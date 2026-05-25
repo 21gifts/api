@@ -12,7 +12,9 @@
 FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock* bun.lockb* ./
-RUN bun install --frozen-lockfile --production=false
+# Install with dev deps (vitest/tsc/eslint not strictly needed at runtime but
+# kept here so the same dep layer is reusable for tooling steps if added later).
+RUN bun install --frozen-lockfile
 
 FROM oven/bun:1.3-alpine AS builder
 WORKDIR /app
