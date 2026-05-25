@@ -31,7 +31,7 @@ or send help.
 6. **Lightning Address mandatory** — receivers must have a LUD-16 address; no custodial wallets
 7. **English only** — UI, copy, code, docs, and commits are all in English. No
    multi-language support in v1. Internationalization is explicitly out of scope.
-8. **Thin client, thick server** — the browser holds only what *must* be
+8. **Thin client, thick server** — the browser holds only what _must_ be
    client-side (keys, signing, wallet flow). Everything else — relay
    communication, indexing, discovery, LN-Address resolution, anti-abuse —
    lives in the backend API. The app bundle stays tiny.
@@ -92,6 +92,7 @@ WebAuthn Passkey (PRF extension)
   mental overhead
 
 **Recovery paths**:
+
 1. Platform Passkey sync — iCloud Keychain, Google Password Manager, 1Password,
    Bitwarden, hardware authenticator with sync
 2. Optional explicit 12-word backup, shown once on sign-up, never sent to the server
@@ -100,16 +101,16 @@ WebAuthn Passkey (PRF extension)
 
 ### Browser support for WebAuthn PRF (as of 2026)
 
-| Platform / Authenticator | PRF Support |
-|---|---|
-| iOS / macOS Safari 18+ | ✅ |
-| Chrome on macOS/iOS | ✅ |
-| Edge (Chromium) | ✅ |
-| Android Chrome 132+ | ✅ |
-| 1Password 8+ | ✅ |
-| Bitwarden | ✅ |
-| YubiKey 5 (firmware 5.7+) | ✅ |
-| Firefox | partial — lagging behind |
+| Platform / Authenticator  | PRF Support              |
+| ------------------------- | ------------------------ |
+| iOS / macOS Safari 18+    | ✅                       |
+| Chrome on macOS/iOS       | ✅                       |
+| Edge (Chromium)           | ✅                       |
+| Android Chrome 132+       | ✅                       |
+| 1Password 8+              | ✅                       |
+| Bitwarden                 | ✅                       |
+| YubiKey 5 (firmware 5.7+) | ✅                       |
+| Firefox                   | partial — lagging behind |
 
 Open question (see below): how to handle the unsupported tail.
 
@@ -117,7 +118,7 @@ Open question (see below): how to handle the unsupported tail.
 
 - Receiver profile **must** include a Lightning Address (LUD-16)
 - The api resolves and caches LUD-16 metadata server-side, with health checks
-- Donor flow in the browser: click *Donate* → app reads cached LN-Address from
+- Donor flow in the browser: click _Donate_ → app reads cached LN-Address from
   api → browser fetches LNURL-pay callback → invoice → pay (browser ↔ wallet
   provider directly, the api is not in the payment path)
 - The api never sees the invoice, the amount, the payer, or the funds
@@ -127,13 +128,13 @@ Open question (see below): how to handle the unsupported tail.
 
 Every "message" the user writes in the UI is a NOSTR event:
 
-| UI surface | NOSTR primitive |
-|---|---|
-| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata) |
-| Receiver profile / campaign post | `kind:1` (text note), tagged with campaign metadata |
-| Public comment / encouragement | `kind:1` reply, with `e` and `p` tags |
-| Private message donor ↔ receiver | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy) |
-| Donation acknowledgement | `kind:9735` Zap receipt (when NIP-57 enabled) |
+| UI surface                            | NOSTR primitive                                           |
+| ------------------------------------- | --------------------------------------------------------- |
+| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                |
+| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata       |
+| Public comment / encouragement        | `kind:1` reply, with `e` and `p` tags                     |
+| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy) |
+| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)             |
 
 **Flow** — the app does not talk to NOSTR relays directly. It talks to the
 backend API, which acts as the user's edge to the network:
@@ -163,6 +164,7 @@ app  ←──indexed feed──  api  ←──subscribe──  relays
 reputation (who follows / vouches for whom).
 
 **Website level**: stricter, to protect donors from obvious scams:
+
 - NIP-05 verification (optional, badged)
 - Profile completeness (story, photo, LN-Address resolves successfully)
 - Community vouching (other NOSTR identities sign off)
@@ -208,12 +210,13 @@ app repo (`21gifts/app`) only carries frontend-specific docs.
 
 IndexedDB, two object stores:
 
-| Store | Contents |
-|---|---|
-| `credentials` | Passkey metadata (credential ID, derivation version, creation timestamp) |
-| `keystore` | Encrypted secret material (encrypted mnemonic / encrypted nsec); plus the NOSTR `npub` in cleartext for the locked view |
+| Store         | Contents                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `credentials` | Passkey metadata (credential ID, derivation version, creation timestamp)                                                |
+| `keystore`    | Encrypted secret material (encrypted mnemonic / encrypted nsec); plus the NOSTR `npub` in cleartext for the locked view |
 
 Encryption: AES-GCM 256, with two key-derivation paths:
+
 - **Passkey path** — HKDF-SHA256 from PRF output, salt `"21gifts-encryption"`, info `"aes-key-v1"`
 - **Password path** — PBKDF2-SHA256 from user password, 100,000 iterations, 16-byte random salt persisted with the ciphertext
 
@@ -222,14 +225,16 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 ## MVP Scope (v1)
 
 **In** — app:
+
 - Sign-up via Passkey (PRF) → derive NOSTR identity (NIP-06)
 - Receiver profile UI: name, photo, story, Lightning Address
 - Public campaign feed (rendered from api response)
-- *Donate* button → LNURL-pay (browser flow)
+- _Donate_ button → LNURL-pay (browser flow)
 - Public comment composer (sign → POST to api)
 - Lock / unlock via Passkey or password
 
 **In** — api:
+
 - Authenticated event ingest endpoint (signature verification, basic rate-limiting)
 - NOSTR fan-out to a default relay set (5–10 relays)
 - Subscribe to relays + index `kind:0`, `kind:1` events
@@ -238,6 +243,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Basic anti-abuse: rate-limit per pubkey, malformed-event rejection
 
 **Out, deferred:**
+
 - Private DMs (NIP-17 sealed messages)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
@@ -258,8 +264,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
    IndexedDB. Trade-off: simplicity vs. inclusivity.
 2. **Verification rigor** — pure NOSTR-reputation, or also platform-level checks?
    Where exactly is the line between "open" and "responsible"?
-3. **Relay strategy** — public relays only, or run a pinned relay for the
-   platform? Trade-off: control + persistence vs. centralization perception.
+3. ~~Relay strategy — public relays only, or run a pinned relay for the
+   platform?~~ **Resolved 2026-05-25**: 21.gifts uses the shared `nostr.space`
+   relay (strfry) maintained as part of the wider NOSTR-space infrastructure.
+   No relay operation is in 21.gifts' scope.
 4. **Funding the platform** — hosting, domain, dev work need someone to pay.
    Options: rounding-up donations, optional tip on every flow, sponsor, founder
    funds. Must align with "non-profit" principle.
@@ -279,24 +287,24 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 ### App (`21gifts/app`) — thin frontend client
 
-Goal: smallest viable browser bundle. Only what *must* run client-side.
+Goal: smallest viable browser bundle. Only what _must_ run client-side.
 
-| Layer | Choice | Rationale |
-|---|---|---|
-| Framework | **Next.js 15** (App Router) | SSR, standalone Docker output, broad ecosystem |
-| Language | TypeScript (strict mode) | Type safety |
-| Styling | **Tailwind CSS only** | No CSS files, no styled-components |
-| State | **Zustand** | Minimal boilerplate, encrypted IndexedDB persistence |
-| WebAuthn / PRF | `navigator.credentials.*` directly, **no external library** | Smallest surface |
-| Crypto primitives | Web Crypto API (HKDF, PBKDF2, AES-GCM, SHA-256) | Native, audited, no dependency cost |
-| secp256k1 / Schnorr | `@noble/curves` | Pure TypeScript, audited, no WASM needed |
-| BIP-32 / BIP-39 | `@scure/bip32`, `@scure/bip39` | Pure TypeScript, NIP-06-compatible |
-| NOSTR event helpers | `nostr-tools` (encoding + signing only; **no relay code**) | App uses it for event construction and NIP-19 bech32, not for relay I/O |
-| Lightning | `light-bolt11-decoder` for invoice decoding | LUD-16 metadata comes pre-resolved from api |
-| Schema validation | `zod` | API response validation |
-| Icons | `lucide-react` | Minimal icon set |
-| Test | Vitest (unit), Playwright (e2e) | Standard |
-| Lint | `next lint` + Prettier | Standard |
+| Layer               | Choice                                                      | Rationale                                                               |
+| ------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Framework           | **Next.js 15** (App Router)                                 | SSR, standalone Docker output, broad ecosystem                          |
+| Language            | TypeScript (strict mode)                                    | Type safety                                                             |
+| Styling             | **Tailwind CSS only**                                       | No CSS files, no styled-components                                      |
+| State               | **Zustand**                                                 | Minimal boilerplate, encrypted IndexedDB persistence                    |
+| WebAuthn / PRF      | `navigator.credentials.*` directly, **no external library** | Smallest surface                                                        |
+| Crypto primitives   | Web Crypto API (HKDF, PBKDF2, AES-GCM, SHA-256)             | Native, audited, no dependency cost                                     |
+| secp256k1 / Schnorr | `@noble/curves`                                             | Pure TypeScript, audited, no WASM needed                                |
+| BIP-32 / BIP-39     | `@scure/bip32`, `@scure/bip39`                              | Pure TypeScript, NIP-06-compatible                                      |
+| NOSTR event helpers | `nostr-tools` (encoding + signing only; **no relay code**)  | App uses it for event construction and NIP-19 bech32, not for relay I/O |
+| Lightning           | `light-bolt11-decoder` for invoice decoding                 | LUD-16 metadata comes pre-resolved from api                             |
+| Schema validation   | `zod`                                                       | API response validation                                                 |
+| Icons               | `lucide-react`                                              | Minimal icon set                                                        |
+| Test                | Vitest (unit), Playwright (e2e)                             | Standard                                                                |
+| Lint                | `next lint` + Prettier                                      | Standard                                                                |
 
 **Dependency philosophy**: stay minimal. Target ~12 runtime dependencies. The
 app does crypto + signing + UI; everything else (relay I/O, indexing,
@@ -304,17 +312,27 @@ discovery, anti-abuse, LN-Address resolution) is the api's job.
 
 ### Backend (`21gifts/api`) — central service
 
-| Layer | Choice | Rationale |
-|---|---|---|
-| Language | **Rust** | Performance, memory safety, strong typing for protocol code |
-| Framework | **Axum** | Async, ergonomic, broad middleware ecosystem |
-| Project layout | **Cargo workspace** | Multiple crates (`api`, `shared`, future modules) |
-| Storage | TBD (Postgres for relational; possibly Redis for relay-event cache) | Decision deferred until indexer surface stabilizes |
-| NOSTR | Custom thin client over `tokio-tungstenite`, or `nostr-sdk` if it fits | Open |
-| Signature verification | `secp256k1` crate (Schnorr) | Standard |
-| Lightning | `light-bolt11` decoding when needed | LN node not required; we only read LNURL JSON |
-| Lint | `cargo clippy --all-targets --all-features -D warnings` | Strict |
-| Test | `cargo test` + integration tests | Standard |
+The workload is I/O-bound (HTTP, WebSocket, JSON) — not CPU-bound. The
+language choice optimizes for iteration speed, dependency sharing with the
+app, and operational simplicity.
+
+| Layer          | Choice                                                                      | Rationale                                                                       |
+| -------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Runtime        | **[Bun](https://bun.sh) ≥ 1.3**                                             | Fast TS execution, built-in package manager, native HTTP server, small image    |
+| Language       | TypeScript (strict mode)                                                    | Same language as app → shared types, mental-model symmetry                      |
+| Framework      | **[Hono](https://hono.dev)**                                                | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
+| Validation     | `zod`                                                                       | Same as app; shared schemas down the line                                       |
+| NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification)             | Same lib as the app; one mental model                                           |
+| Lightning      | LUD-16 JSON resolution via `fetch`; `light-bolt11-decoder` if ever needed   | LN node not required                                                            |
+| Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)      | Decision deferred until indexer surface stabilizes                              |
+| Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV) | Operated as separate infrastructure; configured via env var                     |
+| Test           | **Vitest** + `@vitest/coverage-v8`                                          | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
+| Lint           | ESLint (flat config) + Prettier + `eslint-plugin-tsdoc`                     | TSDoc on every exported function enforced                                       |
+
+**Quality bar**: 100% coverage on every function (lines, branches, functions,
+statements). Unreachable defensive code is exempted via `v8 ignore` markers
+with a one-line written reason — never to silence the gate. CI is red until
+thresholds are met.
 
 ---
 
@@ -322,15 +340,16 @@ discovery, anti-abuse, LN-Address resolution) is the api's job.
 
 GitHub organization: **`21gifts`** (created 2026-05-25).
 
-| Repo | Purpose | Status |
-|---|---|---|
-| **`21gifts/api`** | Backend service + **canonical project docs** (this file, ROADMAP, SPEC, etc.) | To create |
-| `21gifts/app` | Web frontend client (`21.gifts`) — thin, only frontend-specific docs | To create |
-| `21gifts/docs` | Public developer documentation site (`docs.21.gifts`) | Later |
-| `21gifts/landing-page` | Whitepaper / manifest landing page | Later |
-| `21gifts/marketing` *(private)* | Brand assets, launch material | Later |
+| Repo                            | Purpose                                                                       | Status    |
+| ------------------------------- | ----------------------------------------------------------------------------- | --------- |
+| **`21gifts/api`**               | Backend service + **canonical project docs** (this file, ROADMAP, SPEC, etc.) | To create |
+| `21gifts/app`                   | Web frontend client (`21.gifts`) — thin, only frontend-specific docs          | To create |
+| `21gifts/docs`                  | Public developer documentation site (`docs.21.gifts`)                         | Later     |
+| `21gifts/landing-page`          | Whitepaper / manifest landing page                                            | Later     |
+| `21gifts/marketing` _(private)_ | Brand assets, launch material                                                 | Later     |
 
 **Where docs live**:
+
 - `21gifts/api` — `CONCEPT.md` (this file), `ROADMAP.md`, future `SPEC.md`,
   protocol decisions, schema, architecture diagrams. The api is the brain of
   the system, so it owns the canonical project specification.
@@ -339,6 +358,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
   styling, testing). Nothing protocol-level.
 
 **Per-repo conventions**:
+
 - `develop` is the default branch
 - `main` is the production branch
 - Feature branch → PR → merge to `develop`
@@ -346,7 +366,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - Every repo has `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`
 - Strict linting (Prettier + ESLint for TS, Clippy for Rust)
 - No `console.log` / `dbg!` / `println!` in committed code
-- Commit messages in English, concise, describe *what* changed
+- Commit messages in English, concise, describe _what_ changed
 
 ---
 
@@ -382,14 +402,15 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 Four GitHub Actions workflows, identical structure for `app` and `api`:
 
-| Workflow | Trigger | Action |
-|---|---|---|
-| `ci.yaml` | PR, push to develop | Lint + build + test (required for merge) |
-| `deploy-dev.yaml` | push to develop | Docker build → push `:beta` → notify infra repo |
-| `deploy-prd.yaml` | push to main | Docker build → push `:latest` → notify infra repo |
-| `auto-release-pr.yaml` | push to develop | Auto-create release PR `develop → main` |
+| Workflow               | Trigger             | Action                                            |
+| ---------------------- | ------------------- | ------------------------------------------------- |
+| `ci.yaml`              | PR, push to develop | Lint + build + test (required for merge)          |
+| `deploy-dev.yaml`      | push to develop     | Docker build → push `:beta` → notify infra repo   |
+| `deploy-prd.yaml`      | push to main        | Docker build → push `:latest` → notify infra repo |
+| `auto-release-pr.yaml` | push to develop     | Auto-create release PR `develop → main`           |
 
 **Pre-push local checks**:
+
 - `app`: `npm run lint && npm run build && npm test`
 - `api`: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
 
@@ -413,12 +434,12 @@ DNS, and reverse-proxy routing.
 
 Two environments per service, mapped 1:1 to the branch model:
 
-| Service | Env | Source branch | Image tag | Public URL |
-|---|---|---|---|---|
-| app | DEV | `develop` | `:beta` | `dev.21.gifts` |
-| app | PRD | `main` | `:latest` | `21.gifts`, `www.21.gifts` |
-| api | DEV | `develop` | `:beta` | `dev-api.21.gifts` |
-| api | PRD | `main` | `:latest` | `api.21.gifts` |
+| Service | Env | Source branch | Image tag | Public URL                 |
+| ------- | --- | ------------- | --------- | -------------------------- |
+| app     | DEV | `develop`     | `:beta`   | `dev.21.gifts`             |
+| app     | PRD | `main`        | `:latest` | `21.gifts`, `www.21.gifts` |
+| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts`         |
+| api     | PRD | `main`        | `:latest` | `api.21.gifts`             |
 
 Subdomain convention: **dash, not dot** (e.g., `dev-api.21.gifts` rather than
 `dev.api.21.gifts`). This keeps every subdomain at exactly one level deep,
@@ -433,28 +454,33 @@ repository — they're intentionally not part of this project's scope.
 
 ## Decisions Log
 
-| Date | Decision |
-|---|---|
-| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital) |
-| 2026-05-25 | GitHub organization `21gifts` created |
-| 2026-05-25 | Docker Hub organization `21gifts` created |
-| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern |
-| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path) |
-| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly |
-| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds |
-| 2026-05-25 | English-only product (no i18n in v1) |
-| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback) |
-| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later) |
+| Date       | Decision                                                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                        |
+| 2026-05-25 | GitHub organization `21gifts` created                                                                                                                        |
+| 2026-05-25 | Docker Hub organization `21gifts` created                                                                                                                    |
+| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern                                                                   |
+| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path)                                                             |
+| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly                                                                                            |
+| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds                                                                           |
+| 2026-05-25 | English-only product (no i18n in v1)                                                                                                                         |
+| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback)                                                                                             |
+| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later)                                                  |
 | 2026-05-25 | Thin-client / thick-server: app holds only keys+signing+UI; everything else (relay I/O, indexing, discovery, LN-Address resolution, anti-abuse) lives in api |
-| 2026-05-25 | Backend service is named `api` (Rust + Axum + Cargo workspace) and is built from day one — not deferred |
-| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs |
+| 2026-05-25 | Backend service is named `api` and is built from day one — not deferred                                                                                      |
+| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs                            |
+| 2026-05-25 | Backend stack: **TypeScript + Bun + Hono + Vitest** (revised from Rust + Axum). Workload is I/O-bound, not CPU-bound; language symmetry with the app wins    |
+| 2026-05-25 | NOSTR relay: shared `nostr.space` infra (`wss://relay.nostr.space` / `wss://dev-relay.nostr.space`). 21.gifts is a client, not an operator. Closes OQ #3     |
+| 2026-05-25 | Hard 100% coverage gate (lines + branches + functions + statements) enforced via `vitest.config.ts` thresholds; CI red until met                             |
+| 2026-05-25 | TSDoc on every exported symbol, enforced via `eslint-plugin-tsdoc`                                                                                           |
 
 ---
 
 ## Next Steps
 
-1. Create `21gifts/api` repo skeleton (Rust + Axum + Cargo workspace) — and
-   move this CONCEPT.md into it as the canonical home
+1. ~~Create `21gifts/api` repo skeleton~~ — done 2026-05-25: TS + Bun + Hono +
+   Vitest, 100% coverage on `/healthz` and `/info`, this CONCEPT.md committed
+   as the canonical home
 2. Create `21gifts/app` repo skeleton (Next.js 15 + TS strict + Tailwind + Zustand)
 3. Port the passkey + PRF + key-derivation primitives from the reference app,
    adjusted for NIP-06 output (32-byte nsec, not BIP-32 xpriv)
@@ -469,6 +495,6 @@ repository — they're intentionally not part of this project's scope.
 
 ---
 
-*This document is the canonical source for product-level decisions on 21.gifts.
+_This document is the canonical source for product-level decisions on 21.gifts.
 Hosting, secrets, DNS, and any other operator-specific details are out of scope
-and live in the operator's separate infrastructure repository.*
+and live in the operator's separate infrastructure repository._

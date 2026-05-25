@@ -1,5 +1,7 @@
-target/
+node_modules/
+dist/
+coverage/
 .env
 .env.local
-*.pem
+*.tsbuildinfo
 .DS_Store

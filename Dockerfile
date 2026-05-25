@@ -5,29 +5,30 @@
 #   docker build -t 21gifts/api:latest .
 #
 # Run:
-#   docker run -p 3000:3000 -e RUST_LOG=info 21gifts/api:latest
+#   docker run -p 3000:3000 21gifts/api:latest
 #
-# Configuration is environment-variable only; see api/src/main.rs.
+# Configuration is environment-variable only; see CONTRIBUTING.md.
 
-FROM rust:bookworm AS builder
+FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
+COPY package.json bun.lock* bun.lockb* ./
+RUN bun install --frozen-lockfile --production=false
 
-COPY rust-toolchain.toml ./
-RUN rustup show
-
+FROM oven/bun:1.3-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN bun build src/index.ts --target=bun --outdir=dist
 
-RUN cargo build --release -p api
+FROM oven/bun:1.3-alpine
+WORKDIR /app
+RUN addgroup -S app && adduser -S app -G app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+USER app
 
-FROM debian:bookworm-slim
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/target/release/api /usr/local/bin/api
-
-ENV RUST_LOG=info
 ENV BIND_ADDR=0.0.0.0:3000
 EXPOSE 3000
 
-ENTRYPOINT ["api"]
+CMD ["bun", "run", "dist/index.js"]

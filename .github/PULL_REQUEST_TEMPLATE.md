@@ -4,15 +4,15 @@
 
 ## Changes
 
-- 
+-
 
 ## Test plan
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo build --release`
-- [ ] `cargo test`
-- [ ] Manual smoke: `/healthz` returns `200 {"status":"ok",...}`
+- [ ] `bun run typecheck`
+- [ ] `bun run lint`
+- [ ] `bun run test:coverage` (100% threshold respected)
+- [ ] `bun run build`
+- [ ] Manual smoke: `GET /healthz` returns `200 {"status":"ok",...}`
 
 ## Notes
 
