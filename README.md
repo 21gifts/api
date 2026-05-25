@@ -1,5 +1,11 @@
 # 21.gifts — api
 
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-21gifts%2Fapi-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/21gifts/api)
+[![Image size (beta)](https://img.shields.io/docker/image-size/21gifts/api/beta?label=beta%20size)](https://hub.docker.com/r/21gifts/api/tags?name=beta)
+[![Image size (latest)](https://img.shields.io/docker/image-size/21gifts/api/latest?label=latest%20size)](https://hub.docker.com/r/21gifts/api/tags?name=latest)
+[![Pulls](https://img.shields.io/docker/pulls/21gifts/api?label=pulls)](https://hub.docker.com/r/21gifts/api)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 Backend service for [21.gifts](https://21.gifts) — a peer-to-peer Bitcoin
 Lightning donation platform with NOSTR as the invisible communication substrate.
 
@@ -7,12 +13,24 @@ This repository is the **canonical home** for project-level documentation
 (see [`CONCEPT.md`](./CONCEPT.md)). The frontend lives at
 [`21gifts/app`](https://github.com/21gifts/app).
 
-## Live
+## 🐳 Docker images
 
-| Environment | Image                | URL                        |
-| ----------- | -------------------- | -------------------------- |
-| **PRD**     | `21gifts/api:latest` | `https://api.21.gifts`     |
-| **DEV**     | `21gifts/api:beta`   | `https://dev-api.21.gifts` |
+Pre-built images are published to Docker Hub on every push to `develop` (`:beta`)
+and `main` (`:latest`).
+
+| Tag                                                                           | Source    | Deploy target | Public URL                 |
+| ----------------------------------------------------------------------------- | --------- | ------------- | -------------------------- |
+| [`21gifts/api:beta`](https://hub.docker.com/r/21gifts/api/tags?name=beta)     | `develop` | DEV           | `https://dev-api.21.gifts` |
+| [`21gifts/api:latest`](https://hub.docker.com/r/21gifts/api/tags?name=latest) | `main`    | PRD           | `https://api.21.gifts`     |
+
+**Pull and run locally:**
+
+```bash
+docker run --rm -p 3000:3000 21gifts/api:beta
+# → http://localhost:3000/healthz
+```
+
+Full image list and history: **[hub.docker.com/r/21gifts/api](https://hub.docker.com/r/21gifts/api/tags)**.
 
 ## What this service does
 
