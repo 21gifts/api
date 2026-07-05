@@ -292,8 +292,10 @@ the same endpoints later.
 
 **Responsibilities**:
 
-- **NOSTR fan-out** — accept signed events from clients, verify signatures,
-  publish to the configured relay set
+- **NOSTR fan-out** — accept signed events from clients and verify their
+  signatures (target state — in v1 events originate and are signed
+  server-side, see the v1 additions below), publish to the configured relay
+  set
 - **NOSTR aggregation / indexing** — subscribe to relays, index events, expose
   paginated read endpoints for the app
 - **LN-Address resolution + caching** — LUD-16 endpoints get cached server-side
