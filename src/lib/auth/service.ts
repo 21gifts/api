@@ -102,7 +102,14 @@ function upsertAccount(store: AuthStore, linkingKey: string, now: number): Accou
   if (existing !== undefined) {
     return existing;
   }
-  const account: Account = { id: crypto.randomUUID(), linkingKey, role: 'basis', createdAt: now };
+  const account: Account = {
+    id: crypto.randomUUID(),
+    linkingKey,
+    role: 'basis',
+    lightningAddress: null,
+    lightningAddressVerified: false,
+    createdAt: now,
+  };
   store.createAccount(account);
   return account;
 }

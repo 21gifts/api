@@ -59,9 +59,37 @@ describe('InMemoryAuthStore', () => {
 
   it('stores an account and finds it by id and by linkingKey', () => {
     const store = new InMemoryAuthStore();
-    store.createAccount({ id: 'acc', linkingKey: KEY, role: 'basis', createdAt: 1 });
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
     expect(store.getAccount('acc')?.linkingKey).toBe(KEY);
     expect(store.findAccountByLinkingKey(KEY)?.id).toBe('acc');
+  });
+
+  it('overwrites account fields on update', () => {
+    const store = new InMemoryAuthStore();
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.updateAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      lightningAddress: 'a@b.com',
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(store.getAccount('acc')?.lightningAddress).toBe('a@b.com');
   });
 
   it('returns undefined for an unknown account id', () => {

@@ -156,14 +156,28 @@ describe('resolveSession', () => {
 
   it('returns null for an expired session', () => {
     const store = new InMemoryAuthStore();
-    store.createAccount({ id: 'acc', linkingKey: KEY, role: 'basis', createdAt: T0 });
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: T0,
+    });
     store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
     expect(resolveSession(store, T0 + SESSION_TTL_MS + 1, 'tok')).toBeNull();
   });
 
   it('returns the account for a valid session', () => {
     const store = new InMemoryAuthStore();
-    store.createAccount({ id: 'acc', linkingKey: KEY, role: 'basis', createdAt: T0 });
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: T0,
+    });
     store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
     expect(resolveSession(store, T0, 'tok')?.id).toBe('acc');
   });
