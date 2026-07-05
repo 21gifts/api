@@ -43,8 +43,9 @@ or send help.
 v1 ships with a deliberately simplified account and custody model so the
 platform can go live and be dogfooded. It deviates from Core Principle 2 on
 the donor's **sending** side (custodial LNDHub spending) and from Core
-Principle 5 for **all** v1 accounts (no client-side keys; NOSTR events are
-platform-signed — see "NOSTR in v1" below). Both deviations are transitional
+Principle 5 for **all** v1 accounts (no client-side keys; each account's
+NOSTR identity is custodial, held and used for signing server-side — see
+"NOSTR in v1" below). Both deviations are transitional
 and will be replaced by a non-custodial setup. Receiving stays non-custodial
 (LUD-16 only, as before).
 
@@ -113,10 +114,16 @@ exactly these semantics exists and will be ported into the api payout worker.
 
 ### NOSTR in v1
 
-LNURL-auth provides no client-side NOSTR key, so v1 users cannot sign NOSTR
-events themselves. v1 therefore publishes platform-signed events (see Open
-Question #9); user-owned NOSTR identity (Passkey + PRF → NIP-06) arrives with
-the non-custodial phase.
+LNURL-auth provides no client-side NOSTR key, so v1 runs NOSTR **fully
+custodially** (decided 2026-07-05, resolves Open Question #9): on sign-up the
+api generates a NOSTR keypair for the account, stores the `nsec` encrypted at
+rest, and signs that account's events server-side with the account's own key.
+Every profile, campaign, and comment therefore appears on the public NOSTR
+network under the user's own `npub` — attribution stays per-user, and
+external clients (Damus, Amethyst, …) see ordinary per-identity events.
+User-owned keys (Passkey + PRF → NIP-06) arrive with the non-custodial phase;
+the custodial-to-user-owned migration path is the remaining open part of
+Open Question #9.
 
 ---
 
@@ -218,9 +225,11 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 
 ### Communication
 
-Every "message" the user writes in the UI is a NOSTR event. (v1 note: users
-have no client-side NOSTR keys, so v1 publishes platform-signed events — see
-Open Question #9. The table and flow below describe the target state.)
+Every "message" the user writes in the UI is a NOSTR event. (v1 note: NOSTR
+is fully custodial in v1 — the api holds one keypair per account and signs
+events server-side with the account's own key, see "NOSTR in v1". The table
+below applies to v1 as well; the client-side-signing flow beneath it is
+target state.)
 
 | UI surface                            | NOSTR primitive                                           |
 | ------------------------------------- | --------------------------------------------------------- |
@@ -264,9 +273,10 @@ reputation (who follows / vouches for whom).
 - Community vouching (other NOSTR identities sign off)
 - No KYC, no government ID
 
-(v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 users
-hold no NOSTR identities. The v1 verified badge is proof of Lightning-Address
-control via micro-payment nonce, see "Receiver address verification".)
+(v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 NOSTR
+identities are custodial, server-held. The v1 verified badge is proof of
+Lightning-Address control via micro-payment nonce, see "Receiver address
+verification".)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
@@ -294,7 +304,8 @@ the same endpoints later.
   and sessions; encrypted donor `lndhub://` credential storage; the
   recurring-gift scheduler and fail-closed payout worker (incl. USD → sats
   conversion via an exchange-rate source); receiver address
-  verification via micro-payment nonce; platform-side NOSTR event signing
+  verification via micro-payment nonce; custodial per-account NOSTR
+  identities (`nsec` encrypted at rest) with server-side event signing
 
 **Non-responsibilities** (stay client-side; target state — the v1 additions
 above temporarily move event signing and donor payments server-side):
@@ -340,7 +351,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Donor upgrade: deposit `lndhub://` export (`lightning.space` only)
 - Recurring gifts: configure daily USD amounts per recipient
-- Public comment composer (POST to api; platform-signed in v1)
+- Public comment composer (POST to api; signed server-side with the
+  account's custodial key)
 - Moderation actions on campaigns/comments (Moderator role)
 
 **In** — api:
@@ -353,7 +365,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   Model")
 - Receiver address verification: micro-payment with one-time nonce in the
   LUD-12 comment
-- NOSTR fan-out to a default relay set (platform-signed events in v1)
+- Custodial NOSTR identities: per-account keypair generated on sign-up,
+  `nsec` stored encrypted at rest, events signed server-side
+- NOSTR fan-out to a default relay set
 - Subscribe to relays + index `kind:0`, `kind:1` events
 - Read endpoints: feed, profile, replies-to-event, recent campaigns
 - LN-Address (LUD-16) resolution + cache + health check
@@ -366,7 +380,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 **Out, deferred:**
 
 - Passkey + PRF → NOSTR identity (NIP-06) — moves to the non-custodial phase
-- Client-side event signing (v1 events are platform-signed)
+- Client-side event signing (v1 signs server-side with custodial keys)
 - Any second login method or account recovery (no email, no backup auth —
   accepted risk, see "v1 Transitional Model")
 - Linking multiple LNURL-auth wallets to one account
@@ -406,11 +420,14 @@ Encryption: AES-GCM 256, with two key-derivation paths:
    detect without becoming a centralized gatekeeper?
 8. **Sybil resistance** — one person, many profiles? NOSTR Web of Trust helps
    but isn't bulletproof.
-9. **Platform-signed NOSTR events in v1** — v1 users have no NOSTR keys, so
-   the platform signs events on their behalf. One platform key for
-   everything, or one derived key per account? How is authorship attributed
-   transparently, and how does the migration to user-owned keys
-   (non-custodial phase) stay clean?
+9. ~~Platform-signed NOSTR events in v1 — one platform key for everything,
+   or one derived key per account? How is authorship attributed?~~
+   **Resolved 2026-07-05**: v1 NOSTR is fully custodial — one keypair per
+   account, generated server-side on sign-up, `nsec` encrypted at rest,
+   events signed with the account's own key, so public attribution is
+   per-user. **Still open**: the migration path from custodial to user-owned
+   keys in the non-custodial phase (key hand-over/export vs. fresh identity
+   plus republish).
 
 ---
 
@@ -591,32 +608,33 @@ repository — they're intentionally not part of this project's scope.
 
 ## Decisions Log
 
-| Date       | Decision                                                                                                                                                                                                          |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                             |
-| 2026-05-25 | GitHub organization `21gifts` created                                                                                                                                                                             |
-| 2026-05-25 | Docker Hub organization `21gifts` created                                                                                                                                                                         |
-| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern                                                                                                                        |
-| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path)                                                                                                                  |
-| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly                                                                                                                                                 |
-| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds                                                                                                                                |
-| 2026-05-25 | English-only product (no i18n in v1)                                                                                                                                                                              |
-| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback)                                                                                                                                                  |
-| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later)                                                                                                       |
-| 2026-05-25 | Thin-client / thick-server: app holds only keys+signing+UI; everything else (relay I/O, indexing, discovery, LN-Address resolution, anti-abuse) lives in api                                                      |
-| 2026-05-25 | Backend service is named `api` and is built from day one — not deferred                                                                                                                                           |
-| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs                                                                                 |
-| 2026-05-25 | Backend stack: **TypeScript + Bun + Hono + Vitest** (revised from Rust + Axum). Workload is I/O-bound, not CPU-bound; language symmetry with the app wins                                                         |
-| 2026-05-25 | NOSTR relay: shared `nostr.space` infra (`wss://relay.nostr.space` / `wss://dev-relay.nostr.space`). 21.gifts is a client, not an operator. Closes OQ #3                                                          |
-| 2026-05-25 | Hard 100% coverage gate (lines + branches + functions + statements) enforced via `vitest.config.ts` thresholds; CI red until met                                                                                  |
-| 2026-05-25 | TSDoc on every exported symbol, enforced via `eslint-plugin-tsdoc`                                                                                                                                                |
-| 2026-07-05 | v1 account model: Basis (login + receive, default for every account) and Moderator (content moderation); donor is an upgrade, not a role                                                                          |
-| 2026-07-05 | v1 login: **LNURL-auth (LUD-04) only** — no email, no password, no passkey; `linkingKey` = account identifier; lockout risk explicitly accepted; auth callback host pinned to `api.21.gifts` / `dev-api.21.gifts` |
-| 2026-07-05 | v1 donor spending: custodial via deposited `lndhub://` export, restricted to `lightning.space` wallets; explicit transitional deviation from Core Principles 2/5, replaced by a non-custodial setup later         |
-| 2026-07-05 | Recurring daily gifts are a v1 feature: server-side scheduler in the api with fail-closed payout semantics                                                                                                        |
-| 2026-07-05 | Receiver verification: micro-payment with one-time nonce in the LUD-12 comment (WoS-compatible, min 1 sat); no LUD-21 dependency (WoS lacks it)                                                                   |
-| 2026-07-05 | Research recorded: WoS has no official API; WoS supports LNURL-auth (Classic since 2023, Self-Custody since app v3.2.5 / 2026-02-04)                                                                              |
-| 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                        |
+| Date       | Decision                                                                                                                                                                                                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                           |
+| 2026-05-25 | GitHub organization `21gifts` created                                                                                                                                                                                                                                           |
+| 2026-05-25 | Docker Hub organization `21gifts` created                                                                                                                                                                                                                                       |
+| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern                                                                                                                                                                                      |
+| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path)                                                                                                                                                                                |
+| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly                                                                                                                                                                                                               |
+| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds                                                                                                                                                                                              |
+| 2026-05-25 | English-only product (no i18n in v1)                                                                                                                                                                                                                                            |
+| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback)                                                                                                                                                                                                                |
+| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later)                                                                                                                                                                     |
+| 2026-05-25 | Thin-client / thick-server: app holds only keys+signing+UI; everything else (relay I/O, indexing, discovery, LN-Address resolution, anti-abuse) lives in api                                                                                                                    |
+| 2026-05-25 | Backend service is named `api` and is built from day one — not deferred                                                                                                                                                                                                         |
+| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs                                                                                                                                               |
+| 2026-05-25 | Backend stack: **TypeScript + Bun + Hono + Vitest** (revised from Rust + Axum). Workload is I/O-bound, not CPU-bound; language symmetry with the app wins                                                                                                                       |
+| 2026-05-25 | NOSTR relay: shared `nostr.space` infra (`wss://relay.nostr.space` / `wss://dev-relay.nostr.space`). 21.gifts is a client, not an operator. Closes OQ #3                                                                                                                        |
+| 2026-05-25 | Hard 100% coverage gate (lines + branches + functions + statements) enforced via `vitest.config.ts` thresholds; CI red until met                                                                                                                                                |
+| 2026-05-25 | TSDoc on every exported symbol, enforced via `eslint-plugin-tsdoc`                                                                                                                                                                                                              |
+| 2026-07-05 | v1 account model: Basis (login + receive, default for every account) and Moderator (content moderation); donor is an upgrade, not a role                                                                                                                                        |
+| 2026-07-05 | v1 login: **LNURL-auth (LUD-04) only** — no email, no password, no passkey; `linkingKey` = account identifier; lockout risk explicitly accepted; auth callback host pinned to `api.21.gifts` / `dev-api.21.gifts`                                                               |
+| 2026-07-05 | v1 donor spending: custodial via deposited `lndhub://` export, restricted to `lightning.space` wallets; explicit transitional deviation from Core Principles 2/5, replaced by a non-custodial setup later                                                                       |
+| 2026-07-05 | Recurring daily gifts are a v1 feature: server-side scheduler in the api with fail-closed payout semantics                                                                                                                                                                      |
+| 2026-07-05 | Receiver verification: micro-payment with one-time nonce in the LUD-12 comment (WoS-compatible, min 1 sat); no LUD-21 dependency (WoS lacks it)                                                                                                                                 |
+| 2026-07-05 | Research recorded: WoS has no official API; WoS supports LNURL-auth (Classic since 2023, Self-Custody since app v3.2.5 / 2026-02-04)                                                                                                                                            |
+| 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                                                                                      |
+| 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open) |
 
 ---
 
