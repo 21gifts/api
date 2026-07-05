@@ -228,8 +228,9 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 Every "message" the user writes in the UI is a NOSTR event. (v1 note: NOSTR
 is fully custodial in v1 — the api holds one keypair per account and signs
 events server-side with the account's own key, see "NOSTR in v1". The table
-below applies to v1 as well; the client-side-signing flow beneath it is
-target state.)
+below applies to v1 for the surfaces v1 ships — profile metadata, campaign
+post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
+scope. The client-side-signing flow beneath it is target state.)
 
 | UI surface                            | NOSTR primitive                                           |
 | ------------------------------------- | --------------------------------------------------------- |
@@ -308,7 +309,8 @@ the same endpoints later.
   identities (`nsec` encrypted at rest) with server-side event signing
 
 **Non-responsibilities** (stay client-side; target state — the v1 additions
-above temporarily move event signing and donor payments server-side):
+above temporarily move key generation/custody, event signing, and donor
+payments server-side):
 
 - Passkey ceremonies, PRF evaluation, key derivation
 - Event signing (the api never sees the nsec)
@@ -470,18 +472,18 @@ The workload is I/O-bound (HTTP, WebSocket, JSON) — not CPU-bound. The
 language choice optimizes for iteration speed, dependency sharing with the
 app, and operational simplicity.
 
-| Layer          | Choice                                                                                                                                             | Rationale                                                                       |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Runtime        | **[Bun](https://bun.sh) ≥ 1.3**                                                                                                                    | Fast TS execution, built-in package manager, native HTTP server, small image    |
-| Language       | TypeScript (strict mode)                                                                                                                           | Same language as app → shared types, mental-model symmetry                      |
-| Framework      | **[Hono](https://hono.dev)**                                                                                                                       | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
-| Validation     | `zod`                                                                                                                                              | Same as app; shared schemas down the line                                       |
-| NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification)                                                                                    | Same lib as the app; one mental model                                           |
-| Lightning      | LUD-16 JSON resolution via `fetch`; `light-bolt11-decoder` for payout invoice verification (v1); LNDHub client (`auth` → `payinvoice`) via `fetch` | LN node not required                                                            |
-| Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)                                                                             | Decision deferred until indexer surface stabilizes                              |
-| Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV)                                                                        | Operated as separate infrastructure; configured via env var                     |
-| Test           | **Vitest** + `@vitest/coverage-v8`                                                                                                                 | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
-| Lint           | ESLint (flat config) + Prettier + `eslint-plugin-tsdoc`                                                                                            | TSDoc on every exported function enforced                                       |
+| Layer          | Choice                                                                                                                                                | Rationale                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Runtime        | **[Bun](https://bun.sh) ≥ 1.3**                                                                                                                       | Fast TS execution, built-in package manager, native HTTP server, small image    |
+| Language       | TypeScript (strict mode)                                                                                                                              | Same language as app → shared types, mental-model symmetry                      |
+| Framework      | **[Hono](https://hono.dev)**                                                                                                                          | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
+| Validation     | `zod`                                                                                                                                                 | Same as app; shared schemas down the line                                       |
+| NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification; v1 additionally: key generation + server-side event signing for custodial identities) | Same lib as the app; one mental model                                           |
+| Lightning      | LUD-16 JSON resolution via `fetch`; `light-bolt11-decoder` for payout invoice verification (v1); LNDHub client (`auth` → `payinvoice`) via `fetch`    | LN node not required                                                            |
+| Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)                                                                                | Decision deferred until indexer surface stabilizes                              |
+| Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV)                                                                           | Operated as separate infrastructure; configured via env var                     |
+| Test           | **Vitest** + `@vitest/coverage-v8`                                                                                                                    | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
+| Lint           | ESLint (flat config) + Prettier + `eslint-plugin-tsdoc`                                                                                               | TSDoc on every exported function enforced                                       |
 
 **Quality bar**: 100% coverage on every function (lines, branches, functions,
 statements). Unreachable defensive code is exempted via `v8 ignore` markers
@@ -648,8 +650,8 @@ repository — they're intentionally not part of this project's scope.
    app~~ — deferred 2026-07-05 to the non-custodial phase (v1 login is
    LNURL-auth)
 4. Define the v1 api surface (LNURL-auth, donor wallets, recurring-gift
-   scheduler, address verification, feed, LN-Address resolver) — `SPEC.md` in
-   the api repo
+   scheduler, address verification, custodial NOSTR identities + server-side
+   event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo
 5. Wire up the four CI/CD workflows on both repos and Docker Hub publishing
 6. Validate LNURL-auth end-to-end with real wallets (WoS Classic +
    Self-Custody ≥ 3.2.5, Phoenix, Alby) — QR and `lightning:` deep link on
