@@ -32,15 +32,34 @@ api/
 │   ├── server.ts             # createApp() factory + bind-addr helpers (pure, testable)
 │   ├── routes/
 │   │   ├── health.ts         # GET /healthz
-│   │   └── info.ts           # GET /info
+│   │   ├── info.ts           # GET /info
+│   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
+│   │   └── me.ts             # GET /me (account behind a bearer session)
 │   ├── lib/
-│   │   └── meta.ts           # Service constants (name, version, repo URL)
+│   │   ├── meta.ts           # Service constants (name, version, repo URL)
+│   │   ├── config.ts         # Auth config (PUBLIC_BASE_URL, challenge/session TTLs)
+│   │   └── auth/
+│   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
+│   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
+│   │       └── store.ts      # AuthStore port + in-memory adapter
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
-│       ├── lib/meta.test.ts
+│       ├── helpers/
+│       │   └── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
+│       ├── integration/
+│       │   └── auth-flow.test.ts
+│       ├── lib/
+│       │   ├── meta.test.ts
+│       │   ├── config.test.ts
+│       │   └── auth/
+│       │       ├── lnurl.test.ts
+│       │       ├── service.test.ts
+│       │       └── store.test.ts
 │       └── routes/
 │           ├── health.test.ts
-│           └── info.test.ts
+│           ├── info.test.ts
+│           ├── auth.test.ts
+│           └── me.test.ts
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts          # 100% coverage threshold
@@ -131,10 +150,11 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default        | Purpose              |
-| ----------------- | -------------- | -------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000` | Listen address       |
-| `SERVICE_VERSION` | `0.1.0`        | Surfaced via `/info` |
+| Variable          | Default                      | Purpose                                                                                                             |
+| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                      |
+| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                |
+| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev-api.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
 
 More will be added as concrete subsystems (relay client, LN-Address cache, …) land.
 
