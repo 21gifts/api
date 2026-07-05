@@ -31,3 +31,33 @@ export function normalizePublicBaseUrl(raw: string | undefined): string | null {
   }
   return raw.trim().replace(/\/+$/, '');
 }
+
+/**
+ * Browser origins allowed to call the api by default — the 21.gifts app
+ * surfaces (prd, dev, and local dev). These are public, fixed hostnames, not
+ * secrets; `CORS_ALLOWED_ORIGINS` overrides them when a different surface needs
+ * cross-origin access.
+ */
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://app.21.gifts',
+  'https://dev-app.21.gifts',
+  'http://localhost:3000',
+];
+
+/**
+ * Resolve the browser origins that CORS should allow.
+ *
+ * @param env - Environment slice (injected so tests need not mutate the real env).
+ * @returns The origins from `CORS_ALLOWED_ORIGINS` (comma-separated) when set,
+ * otherwise the default 21.gifts app surfaces.
+ */
+export function resolveAllowedOrigins(env: Record<string, string | undefined>): string[] {
+  const raw = env['CORS_ALLOWED_ORIGINS'];
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_ALLOWED_ORIGINS;
+  }
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+}

@@ -21,6 +21,36 @@ describe('createApp', () => {
   });
 });
 
+describe('CORS', () => {
+  it('reflects an allowed origin', async () => {
+    const res = await createApp().request('/healthz', {
+      headers: { origin: 'https://app.21.gifts' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
+  });
+
+  it('does not echo an unknown origin', async () => {
+    const res = await createApp().request('/healthz', { headers: { origin: 'https://evil.test' } });
+    expect(res.headers.get('access-control-allow-origin')).not.toBe('https://evil.test');
+  });
+
+  it('answers the CORS preflight with the allowed headers', async () => {
+    const res = await createApp().request('/auth/lnurl', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://app.21.gifts', 'access-control-request-method': 'GET' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toMatch(/x-poll-token/i);
+  });
+
+  it('honors an injected allowedOrigins override', async () => {
+    const res = await createApp({ allowedOrigins: ['https://custom.test'] }).request('/healthz', {
+      headers: { origin: 'https://custom.test' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://custom.test');
+  });
+});
+
 describe('resolveBindAddr', () => {
   it('prefers the explicit override', () => {
     expect(resolveBindAddr('127.0.0.1:9000', { BIND_ADDR: '0.0.0.0:1234' })).toBe('127.0.0.1:9000');
