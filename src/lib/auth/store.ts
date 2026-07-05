@@ -22,6 +22,10 @@ export interface Account {
   linkingKey: string;
   /** Permission tier. */
   role: AccountRole;
+  /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
+  lightningAddress: string | null;
+  /** Whether control of the linked address has been proven (v1: always false). */
+  lightningAddressVerified: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
 }
@@ -75,6 +79,8 @@ export interface AuthStore {
   findAccountByLinkingKey(linkingKey: string): Account | undefined;
   /** Persist a new account. */
   createAccount(account: Account): void;
+  /** Overwrite a stored account (used to update its profile fields). */
+  updateAccount(account: Account): void;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Account | undefined;
   /** Persist a new session. */
@@ -124,6 +130,10 @@ export class InMemoryAuthStore implements AuthStore {
   createAccount(account: Account): void {
     this.#accounts.set(account.id, account);
     this.#accountsByLinkingKey.set(account.linkingKey, account.id);
+  }
+
+  updateAccount(account: Account): void {
+    this.#accounts.set(account.id, account);
   }
 
   getAccount(id: string): Account | undefined {
