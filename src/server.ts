@@ -2,6 +2,24 @@ import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { healthRoute } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
+import { authRoutes } from '@/routes/auth';
+import { meRoutes } from '@/routes/me';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { AuthStore } from '@/lib/auth/store';
+
+/**
+ * Optional collaborators for {@link createApp}. All default to production
+ * implementations; tests inject a store, a fixed clock, or a base URL to drive
+ * the auth flow deterministically.
+ */
+export interface AppDeps {
+  /** Shared auth persistence port (default: a fresh in-memory store). */
+  authStore?: AuthStore;
+  /** Clock returning epoch milliseconds (default: `Date.now`). */
+  now?: () => number;
+  /** Pinned public base URL (default: `process.env.PUBLIC_BASE_URL`). */
+  publicBaseUrl?: string;
+}
 
 /**
  * Build a fully wired Hono application.
@@ -11,15 +29,22 @@ import { infoRoute } from '@/routes/info';
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
+ * @param deps - Optional overrides for the auth store, clock, and base URL.
  * @returns A Hono app with all routes and middleware attached.
  */
-export function createApp(): Hono {
+export function createApp(deps: AppDeps = {}): Hono {
+  const store = deps.authStore ?? new InMemoryAuthStore();
+  const now = deps.now ?? Date.now;
+  const publicBaseUrl = deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'];
+
   const app = new Hono();
 
   app.use('*', logger());
 
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
+  app.route('/auth', authRoutes({ store, now, publicBaseUrl }));
+  app.route('/me', meRoutes({ store, now }));
 
   return app;
 }
