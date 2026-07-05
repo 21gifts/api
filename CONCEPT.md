@@ -264,6 +264,10 @@ reputation (who follows / vouches for whom).
 - Community vouching (other NOSTR identities sign off)
 - No KYC, no government ID
 
+(v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 users
+hold no NOSTR identities. The v1 verified badge is proof of Lightning-Address
+control via micro-payment nonce, see "Receiver address verification".)
+
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
 client on the same protocol.
