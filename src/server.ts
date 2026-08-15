@@ -52,7 +52,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '*',
     cors({
       origin: allowedOrigins,
-      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Authorization', 'Content-Type', 'X-Poll-Token'],
       maxAge: 86400,
     }),
