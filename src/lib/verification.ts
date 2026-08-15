@@ -167,12 +167,14 @@ export function confirmVerification(
 /**
  * Constant-time equality for fixed-length hex nonces.
  *
- * Length is checked first (both sides are 32 hex chars on the happy path);
- * unequal lengths cannot use `timingSafeEqual` and are a mismatch.
+ * UTF-8 buffers are built first. Unequal byte lengths cannot use
+ * `timingSafeEqual` (JS `.length` is not byte length) and are a mismatch.
  */
 function noncesEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
+  const aBuf = Buffer.from(a, 'utf8');
+  const bBuf = Buffer.from(b, 'utf8');
+  if (aBuf.length !== bBuf.length) {
     return false;
   }
-  return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+  return timingSafeEqual(aBuf, bBuf);
 }

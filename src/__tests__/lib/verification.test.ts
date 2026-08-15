@@ -352,6 +352,25 @@ describe('confirmVerification', () => {
     });
   });
 
+  it('returns mismatch when UTF-8 byte length differs at the same JS .length', () => {
+    const stored = 'a'.repeat(32);
+    const submitted = 'é'.repeat(32);
+    expect(submitted.length).toBe(stored.length);
+    expect(Buffer.byteLength(submitted, 'utf8')).not.toBe(Buffer.byteLength(stored, 'utf8'));
+
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: ADDRESS,
+      nonce: stored,
+      createdAt: T0,
+    });
+    expect(confirmVerification(store, T0, account(), submitted)).toEqual({
+      ok: false,
+      code: 'mismatch',
+    });
+  });
+
   it('sets verified, deletes the record, and returns the updated account', () => {
     const store = new InMemoryAuthStore();
     const acc = account();
