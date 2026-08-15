@@ -3,10 +3,14 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import type { InvoicePayer } from '@/lib/invoice-payer';
+import type { FetchFn } from '@/lib/lnurl-pay';
+import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (the receiver's
- * Lightning Address). Shares the {@link AuthStore} instance with `/auth`.
+ * Lightning Address), including proof-of-control verification. Shares the
+ * {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -15,6 +19,10 @@ export interface MeRouteDeps {
   store: AuthStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Pays the verification micro-payment invoice. */
+  payer: InvoicePayer;
+  /** Injected `fetch` for LNURL-pay resolution. */
+  fetchImpl: FetchFn;
 }
 
 /** The public JSON shape of an account. */
@@ -66,11 +74,14 @@ function serializeAccount(account: Account): AccountResponse {
 /** Body schema for linking a Lightning Address. */
 const addressBody = z.object({ address: z.string() });
 
+/** Body schema for confirming address verification. */
+const confirmBody = z.object({ nonce: z.string() });
+
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store and clock.
- * @returns A Hono app exposing `GET /` and `POST`/`DELETE /lightning-address`.
+ * @param deps - Shared store, clock, payer, and fetch.
+ * @returns A Hono app exposing account, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
@@ -95,13 +106,14 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
       // Linking a (new) address resets any prior verified state; proof of control
-      // is a separate step.
+      // is a separate step. Any in-flight verification is dropped with the link.
       const updated: Account = {
         ...account,
         lightningAddress: address,
         lightningAddressVerified: false,
       };
       deps.store.updateAccount(updated);
+      deps.store.deleteVerification(account.id);
       return c.json(serializeAccount(updated), 200);
     })
     .delete('/lightning-address', (c) => {
@@ -115,6 +127,67 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         lightningAddressVerified: false,
       };
       deps.store.updateAccount(updated);
+      deps.store.deleteVerification(account.id);
       return c.json(serializeAccount(updated), 200);
+    })
+    .post('/lightning-address/verification', async (c) => {
+      const account = authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const result = await startVerification({
+        store: deps.store,
+        payer: deps.payer,
+        fetchImpl: deps.fetchImpl,
+        now: deps.now(),
+        account,
+      });
+      if (!result.ok) {
+        switch (result.code) {
+          case 'no_address':
+            return c.json({ error: 'No Lightning Address linked' }, 409);
+          case 'already_verified':
+            return c.json({ error: 'Lightning Address already verified' }, 409);
+          case 'not_configured':
+            return c.json({ error: 'Verification payments are not configured' }, 503);
+          case 'unreachable':
+            return c.json(
+              { error: 'Lightning Address did not accept the verification payment' },
+              502,
+            );
+        }
+      }
+      // Do not return the nonce — the user must read it from the wallet history.
+      return c.json(
+        {
+          status: 'sent',
+          expiresInSeconds: result.expiresInSeconds,
+          sats: result.sats,
+        },
+        200,
+      );
+    })
+    .post('/lightning-address/verification/confirm', async (c) => {
+      const account = authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = confirmBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "nonce" string' }, 400);
+      }
+      const result = confirmVerification(deps.store, deps.now(), account, parsed.data.nonce);
+      if (!result.ok) {
+        switch (result.code) {
+          case 'bad_nonce':
+          case 'mismatch':
+            return c.json({ error: 'Incorrect verification code' }, 400);
+          case 'no_pending':
+            return c.json({ error: 'No verification in progress' }, 409);
+          case 'expired':
+            return c.json({ error: 'Verification expired' }, 409);
+        }
+      }
+      return c.json(serializeAccount(result.account), 200);
     });
 }

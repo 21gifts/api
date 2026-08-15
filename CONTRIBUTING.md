@@ -34,15 +34,18 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
-│   │   └── me.ts             # GET /me; POST/DELETE /me/lightning-address
+│   │   └── me.ts             # GET /me; link/unlink + address verification
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth config (PUBLIC_BASE_URL, challenge/session TTLs)
+│   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
+│   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
+│   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
-│   │       └── store.ts      # AuthStore port + in-memory adapter
+│   │       └── store.ts      # AuthStore port + in-memory adapter (+ verification records)
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
@@ -53,6 +56,9 @@ api/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
 │       │   ├── lightning-address.test.ts
+│       │   ├── invoice-payer.test.ts
+│       │   ├── lnurl-pay.test.ts
+│       │   ├── verification.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
 │       │       ├── service.test.ts

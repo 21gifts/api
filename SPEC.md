@@ -11,8 +11,13 @@
 ## Implemented HTTP surface (normative)
 
 The process holds all auth state in memory (`InMemoryAuthStore`). There is no
-durable database yet: restarting the process clears challenges, accounts, and
-sessions.
+durable database yet: restarting the process clears challenges, accounts,
+sessions, and pending address verifications.
+
+Lightning Address verification HTTP routes are implemented. A live
+verification payment requires an injected invoice payer; the default
+`UnconfiguredInvoicePayer` makes start verification return **503**. No BOLT11
+decoder and no LNDHub / lightning.space payer are wired in this service yet.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default app
 surfaces `https://app.21.gifts`, `https://dev-app.21.gifts`, and
@@ -27,16 +32,18 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://app.21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev-app.21.gifts` |
 
-| Method | Path                    | Auth                    | Purpose                                    |
-| ------ | ----------------------- | ----------------------- | ------------------------------------------ |
-| GET    | `/healthz`              | none                    | Liveness                                   |
-| GET    | `/info`                 | none                    | Service identity                           |
-| GET    | `/auth/lnurl`           | none                    | Issue LNURL-auth challenge                 |
-| GET    | `/auth/lnurl/callback`  | none (wallet)           | LUD-04 callback                            |
-| GET    | `/auth/session`         | `X-Poll-Token`          | App polls for the session                  |
-| GET    | `/me`                   | `Authorization: Bearer` | Account                                    |
-| POST   | `/me/lightning-address` | Bearer                  | Link/replace receiver address (unverified) |
-| DELETE | `/me/lightning-address` | Bearer                  | Unlink address                             |
+| Method | Path                                         | Auth                    | Purpose                                    |
+| ------ | -------------------------------------------- | ----------------------- | ------------------------------------------ |
+| GET    | `/healthz`                                   | none                    | Liveness                                   |
+| GET    | `/info`                                      | none                    | Service identity                           |
+| GET    | `/auth/lnurl`                                | none                    | Issue LNURL-auth challenge                 |
+| GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
+| GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
+| GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
+| POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
+| DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
+| POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
 
 ### `GET /healthz`
 
@@ -199,14 +206,14 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                             |
-| -------------------------- | -------------- | --------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                   |
-| `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)                 |
-| `role`                     | string         | `basis` or `moderator`                              |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                    |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (always `false` until verify) |
-| `createdAt`                | number         | Creation time (epoch ms)                            |
+| Field                      | Type           | Meaning                                           |
+| -------------------------- | -------------- | ------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                 |
+| `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)               |
+| `role`                     | string         | `basis` or `moderator`                            |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                  |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm) |
+| `createdAt`                | number         | Creation time (epoch ms)                          |
 
 ### `POST /me/lightning-address`
 
@@ -232,13 +239,14 @@ Address fails LUD-16 shape check, or trimmed length `> 255` → **Response**
 ```
 
 Success → **Response** `200` with the updated account (same shape as
-`GET /me`). `lightningAddressVerified` is always reset to `false`. There is
-no proof-of-control in this step — a wrong address is self-punishing (gifts
-go elsewhere).
+`GET /me`). `lightningAddressVerified` is always reset to `false`, and any
+pending verification for the account is cleared. There is no proof-of-control
+in this step — use `POST /me/lightning-address/verification` for that.
 
 ### `DELETE /me/lightning-address`
 
-Unlink the receiver Lightning Address.
+Unlink the receiver Lightning Address. Also clears any pending verification
+for the account.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -246,6 +254,104 @@ Success → **Response** `200` with the updated account:
 
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
+
+### `POST /me/lightning-address/verification`
+
+Start proof-of-control for the linked Lightning Address. No request body.
+
+The api resolves the address via LUD-16 / LNURL-pay, pays **1 sat** (or the
+provider's `minSendable` if higher, capped at 10 sat) with a one-time nonce in
+the LUD-12 comment (`21gifts <32-hex-nonce>`), and stores a pending
+verification (TTL 15 minutes). The **nonce is never returned** — the user
+reads it from their wallet payment history and posts it to confirm.
+
+Missing/invalid bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+No linked address → **Response** `409`:
+
+```json
+{ "error": "No Lightning Address linked" }
+```
+
+Address already verified → **Response** `409`:
+
+```json
+{ "error": "Lightning Address already verified" }
+```
+
+No invoice payer configured (default until a real payer is wired) →
+**Response** `503`:
+
+```json
+{ "error": "Verification payments are not configured" }
+```
+
+LNURL-pay resolve/invoice failure, or payment failure → **Response** `502`:
+
+```json
+{ "error": "Lightning Address did not accept the verification payment" }
+```
+
+Success → **Response** `200`:
+
+```json
+{ "status": "sent", "expiresInSeconds": 900, "sats": 1 }
+```
+
+| Field              | Meaning                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `status`           | Always `"sent"` on success                                                            |
+| `expiresInSeconds` | Seconds until the pending record expires                                              |
+| `sats`             | Amount paid, in sats (`payMsat / 1000`; fractional if minSendable is not a whole sat) |
+
+Linking or unlinking the address clears any pending verification.
+
+### `POST /me/lightning-address/verification/confirm`
+
+Confirm proof-of-control with the nonce from the wallet history. Body:
+
+```json
+{ "nonce": "<32 hex chars>" }
+```
+
+Missing/invalid bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Body is not JSON with a `nonce` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"nonce\" string" }
+```
+
+Empty nonce after trim, or nonce does not match → **Response** `400`:
+
+```json
+{ "error": "Incorrect verification code" }
+```
+
+No pending verification (or address no longer matches the record) →
+**Response** `409`:
+
+```json
+{ "error": "No verification in progress" }
+```
+
+Pending verification past the TTL → **Response** `409`:
+
+```json
+{ "error": "Verification expired" }
+```
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`), with `lightningAddressVerified: true`. The pending record is
+deleted.
 
 ---
 
@@ -255,11 +361,6 @@ The following are decided product capabilities for v1 (see `CONCEPT.md`) but
 are **not** exposed as HTTP routes in this codebase yet. Paths and JSON for
 these land in the PR that implements them; this file is updated then. Do not
 treat the list below as inventing endpoints.
-
-**Receiver address verification (micro-payment + LUD-12 nonce).** The
-verified badge requires proof of control: the api sends a few sats with a
-one-time nonce in the LNURL-pay comment; the user enters the nonce from the
-wallet history. Linking via `POST /me/lightning-address` does not verify.
 
 **Donor upgrade (custodial `lndhub://` from lightning.space only).** Any
 account may become a donor by depositing an LNDHub export restricted to

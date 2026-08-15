@@ -8,6 +8,9 @@ import { meRoutes } from '@/routes/me';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveAllowedOrigins } from '@/lib/config';
+import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
+import type { InvoicePayer } from '@/lib/invoice-payer';
+import type { FetchFn } from '@/lib/lnurl-pay';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -23,6 +26,13 @@ export interface AppDeps {
   publicBaseUrl?: string;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
+  /**
+   * Pays verification micro-payment invoices (default:
+   * {@link UnconfiguredInvoicePayer} — process boots; start verification returns 503).
+   */
+  invoicePayer?: InvoicePayer;
+  /** Injected `fetch` for LNURL-pay (default: `globalThis.fetch`). */
+  fetchImpl?: FetchFn;
 }
 
 /**
@@ -33,7 +43,8 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
- * @param deps - Optional overrides for the auth store, clock, and base URL.
+ * @param deps - Optional overrides for the auth store, clock, base URL,
+ *   invoice payer, and LNURL-pay fetch.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -41,6 +52,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const now = deps.now ?? Date.now;
   const publicBaseUrl = deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'];
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
+  const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
 
   const app = new Hono();
 
@@ -61,7 +74,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/auth', authRoutes({ store, now, publicBaseUrl }));
-  app.route('/me', meRoutes({ store, now }));
+  app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
 
   return app;
 }
