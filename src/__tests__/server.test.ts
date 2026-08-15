@@ -14,6 +14,12 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('mounts /lightning-address', async () => {
+    const app = createApp();
+    const res = await app.request('/lightning-address');
+    expect(res.status).toBe(400);
+  });
+
   it('returns 404 for unknown routes', async () => {
     const app = createApp();
     const res = await app.request('/does-not-exist');

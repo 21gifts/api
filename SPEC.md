@@ -16,8 +16,10 @@ sessions, and pending address verifications.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
-`UnconfiguredInvoicePayer` makes start verification return **503**. No BOLT11
-decoder and no LNDHub / lightning.space payer are wired in this service yet.
+`UnconfiguredInvoicePayer` makes start verification return **503**. Public
+`GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
+does not fetch or pay invoices. No BOLT11 decoder and no LNDHub /
+lightning.space payer are wired in this service yet.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default app
 surfaces `https://app.21.gifts`, `https://dev-app.21.gifts`, and
@@ -44,6 +46,7 @@ Public base URLs used in examples:
 | DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
 | POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
+| GET    | `/lightning-address`                         | none                    | Resolve LUD-16 metadata (cached)           |
 
 ### `GET /healthz`
 
@@ -353,6 +356,59 @@ Success → **Response** `200` with the updated account (same shape as
 `GET /me`), with `lightningAddressVerified: true`. The pending record is
 deleted.
 
+### `GET /lightning-address`
+
+Public LUD-16 metadata resolve for a future guest Donate flow. The api is
+**not** in the payment path: this route returns cached well-known LNURL-pay
+metadata only. It never fetches a BOLT11 invoice (`pr`) and never pays.
+
+Query parameter:
+
+| Param     | Required | Meaning                               |
+| --------- | -------- | ------------------------------------- |
+| `address` | yes      | Lightning Address (`name@domain.tld`) |
+
+The value is normalised with the same LUD-16 shape check as
+`POST /me/lightning-address` (trim; length ≤ 255; `local@domain.tld`).
+
+Missing, empty, not LUD-16, or length `> 255` → **Response** `400`:
+
+```json
+{ "error": "Not a valid Lightning Address (expected name@domain)" }
+```
+
+Well-known fetch / JSON / schema failure, non-HTTPS callback, or network
+error → **Response** `502`:
+
+```json
+{ "error": "Lightning Address could not be resolved" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "address": "name@domain.tld",
+  "callback": "https://…",
+  "minSendable": 1000,
+  "maxSendable": 100000000000,
+  "commentAllowed": 255
+}
+```
+
+| Field            | Type   | Meaning                                             |
+| ---------------- | ------ | --------------------------------------------------- |
+| `address`        | string | Normalised query value                              |
+| `callback`       | string | LNURL-pay callback URL (`https:` only)              |
+| `minSendable`    | number | Minimum sendable amount, millisatoshis              |
+| `maxSendable`    | number | Maximum sendable amount, millisatoshis              |
+| `commentAllowed` | number | Optional; omitted when the provider did not send it |
+
+**Cache**: successful resolves are stored in process memory for **5 minutes**
+(`LN_ADDRESS_CACHE_TTL_MS`). A cache hit does not call the provider. Process
+restart clears the cache. There is no durable (Postgres) cache yet. No auth.
+No new environment variables; the process still boots with zero extra config.
+
 ---
 
 ## Not implemented (v1, decided in CONCEPT — no HTTP paths)
@@ -379,9 +435,11 @@ account's events server-side. Not wired yet.
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
 NOSTR events (profiles, campaigns, replies). Not wired yet.
 
-**Durable persistence (Postgres) and a readiness probe.** Auth and future data need a
-durable store; a readiness probe that checks downstream dependencies is
-planned alongside that. Today only `/healthz` (liveness) exists.
+**Durable persistence (Postgres) and a readiness probe.** Auth and future data
+need a durable store; a readiness probe that checks downstream dependencies is
+planned alongside that. Today only `/healthz` (liveness) exists. The LUD-16
+metadata cache on `GET /lightning-address` is in-memory only; a durable
+Postgres cache is later.
 
 **Moderator-only endpoints.** Content hide/unhide and related Moderator
 actions. Role values exist on the account model; no moderator routes yet.

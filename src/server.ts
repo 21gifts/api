@@ -5,12 +5,15 @@ import { healthRoute } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
 import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
+import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
-import type { FetchFn } from '@/lib/lnurl-pay';
+import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
+import type { LnAddressCache } from '@/lib/ln-address-cache';
+import type { FetchFn } from '@/lib/lnurlp';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -33,6 +36,11 @@ export interface AppDeps {
   invoicePayer?: InvoicePayer;
   /** Injected `fetch` for LNURL-pay (default: `globalThis.fetch`). */
   fetchImpl?: FetchFn;
+  /**
+   * Successful LUD-16 metadata cache (default: a fresh
+   * {@link InMemoryLnAddressCache} with a 5-minute TTL).
+   */
+  lnAddressCache?: LnAddressCache;
 }
 
 /**
@@ -44,7 +52,7 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, and LNURL-pay fetch.
+ *   invoice payer, LNURL-pay fetch, and LN-Address cache.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -54,6 +62,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
   const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
 
   const app = new Hono();
 
@@ -75,6 +84,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/info', infoRoute);
   app.route('/auth', authRoutes({ store, now, publicBaseUrl }));
   app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route(
+    '/lightning-address',
+    lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
+  );
 
   return app;
 }

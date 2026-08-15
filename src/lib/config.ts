@@ -7,7 +7,9 @@
  * `linkingKey` against. A wrong host would silently split account identities,
  * so a missing or empty value is treated as a hard misconfiguration rather
  * than a guessed default. Verification TTL and micro-payment amounts for
- * Lightning Address proof-of-control also live here.
+ * Lightning Address proof-of-control also live here, as does the in-memory
+ * LUD-16 metadata cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant,
+ * not an environment variable).
  */
 
 /** Lifetime of an unclaimed LNURL-auth `k1` challenge, in milliseconds. */
@@ -27,6 +29,9 @@ export const VERIFICATION_AMOUNT_MSAT = 1_000;
  * If the provider's `minSendable` exceeds this, verification is refused.
  */
 export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
+
+/** In-memory TTL for a successful LUD-16 metadata resolve, in milliseconds. */
+export const LN_ADDRESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Normalise the configured public base URL used to build LNURL-auth callbacks.
