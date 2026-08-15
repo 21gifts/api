@@ -302,11 +302,11 @@ Success → **Response** `200`:
 { "status": "sent", "expiresInSeconds": 900, "sats": 1 }
 ```
 
-| Field              | Meaning                                  |
-| ------------------ | ---------------------------------------- |
-| `status`           | Always `"sent"` on success               |
-| `expiresInSeconds` | Seconds until the pending record expires |
-| `sats`             | Amount actually paid (integer sats)      |
+| Field              | Meaning                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `status`           | Always `"sent"` on success                                                            |
+| `expiresInSeconds` | Seconds until the pending record expires                                              |
+| `sats`             | Amount paid, in sats (`payMsat / 1000`; fractional if minSendable is not a whole sat) |
 
 Linking or unlinking the address clears any pending verification.
 
