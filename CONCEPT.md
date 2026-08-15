@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-07-05.
+**Status**: draft, in active iteration. Last revised 2026-08-15.
 
 ---
 
@@ -501,14 +501,14 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 | Repo                            | Purpose                                                                       | Status             |
 | ------------------------------- | ----------------------------------------------------------------------------- | ------------------ |
 | **`21gifts/api`**               | Backend service + **canonical project docs** (this file, ROADMAP, SPEC, etc.) | Created 2026-05-25 |
-| `21gifts/app`                   | Web frontend client (`21.gifts`) — thin, only frontend-specific docs          | To create          |
+| `21gifts/app`                   | Web frontend client (`21.gifts`) — thin, only frontend-specific docs          | Created 2026-07-05 |
 | `21gifts/docs`                  | Public developer documentation site (`docs.21.gifts`)                         | Later              |
 | `21gifts/landing-page`          | Whitepaper / manifest landing page                                            | Later              |
 | `21gifts/marketing` _(private)_ | Brand assets, launch material                                                 | Later              |
 
 **Where docs live**:
 
-- `21gifts/api` — `CONCEPT.md` (this file), `ROADMAP.md`, future `SPEC.md`,
+- `21gifts/api` — `CONCEPT.md` (this file), `SPEC.md`, future `ROADMAP.md`,
   protocol decisions, schema, architecture diagrams. The api is the brain of
   the system, so it owns the canonical project specification.
 - `21gifts/app` — `README.md` (short, points at api repo for protocol),
@@ -592,12 +592,12 @@ DNS, and reverse-proxy routing.
 
 Two environments per service, mapped 1:1 to the branch model:
 
-| Service | Env | Source branch | Image tag | Public URL                 |
-| ------- | --- | ------------- | --------- | -------------------------- |
-| app     | DEV | `develop`     | `:beta`   | `dev.21.gifts`             |
-| app     | PRD | `main`        | `:latest` | `21.gifts`, `www.21.gifts` |
-| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts`         |
-| api     | PRD | `main`        | `:latest` | `api.21.gifts`             |
+| Service | Env | Source branch | Image tag | Public URL         |
+| ------- | --- | ------------- | --------- | ------------------ |
+| app     | DEV | `develop`     | `:beta`   | `dev-app.21.gifts` |
+| app     | PRD | `main`        | `:latest` | `app.21.gifts`     |
+| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts` |
+| api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
 
 Subdomain convention: **dash, not dot** (e.g., `dev-api.21.gifts` rather than
 `dev.api.21.gifts`). This keeps every subdomain at exactly one level deep,
@@ -639,6 +639,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-07-05 | Research recorded: WoS has no official API; WoS supports LNURL-auth (Classic since 2023, Self-Custody since app v3.2.5 / 2026-02-04)                                                                                                                                            |
 | 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                                                                                      |
 | 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open) |
+| 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                    |
 
 ---
 
@@ -647,20 +648,27 @@ repository — they're intentionally not part of this project's scope.
 1. ~~Create `21gifts/api` repo skeleton~~ — done 2026-05-25: TS + Bun + Hono +
    Vitest, 100% coverage on `/healthz` and `/info`, this CONCEPT.md committed
    as the canonical home
-2. Create `21gifts/app` repo skeleton (Next.js 15 + TS strict + Tailwind + Zustand)
+2. ~~Create `21gifts/app` repo skeleton (Next.js 15 + TS strict + Tailwind +
+   Zustand)~~ — done 2026-07-05: public repo exists
 3. ~~Port the passkey + PRF + key-derivation primitives from the reference
    app~~ — deferred 2026-07-05 to the non-custodial phase (v1 login is
    LNURL-auth)
-4. Define the v1 api surface (LNURL-auth, donor wallets, recurring-gift
+4. ~~Define the v1 api surface (LNURL-auth, donor wallets, recurring-gift
    scheduler, address verification, custodial NOSTR identities + server-side
-   event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo
-5. Wire up the four CI/CD workflows on both repos and Docker Hub publishing
+   event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo~~ —
+   done 2026-08-15: implemented HTTP surface documented in `SPEC.md`;
+   remaining CONCEPT capabilities listed there as not implemented
+5. ~~Wire up the four CI/CD workflows on both repos and Docker Hub
+   publishing~~ — done 2026-07-05: `ci`, `deploy-dev`, `deploy-prd`, and
+   `auto-release-pr` exist on api and app
 6. Validate LNURL-auth end-to-end with real wallets (WoS Classic +
    Self-Custody ≥ 3.2.5, Phoenix, Alby) — QR and `lightning:` deep link on
    iOS/Android
 7. Sketch core UI flows: sign-in → profile → donate → recurring gifts → message
-8. Choose initial NOSTR relay set
-9. First public DEV deploy
+8. ~~Choose initial NOSTR relay set~~ — done 2026-05-25: shared `nostr.space` relay
+   (see Decisions Log 2026-05-25 / Open Question #3)
+9. ~~First public DEV deploy~~ — done 2026-07-05: public DEV URLs are live
+   (`dev-api.21.gifts`, `dev-app.21.gifts`)
 10. Iterate MVP, dogfood early
 
 ---

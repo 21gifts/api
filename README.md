@@ -10,7 +10,8 @@ Backend service for [21.gifts](https://21.gifts) — a peer-to-peer Bitcoin
 Lightning donation platform with NOSTR as the invisible communication substrate.
 
 This repository is the **canonical home** for project-level documentation
-(see [`CONCEPT.md`](./CONCEPT.md)). The frontend lives at
+(see [`CONCEPT.md`](./CONCEPT.md)). The implemented HTTP surface is documented
+in [`SPEC.md`](./SPEC.md). The frontend lives at
 [`21gifts/app`](https://github.com/21gifts/app).
 
 ## 🐳 Docker images
@@ -81,11 +82,12 @@ bun run build           # bun build to dist/
 
 ## Documentation
 
-| Doc                                    | Purpose                                             |
-| -------------------------------------- | --------------------------------------------------- |
-| [`CONCEPT.md`](./CONCEPT.md)           | Project vision, architecture, principles, decisions |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Dev setup, conventions, workflow                    |
-| [`SECURITY.md`](./SECURITY.md)         | Reporting vulnerabilities                           |
+| Doc                                    | Purpose                                               |
+| -------------------------------------- | ----------------------------------------------------- |
+| [`CONCEPT.md`](./CONCEPT.md)           | Project vision, architecture, principles, decisions   |
+| [`SPEC.md`](./SPEC.md)                 | Implemented HTTP surface (request/response contracts) |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Dev setup, conventions, workflow                      |
+| [`SECURITY.md`](./SECURITY.md)         | Reporting vulnerabilities                             |
 
 ## License
 

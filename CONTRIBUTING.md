@@ -34,10 +34,11 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
-│   │   └── me.ts             # GET /me (account behind a bearer session)
+│   │   └── me.ts             # GET /me; POST/DELETE /me/lightning-address
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth config (PUBLIC_BASE_URL, challenge/session TTLs)
+│   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
@@ -51,6 +52,7 @@ api/
 │       ├── lib/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
+│       │   ├── lightning-address.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
 │       │       ├── service.test.ts
@@ -67,6 +69,7 @@ api/
 ├── .prettierrc
 ├── Dockerfile                # Multi-stage Bun build
 ├── CONCEPT.md                # Canonical project documentation
+├── SPEC.md                   # Implemented HTTP surface (request/response contracts)
 ├── README.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md

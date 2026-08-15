@@ -43,6 +43,19 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-headers')).toMatch(/x-poll-token/i);
   });
 
+  it('allows DELETE on the lightning-address preflight', async () => {
+    const res = await createApp().request('/me/lightning-address', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'DELETE',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toMatch(/DELETE/i);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
+  });
+
   it('honors an injected allowedOrigins override', async () => {
     const res = await createApp({ allowedOrigins: ['https://custom.test'] }).request('/healthz', {
       headers: { origin: 'https://custom.test' },
