@@ -511,9 +511,10 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 **Where docs live**:
 
-- `21gifts/api` — `CONCEPT.md` (this file), `SPEC.md`, future `ROADMAP.md`,
-  protocol decisions, schema, architecture diagrams. The api is the brain of
-  the system, so it owns the canonical project specification.
+- `21gifts/api` — `CONCEPT.md` (this file), `SPEC.md`, `FLOWS.md` (UI-journey
+  sketch), future `ROADMAP.md`, protocol decisions, schema, architecture
+  diagrams. The api is the brain of the system, so it owns the canonical
+  project specification.
 - `21gifts/app` — `README.md` (short, points at api repo for protocol),
   `CONTRIBUTING.md` (frontend-specific: dev setup, component conventions,
   styling, testing). Nothing protocol-level.
@@ -644,6 +645,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open) |
 | 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                    |
 | 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                              |
+| 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                        |
 
 ---
 
@@ -668,7 +670,9 @@ repository — they're intentionally not part of this project's scope.
 6. Validate LNURL-auth end-to-end with real wallets (WoS Classic +
    Self-Custody ≥ 3.2.5, Phoenix, Alby) — QR and `lightning:` deep link on
    iOS/Android
-7. Sketch core UI flows: sign-in → profile → donate → recurring gifts → message
+7. ~~Sketch core UI flows: sign-in → profile → donate → recurring gifts → message~~ —
+   done 2026-08-15: `FLOWS.md` sketches the five journeys and labels
+   each Shipped vs Sketch; HTTP stays in `SPEC.md`
 8. ~~Choose initial NOSTR relay set~~ — done 2026-05-25: shared `nostr.space` relay
    (see Decisions Log 2026-05-25 / Open Question #3)
 9. ~~First public DEV deploy~~ — done 2026-07-05: public DEV URLs are live

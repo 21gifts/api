@@ -76,6 +76,7 @@ api/
 ├── Dockerfile                # Multi-stage Bun build
 ├── CONCEPT.md                # Canonical project documentation
 ├── SPEC.md                   # Implemented HTTP surface (request/response contracts)
+├── FLOWS.md                  # Core UI journey sketch (CONCEPT next-step 7)
 ├── README.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
