@@ -6,9 +6,9 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * v1 uses the in-memory implementation below, behind the {@link AuthStore}
  * port: the CONCEPT defers the durable-storage choice (Postgres) until the
  * indexer surface stabilises, and this seam makes that a drop-in replacement.
- * Restarting the process clears all challenges, accounts, and sessions —
- * acceptable for the current dev/dogfooding stage, and the reason the port
- * exists.
+ * Restarting the process clears all challenges, accounts, sessions, and
+ * pending address verifications — acceptable for the current dev/dogfooding
+ * stage, and the reason the port exists.
  */
 
 /** Account permission tier. Role assignment stays operator-side in v1. */

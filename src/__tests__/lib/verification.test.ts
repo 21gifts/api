@@ -3,11 +3,13 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { Account } from '@/lib/auth/store';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
+import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { FetchFn } from '@/lib/lnurl-pay';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 const T0 = 1_000_000;
 const ADDRESS = 'alice@walletofsatoshi.com';
+const OTHER_ADDRESS = 'bob@getalby.com';
 const PR = 'lnbc10n1ptest';
 
 function account(overrides: Partial<Account> = {}): Account {
@@ -45,6 +47,7 @@ function happyFetch(): FetchFn {
 
 function okPayer(): InvoicePayer {
   return {
+    isConfigured: () => true,
     payInvoice: async (): Promise<PayInvoiceResult> => ({ ok: true }),
   };
 }
@@ -72,6 +75,23 @@ describe('startVerification', () => {
     expect(result).toEqual({ ok: false, code: 'already_verified' });
   });
 
+  it('returns not_configured without calling LNURL when the payer is unconfigured', async () => {
+    const fetchCalls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      fetchCalls.push(String(input));
+      return jsonResponse({});
+    };
+    const result = await startVerification({
+      store: new InMemoryAuthStore(),
+      payer: new UnconfiguredInvoicePayer(),
+      fetchImpl,
+      now: T0,
+      account: account(),
+    });
+    expect(result).toEqual({ ok: false, code: 'not_configured' });
+    expect(fetchCalls).toEqual([]);
+  });
+
   it('returns unreachable when LNURL-pay fails', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse({}, 502);
     const result = await startVerification({
@@ -84,8 +104,9 @@ describe('startVerification', () => {
     expect(result).toEqual({ ok: false, code: 'unreachable' });
   });
 
-  it('returns not_configured when the payer is unconfigured', async () => {
+  it('returns not_configured when payInvoice reports not_configured', async () => {
     const payer: InvoicePayer = {
+      isConfigured: () => true,
       payInvoice: async () => ({ ok: false, reason: 'not_configured' }),
     };
     const result = await startVerification({
@@ -100,6 +121,7 @@ describe('startVerification', () => {
 
   it('returns unreachable when payment fails', async () => {
     const payer: InvoicePayer = {
+      isConfigured: () => true,
       payInvoice: async () => ({ ok: false, reason: 'payment_failed' }),
     };
     const result = await startVerification({
@@ -114,8 +136,11 @@ describe('startVerification', () => {
 
   it('pays the invoice, stores a verification record, and returns sats + TTL', async () => {
     const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
     const paid: string[] = [];
     const payer: InvoicePayer = {
+      isConfigured: () => true,
       payInvoice: async (bolt11) => {
         paid.push(bolt11);
         return { ok: true };
@@ -141,7 +166,7 @@ describe('startVerification', () => {
       payer,
       fetchImpl,
       now: T0,
-      account: account(),
+      account: acc,
     });
 
     expect(result.ok).toBe(true);
@@ -160,6 +185,90 @@ describe('startVerification', () => {
     expect(record?.address).toBe(ADDRESS);
     expect(record?.nonce).toMatch(/^[0-9a-f]{32}$/);
     expect(record?.createdAt).toBe(T0);
+  });
+
+  it('returns no_address and stores nothing when the address is unlinked after pay', async () => {
+    const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
+    const payer: InvoicePayer = {
+      isConfigured: () => true,
+      payInvoice: async () => {
+        store.updateAccount({ ...acc, lightningAddress: null });
+        return { ok: true };
+      },
+    };
+    const result = await startVerification({
+      store,
+      payer,
+      fetchImpl: happyFetch(),
+      now: T0,
+      account: acc,
+    });
+    expect(result).toEqual({ ok: false, code: 'no_address' });
+    expect(store.getVerification('acc')).toBeUndefined();
+  });
+
+  it('returns unreachable and stores nothing when the address changes after pay', async () => {
+    const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
+    const payer: InvoicePayer = {
+      isConfigured: () => true,
+      payInvoice: async () => {
+        store.updateAccount({ ...acc, lightningAddress: OTHER_ADDRESS });
+        return { ok: true };
+      },
+    };
+    const result = await startVerification({
+      store,
+      payer,
+      fetchImpl: happyFetch(),
+      now: T0,
+      account: acc,
+    });
+    expect(result).toEqual({ ok: false, code: 'unreachable' });
+    expect(store.getVerification('acc')).toBeUndefined();
+  });
+
+  it('returns already_verified and stores nothing when verified after pay', async () => {
+    const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
+    const payer: InvoicePayer = {
+      isConfigured: () => true,
+      payInvoice: async () => {
+        store.updateAccount({ ...acc, lightningAddressVerified: true });
+        return { ok: true };
+      },
+    };
+    const result = await startVerification({
+      store,
+      payer,
+      fetchImpl: happyFetch(),
+      now: T0,
+      account: acc,
+    });
+    expect(result).toEqual({ ok: false, code: 'already_verified' });
+    expect(store.getVerification('acc')).toBeUndefined();
+  });
+
+  it('returns no_address and stores nothing when the account is missing after pay', async () => {
+    const store = new InMemoryAuthStore();
+    // Account is not persisted; getAccount after pay yields undefined.
+    const payer: InvoicePayer = {
+      isConfigured: () => true,
+      payInvoice: async () => ({ ok: true }),
+    };
+    const result = await startVerification({
+      store,
+      payer,
+      fetchImpl: happyFetch(),
+      now: T0,
+      account: account(),
+    });
+    expect(result).toEqual({ ok: false, code: 'no_address' });
+    expect(store.getVerification('acc')).toBeUndefined();
   });
 });
 

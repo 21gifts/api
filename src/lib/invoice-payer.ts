@@ -16,6 +16,13 @@ export type PayInvoiceResult =
  */
 export interface InvoicePayer {
   /**
+   * Whether this payer can actually send payments.
+   * UnconfiguredInvoicePayer returns false so startVerification can
+   * fail closed with not_configured without calling LNURL.
+   */
+  isConfigured(): boolean;
+
+  /**
    * Attempt to pay the given BOLT11 invoice.
    *
    * @param bolt11 - The invoice string (`pr` from LNURL-pay).
@@ -29,6 +36,15 @@ export interface InvoicePayer {
  * `not_configured` so the process can boot without a payment provider.
  */
 export class UnconfiguredInvoicePayer implements InvoicePayer {
+  /**
+   * Always false — no Lightning backend is wired.
+   *
+   * @returns `false`.
+   */
+  isConfigured(): boolean {
+    return false;
+  }
+
   /**
    * Refuse every payment as not configured.
    *

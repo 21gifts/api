@@ -43,7 +43,8 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
- * @param deps - Optional overrides for the auth store, clock, and base URL.
+ * @param deps - Optional overrides for the auth store, clock, base URL,
+ *   invoice payer, and LNURL-pay fetch.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {

@@ -11,8 +11,13 @@
 ## Implemented HTTP surface (normative)
 
 The process holds all auth state in memory (`InMemoryAuthStore`). There is no
-durable database yet: restarting the process clears challenges, accounts, and
-sessions.
+durable database yet: restarting the process clears challenges, accounts,
+sessions, and pending address verifications.
+
+Lightning Address verification HTTP routes are implemented. A live
+verification payment requires an injected invoice payer; the default
+`UnconfiguredInvoicePayer` makes start verification return **503**. No BOLT11
+decoder and no LNDHub / lightning.space payer are wired in this service yet.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default app
 surfaces `https://app.21.gifts`, `https://dev-app.21.gifts`, and
@@ -356,11 +361,6 @@ The following are decided product capabilities for v1 (see `CONCEPT.md`) but
 are **not** exposed as HTTP routes in this codebase yet. Paths and JSON for
 these land in the PR that implements them; this file is updated then. Do not
 treat the list below as inventing endpoints.
-
-**Live verification payments.** The verification HTTP surface above is
-implemented; until a real invoice payer is injected, start verification
-returns **503**. No LNDHub / lightning.space payer is wired in this service
-yet.
 
 **Donor upgrade (custodial `lndhub://` from lightning.space only).** Any
 account may become a donor by depositing an LNDHub export restricted to

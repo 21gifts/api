@@ -61,12 +61,16 @@ export async function startVerification(
   if (account.lightningAddressVerified) {
     return { ok: false, code: 'already_verified' };
   }
+  if (!payer.isConfigured()) {
+    return { ok: false, code: 'not_configured' };
+  }
 
+  const paidAddress = account.lightningAddress;
   const nonce = randomHex(16);
   const comment = `21gifts ${nonce}`;
 
   const invoice = await requestPayInvoice({
-    address: account.lightningAddress,
+    address: paidAddress,
     amountMsat: VERIFICATION_AMOUNT_MSAT,
     comment,
     fetchImpl,
@@ -83,9 +87,22 @@ export async function startVerification(
     return { ok: false, code: 'unreachable' };
   }
 
+  // Re-load after pay so a concurrent unlink / re-link / verify does not
+  // leave a pending record for an address the account no longer holds.
+  const current = store.getAccount(account.id);
+  if (current === undefined || current.lightningAddress === null) {
+    return { ok: false, code: 'no_address' };
+  }
+  if (current.lightningAddress !== paidAddress) {
+    return { ok: false, code: 'unreachable' };
+  }
+  if (current.lightningAddressVerified) {
+    return { ok: false, code: 'already_verified' };
+  }
+
   store.putVerification({
     accountId: account.id,
-    address: account.lightningAddress,
+    address: paidAddress,
     nonce,
     createdAt: now,
   });

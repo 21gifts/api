@@ -71,6 +71,7 @@ function happyFetch(): FetchFn {
 
 function okPayer(paid: string[] = []): InvoicePayer {
   return {
+    isConfigured: () => true,
     payInvoice: async (bolt11): Promise<PayInvoiceResult> => {
       paid.push(bolt11);
       return { ok: true };
@@ -246,10 +247,15 @@ describe('POST /me/lightning-address/verification', () => {
     expect(await res.json()).toEqual({ error: 'Lightning Address already verified' });
   });
 
-  it('returns 503 when the payer is not configured', async () => {
+  it('returns 503 when the payer is not configured without calling LNURL', async () => {
+    const fetchCalls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      fetchCalls.push(String(input));
+      return jsonResponse({});
+    };
     const res = await mount(seededStore({ lightningAddress: ADDRESS }), {
       payer: new UnconfiguredInvoicePayer(),
-      fetchImpl: happyFetch(),
+      fetchImpl,
     }).request('/me/lightning-address/verification', {
       method: 'POST',
       headers: AUTH,
@@ -258,6 +264,7 @@ describe('POST /me/lightning-address/verification', () => {
     expect(await res.json()).toEqual({
       error: 'Verification payments are not configured',
     });
+    expect(fetchCalls).toEqual([]);
   });
 
   it('returns 502 when the address is unreachable', async () => {

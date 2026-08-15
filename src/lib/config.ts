@@ -1,12 +1,13 @@
 /**
- * Auth-subsystem configuration.
+ * Auth and verification configuration.
  *
  * Configuration is read from the environment only (no config files, per
  * CONTRIBUTING). `PUBLIC_BASE_URL` is security-relevant: it pins the
  * LNURL-auth callback host, which is the domain the wallet derives its
  * `linkingKey` against. A wrong host would silently split account identities,
  * so a missing or empty value is treated as a hard misconfiguration rather
- * than a guessed default.
+ * than a guessed default. Verification TTL and micro-payment amounts for
+ * Lightning Address proof-of-control also live here.
  */
 
 /** Lifetime of an unclaimed LNURL-auth `k1` challenge, in milliseconds. */
