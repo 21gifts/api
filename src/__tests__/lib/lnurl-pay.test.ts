@@ -5,6 +5,7 @@ import { VERIFICATION_AMOUNT_CAP_MSAT } from '@/lib/config';
 const ADDRESS = 'alice@walletofsatoshi.com';
 const COMMENT = '21gifts deadbeefdeadbeefdeadbeefdeadbeef';
 const PR = 'lnbc10n1ptest';
+const MAX_SENDABLE = 100_000_000_000;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -23,6 +24,7 @@ describe('requestPayInvoice', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
         });
       }
@@ -51,6 +53,7 @@ describe('requestPayInvoice', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 5000,
+          maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
         });
       }
@@ -72,6 +75,7 @@ describe('requestPayInvoice', () => {
       jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
       });
 
     const result = await requestPayInvoice({
@@ -88,6 +92,7 @@ describe('requestPayInvoice', () => {
       jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
         commentAllowed: 5,
       });
 
@@ -105,6 +110,7 @@ describe('requestPayInvoice', () => {
       jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: VERIFICATION_AMOUNT_CAP_MSAT + 1,
+        maxSendable: MAX_SENDABLE,
         commentAllowed: 255,
       });
 
@@ -142,7 +148,12 @@ describe('requestPayInvoice', () => {
 
   it('rejects invalid metadata shape', async () => {
     const fetchImpl: FetchFn = async () =>
-      jsonResponse({ callback: 'not-a-url', minSendable: 1000, commentAllowed: 255 });
+      jsonResponse({
+        callback: 'not-a-url',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+        commentAllowed: 255,
+      });
     const result = await requestPayInvoice({
       address: ADDRESS,
       amountMsat: 1000,
@@ -158,6 +169,7 @@ describe('requestPayInvoice', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
         });
       }
@@ -178,6 +190,7 @@ describe('requestPayInvoice', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
         });
       }
@@ -236,6 +249,7 @@ describe('requestPayInvoice', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
         });
       }
@@ -258,6 +272,27 @@ describe('requestPayInvoice', () => {
       fetchImpl: async () => {
         throw new Error('fetch must not be called');
       },
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
+  it('maps a thrown fetch on the invoice callback to unreachable', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          commentAllowed: 255,
+        });
+      }
+      throw new Error('callback down');
+    };
+    const result = await requestPayInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      comment: COMMENT,
+      fetchImpl,
     });
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });

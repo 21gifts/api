@@ -646,6 +646,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                    |
 | 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                              |
 | 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                        |
+| 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                     |
 
 ---
 

@@ -38,6 +38,7 @@ function happyFetch(): FetchFn {
       return jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: 1000,
+        maxSendable: 100_000_000_000,
         commentAllowed: 255,
       });
     }
@@ -153,6 +154,7 @@ describe('startVerification', () => {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
           minSendable: 1000,
+          maxSendable: 100_000_000_000,
           commentAllowed: 255,
         });
       }

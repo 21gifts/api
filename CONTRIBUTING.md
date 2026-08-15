@@ -34,12 +34,15 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
-│   │   └── me.ts             # GET /me; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; link/unlink + address verification
+│   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
+│   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
+│   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
@@ -57,6 +60,8 @@ api/
 │       │   ├── config.test.ts
 │       │   ├── lightning-address.test.ts
 │       │   ├── invoice-payer.test.ts
+│       │   ├── lnurlp.test.ts
+│       │   ├── ln-address-cache.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
 │       │   └── auth/
@@ -67,7 +72,8 @@ api/
 │           ├── health.test.ts
 │           ├── info.test.ts
 │           ├── auth.test.ts
-│           └── me.test.ts
+│           ├── me.test.ts
+│           └── lightning-address.test.ts
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts          # 100% coverage threshold

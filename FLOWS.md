@@ -88,16 +88,21 @@ other path.
 
 ---
 
-## 3. Donate — **Sketch**
+## 3. Donate — **Sketch** (button / browser pay) + **Shipped** (resolve)
 
 Guest / one-off giving: the donor clicks **Donate** on a receiver and pays
 through browser LNURL-pay (resolve the Lightning Address → invoice → wallet
 pays). The api is **not** in the payment path. This works without an account
 (CONCEPT Donations).
 
-There is no campaign feed, no Donate button, and no LN-Address cache or read
-endpoint in the api today. **No HTTP for this yet.** Do not invent `/feed`,
-`/campaigns`, or `/lnurl-pay` paths.
+Public `GET /lightning-address` now resolves and caches LUD-16 metadata
+(callback, min/max sendable, optional commentAllowed). There is still no
+Donate button and the api still does not fetch or pay the gift invoice.
+
+There is no campaign feed and no Donate button in the app today. Do not invent
+`/feed` or `/campaigns` paths.
+
+HTTP cited: `/lightning-address` (see `SPEC.md`).
 
 Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
