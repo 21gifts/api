@@ -278,7 +278,7 @@ account's events server-side. Not wired yet.
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
 NOSTR events (profiles, campaigns, replies). Not wired yet.
 
-**Durable persistence (Postgres) and `/readyz`.** Auth and future data need a
+**Durable persistence (Postgres) and a readiness probe.** Auth and future data need a
 durable store; a readiness probe that checks downstream dependencies is
 planned alongside that. Today only `/healthz` (liveness) exists.
 
