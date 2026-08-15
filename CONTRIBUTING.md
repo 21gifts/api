@@ -172,7 +172,9 @@ Currently:
 | `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                |
 | `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev-api.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
 
-More will be added as concrete subsystems (relay client, LN-Address cache, …) land.
+More will be added as concrete subsystems that need runtime configuration
+(relay client, …) land. The LUD-16 metadata cache TTL is a code constant
+(`LN_ADDRESS_CACHE_TTL_MS`), not an environment variable.
 
 ## CI / CD
 
