@@ -27,8 +27,8 @@ describe('InMemoryLnAddressCache', () => {
     const cache = new InMemoryLnAddressCache();
     const t0 = 1_000_000;
     cache.put(ENTRY, t0);
-    expect(cache.get(ENTRY.address, t0 + LN_ADDRESS_CACHE_TTL_MS)).toBeNull();
     expect(cache.get(ENTRY.address, t0 + LN_ADDRESS_CACHE_TTL_MS - 1)).toEqual(ENTRY);
+    expect(cache.get(ENTRY.address, t0 + LN_ADDRESS_CACHE_TTL_MS)).toBeNull();
   });
 
   it('honors a custom ttlMs constructor argument', () => {
@@ -48,5 +48,19 @@ describe('InMemoryLnAddressCache', () => {
     };
     cache.put(updated, 1_000_001);
     expect(cache.get(ENTRY.address, 1_000_001)).toEqual(updated);
+  });
+
+  it('evicts expired rows on a later put', () => {
+    const cache = new InMemoryLnAddressCache();
+    const other: CachedLnAddress = {
+      ...ENTRY,
+      address: 'bob@walletofsatoshi.com',
+      callback: 'https://walletofsatoshi.com/lnurlp/bob',
+    };
+    const t0 = 1_000_000;
+    cache.put(ENTRY, t0);
+    cache.put(other, t0 + LN_ADDRESS_CACHE_TTL_MS);
+    expect(cache.get(ENTRY.address, t0 + LN_ADDRESS_CACHE_TTL_MS)).toBeNull();
+    expect(cache.get(other.address, t0 + LN_ADDRESS_CACHE_TTL_MS)).toEqual(other);
   });
 });

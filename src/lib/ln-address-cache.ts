@@ -4,8 +4,9 @@ import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
  * In-memory TTL cache of successful LUD-16 metadata resolves.
  *
  * Used by `GET /lightning-address` so repeated guest lookups do not hit the
- * provider well-known endpoint every time. Process restart clears the cache;
- * there is no durable store.
+ * provider well-known endpoint every time. Expired rows are dropped on get
+ * and swept on put so a public resolver cannot accumulate keys until
+ * restart. Process restart still clears the cache; there is no durable store.
  */
 
 /** Cached LN-Address metadata returned to clients. */
@@ -75,6 +76,7 @@ export class InMemoryLnAddressCache implements LnAddressCache {
       return null;
     }
     if (now >= row.storedAt + this.ttlMs) {
+      this.rows.delete(address);
       return null;
     }
     return row.entry;
@@ -87,6 +89,21 @@ export class InMemoryLnAddressCache implements LnAddressCache {
    * @param now - Epoch milliseconds stored as the write time.
    */
   put(entry: CachedLnAddress, now: number): void {
+    this.evictExpired(now);
     this.rows.set(entry.address, { entry, storedAt: now });
+  }
+
+  /**
+   * Drop every row whose TTL has elapsed, so a public unauthenticated
+   * resolve cannot accumulate expired keys until process restart.
+   *
+   * @param now - Epoch milliseconds used for TTL comparison.
+   */
+  private evictExpired(now: number): void {
+    for (const [address, row] of this.rows) {
+      if (now >= row.storedAt + this.ttlMs) {
+        this.rows.delete(address);
+      }
+    }
   }
 }
