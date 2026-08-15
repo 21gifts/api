@@ -93,11 +93,14 @@ Any account can additionally become a donor and spend money:
 
 A receiver's Lightning Address is entered free-form on sign-up (a wrong
 address is self-punishing — gifts simply go elsewhere). The **verified
-badge** requires proof of control via micro-payment: the api sends a few sats
-with a one-time nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi
-allows 255 characters, min 1 sat); the user reads the nonce from the wallet's
-transaction history and enters it in the app. No LUD-21 dependency — WoS does
-not implement LNURL-verify.
+badge** requires proof of control via micro-payment: the api pays 1 sat (or
+the provider's `minSendable` if higher, capped at 10 sat) with a one-time
+nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi allows 255
+characters); the user reads the nonce from the wallet's transaction history
+and enters it in the app (`POST /me/lightning-address/verification` +
+`…/confirm`). No LNDHub payer is wired yet — start returns 503 until one is
+injected; the process still boots. No LUD-21 dependency — WoS does not
+implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
@@ -640,6 +643,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                                                                                      |
 | 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open) |
 | 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                    |
+| 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                              |
 
 ---
 

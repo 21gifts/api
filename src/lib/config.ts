@@ -15,6 +15,18 @@ export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 /** Lifetime of an issued session token, in milliseconds. */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Lifetime of a pending Lightning Address verification, in milliseconds. */
+export const VERIFICATION_TTL_MS = 15 * 60 * 1000;
+
+/** Preferred verification micro-payment amount, in millisatoshis (1 sat). */
+export const VERIFICATION_AMOUNT_MSAT = 1_000;
+
+/**
+ * Maximum amount the api will pay for verification, in millisatoshis (10 sat).
+ * If the provider's `minSendable` exceeds this, verification is refused.
+ */
+export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
+
 /**
  * Normalise the configured public base URL used to build LNURL-auth callbacks.
  *

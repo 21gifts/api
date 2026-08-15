@@ -164,4 +164,49 @@ describe('InMemoryAuthStore', () => {
     store.createSession({ token: 'b', accountId: 'acc', createdAt: T0 + 1000 });
     expect(store.getSession('a')?.token).toBe('a');
   });
+
+  it('stores and retrieves a pending address verification', () => {
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: 'alice@walletofsatoshi.com',
+      nonce: 'a'.repeat(32),
+      createdAt: T0,
+    });
+    expect(store.getVerification('acc')?.nonce).toBe('a'.repeat(32));
+  });
+
+  it('upserts verification by accountId', () => {
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: 'alice@walletofsatoshi.com',
+      nonce: 'a'.repeat(32),
+      createdAt: T0,
+    });
+    store.putVerification({
+      accountId: 'acc',
+      address: 'bob@getalby.com',
+      nonce: 'b'.repeat(32),
+      createdAt: T0 + 1,
+    });
+    expect(store.getVerification('acc')?.address).toBe('bob@getalby.com');
+    expect(store.getVerification('acc')?.nonce).toBe('b'.repeat(32));
+  });
+
+  it('returns undefined for an unknown verification account', () => {
+    expect(new InMemoryAuthStore().getVerification('missing')).toBeUndefined();
+  });
+
+  it('deletes a pending verification', () => {
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: 'alice@walletofsatoshi.com',
+      nonce: 'a'.repeat(32),
+      createdAt: T0,
+    });
+    store.deleteVerification('acc');
+    expect(store.getVerification('acc')).toBeUndefined();
+  });
 });
