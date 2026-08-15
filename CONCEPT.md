@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-07-05.
+**Status**: draft, in active iteration. Last revised 2026-08-15.
 
 ---
 
@@ -508,7 +508,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 **Where docs live**:
 
-- `21gifts/api` — `CONCEPT.md` (this file), `ROADMAP.md`, future `SPEC.md`,
+- `21gifts/api` — `CONCEPT.md` (this file), `SPEC.md`, future `ROADMAP.md`,
   protocol decisions, schema, architecture diagrams. The api is the brain of
   the system, so it owns the canonical project specification.
 - `21gifts/app` — `README.md` (short, points at api repo for protocol),

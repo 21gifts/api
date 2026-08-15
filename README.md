@@ -82,11 +82,12 @@ bun run build           # bun build to dist/
 
 ## Documentation
 
-| Doc                                    | Purpose                                             |
-| -------------------------------------- | --------------------------------------------------- |
-| [`CONCEPT.md`](./CONCEPT.md)           | Project vision, architecture, principles, decisions |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Dev setup, conventions, workflow                    |
-| [`SECURITY.md`](./SECURITY.md)         | Reporting vulnerabilities                           |
+| Doc                                    | Purpose                                               |
+| -------------------------------------- | ----------------------------------------------------- |
+| [`CONCEPT.md`](./CONCEPT.md)           | Project vision, architecture, principles, decisions   |
+| [`SPEC.md`](./SPEC.md)                 | Implemented HTTP surface (request/response contracts) |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Dev setup, conventions, workflow                      |
+| [`SECURITY.md`](./SECURITY.md)         | Reporting vulnerabilities                             |
 
 ## License
 
