@@ -49,13 +49,16 @@ interface CacheRow {
 }
 
 /**
- * Process-local LN-Address cache with lazy TTL expiry on {@link get}.
+ * Process-local LN-Address cache. Expired rows are dropped on {@link get}
+ * and swept on {@link put} so a public resolve cannot accumulate keys.
  */
 export class InMemoryLnAddressCache implements LnAddressCache {
   private readonly ttlMs: number;
   private readonly rows = new Map<string, CacheRow>();
 
   /**
+   * Create an in-memory cache with the given entry TTL.
+   *
    * @param ttlMs - Entry lifetime in milliseconds (default
    *   {@link LN_ADDRESS_CACHE_TTL_MS}).
    */
