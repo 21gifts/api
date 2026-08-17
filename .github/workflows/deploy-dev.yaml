@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: deploy-dev
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   DOCKER_TAGS: 21gifts/api:beta
@@ -41,3 +41,19 @@ jobs:
           platforms: linux/arm64
           cache-from: type=registry,ref=21gifts/api:buildcache
           cache-to: type=registry,ref=21gifts/api:buildcache,mode=max
+
+      - name: Notify infrastructure to pull :beta
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ secrets.DISPATCH_REPO }}"
+          if [ -z "${GH_TOKEN}" ] || [ -z "${repo}" ]; then
+            echo "::error::DISPATCH_TOKEN or DISPATCH_REPO is not configured — image was pushed but hosts will not pull"
+            exit 1
+          fi
+          gh api "repos/${repo}/dispatches" \
+            -f event_type=image-published \
+            -f "client_payload[image]=21gifts/api" \
+            -f "client_payload[tag]=beta" \
+            -f "client_payload[sha]=${GITHUB_SHA}"
