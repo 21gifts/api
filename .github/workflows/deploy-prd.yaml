@@ -49,8 +49,8 @@ jobs:
           set -euo pipefail
           repo="${{ secrets.DISPATCH_REPO }}"
           if [ -z "${GH_TOKEN}" ] || [ -z "${repo}" ]; then
-            echo "::error::DISPATCH_TOKEN or DISPATCH_REPO is not configured — image was pushed but hosts will not pull"
-            exit 1
+            echo "::warning::DISPATCH_TOKEN or DISPATCH_REPO unset — infra probe-published-images.yml will pick up the tag"
+            exit 0
           fi
           gh api "repos/${repo}/dispatches" \
             -f event_type=image-published \

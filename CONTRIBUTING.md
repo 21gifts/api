@@ -196,8 +196,9 @@ Deploy workflows require these GitHub Actions secrets:
 | `DISPATCH_TOKEN`   | PAT used to fire `repository_dispatch` after push    |
 | `DISPATCH_REPO`    | Target `owner/repo` that receives `image-published`  |
 
-The notify step is fail-closed: if `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing,
-the workflow fails after the image was pushed so the gap is visible.
+If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, notify warns and exits 0 —
+the image is already on Hub; DFXServer `probe-published-images.yml` dispatches
+`image-published` when the tag moves. Set the secrets for an immediate pull.
 
 ## Related repos
 
