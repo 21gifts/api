@@ -41,3 +41,19 @@ jobs:
           platforms: linux/arm64
           cache-from: type=registry,ref=21gifts/api:buildcache
           cache-to: type=registry,ref=21gifts/api:buildcache,mode=max
+
+      - name: Notify infrastructure to pull :latest
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ secrets.DISPATCH_REPO }}"
+          if [ -z "${GH_TOKEN}" ] || [ -z "${repo}" ]; then
+            echo "::warning::DISPATCH_TOKEN or DISPATCH_REPO unset — infra probe-published-images.yml will pick up the tag"
+            exit 0
+          fi
+          gh api "repos/${repo}/dispatches" \
+            -f event_type=image-published \
+            -f "client_payload[image]=21gifts/api" \
+            -f "client_payload[tag]=latest" \
+            -f "client_payload[sha]=${GITHUB_SHA}"
