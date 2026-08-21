@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-15.
+**Status**: living document. Last revised 2026-08-22.
 
 ---
 
@@ -38,6 +38,9 @@ Public base URLs used in examples:
 | ------ | -------------------------------------------- | ----------------------- | ------------------------------------------ |
 | GET    | `/healthz`                                   | none                    | Liveness                                   |
 | GET    | `/info`                                      | none                    | Service identity                           |
+| GET    | `/favicon.ico`                               | none                    | Brand mark (favicon)                       |
+| GET    | `/favicon.svg`                               | none                    | Brand mark (SVG favicon)                   |
+| GET    | `/apple-touch-icon.png`                      | none                    | Brand mark (Apple touch icon)              |
 | GET    | `/auth/lnurl`                                | none                    | Issue LNURL-auth challenge                 |
 | GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
 | GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
@@ -78,6 +81,36 @@ Service identity for clients. Does not expose runtime configuration.
   "repository": "https://github.com/21gifts/api"
 }
 ```
+
+### `GET /favicon.ico`
+
+Brand mark for browsers that request `/favicon.ico` without HTML. No auth.
+No JSON. No env vars. No Open Graph tags.
+
+**Response** `200`: binary body, `Content-Type: image/x-icon`,
+`Cache-Control: public, max-age=86400`.
+
+**Response** `404`: empty body when the file is missing.
+
+### `GET /favicon.svg`
+
+SVG brand mark at the origin root. No auth. No JSON. No env vars. No Open
+Graph tags.
+
+**Response** `200`: binary body, `Content-Type: image/svg+xml`,
+`Cache-Control: public, max-age=86400`.
+
+**Response** `404`: empty body when the file is missing.
+
+### `GET /apple-touch-icon.png`
+
+Apple touch icon at the origin root. No auth. No JSON. No env vars. No Open
+Graph tags.
+
+**Response** `200`: binary body, `Content-Type: image/png`,
+`Cache-Control: public, max-age=86400`.
+
+**Response** `404`: empty body when the file is missing.
 
 ### `GET /auth/lnurl`
 

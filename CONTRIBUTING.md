@@ -33,6 +33,7 @@ api/
 │   ├── routes/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
+│   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
 │   │   ├── me.ts             # GET /me; link/unlink + address verification
 │   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -73,9 +74,14 @@ api/
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts
+│           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
 │           └── lightning-address.test.ts
+├── public/                   # Brand mark files served at origin root
+│   ├── favicon.ico
+│   ├── favicon.svg
+│   └── apple-touch-icon.png
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts          # 100% coverage threshold

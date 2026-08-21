@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
+import { brandRoutes, readPublicBrandFile } from '@/routes/brand';
+import type { BrandReader } from '@/routes/brand';
 import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
@@ -41,6 +43,11 @@ export interface AppDeps {
    * {@link InMemoryLnAddressCache} with a 5-minute TTL).
    */
   lnAddressCache?: LnAddressCache;
+  /**
+   * Reads brand mark bytes for `/favicon.ico`, `/favicon.svg`, and
+   * `/apple-touch-icon.png` (default: {@link readPublicBrandFile}).
+   */
+  readBrand?: BrandReader;
 }
 
 /**
@@ -52,7 +59,7 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, and LN-Address cache.
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, and brand reader.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -63,6 +70,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
+  const readBrand = deps.readBrand ?? readPublicBrandFile;
 
   const app = new Hono();
 
@@ -80,6 +88,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
 
+  app.route('/', brandRoutes({ read: readBrand }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/auth', authRoutes({ store, now, publicBaseUrl }));

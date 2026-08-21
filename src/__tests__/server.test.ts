@@ -19,6 +19,13 @@ describe('createApp', () => {
     warn.mockRestore();
   });
 
+  it('mounts /favicon.ico', async () => {
+    const app = createApp();
+    const res = await app.request('/favicon.ico');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/image/);
+  });
+
   it('mounts /healthz', async () => {
     const app = createApp();
     const res = await app.request('/healthz');
