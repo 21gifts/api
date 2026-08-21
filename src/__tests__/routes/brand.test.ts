@@ -54,14 +54,17 @@ describe('readPublicBrandFile', () => {
     expect(Array.from(bytes?.slice(0, 4) ?? [])).toEqual([0, 0, 1, 0]);
     const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     const hay = bytes ?? new Uint8Array();
-    let found = false;
+    let pngAt = -1;
     for (let i = 0; i <= hay.length - pngMagic.length; i += 1) {
       if (pngMagic.every((b, j) => hay[i + j] === b)) {
-        found = true;
+        pngAt = i;
         break;
       }
     }
-    expect(found).toBe(true);
+    expect(pngAt).toBeGreaterThanOrEqual(0);
+    // IHDR: signature(8) + len(4) + 'IHDR'(4) + width(4) + height(4) + bitDepth(1) + colorType(1)
+    expect(hay[pngAt + 24]).toBe(8);
+    expect(hay[pngAt + 25]).toBe(6);
   });
 
   it('returns null when the file is missing', async () => {
