@@ -43,6 +43,7 @@ api/
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
+│   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
@@ -62,6 +63,7 @@ api/
 │       │   ├── invoice-payer.test.ts
 │       │   ├── lnurlp.test.ts
 │       │   ├── ln-address-cache.test.ts
+│       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
 │       │   └── auth/

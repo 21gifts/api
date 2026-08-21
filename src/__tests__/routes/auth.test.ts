@@ -94,6 +94,19 @@ describe('auth routes', () => {
       expect((loginOk?.['accountId'] as string).length).toBeGreaterThan(0);
       expect(loginOk?.['userAgent']).toBe('unknown');
     });
+
+    it('records the User-Agent when present', async () => {
+      const app = mount(new InMemoryAuthStore(), BASE);
+      const { k1 } = await startLogin(app);
+      const w = newWallet();
+      const res = await app.request(
+        `/auth/lnurl/callback?tag=login&k1=${k1}&sig=${w.sign(k1)}&key=${w.key}`,
+        { headers: { 'user-agent': 'Copay' } },
+      );
+      expect(await res.json()).toEqual({ status: 'OK' });
+      const loginOk = parsedEvents(warn).find((e) => e['event'] === 'auth.login.ok');
+      expect(loginOk?.['userAgent']).toBe('Copay');
+    });
   });
 
   describe('GET /auth/session', () => {
@@ -107,6 +120,22 @@ describe('auth routes', () => {
       const { pollToken } = await startLogin(app);
       const res = await app.request('/auth/session', { headers: { 'x-poll-token': pollToken } });
       expect(((await res.json()) as { status: string }).status).toBe('pending');
+    });
+
+    it('emits auth.session.issued when the poll authenticates', async () => {
+      const app = mount(new InMemoryAuthStore(), BASE);
+      const { k1, pollToken } = await startLogin(app);
+      const w = newWallet();
+      await app.request(`/auth/lnurl/callback?tag=login&k1=${k1}&sig=${w.sign(k1)}&key=${w.key}`);
+      const loginOk = parsedEvents(warn).find((e) => e['event'] === 'auth.login.ok');
+      const accountId = loginOk?.['accountId'];
+      const res = await app.request('/auth/session', { headers: { 'x-poll-token': pollToken } });
+      expect(((await res.json()) as { status: string }).status).toBe('authenticated');
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'auth.session.issued' && e['accountId'] === accountId,
+        ),
+      ).toBe(true);
     });
   });
 });
