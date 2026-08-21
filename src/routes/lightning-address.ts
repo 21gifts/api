@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { CachedLnAddress, LnAddressCache } from '@/lib/ln-address-cache';
+import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 
@@ -67,11 +68,13 @@ export function lightningAddressRoutes(deps: LightningAddressRouteDeps): Hono {
 
     const cached = deps.cache.get(address, deps.now());
     if (cached !== null) {
+      logEvent('lightning_address.resolved', { address, cached: true });
       return c.json(toResponseBody(cached), 200);
     }
 
     const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
     if (!resolved.ok) {
+      logEvent('lightning_address.resolve_failed', { address });
       return c.json({ error: 'Lightning Address could not be resolved' }, 502);
     }
 
@@ -85,6 +88,7 @@ export function lightningAddressRoutes(deps: LightningAddressRouteDeps): Hono {
       entry.commentAllowed = resolved.metadata.commentAllowed;
     }
     deps.cache.put(entry, deps.now());
+    logEvent('lightning_address.resolved', { address, cached: false });
     return c.json(toResponseBody(entry), 200);
   });
 }

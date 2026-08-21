@@ -67,8 +67,9 @@ describe('completeCallback', () => {
     const store = new InMemoryAuthStore();
     const { k1 } = startChallenge(store, BASE, T0);
     const w = newWallet();
-    expect(completeCallback(store, T0, { k1, sig: w.sign(k1), key: w.key })).toEqual({ ok: true });
+    const result = completeCallback(store, T0, { k1, sig: w.sign(k1), key: w.key });
     const account = store.findAccountByLinkingKey(w.key);
+    expect(result).toEqual({ ok: true, accountId: account?.id, firstLogin: true });
     expect(account?.role).toBe('basis');
     expect(store.getChallenge(k1)?.status).toBe('authenticated');
     expect(store.getChallenge(k1)?.accountId).toBe(account?.id);
@@ -83,7 +84,7 @@ describe('completeCallback', () => {
     const second = startChallenge(store, BASE, T0);
     expect(
       completeCallback(store, T0, { k1: second.k1, sig: w.sign(second.k1), key: w.key }),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, accountId: firstId, firstLogin: false });
     expect(store.findAccountByLinkingKey(w.key)?.id).toBe(firstId);
   });
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { normalizePublicBaseUrl } from '@/lib/config';
 import { claimSession, completeCallback, startChallenge } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
+import { logEvent } from '@/lib/log';
 
 /**
  * LNURL-auth (LUD-04) HTTP surface: challenge issuance for the app, the
@@ -41,17 +42,27 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         console.error('PUBLIC_BASE_URL is not configured; cannot issue an LNURL-auth challenge.');
         return c.json({ error: 'Server auth is not configured' }, 500);
       }
-      return c.json(startChallenge(deps.store, baseUrl, deps.now()), 200);
+      const challenge = startChallenge(deps.store, baseUrl, deps.now());
+      logEvent('auth.challenge.issued', { k1: challenge.k1 });
+      return c.json(challenge, 200);
     })
     .get('/lnurl/callback', (c) => {
       const parsed = callbackQuery.safeParse(c.req.query());
       if (!parsed.success) {
+        logEvent('auth.login.denied', { reason: 'Missing k1, sig, or key' });
         return c.json({ status: 'ERROR', reason: 'Missing k1, sig, or key' }, 200);
       }
       const result = completeCallback(deps.store, deps.now(), parsed.data);
       if (!result.ok) {
+        logEvent('auth.login.denied', { reason: result.reason });
         return c.json({ status: 'ERROR', reason: result.reason }, 200);
       }
+      logEvent('auth.login.ok', {
+        accountId: result.accountId,
+        firstLogin: result.firstLogin,
+        linkingKey: parsed.data.key.toLowerCase(),
+        userAgent: c.req.header('user-agent') ?? 'unknown',
+      });
       return c.json({ status: 'OK' }, 200);
     })
     .get('/session', (c) => {
@@ -61,6 +72,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       if (pollToken === undefined) {
         return c.json({ status: 'expired' }, 200);
       }
-      return c.json(claimSession(deps.store, deps.now(), pollToken), 200);
+      const result = claimSession(deps.store, deps.now(), pollToken);
+      if (result.status === 'authenticated') {
+        logEvent('auth.session.issued', { accountId: result.account.id });
+      }
+      return c.json(result, 200);
     });
 }

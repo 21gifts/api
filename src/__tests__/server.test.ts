@@ -1,17 +1,54 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 
+function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+    .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+}
+
 describe('createApp', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('mounts /healthz', async () => {
     const app = createApp();
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
   });
 
+  it('does not emit http.request for GET /healthz', async () => {
+    await createApp().request('/healthz');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+  });
+
   it('mounts /info', async () => {
     const app = createApp();
     const res = await app.request('/info');
     expect(res.status).toBe(200);
+  });
+
+  it('emits http.request for GET /info', async () => {
+    await createApp().request('/info');
+    const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
+    expect(httpEvents).toHaveLength(1);
+    expect(httpEvents[0]?.['method']).toBe('GET');
+    expect(httpEvents[0]?.['path']).toBe('/info');
+    expect(httpEvents[0]?.['status']).toBe(200);
+    expect(Number.isInteger(httpEvents[0]?.['ms'])).toBe(true);
+    const raw = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
+    expect(raw).toBeDefined();
+    expect(raw).not.toContain('?');
   });
 
   it('mounts /lightning-address', async () => {
@@ -28,6 +65,16 @@ describe('createApp', () => {
 });
 
 describe('CORS', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('reflects an allowed origin', async () => {
     const res = await createApp().request('/healthz', {
       headers: { origin: 'https://app.21.gifts' },
@@ -47,6 +94,7 @@ describe('CORS', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-headers')).toMatch(/x-poll-token/i);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
   it('allows DELETE on the lightning-address preflight', async () => {
@@ -60,6 +108,7 @@ describe('CORS', () => {
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-methods')).toMatch(/DELETE/i);
     expect(res.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
   it('honors an injected allowedOrigins override', async () => {

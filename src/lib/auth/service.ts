@@ -57,7 +57,8 @@ export interface CallbackParams {
 }
 
 /** Outcome of the LUD-04 callback. */
-export type CallbackResult = { ok: true } | { ok: false; reason: string };
+export type CallbackResult =
+  { ok: true; accountId: string; firstLogin: boolean } | { ok: false; reason: string };
 
 /**
  * Complete the LUD-04 callback: validate the challenge, verify the signature,
@@ -66,7 +67,8 @@ export type CallbackResult = { ok: true } | { ok: false; reason: string };
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param params - The `k1`, `sig`, and `key` supplied by the wallet.
- * @returns `{ ok: true }` on success, or `{ ok: false, reason }` otherwise.
+ * @returns `{ ok: true, accountId, firstLogin }` on success, or
+ *   `{ ok: false, reason }` otherwise.
  */
 export function completeCallback(
   store: AuthStore,
@@ -89,18 +91,24 @@ export function completeCallback(
   if (!verifyAuthSig(params.k1, params.sig, linkingKey)) {
     return { ok: false, reason: 'Invalid signature' };
   }
-  const account = upsertAccount(store, linkingKey, now);
+  const { account, firstLogin } = upsertAccount(store, linkingKey, now);
   store.updateChallenge({ ...challenge, status: 'authenticated', accountId: account.id });
-  return { ok: true };
+  return { ok: true, accountId: account.id, firstLogin };
 }
 
 /**
  * Return the account for `linkingKey`, creating a Basis account on first sight.
+ *
+ * @returns The account and whether this call created the row.
  */
-function upsertAccount(store: AuthStore, linkingKey: string, now: number): Account {
+function upsertAccount(
+  store: AuthStore,
+  linkingKey: string,
+  now: number,
+): { account: Account; firstLogin: boolean } {
   const existing = store.findAccountByLinkingKey(linkingKey);
   if (existing !== undefined) {
-    return existing;
+    return { account: existing, firstLogin: false };
   }
   const account: Account = {
     id: crypto.randomUUID(),
@@ -111,7 +119,7 @@ function upsertAccount(store: AuthStore, linkingKey: string, now: number): Accou
     createdAt: now,
   };
   store.createAccount(account);
-  return account;
+  return { account, firstLogin: true };
 }
 
 /** Outcome of polling for a session on an authenticated challenge. */

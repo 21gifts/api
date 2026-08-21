@@ -4,6 +4,7 @@ import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
+import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurl-pay';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
@@ -114,6 +115,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       };
       deps.store.updateAccount(updated);
       deps.store.deleteVerification(account.id);
+      logEvent('account.lightning_address.linked', {
+        accountId: account.id,
+        address,
+      });
       return c.json(serializeAccount(updated), 200);
     })
     .delete('/lightning-address', (c) => {
@@ -128,6 +133,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       };
       deps.store.updateAccount(updated);
       deps.store.deleteVerification(account.id);
+      logEvent('account.lightning_address.unlinked', { accountId: account.id });
       return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address/verification', async (c) => {
@@ -158,6 +164,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         }
       }
       // Do not return the nonce — the user must read it from the wallet history.
+      logEvent('account.verification.started', { accountId: account.id });
       return c.json(
         {
           status: 'sent',
@@ -188,6 +195,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             return c.json({ error: 'Verification expired' }, 409);
         }
       }
+      logEvent('account.verification.confirmed', { accountId: account.id });
       return c.json(serializeAccount(result.account), 200);
     });
 }

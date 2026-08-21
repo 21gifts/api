@@ -43,6 +43,7 @@ api/
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
+│   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
@@ -62,6 +63,7 @@ api/
 │       │   ├── invoice-payer.test.ts
 │       │   ├── lnurlp.test.ts
 │       │   ├── ln-address-cache.test.ts
+│       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
 │       │   └── auth/
@@ -178,23 +180,23 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                                 |
-| ---------------------- | ----------------- | ---------------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + test (100% coverage) + build                        |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure         |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure       |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                              |
+| Workflow               | Trigger           | Action                                                           |
+| ---------------------- | ----------------- | ---------------------------------------------------------------- |
+| `ci.yaml`              | PR                | Typecheck + lint + test (100% coverage) + build                  |
+| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure   |
+| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure |
+| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                        |
 
 Images target `linux/arm64`.
 
 Deploy workflows require these GitHub Actions secrets:
 
-| Secret             | Purpose                                              |
-| ------------------ | ---------------------------------------------------- |
-| `DOCKER_USERNAME`  | Docker Hub username for image push                   |
-| `DOCKER_PASSWORD`  | Docker Hub token for image push                      |
-| `DISPATCH_TOKEN`   | PAT used to fire `repository_dispatch` after push    |
-| `DISPATCH_REPO`    | Target `owner/repo` that receives `image-published`  |
+| Secret            | Purpose                                             |
+| ----------------- | --------------------------------------------------- |
+| `DOCKER_USERNAME` | Docker Hub username for image push                  |
+| `DOCKER_PASSWORD` | Docker Hub token for image push                     |
+| `DISPATCH_TOKEN`  | PAT used to fire `repository_dispatch` after push   |
+| `DISPATCH_REPO`   | Target `owner/repo` that receives `image-published` |
 
 If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, notify warns and exits 0 —
 the image is already on Hub; DFXServer `probe-published-images.yml` dispatches

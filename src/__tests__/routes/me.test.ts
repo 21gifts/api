@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
@@ -6,6 +6,23 @@ import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurl-pay';
 import { bearerToken, meRoutes } from '@/routes/me';
+
+function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+    .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+}
+
+let warn: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  warn.mockRestore();
+});
 
 const now = (): number => 1_000_000;
 const AUTH = { authorization: 'Bearer tok' };
@@ -149,6 +166,14 @@ describe('POST /me/lightning-address', () => {
     expect(body.lightningAddress).toBe(ADDRESS);
     expect(body.lightningAddressVerified).toBe(false);
     expect(store.getAccount('acc')?.lightningAddress).toBe(ADDRESS);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.lightning_address.linked' &&
+          e['accountId'] === 'acc' &&
+          e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
   });
 
   it('clears a pending verification when linking', async () => {
@@ -212,6 +237,11 @@ describe('DELETE /me/lightning-address', () => {
     expect(body.lightningAddress).toBeNull();
     expect(store.getAccount('acc')?.lightningAddress).toBeNull();
     expect(store.getVerification('acc')).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.lightning_address.unlinked' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
   });
 });
 
@@ -319,6 +349,12 @@ describe('POST /me/lightning-address/verification', () => {
       /^21gifts [0-9a-f]{32}$/,
     );
     expect(store.getVerification('acc')).toBeDefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.verification.started' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+    expect(parsedEvents(warn).every((e) => !('nonce' in e))).toBe(true);
   });
 });
 
@@ -438,6 +474,12 @@ describe('POST /me/lightning-address/verification/confirm', () => {
     expect(body.lightningAddressVerified).toBe(true);
     expect(store.getAccount('acc')?.lightningAddressVerified).toBe(true);
     expect(store.getVerification('acc')).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.verification.confirmed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+    expect(parsedEvents(warn).every((e) => !('nonce' in e))).toBe(true);
   });
 
   it('returns 409 after link clears a pending verification', async () => {
