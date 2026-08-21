@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { logger } from 'hono/logger';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
@@ -13,6 +12,7 @@ import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
+import { requestLog } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 
 /**
@@ -66,7 +66,7 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   const app = new Hono();
 
-  app.use('*', logger());
+  app.use('*', requestLog());
   // The app is a separate-origin browser client (app.21.gifts -> api.21.gifts),
   // so cross-origin requests need CORS. Bearer sessions + the X-Poll-Token are
   // sent as headers (no cookies), so credentials are not enabled.

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -32,13 +32,33 @@ function happyMetadata(commentAllowed?: number): unknown {
   return body;
 }
 
+function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+    .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+}
+
 describe('GET /lightning-address', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('returns 400 when the address query is missing', async () => {
     const res = await createApp().request('/lightning-address');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: 'Not a valid Lightning Address (expected name@domain)',
     });
+    const events = parsedEvents(warn);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolved')).toBe(false);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolve_failed')).toBe(false);
   });
 
   it('returns 400 when the address query is empty', async () => {
@@ -47,6 +67,9 @@ describe('GET /lightning-address', () => {
     expect(await res.json()).toEqual({
       error: 'Not a valid Lightning Address (expected name@domain)',
     });
+    const events = parsedEvents(warn);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolved')).toBe(false);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolve_failed')).toBe(false);
   });
 
   it('returns 400 for a non LUD-16 address shape', async () => {
@@ -55,6 +78,9 @@ describe('GET /lightning-address', () => {
     expect(await res.json()).toEqual({
       error: 'Not a valid Lightning Address (expected name@domain)',
     });
+    const events = parsedEvents(warn);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolved')).toBe(false);
+    expect(events.some((e) => e['event'] === 'lightning_address.resolve_failed')).toBe(false);
   });
 
   it('returns 400 when the address is longer than 255 characters', async () => {
@@ -78,6 +104,11 @@ describe('GET /lightning-address', () => {
     expect(await res.json()).toEqual({
       error: 'Lightning Address could not be resolved',
     });
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'lightning_address.resolve_failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
   });
 
   it('returns 502 when metadata is unreachable', async () => {
@@ -89,6 +120,11 @@ describe('GET /lightning-address', () => {
     expect(await res.json()).toEqual({
       error: 'Lightning Address could not be resolved',
     });
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'lightning_address.resolve_failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
   });
 
   it('returns 200 with the normalised payload on success', async () => {
@@ -104,6 +140,14 @@ describe('GET /lightning-address', () => {
       maxSendable: MAX_SENDABLE,
       commentAllowed: 255,
     });
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'lightning_address.resolved' &&
+          e['address'] === ADDRESS &&
+          e['cached'] === false,
+      ),
+    ).toBe(true);
   });
 
   it('omits commentAllowed when the provider omitted it', async () => {
@@ -149,6 +193,8 @@ describe('GET /lightning-address', () => {
       maxSendable: MAX_SENDABLE,
       commentAllowed: 255,
     });
+    const resolved = parsedEvents(warn).filter((e) => e['event'] === 'lightning_address.resolved');
+    expect(resolved.some((e) => e['cached'] === true)).toBe(true);
   });
 
   it('calls fetch again after the cache TTL elapses', async () => {
