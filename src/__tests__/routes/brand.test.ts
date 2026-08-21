@@ -47,10 +47,21 @@ describe('brandRoutes', () => {
 });
 
 describe('readPublicBrandFile', () => {
-  it('returns non-empty bytes for public/favicon.ico', async () => {
+  it('returns a Windows ICO with RGBA PNG payloads for public/favicon.ico', async () => {
     const bytes = await readPublicBrandFile('favicon.ico');
     expect(bytes).not.toBeNull();
     expect(bytes?.byteLength ?? 0).toBeGreaterThan(0);
+    expect(Array.from(bytes?.slice(0, 4) ?? [])).toEqual([0, 0, 1, 0]);
+    const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const hay = bytes ?? new Uint8Array();
+    let found = false;
+    for (let i = 0; i <= hay.length - pngMagic.length; i += 1) {
+      if (pngMagic.every((b, j) => hay[i + j] === b)) {
+        found = true;
+        break;
+      }
+    }
+    expect(found).toBe(true);
   });
 
   it('returns null when the file is missing', async () => {
