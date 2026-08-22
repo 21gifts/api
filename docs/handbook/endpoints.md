@@ -37,15 +37,15 @@
 
 ## Endpoint: GET /favicon.ico
 
-- **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark.
-- **Errors:** 404 if file missing.
+- **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark. `Content-Type: image/x-icon`, `Cache-Control: public, max-age=86400`.
+- **Errors:** 404 empty body when `public/favicon.ico` is missing.
 - **Used by:** Browsers opening api.21.gifts.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /favicon.svg
 
-- **Purpose:** SVG mark, orange 21 on black.
-- **Errors:** 404 if missing.
+- **Purpose:** SVG mark, orange 21 on black. `Content-Type: image/svg+xml`, `Cache-Control: public, max-age=86400`.
+- **Errors:** 404 empty body when `public/favicon.svg` is missing.
 - **Used by:** Modern browsers preferring SVG icons.
 - **Auth:** See Purpose — Bearer where stated, else public.
 

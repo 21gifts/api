@@ -44,17 +44,11 @@ const CONTENT_TYPES: Record<BrandFileName, string> = {
 const CACHE_CONTROL = 'public, max-age=86400';
 
 /**
- * Brand mark routes at the origin root.
- *
- * - `GET /favicon.ico` → `200` `image/x-icon`
- * - `GET /favicon.svg` → `200` `image/svg+xml`
- * - `GET /apple-touch-icon.png` → `200` `image/png`
- *
- * Missing bytes → `404` empty body. Successful responses set
- * `Cache-Control: public, max-age=86400`.
+ * Reads one brand file and turns it into an HTTP response.
  *
  * @param deps - Injected brand file reader.
- * @returns A Hono app with the three GET handlers.
+ * @param name - File under `public/`.
+ * @returns `200` with bytes, or `404` empty body.
  */
 async function sendBrand(deps: BrandRouteDeps, name: BrandFileName): Promise<Response> {
   const bytes = await deps.read(name);
@@ -70,6 +64,19 @@ async function sendBrand(deps: BrandRouteDeps, name: BrandFileName): Promise<Res
   });
 }
 
+/**
+ * Brand mark routes at the origin root.
+ *
+ * - `GET /favicon.ico` → `200` `image/x-icon`
+ * - `GET /favicon.svg` → `200` `image/svg+xml`
+ * - `GET /apple-touch-icon.png` → `200` `image/png`
+ *
+ * Missing bytes → `404` empty body. Successful responses set
+ * `Cache-Control: public, max-age=86400`.
+ *
+ * @param deps - Injected brand file reader.
+ * @returns A Hono app with the three GET handlers.
+ */
 export function brandRoutes(deps: BrandRouteDeps): Hono {
   const app = new Hono();
   app.get('/favicon.ico', () => sendBrand(deps, 'favicon.ico'));
