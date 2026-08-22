@@ -9,7 +9,7 @@ describe('LNURL-auth end-to-end via createApp', () => {
     const app = createApp({
       authStore: store,
       now: () => 5_000_000,
-      publicBaseUrl: 'https://dev-api.21.gifts',
+      publicBaseUrl: 'https://dev.21.gifts',
     });
 
     const start = (await (await app.request('/auth/lnurl')).json()) as {
@@ -49,7 +49,7 @@ describe('LNURL-auth end-to-end via createApp', () => {
 
   it('reads PUBLIC_BASE_URL from the environment when no override is given', async () => {
     const prev = process.env['PUBLIC_BASE_URL'];
-    process.env['PUBLIC_BASE_URL'] = 'https://dev-api.21.gifts';
+    process.env['PUBLIC_BASE_URL'] = 'https://dev.21.gifts';
     try {
       const res = await createApp().request('/auth/lnurl');
       expect(res.status).toBe(200);

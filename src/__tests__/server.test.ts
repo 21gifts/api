@@ -103,6 +103,13 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
   });
 
+  it('reflects the public apex origin', async () => {
+    const res = await createApp().request('/healthz', {
+      headers: { origin: 'https://21.gifts' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://21.gifts');
+  });
+
   it('does not echo an unknown origin', async () => {
     const res = await createApp().request('/healthz', { headers: { origin: 'https://evil.test' } });
     expect(res.headers.get('access-control-allow-origin')).not.toBe('https://evil.test');

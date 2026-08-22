@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-22.
+**Status**: living document. Last revised 2026-08-22 (apex origin).
 
 ---
 
@@ -21,18 +21,19 @@ verification payment requires an injected invoice payer; the default
 does not fetch or pay invoices. No BOLT11 decoder and no LNDHub /
 lightning.space payer are wired in this service yet.
 
-CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default app
-surfaces `https://app.21.gifts`, `https://dev-app.21.gifts`, and
-`http://localhost:3000`) and methods `GET`, `POST`, `DELETE`, `OPTIONS`, with
-headers `Authorization`, `Content-Type`, and `X-Poll-Token`. Sessions and the
-poll token are sent as headers — no cookies, credentials not enabled.
+CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
+surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
+`https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
+`POST`, `DELETE`, `OPTIONS`, with headers `Authorization`, `Content-Type`, and
+`X-Poll-Token`. Sessions and the poll token are sent as headers — no cookies,
+credentials not enabled.
 
 Public base URLs used in examples:
 
-| Environment | API                        | App                        |
-| ----------- | -------------------------- | -------------------------- |
-| PRD         | `https://api.21.gifts`     | `https://app.21.gifts`     |
-| DEV         | `https://dev-api.21.gifts` | `https://dev-app.21.gifts` |
+| Environment | API                        | App                    |
+| ----------- | -------------------------- | ---------------------- |
+| PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
+| DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
 | Method | Path                                         | Auth                    | Purpose                                    |
 | ------ | -------------------------------------------- | ----------------------- | ------------------------------------------ |

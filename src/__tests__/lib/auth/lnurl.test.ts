@@ -6,7 +6,7 @@ const K1 = 'a'.repeat(64);
 
 describe('encodeLnurl', () => {
   it('produces a lower-case bech32 lnurl string', () => {
-    const lnurl = encodeLnurl(`https://dev-api.21.gifts/auth/lnurl/callback?tag=login&k1=${K1}`);
+    const lnurl = encodeLnurl(`https://dev.21.gifts/auth/lnurl/callback?tag=login&k1=${K1}`);
     expect(lnurl.startsWith('lnurl1')).toBe(true);
     expect(lnurl).toBe(lnurl.toLowerCase());
   });

@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { authRoutes } from '@/routes/auth';
+import { encodeLnurl } from '@/lib/auth/lnurl';
 import { newWallet } from '@/__tests__/helpers/auth-vectors';
 
-const BASE = 'https://dev-api.21.gifts';
+const BASE = 'https://dev.21.gifts';
 const now = (): number => 1_000_000;
 
 function mount(store: InMemoryAuthStore, publicBaseUrl: string | undefined): Hono {
@@ -43,7 +44,7 @@ describe('auth routes', () => {
       const res = await mount(new InMemoryAuthStore(), BASE).request('/auth/lnurl');
       expect(res.status).toBe(200);
       const body = (await res.json()) as { lnurl: string; k1: string };
-      expect(body.lnurl.startsWith('lnurl1')).toBe(true);
+      expect(body.lnurl).toBe(encodeLnurl(`${BASE}/auth/lnurl/callback?tag=login&k1=${body.k1}`));
       expect(body.k1).toMatch(/^[0-9a-f]{64}$/);
       expect(
         parsedEvents(warn).some(

@@ -163,7 +163,7 @@
 
 ## Function: resolveAllowedOrigins
 
-- **Purpose:** CORS allow-list from `CORS_ALLOWED_ORIGINS` or the built-in app origins.
+- **Purpose:** CORS allow-list from `CORS_ALLOWED_ORIGINS` or the built-in apex, transitional app-subdomain, and localhost origins.
 - **Inputs:** `env` record.
 - **Returns / side effects:** string[] of origins.
 - **Used by:** `createApp` CORS.
