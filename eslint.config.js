@@ -25,7 +25,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/__tests__/**/*.ts'],
+    files: ['src/__tests__/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts'],
     rules: {
       '@typescript-eslint/explicit-function-return-type': 'off',
     },

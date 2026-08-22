@@ -77,8 +77,10 @@ bun run dev    # → http://localhost:3000/healthz
 bun run typecheck       # tsc --noEmit
 bun run lint            # eslint + prettier --check
 bun run handbook:check  # every function and HTTP endpoint must be documented
+bun run e2e:check       # every HTTP endpoint must have a Playwright request
 bun run test:coverage   # vitest with 100% threshold
 bun run build           # bun build to dist/
+bun run e2e             # Playwright against bun src/index.ts
 ```
 
 ## Documentation

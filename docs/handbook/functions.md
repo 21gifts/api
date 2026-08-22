@@ -58,8 +58,8 @@
 
 ## Function: confirmVerification
 
-- **Purpose:** Checks the nonce the client got from startVerification after the 1-sat pay.
-- **Inputs:** `store`, `now`, accountId, nonce.
+- **Purpose:** Checks the nonce the user read from the wallet payment comment (`21gifts <hex>`), not a nonce returned by startVerification.
+- **Inputs:** `store`, `now`, `account`, `nonceRaw`.
 - **Returns / side effects:** Success marks the address verified, or a `ConfirmVerificationCode`.
 - **Used by:** `POST /me/lightning-address/verification/confirm`.
 

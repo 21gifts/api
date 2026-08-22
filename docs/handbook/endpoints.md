@@ -87,13 +87,13 @@
 ## Endpoint: POST /me/lightning-address/verification
 
 - **Purpose:** Triggers the 1-sat proof-of-control payment. JSON `{ status: 'sent', expiresInSeconds, sats }`. The nonce is **not** returned to the client; it is only in the LUD-12 wallet comment.
-- **Errors:** 401 without session; 409 `no_address` / `already_verified`; 502 unreachable; 503 payer unconfigured.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 409 `{ error: 'No Lightning Address linked' }` or `{ error: 'Lightning Address already verified' }`; 502 `{ error: 'Lightning Address did not accept the verification payment' }`; 503 `{ error: 'Verification payments are not configured' }`.
 - **Used by:** App `startLightningAddressVerification`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: POST /me/lightning-address/verification/confirm
 
 - **Purpose:** Body `{ nonce }`. Marks the address verified when the invoice was paid.
-- **Errors:** 401/400 mismatch.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "nonce" string' }` or `{ error: 'Incorrect verification code' }`; 409 `{ error: 'No verification in progress' }` or `{ error: 'Verification expired' }`.
 - **Used by:** App `confirmLightningAddressVerification`.
 - **Auth:** See Purpose — Bearer where stated, else public.

@@ -83,7 +83,11 @@ api/
 │   ├── functions.md
 │   └── endpoints.md
 ├── scripts/
-│   └── check-handbook.mjs    # CI gate: missing heading → exit 1
+│   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
+│   └── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+├── e2e/
+│   └── http.spec.ts          # Playwright against a booted Bun process
+├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
 │   ├── favicon.svg
@@ -189,6 +193,7 @@ bun run handbook:check
 bun run e2e:check
 bun run test:coverage
 bun run build
+bun run e2e
 ```
 
 CI will fail on the same conditions; catching them locally is faster.

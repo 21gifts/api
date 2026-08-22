@@ -1,13 +1,13 @@
 import { defineConfig } from '@playwright/test';
 
 /**
- * HTTP end-to-end tests against a booted Bun process (the same entry as Docker).
- * Request-only: no browser download required.
+ * HTTP end-to-end tests against `bun src/index.ts` (request-only; no browser).
+ * Docker runs the compiled `dist/index.js`; locally and in CI this boots source.
  */
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
-  forbidOnly: !!process.env.CI,
+  forbidOnly: !!process.env['CI'],
   reporter: 'list',
   use: {
     baseURL: 'http://127.0.0.1:3000',
@@ -15,7 +15,7 @@ export default defineConfig({
   webServer: {
     command: 'bun src/index.ts',
     url: 'http://127.0.0.1:3000/healthz',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !process.env['CI'],
     timeout: 60_000,
     env: {
       ...process.env,
