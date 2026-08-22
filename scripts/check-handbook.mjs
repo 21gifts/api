@@ -57,7 +57,7 @@ function extractFunctions(srcRoot) {
       !p.endsWith('.test.tsx'),
   );
   const reFn = /^export\s+(async\s+)?function\s+([A-Za-z0-9_]+)/gm;
-  const reDefault = /^export\s+default\s+function\s+([A-Za-z0-9_]+)/gm;
+  const reDefault = /^export\s+default\s+(async\s+)?function\s+([A-Za-z0-9_]+)/gm;
   const reConstFn =
     /^export\s+const\s+([A-Za-z0-9_]+)\s*=\s*(async\s*)?(\(|function|create[<(\s]|new\s)/gm;
   const reClass = /^export\s+class\s+([A-Za-z0-9_]+)/gm;
@@ -70,7 +70,7 @@ function extractFunctions(srcRoot) {
     }
     reDefault.lastIndex = 0;
     while ((m = reDefault.exec(t))) {
-      names.add(m[1]);
+      names.add(m[2]);
     }
     reConstFn.lastIndex = 0;
     while ((m = reConstFn.exec(t))) {
@@ -98,10 +98,16 @@ function extractScreens() {
       screens.add(route);
     }
   }
-  const htmlScreens = { 'index.html': '/', 'legal.html': '/legal', '404.html': '/404' };
-  for (const [file, route] of Object.entries(htmlScreens)) {
-    if (fs.existsSync(path.join(ROOT, file))) {
-      screens.add(route);
+  for (const name of fs.existsSync(ROOT) ? fs.readdirSync(ROOT) : []) {
+    if (!name.endsWith('.html')) {
+      continue;
+    }
+    if (name === 'index.html') {
+      screens.add('/');
+    } else if (name === '404.html') {
+      screens.add('/404');
+    } else {
+      screens.add(`/${name.replace(/\.html$/, '')}`);
     }
   }
   return screens;
@@ -111,8 +117,12 @@ function extractEndpoints() {
   const endpoints = new Set();
   const server = path.join(ROOT, 'src', 'server.ts');
   const routeDir = path.join(ROOT, 'src', 'routes');
-  if (!fs.existsSync(server) || !fs.existsSync(routeDir)) {
+  if (!fs.existsSync(server)) {
     return endpoints;
+  }
+  if (!fs.existsSync(routeDir)) {
+    console.error('HANDBOOK: src/server.ts exists but src/routes/ is missing');
+    process.exit(1);
   }
   const mountByFile = {
     'health.ts': '/healthz',
@@ -122,18 +132,17 @@ function extractEndpoints() {
     'lightning-address.ts': '/lightning-address',
     'brand.ts': '',
   };
-  const methodRe = /\.(get|post|delete|put|patch)\('(\/[^']*)'/g;
-  for (const [file, mount] of Object.entries(mountByFile)) {
-    const fp = path.join(routeDir, file);
-    if (!fs.existsSync(fp)) {
-      continue;
-    }
-    const t = fs.readFileSync(fp, 'utf8');
+  const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_/]*)\2/g;
+  for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {
+    const mount = Object.hasOwn(mountByFile, file)
+      ? mountByFile[file]
+      : `/${file.replace(/\.ts$/, '')}`;
+    const t = fs.readFileSync(path.join(routeDir, file), 'utf8');
     let m;
     methodRe.lastIndex = 0;
     while ((m = methodRe.exec(t))) {
       const method = m[1].toUpperCase();
-      const sub = m[2] === '/' ? '' : m[2];
+      const sub = m[3] === '/' ? '' : m[3];
       const full = `${mount}${sub}` || '/';
       endpoints.add(`${method} ${full}`);
     }
@@ -142,6 +151,10 @@ function extractEndpoints() {
     endpoints.add('GET /favicon.ico');
     endpoints.add('GET /favicon.svg');
     endpoints.add('GET /apple-touch-icon.png');
+  }
+  if (endpoints.size === 0) {
+    console.error('HANDBOOK: src/server.ts present but no HTTP endpoints discovered');
+    process.exit(1);
   }
   return endpoints;
 }

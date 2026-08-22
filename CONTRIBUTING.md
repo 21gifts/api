@@ -210,7 +210,7 @@ More will be added as concrete subsystems that need runtime configuration
 
 | Workflow               | Trigger           | Action                                                           |
 | ---------------------- | ----------------- | ---------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + test (100% coverage) + build                  |
+| `ci.yaml`              | PR                | Typecheck + lint + handbook + test (100% coverage) + build       |
 | `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure   |
 | `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure |
 | `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                        |

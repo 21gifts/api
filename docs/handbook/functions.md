@@ -10,15 +10,15 @@
 ## Function: InMemoryLnAddressCache
 
 - **Purpose:** TTL cache for successful LUD-16 metadata resolves.
-- **Inputs:** `get(address, now)`, `set(address, value, now)`. TTL from `LN_ADDRESS_CACHE_TTL_MS`.
-- **Returns / side effects:** Cached metadata or `undefined`.
+- **Inputs:** `get(address, now)`, `put(entry, now)`. TTL from `LN_ADDRESS_CACHE_TTL_MS`.
+- **Returns / side effects:** `get` returns `CachedLnAddress` or `null`.
 - **Used by:** `lightningAddressRoutes`.
 
 ## Function: UnconfiguredInvoicePayer
 
 - **Purpose:** InvoicePayer that always fails — process boots without a payer so verification returns 503 until wired.
-- **Inputs:** `pay(pr)` never succeeds.
-- **Returns / side effects:** `{ ok: false, reason }` / throws per port.
+- **Inputs:** `isConfigured()` is always false. `payInvoice(bolt11)` is the pay method.
+- **Returns / side effects:** `{ ok: false, reason: 'not_configured' }` — it does not throw.
 - **Used by:** Default `createApp` `invoicePayer`.
 
 ## Function: authRoutes
@@ -123,7 +123,7 @@
 
 - **Purpose:** Trims trailing slash; rejects empty.
 - **Inputs:** raw env string or undefined.
-- **Returns / side effects:** Base URL or `null` (challenge then 503).
+- **Returns / side effects:** Base URL or `null`. Auth routes then respond HTTP 500 `Server auth is not configured`.
 - **Used by:** `startChallenge` via auth routes.
 
 ## Function: parseBindAddr
@@ -156,7 +156,7 @@
 
 ## Function: requestPayInvoice
 
-- **Purpose:** LNURL-pay: fetch metadata, POST amount (+ optional comment) to callback, return bolt11.
+- **Purpose:** LNURL-pay: fetch metadata, then GET the callback with `amount` and optional `comment` query params (LUD-06), return bolt11.
 - **Inputs:** `RequestPayInvoiceArgs`.
 - **Returns / side effects:** `LnurlPayResult`.
 - **Used by:** Verification payer path when a real InvoicePayer is wired; app donate uses the browser equivalent.

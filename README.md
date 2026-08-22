@@ -76,6 +76,7 @@ bun run dev    # → http://localhost:3000/healthz
 ```bash
 bun run typecheck       # tsc --noEmit
 bun run lint            # eslint + prettier --check
+bun run handbook:check  # every function and HTTP endpoint must be documented
 bun run test:coverage   # vitest with 100% threshold
 bun run build           # bun build to dist/
 ```
@@ -87,6 +88,7 @@ bun run build           # bun build to dist/
 | [`CONCEPT.md`](./CONCEPT.md)           | Project vision, architecture, principles, decisions                 |
 | [`SPEC.md`](./SPEC.md)                 | Implemented HTTP surface (request/response contracts)               |
 | [`FLOWS.md`](./FLOWS.md)               | Core UI journeys (sign-in → profile → donate → recurring → message) |
+| [`docs/handbook/`](./docs/handbook/)   | Mandatory: every function and HTTP endpoint                         |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Dev setup, conventions, workflow                                    |
 | [`SECURITY.md`](./SECURITY.md)         | Reporting vulnerabilities                                           |
 

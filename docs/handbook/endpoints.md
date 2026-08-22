@@ -9,22 +9,22 @@
 
 ## Endpoint: GET /apple-touch-icon.png
 
-- **Purpose:** 180×180 PNG brand mark. `Cache-Control: public, max-age=86400`.
-- **Errors:** 404 if `public/` missing in the image.
+- **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.
+- **Errors:** 404 empty body when `public/apple-touch-icon.png` is missing.
 - **Used by:** iOS home-screen icon crawlers.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /auth/lnurl
 
 - **Purpose:** Creates a login challenge. JSON: lnurl, k1, pollToken.
-- **Errors:** 503 if PUBLIC_BASE_URL unset.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `PUBLIC_BASE_URL` is unset.
 - **Used by:** App `startLnurlAuth`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /auth/lnurl/callback
 
-- **Purpose:** Wallet hits this with `k1`, `sig`, `key` (LUD-04). Body `{ status: 'OK' }` or ERROR. Query is never written to http.request logs.
-- **Errors:** 400/ERROR on bad sig.
+- **Purpose:** Wallet hits this with `k1`, `sig`, `key` (LUD-04). Success body `{ status: 'OK' }`. Query is never written to http.request logs.
+- **Errors:** HTTP 200 `{ status: 'ERROR', reason }` on missing params or bad signature (LUD-04).
 - **Used by:** Wallet of Satoshi / any LNURL-auth wallet.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
@@ -86,8 +86,8 @@
 
 ## Endpoint: POST /me/lightning-address/verification
 
-- **Purpose:** Triggers the 1-sat proof-of-control payment. Returns nonce + amount.
-- **Errors:** 401/503 if payer unconfigured.
+- **Purpose:** Triggers the 1-sat proof-of-control payment. JSON `{ status: 'sent', expiresInSeconds, sats }`. The nonce is **not** returned to the client; it is only in the LUD-12 wallet comment.
+- **Errors:** 401 without session; 409 `no_address` / `already_verified`; 502 unreachable; 503 payer unconfigured.
 - **Used by:** App `startLightningAddressVerification`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
