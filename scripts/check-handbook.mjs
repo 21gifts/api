@@ -133,7 +133,7 @@ function extractEndpoints() {
     'lightning-address.ts': '/lightning-address',
     'brand.ts': '',
   };
-  const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_/]*)\2/g;
+  const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {
     const mount = Object.hasOwn(mountByFile, file)
       ? mountByFile[file]
@@ -147,11 +147,6 @@ function extractEndpoints() {
       const full = `${mount}${sub}` || '/';
       endpoints.add(`${method} ${full}`);
     }
-  }
-  if (fs.existsSync(path.join(routeDir, 'brand.ts'))) {
-    endpoints.add('GET /favicon.ico');
-    endpoints.add('GET /favicon.svg');
-    endpoints.add('GET /apple-touch-icon.png');
   }
   if (endpoints.size === 0) {
     console.error('HANDBOOK: src/server.ts present but no HTTP endpoints discovered');

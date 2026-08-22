@@ -56,25 +56,24 @@ const CACHE_CONTROL = 'public, max-age=86400';
  * @param deps - Injected brand file reader.
  * @returns A Hono app with the three GET handlers.
  */
+async function sendBrand(deps: BrandRouteDeps, name: BrandFileName): Promise<Response> {
+  const bytes = await deps.read(name);
+  if (bytes === null) {
+    return new Response(null, { status: 404 });
+  }
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'Content-Type': CONTENT_TYPES[name],
+      'Cache-Control': CACHE_CONTROL,
+    },
+  });
+}
+
 export function brandRoutes(deps: BrandRouteDeps): Hono {
   const app = new Hono();
-  const names: BrandFileName[] = ['favicon.ico', 'favicon.svg', 'apple-touch-icon.png'];
-
-  for (const name of names) {
-    app.get(`/${name}`, async (c) => {
-      const bytes = await deps.read(name);
-      if (bytes === null) {
-        return c.body(null, 404);
-      }
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          'Content-Type': CONTENT_TYPES[name],
-          'Cache-Control': CACHE_CONTROL,
-        },
-      });
-    });
-  }
-
+  app.get('/favicon.ico', () => sendBrand(deps, 'favicon.ico'));
+  app.get('/favicon.svg', () => sendBrand(deps, 'favicon.svg'));
+  app.get('/apple-touch-icon.png', () => sendBrand(deps, 'apple-touch-icon.png'));
   return app;
 }
