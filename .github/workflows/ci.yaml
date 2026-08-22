@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   check:
-    name: Typecheck, Lint, Test (100% coverage), Build
+    name: Typecheck, Lint, Handbook, E2E-check, Test (100% coverage), Build, E2E
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -35,8 +35,19 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Handbook completeness
+        run: bun run handbook:check
+
+      - name: E2E completeness
+        run: bun run e2e:check
+
       - name: Test with 100% coverage gate
         run: bun run test:coverage
 
       - name: Build
         run: bun run build
+
+      - name: End-to-end HTTP tests
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: bun run e2e

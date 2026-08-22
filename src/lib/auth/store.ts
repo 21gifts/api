@@ -6,9 +6,9 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * v1 uses the in-memory implementation below, behind the {@link AuthStore}
  * port: the CONCEPT defers the durable-storage choice (Postgres) until the
  * indexer surface stabilises, and this seam makes that a drop-in replacement.
- * Restarting the process clears all challenges, accounts, and sessions —
- * acceptable for the current dev/dogfooding stage, and the reason the port
- * exists.
+ * Restarting the process clears all challenges, accounts, sessions, and
+ * pending address verifications — acceptable for the current dev/dogfooding
+ * stage, and the reason the port exists.
  */
 
 /** Account permission tier. Role assignment stays operator-side in v1. */
@@ -24,9 +24,27 @@ export interface Account {
   role: AccountRole;
   /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
   lightningAddress: string | null;
-  /** Whether control of the linked address has been proven (v1: always false). */
+  /**
+   * Whether control of the linked address has been proven via micro-payment
+   * verification. Set only by successful confirm; linking/unlinking resets it.
+   */
   lightningAddressVerified: boolean;
   /** Creation time (epoch ms). */
+  createdAt: number;
+}
+
+/**
+ * Pending receiver address verification (one-time nonce in an LNURL-pay comment).
+ * At most one record per account; replaced on re-start, cleared on confirm/link/unlink.
+ */
+export interface AddressVerification {
+  /** Account that started verification. */
+  accountId: string;
+  /** Lightning Address the payment was sent to (must still match on confirm). */
+  address: string;
+  /** One-time nonce (32 lowercase hex chars) placed in the LUD-12 comment. */
+  nonce: string;
+  /** Issue time (epoch ms). */
   createdAt: number;
 }
 
@@ -87,6 +105,12 @@ export interface AuthStore {
   createSession(session: Session): void;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Session | undefined;
+  /** Upsert a pending address verification for the account. */
+  putVerification(verification: AddressVerification): void;
+  /** Look up a pending verification by account id, or `undefined` if none. */
+  getVerification(accountId: string): AddressVerification | undefined;
+  /** Drop any pending verification for the account. */
+  deleteVerification(accountId: string): void;
 }
 
 /**
@@ -100,6 +124,7 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #accounts = new Map<string, Account>();
   readonly #accountsByLinkingKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
+  readonly #verifications = new Map<string, AddressVerification>();
 
   createChallenge(challenge: Challenge): void {
     // Evict on write so unauthenticated challenge minting cannot grow the maps
@@ -147,6 +172,18 @@ export class InMemoryAuthStore implements AuthStore {
 
   getSession(token: string): Session | undefined {
     return this.#sessions.get(token);
+  }
+
+  putVerification(verification: AddressVerification): void {
+    this.#verifications.set(verification.accountId, verification);
+  }
+
+  getVerification(accountId: string): AddressVerification | undefined {
+    return this.#verifications.get(accountId);
+  }
+
+  deleteVerification(accountId: string): void {
+    this.#verifications.delete(accountId);
   }
 
   /** Drop challenges (and their poll-token index entries) older than the TTL. */

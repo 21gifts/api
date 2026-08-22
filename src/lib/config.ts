@@ -1,12 +1,15 @@
 /**
- * Auth-subsystem configuration.
+ * Auth and verification configuration.
  *
  * Configuration is read from the environment only (no config files, per
  * CONTRIBUTING). `PUBLIC_BASE_URL` is security-relevant: it pins the
  * LNURL-auth callback host, which is the domain the wallet derives its
  * `linkingKey` against. A wrong host would silently split account identities,
  * so a missing or empty value is treated as a hard misconfiguration rather
- * than a guessed default.
+ * than a guessed default. Verification TTL and micro-payment amounts for
+ * Lightning Address proof-of-control also live here, as does the in-memory
+ * LUD-16 metadata cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant,
+ * not an environment variable).
  */
 
 /** Lifetime of an unclaimed LNURL-auth `k1` challenge, in milliseconds. */
@@ -14,6 +17,21 @@ export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 /** Lifetime of an issued session token, in milliseconds. */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Lifetime of a pending Lightning Address verification, in milliseconds. */
+export const VERIFICATION_TTL_MS = 15 * 60 * 1000;
+
+/** Preferred verification micro-payment amount, in millisatoshis (1 sat). */
+export const VERIFICATION_AMOUNT_MSAT = 1_000;
+
+/**
+ * Maximum amount the api will pay for verification, in millisatoshis (10 sat).
+ * If the provider's `minSendable` exceeds this, verification is refused.
+ */
+export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
+
+/** In-memory TTL for a successful LUD-16 metadata resolve, in milliseconds. */
+export const LN_ADDRESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Normalise the configured public base URL used to build LNURL-auth callbacks.

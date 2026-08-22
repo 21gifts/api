@@ -5,7 +5,14 @@ import tsdoc from 'eslint-plugin-tsdoc';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'dist/**', 'coverage/**', '*.lockb'],
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'coverage/**',
+      '*.lockb',
+      'playwright-report/**',
+      'test-results/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
@@ -25,9 +32,18 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/__tests__/**/*.ts'],
+    files: ['src/__tests__/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts'],
     rules: {
       '@typescript-eslint/explicit-function-return-type': 'off',
+    },
+  },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+      },
     },
   },
 );

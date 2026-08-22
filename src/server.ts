@@ -1,13 +1,21 @@
 import { Hono } from 'hono';
-import { logger } from 'hono/logger';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
+import { brandRoutes, readPublicBrandFile } from '@/routes/brand';
+import type { BrandReader } from '@/routes/brand';
 import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
+import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveAllowedOrigins } from '@/lib/config';
+import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
+import type { InvoicePayer } from '@/lib/invoice-payer';
+import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
+import type { LnAddressCache } from '@/lib/ln-address-cache';
+import { requestLog } from '@/lib/log';
+import type { FetchFn } from '@/lib/lnurlp';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -23,6 +31,23 @@ export interface AppDeps {
   publicBaseUrl?: string;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
+  /**
+   * Pays verification micro-payment invoices (default:
+   * {@link UnconfiguredInvoicePayer} — process boots; start verification returns 503).
+   */
+  invoicePayer?: InvoicePayer;
+  /** Injected `fetch` for LNURL-pay (default: `globalThis.fetch`). */
+  fetchImpl?: FetchFn;
+  /**
+   * Successful LUD-16 metadata cache (default: a fresh
+   * {@link InMemoryLnAddressCache} with a 5-minute TTL).
+   */
+  lnAddressCache?: LnAddressCache;
+  /**
+   * Reads brand mark bytes for `/favicon.ico`, `/favicon.svg`, and
+   * `/apple-touch-icon.png` (default: {@link readPublicBrandFile}).
+   */
+  readBrand?: BrandReader;
 }
 
 /**
@@ -33,7 +58,8 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
- * @param deps - Optional overrides for the auth store, clock, and base URL.
+ * @param deps - Optional overrides for the auth store, clock, base URL,
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, and brand reader.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -41,10 +67,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   const now = deps.now ?? Date.now;
   const publicBaseUrl = deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'];
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
+  const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
+  const readBrand = deps.readBrand ?? readPublicBrandFile;
 
   const app = new Hono();
 
-  app.use('*', logger());
+  app.use('*', requestLog());
   // The app is a separate-origin browser client (app.21.gifts -> api.21.gifts),
   // so cross-origin requests need CORS. Bearer sessions + the X-Poll-Token are
   // sent as headers (no cookies), so credentials are not enabled.
@@ -52,16 +82,21 @@ export function createApp(deps: AppDeps = {}): Hono {
     '*',
     cors({
       origin: allowedOrigins,
-      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Authorization', 'Content-Type', 'X-Poll-Token'],
       maxAge: 86400,
     }),
   );
 
+  app.route('/', brandRoutes({ read: readBrand }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/auth', authRoutes({ store, now, publicBaseUrl }));
-  app.route('/me', meRoutes({ store, now }));
+  app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route(
+    '/lightning-address',
+    lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
+  );
 
   return app;
 }

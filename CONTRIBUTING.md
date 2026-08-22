@@ -33,15 +33,24 @@ api/
 │   ├── routes/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
+│   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
-│   │   └── me.ts             # GET /me (account behind a bearer session)
+│   │   ├── me.ts             # GET /me; link/unlink + address verification
+│   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth config (PUBLIC_BASE_URL, challenge/session TTLs)
+│   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
+│   │   ├── lightning-address.ts  # LUD-16 shape check
+│   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
+│   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
+│   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
+│   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
+│   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
-│   │       └── store.ts      # AuthStore port + in-memory adapter
+│   │       └── store.ts      # AuthStore port + in-memory adapter (+ verification records)
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
@@ -51,6 +60,13 @@ api/
 │       ├── lib/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
+│       │   ├── lightning-address.test.ts
+│       │   ├── invoice-payer.test.ts
+│       │   ├── lnurlp.test.ts
+│       │   ├── ln-address-cache.test.ts
+│       │   ├── log.test.ts
+│       │   ├── lnurl-pay.test.ts
+│       │   ├── verification.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
 │       │       ├── service.test.ts
@@ -58,8 +74,24 @@ api/
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts
+│           ├── brand.test.ts
 │           ├── auth.test.ts
-│           └── me.test.ts
+│           ├── me.test.ts
+│           └── lightning-address.test.ts
+├── docs/handbook/            # Mandatory: every function + HTTP endpoint
+│   ├── README.md
+│   ├── functions.md
+│   └── endpoints.md
+├── scripts/
+│   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
+│   └── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+├── e2e/
+│   └── http.spec.ts          # Playwright against a booted Bun process
+├── playwright.config.ts
+├── public/                   # Brand mark files served at origin root
+│   ├── favicon.ico
+│   ├── favicon.svg
+│   └── apple-touch-icon.png
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts          # 100% coverage threshold
@@ -67,6 +99,8 @@ api/
 ├── .prettierrc
 ├── Dockerfile                # Multi-stage Bun build
 ├── CONCEPT.md                # Canonical project documentation
+├── SPEC.md                   # Implemented HTTP surface (request/response contracts)
+├── FLOWS.md                  # Core UI journey sketch (CONCEPT next-step 7)
 ├── README.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
@@ -119,6 +153,29 @@ Every exported symbol has a TSDoc block with a one-line summary plus
 `@param` / `@returns` / `@throws` where applicable. `eslint-plugin-tsdoc`
 flags malformed comments.
 
+### Handbook (hard requirement)
+
+The handbook under `docs/handbook/` **must exist**. This repo has no UI screens.
+Every exported function/class in `src/` and every HTTP endpoint **must** have a
+complete section:
+
+- Functions: `## Function: name`
+- Endpoints: `## Endpoint: METHOD /path`
+
+A section is complete only if it has at least three `- **…**` bullets and enough
+prose to describe the behaviour. `bun run handbook:check` (and CI) **fails the
+PR** when a heading is missing or a section is a stub. Adding an export or
+route without updating the handbook in the **same PR** is an undeclared
+deviation and is rejected.
+
+### E2E (hard requirement)
+
+Every HTTP endpoint **must** have at least one Playwright request against a
+booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
+endpoint has no matching `request.get/post/delete`. Adding a route without an
+e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
+`e2e:check` then `e2e`.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -132,8 +189,11 @@ flags malformed comments.
 ```bash
 bun run typecheck
 bun run lint
+bun run handbook:check
+bun run e2e:check
 bun run test:coverage
 bun run build
+bun run e2e
 ```
 
 CI will fail on the same conditions; catching them locally is faster.
@@ -156,18 +216,33 @@ Currently:
 | `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                |
 | `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev-api.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
 
-More will be added as concrete subsystems (relay client, LN-Address cache, …) land.
+More will be added as concrete subsystems that need runtime configuration
+(relay client, …) land. The LUD-16 metadata cache TTL is a code constant
+(`LN_ADDRESS_CACHE_TTL_MS`), not an environment variable.
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                          |
-| ---------------------- | ----------------- | ----------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + test (100% coverage) + build |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta`          |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest`        |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)       |
+| Workflow               | Trigger           | Action                                                                       |
+| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
+
+Deploy workflows require these GitHub Actions secrets:
+
+| Secret            | Purpose                                             |
+| ----------------- | --------------------------------------------------- |
+| `DOCKER_USERNAME` | Docker Hub username for image push                  |
+| `DOCKER_PASSWORD` | Docker Hub token for image push                     |
+| `DISPATCH_TOKEN`  | PAT used to fire `repository_dispatch` after push   |
+| `DISPATCH_REPO`   | Target `owner/repo` that receives `image-published` |
+
+If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, notify warns and exits 0 —
+the image is already on Hub; DFXServer `probe-published-images.yml` dispatches
+`image-published` when the tag moves. Set the secrets for an immediate pull.
 
 ## Related repos
 
