@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Fail if docs/handbook does not document every exported function/class and
- * every UI screen. Run from the repo root. No extra packages.
+ * every HTTP endpoint. Run from the repo root. No extra packages.
  */
 import fs from 'node:fs';
 import path from 'node:path';

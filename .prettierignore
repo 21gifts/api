@@ -6,3 +6,5 @@ bun.lockb
 public/*.ico
 public/*.png
 public/*.svg
+playwright-report
+test-results

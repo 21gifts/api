@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Fail if e2e/ does not exercise every UI screen and every HTTP endpoint.
- * A screen needs page.goto of that path; an endpoint needs request.get/post/delete
- * of that path. Run from the repo root.
+ * Fail if e2e/ does not cover every exported function/class and every HTTP
+ * endpoint. A screen needs page.goto of that path; an endpoint needs
+ * request.get/post/delete of that path. Run from the repo root.
  */
 import fs from 'node:fs';
 import path from 'node:path';

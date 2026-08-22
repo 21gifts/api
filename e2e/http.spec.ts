@@ -17,19 +17,31 @@ test('GET /info names the service', async ({ request }) => {
 test('GET /favicon.ico is an image', async ({ request }) => {
   const res = await request.get('/favicon.ico');
   expect(res.status()).toBe(200);
-  expect(res.headers()['content-type'] ?? '').toMatch(/image\//);
+  const contentType = res.headers()['content-type'] ?? '';
+  expect(contentType.startsWith('image/x-icon')).toBe(true);
+  const cacheControl = res.headers()['cache-control'] ?? '';
+  expect(cacheControl).toMatch(/public/);
+  expect(cacheControl).toMatch(/max-age=86400/);
 });
 
 test('GET /favicon.svg is svg', async ({ request }) => {
   const res = await request.get('/favicon.svg');
   expect(res.status()).toBe(200);
-  expect(res.headers()['content-type'] ?? '').toMatch(/svg/);
+  const contentType = res.headers()['content-type'] ?? '';
+  expect(contentType.startsWith('image/svg+xml')).toBe(true);
+  const cacheControl = res.headers()['cache-control'] ?? '';
+  expect(cacheControl).toMatch(/public/);
+  expect(cacheControl).toMatch(/max-age=86400/);
 });
 
 test('GET /apple-touch-icon.png is png', async ({ request }) => {
   const res = await request.get('/apple-touch-icon.png');
   expect(res.status()).toBe(200);
-  expect(res.headers()['content-type'] ?? '').toMatch(/png/);
+  const contentType = res.headers()['content-type'] ?? '';
+  expect(contentType.startsWith('image/png')).toBe(true);
+  const cacheControl = res.headers()['cache-control'] ?? '';
+  expect(cacheControl).toMatch(/public/);
+  expect(cacheControl).toMatch(/max-age=86400/);
 });
 
 test('GET /auth/lnurl issues a challenge', async ({ request }) => {
