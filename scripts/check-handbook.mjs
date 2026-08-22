@@ -5,6 +5,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = process.cwd();
 const HANDBOOK_DIR = path.join(ROOT, 'docs', 'handbook');
@@ -190,44 +191,50 @@ function sectionComplete(body) {
   return bullets >= 3 && body.trim().length >= 80;
 }
 
-const text = handbookText();
-const missing = [];
+export { extractScreens, extractEndpoints, walk };
 
-const fns = extractFunctions(path.join(ROOT, 'src'));
-for (const n of [...fns].sort()) {
-  if (!headingRe('Function', n).test(text)) {
-    missing.push(`Function: ${n} (missing ## Function: ${n})`);
-  } else if (!sectionComplete(sectionBody(text, 'Function', n))) {
-    missing.push(`Function: ${n} (incomplete — need ≥3 "- **…**" bullets and ≥80 characters)`);
+const isMain = import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isMain) {
+  const text = handbookText();
+  const missing = [];
+
+  const fns = extractFunctions(path.join(ROOT, 'src'));
+  for (const n of [...fns].sort()) {
+    if (!headingRe('Function', n).test(text)) {
+      missing.push(`Function: ${n} (missing ## Function: ${n})`);
+    } else if (!sectionComplete(sectionBody(text, 'Function', n))) {
+      missing.push(`Function: ${n} (incomplete — need ≥3 "- **…**" bullets and ≥80 characters)`);
+    }
   }
-}
 
-const screens = extractScreens();
-for (const n of [...screens].sort()) {
-  if (!headingRe('Screen', n).test(text)) {
-    missing.push(`Screen: ${n} (missing ## Screen: ${n})`);
-  } else if (!sectionComplete(sectionBody(text, 'Screen', n))) {
-    missing.push(`Screen: ${n} (incomplete)`);
+  const screens = extractScreens();
+  for (const n of [...screens].sort()) {
+    if (!headingRe('Screen', n).test(text)) {
+      missing.push(`Screen: ${n} (missing ## Screen: ${n})`);
+    } else if (!sectionComplete(sectionBody(text, 'Screen', n))) {
+      missing.push(`Screen: ${n} (incomplete)`);
+    }
   }
-}
 
-const endpoints = extractEndpoints();
-for (const n of [...endpoints].sort()) {
-  if (!headingRe('Endpoint', n).test(text)) {
-    missing.push(`Endpoint: ${n} (missing ## Endpoint: ${n})`);
-  } else if (!sectionComplete(sectionBody(text, 'Endpoint', n))) {
-    missing.push(`Endpoint: ${n} (incomplete)`);
+  const endpoints = extractEndpoints();
+  for (const n of [...endpoints].sort()) {
+    if (!headingRe('Endpoint', n).test(text)) {
+      missing.push(`Endpoint: ${n} (missing ## Endpoint: ${n})`);
+    } else if (!sectionComplete(sectionBody(text, 'Endpoint', n))) {
+      missing.push(`Endpoint: ${n} (incomplete)`);
+    }
   }
-}
 
-if (missing.length) {
-  console.error('HANDBOOK INCOMPLETE:');
-  for (const line of missing) {
-    console.error(`  - ${line}`);
+  if (missing.length) {
+    console.error('HANDBOOK INCOMPLETE:');
+    for (const line of missing) {
+      console.error(`  - ${line}`);
+    }
+    process.exit(1);
   }
-  process.exit(1);
-}
 
-console.log(
-  `Handbook complete: ${fns.size} functions, ${screens.size} screens, ${endpoints.size} endpoints.`,
-);
+  console.log(
+    `Handbook complete: ${fns.size} functions, ${screens.size} screens, ${endpoints.size} endpoints.`,
+  );
+}

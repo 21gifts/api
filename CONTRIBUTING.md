@@ -164,6 +164,14 @@ PR** when a heading is missing or a section is a stub. Adding an export or
 route without updating the handbook in the **same PR** is an undeclared
 deviation and is rejected.
 
+### E2E (hard requirement)
+
+Every HTTP endpoint **must** have at least one Playwright request against a
+booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
+endpoint has no matching `request.get/post/delete`. Adding a route without an
+e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
+`e2e:check` then `e2e`.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -178,6 +186,7 @@ deviation and is rejected.
 bun run typecheck
 bun run lint
 bun run handbook:check
+bun run e2e:check
 bun run test:coverage
 bun run build
 ```
@@ -208,12 +217,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                           |
-| ---------------------- | ----------------- | ---------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + handbook + test (100% coverage) + build       |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure   |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                        |
+| Workflow               | Trigger           | Action                                                                       |
+| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
 
