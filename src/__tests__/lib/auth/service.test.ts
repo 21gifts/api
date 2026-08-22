@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { encodeLnurl } from '@/lib/auth/lnurl';
 import { claimSession, completeCallback, resolveSession, startChallenge } from '@/lib/auth/service';
 import { newWallet, type TestWallet } from '@/__tests__/helpers/auth-vectors';
 
 const T0 = 1_000_000;
-const BASE = 'https://dev-api.21.gifts';
+const BASE = 'https://dev.21.gifts';
 const KEY = `02${'a'.repeat(64)}`;
 
 describe('startChallenge', () => {
@@ -13,7 +14,7 @@ describe('startChallenge', () => {
     const store = new InMemoryAuthStore();
     const res = startChallenge(store, BASE, T0);
     expect(res.k1).toMatch(/^[0-9a-f]{64}$/);
-    expect(res.lnurl.startsWith('lnurl1')).toBe(true);
+    expect(res.lnurl).toBe(encodeLnurl(`${BASE}/auth/lnurl/callback?tag=login&k1=${res.k1}`));
     expect(res.expiresInSeconds).toBe(Math.floor(CHALLENGE_TTL_MS / 1000));
     expect(res.pollToken).toMatch(/^[0-9a-f]{64}$/);
     expect(res.pollToken).not.toBe(res.k1);
