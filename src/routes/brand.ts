@@ -14,15 +14,19 @@ export type BrandFileName = 'favicon.ico' | 'favicon.svg' | 'apple-touch-icon.pn
 export type BrandReader = (name: BrandFileName) => Promise<Uint8Array | null>;
 
 /**
- * Default reader: `public/<name>` relative to `process.cwd()`.
+ * Default reader: `public/<name>` relative to `root` (default `process.cwd()`).
  * Missing file → `null` (does not throw).
  *
  * @param name - Brand file under `public/`.
+ * @param root - Directory that contains `public/`. Defaults to `process.cwd()`.
  * @returns File bytes, or `null` when the file cannot be read.
  */
-export async function readPublicBrandFile(name: BrandFileName): Promise<Uint8Array | null> {
+export async function readPublicBrandFile(
+  name: BrandFileName,
+  root: string = process.cwd(),
+): Promise<Uint8Array | null> {
   try {
-    const buf = await readFile(join(process.cwd(), 'public', name));
+    const buf = await readFile(join(root, 'public', name));
     return new Uint8Array(buf);
   } catch {
     return null;

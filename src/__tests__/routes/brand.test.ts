@@ -69,13 +69,10 @@ describe('readPublicBrandFile', () => {
 
   it('returns null when the file is missing', async () => {
     const emptyDir = mkdtempSync(join(tmpdir(), 'brand-missing-'));
-    const prev = process.cwd();
     try {
-      process.chdir(emptyDir);
-      const bytes = await readPublicBrandFile('favicon.ico');
+      const bytes = await readPublicBrandFile('favicon.ico', emptyDir);
       expect(bytes).toBeNull();
     } finally {
-      process.chdir(prev);
       rmSync(emptyDir, { recursive: true, force: true });
     }
   });

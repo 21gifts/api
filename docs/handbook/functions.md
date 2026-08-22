@@ -142,9 +142,9 @@
 
 ## Function: readPublicBrandFile
 
-- **Purpose:** Reads `public/<name>` from `process.cwd()`.
-- **Inputs:** `BrandFileName`.
-- **Returns / side effects:** `Uint8Array` or `null` if missing.
+- **Purpose:** Reads `public/<name>` relative to a root directory.
+- **Inputs:** `BrandFileName` and optional `root` (default `process.cwd()`).
+- **Returns / side effects:** `Uint8Array` or `null` if missing. Does not change the process cwd.
 - **Used by:** Default `brandRoutes` reader.
 
 ## Function: requestLog
