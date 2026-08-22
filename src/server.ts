@@ -75,9 +75,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   const app = new Hono();
 
   app.use('*', requestLog());
-  // The browser app is same-origin on the apex (21.gifts) and still allowed
-  // from the transitional app.* aliases and localhost. Bearer sessions + the
-  // X-Poll-Token are sent as headers (no cookies), so credentials are not enabled.
+  // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
+  // CORS covers the apex, transitional app.* aliases, and localhost. The
+  // LNURL-auth callback is proxied at the apex so wallets pin linkingKeys there.
+  // Bearer sessions + the X-Poll-Token are headers (no cookies), credentials off.
   app.use(
     '*',
     cors({
