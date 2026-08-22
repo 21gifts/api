@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-15.
+**Status**: draft, in active iteration. Last revised 2026-08-22.
 
 ---
 

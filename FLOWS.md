@@ -6,7 +6,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-15.
+**Status**: living document. Last revised 2026-08-22.
 
 ---
 
