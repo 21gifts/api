@@ -19,6 +19,27 @@ describe('createApp', () => {
     warn.mockRestore();
   });
 
+  it('mounts /favicon.ico', async () => {
+    const app = createApp();
+    const res = await app.request('/favicon.ico');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/image/);
+  });
+
+  it('returns 404 for /favicon.ico when readBrand yields null', async () => {
+    const app = createApp({ readBrand: async () => null });
+    const res = await app.request('/favicon.ico');
+    expect(res.status).toBe(404);
+  });
+
+  it('serves injected brand bytes for /favicon.ico', async () => {
+    const app = createApp({ readBrand: async () => new Uint8Array([1, 2, 3]) });
+    const res = await app.request('/favicon.ico');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/image\/x-icon/);
+    expect((await res.arrayBuffer()).byteLength).toBe(3);
+  });
+
   it('mounts /healthz', async () => {
     const app = createApp();
     const res = await app.request('/healthz');

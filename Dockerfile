@@ -28,6 +28,7 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/public ./public
 USER app
 
 ENV BIND_ADDR=0.0.0.0:3000

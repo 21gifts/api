@@ -33,6 +33,7 @@ api/
 │   ├── routes/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
+│   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
 │   │   ├── me.ts             # GET /me; link/unlink + address verification
 │   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -73,9 +74,24 @@ api/
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts
+│           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
 │           └── lightning-address.test.ts
+├── docs/handbook/            # Mandatory: every function + HTTP endpoint
+│   ├── README.md
+│   ├── functions.md
+│   └── endpoints.md
+├── scripts/
+│   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
+│   └── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+├── e2e/
+│   └── http.spec.ts          # Playwright against a booted Bun process
+├── playwright.config.ts
+├── public/                   # Brand mark files served at origin root
+│   ├── favicon.ico
+│   ├── favicon.svg
+│   └── apple-touch-icon.png
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts          # 100% coverage threshold
@@ -137,6 +153,29 @@ Every exported symbol has a TSDoc block with a one-line summary plus
 `@param` / `@returns` / `@throws` where applicable. `eslint-plugin-tsdoc`
 flags malformed comments.
 
+### Handbook (hard requirement)
+
+The handbook under `docs/handbook/` **must exist**. This repo has no UI screens.
+Every exported function/class in `src/` and every HTTP endpoint **must** have a
+complete section:
+
+- Functions: `## Function: name`
+- Endpoints: `## Endpoint: METHOD /path`
+
+A section is complete only if it has at least three `- **…**` bullets and enough
+prose to describe the behaviour. `bun run handbook:check` (and CI) **fails the
+PR** when a heading is missing or a section is a stub. Adding an export or
+route without updating the handbook in the **same PR** is an undeclared
+deviation and is rejected.
+
+### E2E (hard requirement)
+
+Every HTTP endpoint **must** have at least one Playwright request against a
+booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
+endpoint has no matching `request.get/post/delete`. Adding a route without an
+e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
+`e2e:check` then `e2e`.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -150,8 +189,11 @@ flags malformed comments.
 ```bash
 bun run typecheck
 bun run lint
+bun run handbook:check
+bun run e2e:check
 bun run test:coverage
 bun run build
+bun run e2e
 ```
 
 CI will fail on the same conditions; catching them locally is faster.
@@ -180,12 +222,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                           |
-| ---------------------- | ----------------- | ---------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + test (100% coverage) + build                  |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure   |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                        |
+| Workflow               | Trigger           | Action                                                                       |
+| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
 
