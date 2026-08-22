@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   check:
-    name: Typecheck, Lint, Test (100% coverage), Build
+    name: Typecheck, Lint, Handbook, Test (100% coverage), Build
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -34,6 +34,9 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      - name: Handbook completeness
+        run: bun run handbook:check
 
       - name: Test with 100% coverage gate
         run: bun run test:coverage

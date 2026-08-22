@@ -18,7 +18,8 @@
     "lint:fix": "eslint . --fix && prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "handbook:check": "node scripts/check-handbook.mjs"
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",

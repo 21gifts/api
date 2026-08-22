@@ -78,6 +78,12 @@ api/
 │           ├── auth.test.ts
 │           ├── me.test.ts
 │           └── lightning-address.test.ts
+├── docs/handbook/            # Mandatory: every function + HTTP endpoint
+│   ├── README.md
+│   ├── functions.md
+│   └── endpoints.md
+├── scripts/
+│   └── check-handbook.mjs    # CI gate: missing heading → exit 1
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
 │   ├── favicon.svg
@@ -143,6 +149,21 @@ Every exported symbol has a TSDoc block with a one-line summary plus
 `@param` / `@returns` / `@throws` where applicable. `eslint-plugin-tsdoc`
 flags malformed comments.
 
+### Handbook (hard requirement)
+
+The handbook under `docs/handbook/` **must exist**. This repo has no UI screens.
+Every exported function/class in `src/` and every HTTP endpoint **must** have a
+complete section:
+
+- Functions: `## Function: name`
+- Endpoints: `## Endpoint: METHOD /path`
+
+A section is complete only if it has at least three `- **…**` bullets and enough
+prose to describe the behaviour. `bun run handbook:check` (and CI) **fails the
+PR** when a heading is missing or a section is a stub. Adding an export or
+route without updating the handbook in the **same PR** is an undeclared
+deviation and is rejected.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -156,6 +177,7 @@ flags malformed comments.
 ```bash
 bun run typecheck
 bun run lint
+bun run handbook:check
 bun run test:coverage
 bun run build
 ```
