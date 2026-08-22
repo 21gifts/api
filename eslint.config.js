@@ -37,4 +37,13 @@ export default tseslint.config(
       '@typescript-eslint/explicit-function-return-type': 'off',
     },
   },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
 );
