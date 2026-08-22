@@ -24,8 +24,10 @@ product stays warm and direct — people helping people.
 
 ## 1. Sign-in — **Shipped**
 
-The landing page at `/` is a placeholder ("Coming soon") with a **Log in**
-link to `/login`. That route is the LNURL-auth surface (`LoginCard`).
+The landing page at `/` is the marketing site (pitch, how-it-works, FAQ) with
+**Log in** / **Ask for help** to `/login` and **Send help** to `/donate`.
+`/login` is the LNURL-auth surface (`LoginCard`). The LUD-04 callback host
+is the public apex (`21.gifts` / `dev.21.gifts`).
 
 On mount the app rehydrates a persisted session token via `GET /me`. A **401**
 clears the token; a transient failure does not.

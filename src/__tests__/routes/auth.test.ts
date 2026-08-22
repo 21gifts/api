@@ -4,7 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { authRoutes } from '@/routes/auth';
 import { newWallet } from '@/__tests__/helpers/auth-vectors';
 
-const BASE = 'https://dev-api.21.gifts';
+const BASE = 'https://dev.21.gifts';
 const now = (): number => 1_000_000;
 
 function mount(store: InMemoryAuthStore, publicBaseUrl: string | undefined): Hono {

@@ -51,12 +51,14 @@ export function normalizePublicBaseUrl(raw: string | undefined): string | null {
 }
 
 /**
- * Browser origins allowed to call the api by default — the 21.gifts app
- * surfaces (prd, dev, and local dev). These are public, fixed hostnames, not
- * secrets; `CORS_ALLOWED_ORIGINS` overrides them when a different surface needs
- * cross-origin access.
+ * Browser origins allowed to call the api by default — the 21.gifts apex
+ * (prd, dev), transitional app-subdomain aliases, and local dev. These are
+ * public, fixed hostnames, not secrets; `CORS_ALLOWED_ORIGINS` overrides them
+ * when a different surface needs cross-origin access.
  */
 const DEFAULT_ALLOWED_ORIGINS = [
+  'https://21.gifts',
+  'https://dev.21.gifts',
   'https://app.21.gifts',
   'https://dev-app.21.gifts',
   'http://localhost:3000',

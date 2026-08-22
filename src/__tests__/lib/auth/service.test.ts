@@ -5,7 +5,7 @@ import { claimSession, completeCallback, resolveSession, startChallenge } from '
 import { newWallet, type TestWallet } from '@/__tests__/helpers/auth-vectors';
 
 const T0 = 1_000_000;
-const BASE = 'https://dev-api.21.gifts';
+const BASE = 'https://dev.21.gifts';
 const KEY = `02${'a'.repeat(64)}`;
 
 describe('startChallenge', () => {

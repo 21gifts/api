@@ -75,9 +75,9 @@ export function createApp(deps: AppDeps = {}): Hono {
   const app = new Hono();
 
   app.use('*', requestLog());
-  // The app is a separate-origin browser client (app.21.gifts -> api.21.gifts),
-  // so cross-origin requests need CORS. Bearer sessions + the X-Poll-Token are
-  // sent as headers (no cookies), so credentials are not enabled.
+  // The browser app is same-origin on the apex (21.gifts) and still allowed
+  // from the transitional app.* aliases and localhost. Bearer sessions + the
+  // X-Poll-Token are sent as headers (no cookies), so credentials are not enabled.
   app.use(
     '*',
     cors({
