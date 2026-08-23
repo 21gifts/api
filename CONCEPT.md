@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-23.
+**Status**: draft, in active iteration. Last revised 2026-08-22.
 
 ---
 
@@ -59,33 +59,23 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below).
 
-### Login: Passkey first, LNURL-auth remains
+### Login: LNURL-auth only
 
-- **Passkey is the first login method.** A discoverable platform passkey
-  (WebAuthn, `residentKey` required, `userVerification` required) creates or
-  unlocks an account. No email, no password. The api stores the credential
-  public key and issues a session bound to `Account.id`. `linkingKey` is
-  `null` until a wallet is bound (binding is not in this increment).
-- **LNURL-auth (LUD-04) remains** for wallet-first accounts. The wallet scans
-  a QR (or opens a `lightning:` deep link), signs the server's `k1`
-  challenge, and that session is bound to the wallet's per-domain
-  `linkingKey`. Passkey and LNURL are **parallel identity namespaces** — a
-  passkey account and an LNURL account are not merged.
+- **LNURL-auth (LUD-04) is the only login method in v1.** No email, no
+  password, no passkey. The wallet scans a QR (or opens a `lightning:` deep
+  link), signs the server's `k1` challenge, and the session is bound to the
+  wallet's per-domain `linkingKey` — which is the account identifier.
 - Works with Wallet of Satoshi (Classic since 2023; Self-Custody/Spark since
   app v3.2.5, 2026-02-04), Phoenix, Breez, Zeus, Alby, and others.
-- **RP ID is pinned per environment** via `WEBAUTHN_RP_ID` (`21.gifts` /
-  `dev.21.gifts` / `localhost`) so credentials do not fragment across
-  `app.21.gifts` vs the apex. Expected origins are the CORS allowlist
-  filtered to that RP ID.
-- **Accepted trade-off**: losing the passkey (and any platform sync) or the
-  LNURL wallet still loses that namespace's account. Email/password recovery
-  stays out. Passkey + PRF → NIP-06 remains the post-v1 non-custodial
-  identity; this increment is login only.
-- The LNURL-auth callback host pins the `linkingKey` domain and is **fixed**
-  to `21.gifts` (PRD) / `dev.21.gifts` (DEV). The api process still listens
-  at `api.21.gifts` / `dev-api.21.gifts`; the app same-origin-proxies
+- **Accepted trade-off (decided 2026-07-05)**: if the user loses the wallet
+  or its LNURL-auth key changes (e.g. the WoS Classic → Spark migration
+  generates a new seed), the account is unrecoverable in v1. Linking multiple
+  wallets to one account as a mitigation is deferred.
+- The auth callback host pins the `linkingKey` domain and is **fixed** to
+  `21.gifts` (PRD) / `dev.21.gifts` (DEV). The api process still listens at
+  `api.21.gifts` / `dev-api.21.gifts`; the app same-origin-proxies
   `/auth/lnurl/callback` so wallets hit the apex. Changing this host later
-  would invalidate LNURL account identities.
+  would invalidate every account identity.
 
 ### Donor upgrade (custodial, v1 only)
 
@@ -362,9 +352,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — app:
 
-- Sign-in via passkey (discoverable WebAuthn; session on `Account.id`) or
-  LNURL-auth (QR + `lightning:` deep link; session bound to the wallet's
-  `linkingKey`)
+- Sign-in via LNURL-auth (QR + `lightning:` deep link; session bound to the
+  wallet's `linkingKey`)
 - Receiver profile UI: name, photo, story, Lightning Address (+ verified
   badge via micro-payment nonce)
 - Public campaign feed (rendered from api response)
@@ -379,8 +368,6 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - LNURL-auth endpoints: `k1` challenge issuance, signature verification,
   replay protection, session issuance
-- Passkey endpoints: WebAuthn register/authenticate begin+finish, session
-  issuance, `linkingKey` nullable, RP ID pinned by `WEBAUTHN_RP_ID`
 - Donor wallet storage: encrypted `lndhub://` credentials
   (`lightning.space` only), balance preflight
 - Recurring-gift scheduler + fail-closed payout worker (see "v1 Transitional
@@ -403,8 +390,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Passkey + PRF → NOSTR identity (NIP-06) — moves to the non-custodial phase
 - Client-side event signing (v1 signs server-side with custodial keys)
-- Email / password login or account recovery (passkey sync is the only
-  extra factor; LNURL remains a parallel namespace, not a merge)
+- Any second login method or account recovery (no email, no backup auth —
+  accepted risk, see "v1 Transitional Model")
 - Linking multiple LNURL-auth wallets to one account
 - Non-custodial donor spending (replaces the v1 `lndhub://` deposit)
 - Private DMs (NIP-17 sealed messages)
@@ -635,41 +622,39 @@ repository — they're intentionally not part of this project's scope.
 
 ## Decisions Log
 
-| Date       | Decision                                                                                                                                                                                                                                                                           |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                              |
-| 2026-05-25 | GitHub organization `21gifts` created                                                                                                                                                                                                                                              |
-| 2026-05-25 | Docker Hub organization `21gifts` created                                                                                                                                                                                                                                          |
-| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern                                                                                                                                                                                         |
-| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path)                                                                                                                                                                                   |
-| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly                                                                                                                                                                                                                  |
-| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds                                                                                                                                                                                                 |
-| 2026-05-25 | English-only product (no i18n in v1)                                                                                                                                                                                                                                               |
-| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback)                                                                                                                                                                                                                   |
-| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later)                                                                                                                                                                        |
-| 2026-05-25 | Thin-client / thick-server: app holds only keys+signing+UI; everything else (relay I/O, indexing, discovery, LN-Address resolution, anti-abuse) lives in api                                                                                                                       |
-| 2026-05-25 | Backend service is named `api` and is built from day one — not deferred                                                                                                                                                                                                            |
-| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs                                                                                                                                                  |
-| 2026-05-25 | Backend stack: **TypeScript + Bun + Hono + Vitest** (revised from Rust + Axum). Workload is I/O-bound, not CPU-bound; language symmetry with the app wins                                                                                                                          |
-| 2026-05-25 | NOSTR relay: shared `nostr.space` infra (`wss://relay.nostr.space` / `wss://dev-relay.nostr.space`). 21.gifts is a client, not an operator. Closes OQ #3                                                                                                                           |
-| 2026-05-25 | Hard 100% coverage gate (lines + branches + functions + statements) enforced via `vitest.config.ts` thresholds; CI red until met                                                                                                                                                   |
-| 2026-05-25 | TSDoc on every exported symbol, enforced via `eslint-plugin-tsdoc`                                                                                                                                                                                                                 |
-| 2026-07-05 | v1 account model: Basis (login + receive, default for every account) and Moderator (content moderation); donor is an upgrade, not a role                                                                                                                                           |
-| 2026-07-05 | v1 login: **LNURL-auth (LUD-04) only** — no email, no password, no passkey; `linkingKey` = account identifier; lockout risk explicitly accepted; auth callback host pinned to `api.21.gifts` / `dev-api.21.gifts`                                                                  |
-| 2026-08-22 | Auth callback host (wallet `linkingKey` domain) moved to the public apex `21.gifts` / `dev.21.gifts`. Supersedes the 2026-07-05 pin to `api.21.gifts`. App public URL is the apex; `app.21.gifts` stays a transitional alias. In-memory accounts from the old host do not survive. |
-| 2026-08-23 | v1 login: **passkey first** (discoverable WebAuthn, session on `Account.id`, `linkingKey` nullable) plus LNURL-auth as a parallel namespace (no merge). RP ID pinned by `WEBAUTHN_RP_ID`. Passkey+PRF→NIP-06 still deferred.                                                       |
-| 2026-07-05 | v1 donor spending: custodial via deposited `lndhub://` export, restricted to `lightning.space` wallets; explicit transitional deviation from Core Principles 2/5, replaced by a non-custodial setup later                                                                          |
-| 2026-07-05 | Recurring daily gifts are a v1 feature: server-side scheduler in the api with fail-closed payout semantics                                                                                                                                                                         |
-| 2026-07-05 | Receiver verification: micro-payment with one-time nonce in the LUD-12 comment (WoS-compatible, min 1 sat); no LUD-21 dependency (WoS lacks it)                                                                                                                                    |
-| 2026-07-05 | Research recorded: WoS has no official API; WoS supports LNURL-auth (Classic since 2023, Self-Custody since app v3.2.5 / 2026-02-04)                                                                                                                                               |
-| 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                                                                                         |
-| 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open)    |
-| 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                       |
-| 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                                 |
-| 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                           |
-| 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                        |
+| Date       | Decision                                                                                                                                                                                                                                                                                                   |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                                                      |
+| 2026-05-25 | GitHub organization `21gifts` created                                                                                                                                                                                                                                                                      |
+| 2026-05-25 | Docker Hub organization `21gifts` created                                                                                                                                                                                                                                                                  |
+| 2026-05-25 | Tech stack: Next.js 15 + TS strict + Tailwind + Zustand, mirroring the zkCoins-app pattern                                                                                                                                                                                                                 |
+| 2026-05-25 | Passkey + PRF + NIP-06 derivation chosen as the key model (over `PRF → HKDF → nsec` direct path)                                                                                                                                                                                                           |
+| 2026-05-25 | No external WebAuthn library — `navigator.credentials.*` directly                                                                                                                                                                                                                                          |
+| 2026-05-25 | Lightning Address (LUD-16) mandatory for receivers; platform never custodies funds                                                                                                                                                                                                                         |
+| 2026-05-25 | English-only product (no i18n in v1)                                                                                                                                                                                                                                                                       |
+| 2026-05-25 | Hard-fail on PRF-unsupported authenticators (no silent fallback)                                                                                                                                                                                                                                           |
+| 2026-05-25 | Multi-repo architecture: `api`, `app`, `docs` (later), `landing-page` (later), `marketing` (private, later)                                                                                                                                                                                                |
+| 2026-05-25 | Thin-client / thick-server: app holds only keys+signing+UI; everything else (relay I/O, indexing, discovery, LN-Address resolution, anti-abuse) lives in api                                                                                                                                               |
+| 2026-05-25 | Backend service is named `api` and is built from day one — not deferred                                                                                                                                                                                                                                    |
+| 2026-05-25 | Canonical project documentation (CONCEPT, ROADMAP, SPEC) lives in `21gifts/api`; the app repo carries only frontend-specific docs                                                                                                                                                                          |
+| 2026-05-25 | Backend stack: **TypeScript + Bun + Hono + Vitest** (revised from Rust + Axum). Workload is I/O-bound, not CPU-bound; language symmetry with the app wins                                                                                                                                                  |
+| 2026-05-25 | NOSTR relay: shared `nostr.space` infra (`wss://relay.nostr.space` / `wss://dev-relay.nostr.space`). 21.gifts is a client, not an operator. Closes OQ #3                                                                                                                                                   |
+| 2026-05-25 | Hard 100% coverage gate (lines + branches + functions + statements) enforced via `vitest.config.ts` thresholds; CI red until met                                                                                                                                                                           |
+| 2026-05-25 | TSDoc on every exported symbol, enforced via `eslint-plugin-tsdoc`                                                                                                                                                                                                                                         |
+| 2026-07-05 | v1 account model: Basis (login + receive, default for every account) and Moderator (content moderation); donor is an upgrade, not a role                                                                                                                                                                   |
+| 2026-07-05 | v1 login: **LNURL-auth (LUD-04) only** — no email, no password, no passkey; `linkingKey` = account identifier; lockout risk explicitly accepted; auth callback host pinned to `api.21.gifts` / `dev-api.21.gifts`                                                                                          |
+| 2026-08-22 | Auth callback host (wallet `linkingKey` domain) moved to the public apex `21.gifts` / `dev.21.gifts`. Supersedes the 2026-07-05 pin to `api.21.gifts`. App public URL is the apex; `app.21.gifts` stays a transitional alias. In-memory accounts from the old host do not survive.                         |
+| 2026-07-05 | v1 donor spending: custodial via deposited `lndhub://` export, restricted to `lightning.space` wallets; explicit transitional deviation from Core Principles 2/5, replaced by a non-custodial setup later                                                                                                  |
+| 2026-07-05 | Recurring daily gifts are a v1 feature: server-side scheduler in the api with fail-closed payout semantics                                                                                                                                                                                                 |
+| 2026-07-05 | Receiver verification: micro-payment with one-time nonce in the LUD-12 comment (WoS-compatible, min 1 sat); no LUD-21 dependency (WoS lacks it)                                                                                                                                                            |
+| 2026-07-05 | Research recorded: WoS has no official API; WoS supports LNURL-auth (Classic since 2023, Self-Custody since app v3.2.5 / 2026-02-04)                                                                                                                                                                       |
+| 2026-07-05 | v1 NOSTR events are platform-signed (users hold no keys until the non-custodial phase) — attribution details open in OQ #9                                                                                                                                                                                 |
+| 2026-07-05 | Revised same day: v1 NOSTR is **fully custodial** — one keypair per account, generated server-side, `nsec` encrypted at rest, events signed with the account's own key. Supersedes the platform-signed row above; resolves OQ #9 (migration path to user-owned keys stays open)                            |
+| 2026-08-15 | CORS on the api allows `DELETE` so the browser app can unlink a Lightning Address; `SPEC.md` added as the HTTP contract home                                                                                                                                                                               |
+| 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                                                         |
+| 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                                                   |
+| 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                                                |
 | 2026-08-23 | Spend-worker invoice HTTP: `POST /invoices` fetches a recipient BOLT11 via LNURL-pay; `POST /invoices/proof` accepts the payment preimage. Paying is the external spend worker via lightning.space LNDHub — this api does not store LNDHub credentials or pay. `SPEND_API_TOKEN` optional (503 until set). |
-
 
 ---
 
