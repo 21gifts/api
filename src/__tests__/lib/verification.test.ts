@@ -374,6 +374,40 @@ describe('confirmVerification', () => {
     });
   });
 
+  it('returns no_pending when the account is gone', () => {
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: ADDRESS,
+      nonce: 'c'.repeat(32),
+      createdAt: T0,
+    });
+    expect(confirmVerification(store, T0, account(), 'c'.repeat(32))).toEqual({
+      ok: false,
+      code: 'no_pending',
+    });
+  });
+
+  it('keeps a name set after the confirm snapshot was taken', () => {
+    const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
+    store.putVerification({
+      accountId: 'acc',
+      address: ADDRESS,
+      nonce: 'c'.repeat(32),
+      createdAt: T0,
+    });
+    store.updateAccount({ ...acc, name: 'Ada' });
+    const result = confirmVerification(store, T0, acc, 'c'.repeat(32));
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.account.name).toBe('Ada');
+    expect(result.account.lightningAddressVerified).toBe(true);
+  });
+
   it('sets verified, deletes the record, and returns the updated account', () => {
     const store = new InMemoryAuthStore();
     const acc = account();
