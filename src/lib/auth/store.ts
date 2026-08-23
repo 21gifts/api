@@ -3,12 +3,9 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 /**
  * Persistence for the LNURL-auth subsystem.
  *
- * v1 uses the in-memory implementation below, behind the {@link AuthStore}
- * port: the CONCEPT defers the durable-storage choice (Postgres) until the
- * indexer surface stabilises, and this seam makes that a drop-in replacement.
- * Restarting the process clears all challenges, accounts, sessions, and
- * pending address verifications — acceptable for the current dev/dogfooding
- * stage, and the reason the port exists.
+ * {@link InMemoryAuthStore} is the default when `DATABASE_URL` is unset
+ * (tests and local boots). {@link PostgresAuthStore} is the durable adapter
+ * used when a database URL is configured. Both implement {@link AuthStore}.
  */
 
 /** Account permission tier. Role assignment stays operator-side in v1. */
@@ -82,37 +79,45 @@ export interface Session {
 }
 
 /**
- * Persistence port for the auth subsystem. The in-memory implementation is the
- * v1 adapter; a durable adapter (Postgres) can implement the same contract
- * later without touching the auth logic.
+ * Persistence port for the auth subsystem. In-memory and Postgres adapters
+ * implement the same async contract so domain logic does not branch on storage.
  */
 export interface AuthStore {
   /** Persist a freshly issued, pending challenge. */
-  createChallenge(challenge: Challenge): void;
+  createChallenge(challenge: Challenge): Promise<void>;
   /** Look up a challenge by its `k1`, or `undefined` if unknown. */
-  getChallenge(k1: string): Challenge | undefined;
+  getChallenge(k1: string): Promise<Challenge | undefined>;
   /** Look up a challenge by its secret poll token, or `undefined` if unknown. */
-  getChallengeByPollToken(pollToken: string): Challenge | undefined;
-  /** Overwrite a stored challenge (used to advance its lifecycle). */
-  updateChallenge(challenge: Challenge): void;
+  getChallengeByPollToken(pollToken: string): Promise<Challenge | undefined>;
+  /**
+   * Advance a stored challenge. Returns false when the expected previous
+   * status does not match (`authenticated` requires `pending`; `consumed`
+   * requires `authenticated`) so concurrent callbacks cannot steal the row.
+   */
+  updateChallenge(challenge: Challenge): Promise<boolean>;
   /** Find an account by its linkingKey, or `undefined` if not registered. */
-  findAccountByLinkingKey(linkingKey: string): Account | undefined;
+  findAccountByLinkingKey(linkingKey: string): Promise<Account | undefined>;
   /** Persist a new account. */
-  createAccount(account: Account): void;
+  createAccount(account: Account): Promise<void>;
   /** Overwrite a stored account (used to update its profile fields). */
-  updateAccount(account: Account): void;
+  updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */
-  getAccount(id: string): Account | undefined;
+  getAccount(id: string): Promise<Account | undefined>;
+  /**
+   * Every stored account, oldest first (then `id` ascending).
+   * Used by the operator debug listing; never includes session tokens.
+   */
+  listAccounts(): Promise<Account[]>;
   /** Persist a new session. */
-  createSession(session: Session): void;
+  createSession(session: Session): Promise<void>;
   /** Look up a session by token, or `undefined` if unknown. */
-  getSession(token: string): Session | undefined;
+  getSession(token: string): Promise<Session | undefined>;
   /** Upsert a pending address verification for the account. */
-  putVerification(verification: AddressVerification): void;
+  putVerification(verification: AddressVerification): Promise<void>;
   /** Look up a pending verification by account id, or `undefined` if none. */
-  getVerification(accountId: string): AddressVerification | undefined;
+  getVerification(accountId: string): Promise<AddressVerification | undefined>;
   /** Drop any pending verification for the account. */
-  deleteVerification(accountId: string): void;
+  deleteVerification(accountId: string): Promise<void>;
 }
 
 /**
@@ -128,7 +133,7 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #sessions = new Map<string, Session>();
   readonly #verifications = new Map<string, AddressVerification>();
 
-  createChallenge(challenge: Challenge): void {
+  async createChallenge(challenge: Challenge): Promise<void> {
     // Evict on write so unauthenticated challenge minting cannot grow the maps
     // without bound; the new challenge's own timestamp is the current time.
     this.#evictExpiredChallenges(challenge.createdAt);
@@ -136,55 +141,73 @@ export class InMemoryAuthStore implements AuthStore {
     this.#pollTokenIndex.set(challenge.pollToken, challenge.k1);
   }
 
-  getChallenge(k1: string): Challenge | undefined {
+  async getChallenge(k1: string): Promise<Challenge | undefined> {
     return this.#challenges.get(k1);
   }
 
-  getChallengeByPollToken(pollToken: string): Challenge | undefined {
+  async getChallengeByPollToken(pollToken: string): Promise<Challenge | undefined> {
     const k1 = this.#pollTokenIndex.get(pollToken);
     return k1 === undefined ? undefined : this.#challenges.get(k1);
   }
 
-  updateChallenge(challenge: Challenge): void {
+  async updateChallenge(challenge: Challenge): Promise<boolean> {
+    const current = this.#challenges.get(challenge.k1);
+    if (current === undefined) {
+      return false;
+    }
+    if (challenge.status === 'authenticated' && current.status !== 'pending') {
+      return false;
+    }
+    if (challenge.status === 'consumed' && current.status !== 'authenticated') {
+      return false;
+    }
     this.#challenges.set(challenge.k1, challenge);
+    return true;
   }
 
-  findAccountByLinkingKey(linkingKey: string): Account | undefined {
+  async findAccountByLinkingKey(linkingKey: string): Promise<Account | undefined> {
     const id = this.#accountsByLinkingKey.get(linkingKey);
     return id === undefined ? undefined : this.#accounts.get(id);
   }
 
-  createAccount(account: Account): void {
+  async createAccount(account: Account): Promise<void> {
+    if (this.#accountsByLinkingKey.has(account.linkingKey)) {
+      return;
+    }
     this.#accounts.set(account.id, account);
     this.#accountsByLinkingKey.set(account.linkingKey, account.id);
   }
 
-  updateAccount(account: Account): void {
+  async updateAccount(account: Account): Promise<void> {
     this.#accounts.set(account.id, account);
   }
 
-  getAccount(id: string): Account | undefined {
+  async getAccount(id: string): Promise<Account | undefined> {
     return this.#accounts.get(id);
   }
 
-  createSession(session: Session): void {
+  async listAccounts(): Promise<Account[]> {
+    return [...this.#accounts.values()].sort(compareAccountsForList);
+  }
+
+  async createSession(session: Session): Promise<void> {
     this.#evictExpiredSessions(session.createdAt);
     this.#sessions.set(session.token, session);
   }
 
-  getSession(token: string): Session | undefined {
+  async getSession(token: string): Promise<Session | undefined> {
     return this.#sessions.get(token);
   }
 
-  putVerification(verification: AddressVerification): void {
+  async putVerification(verification: AddressVerification): Promise<void> {
     this.#verifications.set(verification.accountId, verification);
   }
 
-  getVerification(accountId: string): AddressVerification | undefined {
+  async getVerification(accountId: string): Promise<AddressVerification | undefined> {
     return this.#verifications.get(accountId);
   }
 
-  deleteVerification(accountId: string): void {
+  async deleteVerification(accountId: string): Promise<void> {
     this.#verifications.delete(accountId);
   }
 
@@ -206,4 +229,24 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
   }
+}
+
+/**
+ * Sort key for {@link AuthStore.listAccounts}: oldest `createdAt` first, then `id`.
+ *
+ * @param a - Left account.
+ * @param b - Right account.
+ * @returns Negative if `a` comes first, positive if `b` comes first, else 0.
+ */
+export function compareAccountsForList(a: Account, b: Account): number {
+  if (a.createdAt !== b.createdAt) {
+    return a.createdAt - b.createdAt;
+  }
+  if (a.id < b.id) {
+    return -1;
+  }
+  if (a.id > b.id) {
+    return 1;
+  }
+  return 0;
 }

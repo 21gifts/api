@@ -21,6 +21,7 @@ export default defineConfig({
       ...process.env,
       BIND_ADDR: '127.0.0.1:3000',
       PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+      DEBUG_TOKEN: 'e2e-debug-token',
     },
   },
 });

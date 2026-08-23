@@ -2,10 +2,52 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: challenges, accounts, sessions, verifications. Evicts expired challenges/sessions on write.
-- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `Account`, `Session`, `AddressVerification`).
-- **Returns / side effects:** Lookups return the object or `undefined`. Writes are void.
-- **Used by:** `createApp` default store; all auth/me routes.
+- **Purpose:** Process-local AuthStore: challenges, accounts, sessions, verifications. Evicts expired challenges/sessions on write. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when the `linkingKey` already exists. `updateChallenge` returns false when the row is missing or the previous status does not match.
+- **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
+- **Used by:** `createApp` default store; all auth/me/debug routes.
+
+## Function: PostgresAuthStore
+
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter.
+- **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
+- **Used by:** `openAuthStore` when `DATABASE_URL` is set.
+
+## Function: migrateAuthSchema
+
+- **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE account ADD COLUMN IF NOT EXISTS name` for existing databases).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification` and backfills `account.name`.
+- **Used by:** `openAuthStore`.
+
+## Function: openAuthStore
+
+- **Purpose:** Chooses in-memory vs Postgres AuthStore from `DATABASE_URL`.
+- **Inputs:** URL or blank/undefined; `createClient` factory required when the URL is set (boot supplies Bun SQL; tests inject a mock).
+- **Returns / side effects:** `InMemoryAuthStore` if unset; otherwise migrate then `PostgresAuthStore`. Throws if the URL is set without a factory.
+- **Used by:** `src/index.ts` boot.
+
+## Function: bearerMatchesDebugToken
+
+- **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
+- **Inputs:** Configured token (non-empty) and raw header or `undefined`.
+- **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
+- **Used by:** `debugRoutes`.
+
+## Function: compareAccountsForList
+
+- **Purpose:** Sort key for `listAccounts`: older `createdAt` first, then `id` ascending.
+- **Inputs:** Two `Account` values.
+- **Returns / side effects:** Negative / positive / 0.
+- **Used by:** `InMemoryAuthStore.listAccounts`.
+
+## Function: debugRoutes
+
+- **Purpose:** Operator listing of registered accounts.
+- **Inputs:** `DebugRouteDeps`: store, optional debugToken.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ accounts }` otherwise. Logs `debug.accounts.listed` with count, never the token.
+- **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: InMemoryLnAddressCache
 
@@ -65,8 +107,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, and `/debug/accounts`.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`).
 - **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 

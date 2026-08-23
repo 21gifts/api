@@ -35,6 +35,13 @@
 - **Used by:** App `pollSession`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /debug/accounts
+
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `createdAt`). Same JSON fields as `GET /me`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
+- **Used by:** Operator `gifts-debug` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /favicon.ico
 
 - **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark. `Content-Type: image/x-icon`, `Cache-Control: public, max-age=86400`.
