@@ -31,4 +31,9 @@ describe('checkSpendAuth', () => {
   it('returns ok when the Bearer token matches', () => {
     expect(checkSpendAuth(TOKEN, `Bearer ${TOKEN}`)).toBe('ok');
   });
+
+  it('trims surrounding whitespace on the configured and presented tokens', () => {
+    expect(checkSpendAuth(` ${TOKEN}\n`, `Bearer ${TOKEN}`)).toBe('ok');
+    expect(checkSpendAuth(TOKEN, `Bearer ${TOKEN} `)).toBe('ok');
+  });
 });

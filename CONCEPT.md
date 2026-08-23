@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-22.
+**Status**: draft, in active iteration. Last revised 2026-08-23.
 
 ---
 
@@ -81,14 +81,13 @@ its own (see below).
 
 Any account can additionally become a donor and spend money:
 
-- The account deposits the `lndhub://` export of an **LNbits wallet on
-  `lightning.space`** — v1 accepts only this one, operator-controlled LNDHub
-  backend; arbitrary LNDHub URLs are rejected.
-- The api stores the credentials encrypted at rest and pays invoices
-  server-side through the LNDHub protocol (`auth` → `payinvoice`).
-- This is the explicit v1 custody compromise: with deposited credentials the
-  server _can_ spend donor funds. It is documented here precisely because it
-  contradicts the target architecture; the non-custodial replacement retires
+- Recurring paying uses an **external spend worker** with a
+  `lightning.space` LNDHub wallet. This api does not store LNDHub
+  credentials and does not pay.
+- The api issues recipient BOLT11 invoices (`POST /invoices`) and verifies
+  the payment preimage (`POST /invoices/proof`).
+- This remains a v1 custody compromise (the worker can spend), documented
+  because it contradicts the non-custodial target; that replacement retires
   it.
 
 ### Receiver address verification
@@ -221,10 +220,10 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
   provider directly, the api is not in the payment path)
 - In this browser flow the api never sees the invoice, the amount, the payer,
   or the funds
-- **v1 addition** (see "v1 Transitional Model"): donor accounts can also pay
-  server-side via their deposited `lightning.space` LNDHub credentials — used
-  for recurring gifts. For these payments the api _is_ in the payment path;
-  the browser flow above remains for guests and one-off gifts.
+- **v1 addition** (see "v1 Transitional Model"): recurring gifts are paid by
+  an external spend worker via lightning.space LNDHub. This api only fetches
+  the invoice and verifies the preimage — it is not in the LNDHub pay path.
+  The browser flow above remains for guests and one-off gifts.
 - Optional: **NIP-57 Zap receipts** published to NOSTR for transparent acknowledgements
 
 ### Communication
@@ -308,19 +307,19 @@ the same endpoints later.
 - **Anti-abuse signals** — rate-limiting, spam scoring, suspicious-pattern
   detection at the edge
 - **v1 additions** (see "v1 Transitional Model"): LNURL-auth challenge/verify
-  and sessions; encrypted donor `lndhub://` credential storage; the
-  recurring-gift scheduler and fail-closed payout worker (incl. USD → sats
-  conversion via an exchange-rate source); receiver address
-  verification via micro-payment nonce; custodial per-account NOSTR
-  identities (`nsec` encrypted at rest) with server-side event signing
+  and sessions; spend-worker invoice HTTP (`POST /invoices`,
+  `POST /invoices/proof`); receiver address verification via micro-payment
+  nonce; custodial per-account NOSTR identities (`nsec` encrypted at rest)
+  with server-side event signing
 
 **Non-responsibilities** (stay client-side; target state — the v1 additions
-above temporarily move key generation/custody, event signing, and donor
-payments server-side):
+above temporarily move key generation/custody and event signing server-side;
+recurring paying stays in the external spend worker):
 
 - Passkey ceremonies, PRF evaluation, key derivation
 - Event signing (the api never sees the nsec)
-- LNURL-pay flow (browser → wallet provider directly, no api proxy)
+- Guest Donate LNURL-pay flow (browser → wallet provider directly). Recurring
+  spend-worker invoices are the exception (`POST /invoices`).
 - Decryption of NIP-17 sealed DMs (payloads pass through the api opaque)
 
 The api lives in its own repository (`21gifts/api`) and is the **canonical
@@ -357,8 +356,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   badge via micro-payment nonce)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
-- Donor upgrade: deposit `lndhub://` export (`lightning.space` only)
-- Recurring gifts: configure daily USD amounts per recipient
+- Recurring gifts: configure daily USD amounts per recipient (paid by the
+  external spend worker, not by depositing LNDHub into this api)
 - Public comment composer (POST to api; signed server-side with the
   account's custodial key)
 - Moderation actions on campaigns/comments (Moderator role)
@@ -367,10 +366,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - LNURL-auth endpoints: `k1` challenge issuance, signature verification,
   replay protection, session issuance
-- Donor wallet storage: encrypted `lndhub://` credentials
-  (`lightning.space` only), balance preflight
-- Recurring-gift scheduler + fail-closed payout worker (see "v1 Transitional
-  Model")
+- Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
+  (paying and LNDHub stay in the external worker)
 - Receiver address verification: micro-payment with one-time nonce in the
   LUD-12 comment
 - Custodial NOSTR identities: per-account keypair generated on sign-up,
@@ -382,8 +379,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Basic anti-abuse: rate-limit per account, malformed-input rejection
 - Moderation: hide/unhide content endpoints (Moderator role); role
   assignment stays operator-side in v1
-- USD → sats conversion for payouts via an exchange-rate source (fail-closed
-  on a missing or implausible rate)
+- USD → sats conversion for recurring-gift amounts via an exchange-rate
+  source (fail-closed on a missing or implausible rate; paying stays in
+  the spend worker)
 
 **Out, deferred:**
 
@@ -392,7 +390,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Any second login method or account recovery (no email, no backup auth —
   accepted risk, see "v1 Transitional Model")
 - Linking multiple LNURL-auth wallets to one account
-- Non-custodial donor spending (replaces the v1 `lndhub://` deposit)
+- Non-custodial donor spending (replaces the v1 spend worker)
 - Private DMs (NIP-17 sealed messages)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
@@ -478,18 +476,18 @@ The workload is I/O-bound (HTTP, WebSocket, JSON) — not CPU-bound. The
 language choice optimizes for iteration speed, dependency sharing with the
 app, and operational simplicity.
 
-| Layer          | Choice                                                                                                                                                | Rationale                                                                       |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Runtime        | **[Bun](https://bun.sh) ≥ 1.3**                                                                                                                       | Fast TS execution, built-in package manager, native HTTP server, small image    |
-| Language       | TypeScript (strict mode)                                                                                                                              | Same language as app → shared types, mental-model symmetry                      |
-| Framework      | **[Hono](https://hono.dev)**                                                                                                                          | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
-| Validation     | `zod`                                                                                                                                                 | Same as app; shared schemas down the line                                       |
-| NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification; v1 additionally: key generation + server-side event signing for custodial identities) | Same lib as the app; one mental model                                           |
-| Lightning      | LUD-16 JSON resolution via `fetch`; `light-bolt11-decoder` for payout invoice verification (v1); LNDHub client (`auth` → `payinvoice`) via `fetch`    | LN node not required                                                            |
-| Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)                                                                                | Decision deferred until indexer surface stabilizes                              |
-| Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV)                                                                           | Operated as separate infrastructure; configured via env var                     |
-| Test           | **Vitest** + `@vitest/coverage-v8`                                                                                                                    | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
-| Lint           | ESLint (flat config) + Prettier + `eslint-plugin-tsdoc`                                                                                               | TSDoc on every exported function enforced                                       |
+| Layer          | Choice                                                                                                                                                  | Rationale                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Runtime        | **[Bun](https://bun.sh) ≥ 1.3**                                                                                                                         | Fast TS execution, built-in package manager, native HTTP server, small image    |
+| Language       | TypeScript (strict mode)                                                                                                                                | Same language as app → shared types, mental-model symmetry                      |
+| Framework      | **[Hono](https://hono.dev)**                                                                                                                            | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
+| Validation     | `zod`                                                                                                                                                   | Same as app; shared schemas down the line                                       |
+| NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification; v1 additionally: key generation + server-side event signing for custodial identities)   | Same lib as the app; one mental model                                           |
+| Lightning      | LUD-16 JSON resolution via `fetch`; LNURL-pay invoice fetch + `light-bolt11-decoder` for spend-worker invoices; LNDHub pay stays in the external worker | LN node not required                                                            |
+| Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)                                                                                  | Decision deferred until indexer surface stabilizes                              |
+| Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV)                                                                             | Operated as separate infrastructure; configured via env var                     |
+| Test           | **Vitest** + `@vitest/coverage-v8`                                                                                                                      | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
+| Lint           | ESLint (flat config) + Prettier + `eslint-plugin-tsdoc`                                                                                                 | TSDoc on every exported function enforced                                       |
 
 **Quality bar**: 100% coverage on every function (lines, branches, functions,
 statements). Unreachable defensive code is exempted via `v8 ignore` markers

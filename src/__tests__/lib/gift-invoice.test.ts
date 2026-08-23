@@ -16,9 +16,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('requestGiftInvoice', () => {
   it('returns pr and does not raise the amount to minSendable', async () => {
     const calls: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
+    const redirects: Array<RequestInit['redirect'] | undefined> = [];
+    const fetchImpl: FetchFn = async (input, init) => {
       const url = String(input);
       calls.push(url);
+      redirects.push(init?.redirect);
       if (url.includes('/.well-known/lnurlp/')) {
         return jsonResponse({
           callback: 'https://walletofsatoshi.com/lnurlp/callback',
@@ -38,6 +40,7 @@ describe('requestGiftInvoice', () => {
 
     expect(result).toEqual({ ok: true, pr: PR });
     expect(calls[1]).toContain('amount=1000');
+    expect(redirects[1]).toBe('error');
     expect(new URL(calls[1] ?? '').searchParams.get('comment')).toBeNull();
   });
 

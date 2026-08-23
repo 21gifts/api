@@ -76,6 +76,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (denied !== null) {
         return denied;
       }
+      deps.store.sweep(deps.now());
 
       let raw: unknown;
       try {
@@ -178,15 +179,15 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         }
         return c.json({ error: 'Invoice already paid' }, 409);
       }
+      if (preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)) {
+        const preimage = parsed.data.preimage.trim().toLowerCase();
+        deps.store.markPaid(invoice.id, preimage, now);
+        logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
+        return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
+      }
       if (now >= invoice.expiresAt) {
         return c.json({ error: 'Invoice expired' }, 409);
       }
-      if (!preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)) {
-        return c.json({ error: 'Proof does not match invoice' }, 400);
-      }
-      const preimage = parsed.data.preimage.trim().toLowerCase();
-      deps.store.markPaid(invoice.id, preimage, now);
-      logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
-      return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
+      return c.json({ error: 'Proof does not match invoice' }, 400);
     });
 }

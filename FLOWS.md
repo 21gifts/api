@@ -107,7 +107,8 @@ pays). The api is **not** in the payment path. This works without an account
 
 Public `GET /lightning-address` now resolves and caches LUD-16 metadata
 (callback, min/max sendable, optional commentAllowed). There is still no
-Donate button and the api still does not fetch or pay the gift invoice.
+Donate button; for this guest path the api still does not fetch or pay the
+gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
 
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.

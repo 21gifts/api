@@ -73,7 +73,7 @@ describe('POST /invoices', () => {
   });
 
   it('returns 503 when the spend token is not configured', async () => {
-    const res = await createApp().request('/invoices', {
+    const res = await createApp({ spendApiToken: '' }).request('/invoices', {
       method: 'POST',
       body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }),
     });
@@ -212,7 +212,7 @@ describe('POST /invoices/proof', () => {
   });
 
   it('returns 503 when unconfigured', async () => {
-    const res = await createApp().request('/invoices/proof', {
+    const res = await createApp({ spendApiToken: '' }).request('/invoices/proof', {
       method: 'POST',
       body: JSON.stringify({ id: 'x', preimage: PREIMAGE }),
     });
@@ -251,7 +251,7 @@ describe('POST /invoices/proof', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 409 when the invoice expired unpaid', async () => {
+  it('accepts a matching preimage after store TTL', async () => {
     store.put(unpaid({ expiresAt: 10 }));
     const res = await createApp({
       spendApiToken: TOKEN,
@@ -260,6 +260,27 @@ describe('POST /invoices/proof', () => {
     }).request(
       '/invoices/proof',
       auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'paid',
+      id: unpaid().id,
+      paymentHash: MATCHING_HASH,
+    });
+  });
+
+  it('returns 409 when expired unpaid and the preimage does not match', async () => {
+    store.put(unpaid({ expiresAt: 10 }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      now: () => 11,
+    }).request(
+      '/invoices/proof',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ id: unpaid().id, preimage: '22'.repeat(32) }),
+      }),
     );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Invoice expired' });

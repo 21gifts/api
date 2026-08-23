@@ -675,7 +675,8 @@ It does not pay.
 { "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional" }
 ```
 
-`comment` is optional. `amountMsat` must be an integer in `1000..10000000000`.
+`comment` is optional and at most 255 characters. `amountMsat` must be an
+integer in `1000..10000000000`.
 
 When `SPEND_API_TOKEN` is unset or blank:
 
@@ -687,7 +688,8 @@ When `SPEND_API_TOKEN` is unset or blank:
 
 Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
 
-Bad JSON or `amountMsat` outside `1000..10000000000` → **400**
+Bad JSON, `amountMsat` outside `1000..10000000000`, or `comment` longer than
+255 → **400**
 `{ "error": "Expected a JSON body with address and amountMsat" }`.
 
 Invalid Lightning Address → **400**
@@ -710,8 +712,9 @@ Success → **Response** `200`:
 }
 ```
 
-Unpaid invoices expire after 15 minutes (`GIFT_INVOICE_TTL_MS`). Restart
-clears the store.
+Unpaid invoices expire after 15 minutes (`GIFT_INVOICE_TTL_MS`). A later
+`POST /invoices` sweeps unpaid rows after expiry plus one extra TTL; until
+then a matching preimage still proves payment. Restart clears the store.
 
 ### `POST /invoices/proof`
 
@@ -720,10 +723,13 @@ Spend-worker proof. Body `{ "id", "preimage" }`. Proof is the **preimage**;
 
 Same 503/401 as `POST /invoices` when unconfigured or unauthorized.
 
-Unknown id → **404**. Expired unpaid → **409** `{ "error": "Invoice expired" }`.
-Hash mismatch → **400** `{ "error": "Proof does not match invoice" }`. Already
-paid with a different preimage → **409** `{ "error": "Invoice already paid" }`.
-Same preimage → **200** idempotent.
+Unknown id → **404** (including after sweep/restart). Matching preimage →
+**200** even after the 15-minute unpaid TTL, as long as the row is still in
+memory. Expired unpaid **without** a matching preimage → **409**
+`{ "error": "Invoice expired" }`. Hash mismatch on an unexpired invoice →
+**400** `{ "error": "Proof does not match invoice" }`. Already paid with a
+different preimage → **409** `{ "error": "Invoice already paid" }`. Same
+preimage → **200** idempotent.
 
 Success → **Response** `200`:
 
@@ -773,4 +779,4 @@ an operator token route, not a moderator session.
 - Email/password login (or any second login method)
 - Internationalization (English only)
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
-- Arbitrary LNDHub URLs (only `lightning.space` when donor upgrade lands)
+- Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)

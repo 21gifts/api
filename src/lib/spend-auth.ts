@@ -28,8 +28,8 @@ export function checkSpendAuth(
   if (authorizationHeader === undefined || !authorizationHeader.startsWith('Bearer ')) {
     return 'unauthorized';
   }
-  const presented = authorizationHeader.slice('Bearer '.length);
-  const expected = configuredToken;
+  const presented = authorizationHeader.slice('Bearer '.length).trim();
+  const expected = configuredToken.trim();
   const a = Buffer.from(presented, 'utf8');
   const b = Buffer.from(expected, 'utf8');
   if (a.length !== b.length) {

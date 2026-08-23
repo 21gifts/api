@@ -88,7 +88,7 @@ async function fetchJson<T>(
 ): Promise<T | null> {
   let response: Response;
   try {
-    response = await fetchImpl(url);
+    response = await fetchImpl(url, { redirect: 'error' });
   } catch {
     return null;
   }

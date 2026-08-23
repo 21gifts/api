@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
 import { InMemoryInvoiceStore, newInvoiceId, type GiftInvoice } from '@/lib/invoice-store';
 
 function sample(id: string): GiftInvoice {
@@ -48,5 +49,24 @@ describe('InMemoryInvoiceStore', () => {
       paidAt: 42,
       preimage: 'dd'.repeat(32),
     });
+  });
+
+  it('sweep drops unpaid rows after the 409 tombstone window', () => {
+    const store = new InMemoryInvoiceStore();
+    const unpaid = sample('e'.repeat(32));
+    store.put(unpaid);
+    store.sweep(unpaid.expiresAt);
+    expect(store.get(unpaid.id)).toEqual(unpaid);
+    store.sweep(unpaid.expiresAt + GIFT_INVOICE_TTL_MS);
+    expect(store.get(unpaid.id)).toBeUndefined();
+  });
+
+  it('sweep keeps paid rows', () => {
+    const store = new InMemoryInvoiceStore();
+    const row = sample('f'.repeat(32));
+    store.put(row);
+    store.markPaid(row.id, 'ee'.repeat(32), 3);
+    store.sweep(row.expiresAt + GIFT_INVOICE_TTL_MS);
+    expect(store.get(row.id)?.paidAt).toBe(3);
   });
 });

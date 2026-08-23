@@ -1,8 +1,12 @@
+import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
+
 /**
  * In-memory gift invoices issued for the spend worker.
  *
  * Same persistence story as auth: process-local, gone on restart. Unpaid
- * invoices expire after `GIFT_INVOICE_TTL_MS` (checked at read time).
+ * invoices expire after `GIFT_INVOICE_TTL_MS` (checked at read time). `sweep`
+ * drops unpaid rows after expiry plus one extra TTL so 409 still works in
+ * that window; paid rows stay for proof idempotency.
  */
 
 /** One BOLT11 fetched from a recipient Lightning Address, awaiting proof. */
@@ -50,6 +54,12 @@ export interface InvoiceStore {
    * @param now - Clock, epoch milliseconds.
    */
   markPaid(id: string, preimage: string, now: number): void;
+  /**
+   * Drop unpaid rows whose 409 tombstone window has elapsed.
+   *
+   * @param now - Clock, epoch milliseconds.
+   */
+  sweep(now: number): void;
 }
 
 /**
@@ -100,6 +110,22 @@ export class InMemoryInvoiceStore implements InvoiceStore {
       preimage,
     };
     this.byId.set(id, paid);
+  }
+
+  /**
+   * Delete unpaid rows with `now >= expiresAt + GIFT_INVOICE_TTL_MS`.
+   *
+   * @param now - Clock, epoch milliseconds.
+   */
+  sweep(now: number): void {
+    for (const [id, row] of this.byId) {
+      if (row.paidAt !== undefined) {
+        continue;
+      }
+      if (now >= row.expiresAt + GIFT_INVOICE_TTL_MS) {
+        this.byId.delete(id);
+      }
+    }
   }
 }
 

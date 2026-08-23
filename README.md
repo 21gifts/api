@@ -44,8 +44,10 @@ It handles everything that doesn't have to run client-side:
 - **Discovery** — recent campaigns, ordering, future categories / search
 - **Anti-abuse** — rate-limiting, spam scoring, malformed-event rejection
 
-It explicitly **does not** hold keys, sign events, or proxy LNURL-pay flows —
-those are the app's job.
+It explicitly **does not** hold keys or sign events for the non-custodial
+target (v1 signs custodial identities server-side). Guest Donate LNURL-pay
+stays in the browser; the spend-worker path is the exception
+(`POST /invoices` fetches a recipient BOLT11, this api still does not pay).
 
 ## Stack
 

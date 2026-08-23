@@ -42,7 +42,7 @@ api/
 │   │   └── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
+│   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer

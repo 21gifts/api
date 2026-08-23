@@ -115,8 +115,8 @@
 ## Function: InMemoryInvoiceStore
 
 - **Purpose:** Process-local store of gift invoices issued for the spend worker.
-- **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`.
-- **Returns / side effects:** Lookups return the row or `undefined`. Restart clears the map.
+- **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`, `sweep(now)`.
+- **Returns / side effects:** Lookups return the row or `undefined`. `sweep` drops unpaid rows after expiry plus one extra TTL (409 tombstone window); paid rows stay for proof idempotency. Restart clears the map.
 - **Used by:** Default `createApp` `invoiceStore`; `invoiceRoutes`.
 
 ## Function: invoiceRoutes
@@ -198,8 +198,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, and gifts/stats.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore, spendApiToken, invoiceStore).
 - **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -320,7 +320,7 @@
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
 - **Inputs:** address + fetchImpl.
 - **Returns / side effects:** Callback URL + min/max sendable or error.
-- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`.
+- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`.
 
 ## Function: resolveSession
 

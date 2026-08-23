@@ -1,5 +1,5 @@
 /**
- * Auth and verification configuration.
+ * Auth, verification, and gift-invoice configuration.
  *
  * Configuration is read from the environment only (no config files, per
  * CONTRIBUTING). `PUBLIC_BASE_URL` is security-relevant: it pins the
