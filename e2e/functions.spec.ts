@@ -462,11 +462,16 @@ test('Function: normalizeWebAuthnRpId — POST begin returns a challenge', async
   expect(res.status()).toBe(200);
 });
 
-test('Function: finishPasskeyRegistration — POST finish without body is 400', async ({
+test('Function: finishPasskeyRegistration — POST finish without Origin is 400', async ({
   request,
 }) => {
-  const res = await request.post('/auth/passkey/register/finish');
+  const begin = await request.post('/auth/passkey/register/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/register/finish', {
+    data: { challengeId, credential: { id: 'cred-e2e' } },
+  });
   expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Invalid origin');
 });
 
 test('Function: expectedOriginsForRpId — POST finish without Origin is 400', async ({
@@ -489,11 +494,17 @@ test('Function: startPasskeyAuthentication — POST begin returns a challenge', 
   expect(((await res.json()) as { challengeId: string }).challengeId.length).toBeGreaterThan(8);
 });
 
-test('Function: finishPasskeyAuthentication — POST finish without body is 400', async ({
+test('Function: finishPasskeyAuthentication — POST finish without credential id is 400', async ({
   request,
 }) => {
-  const res = await request.post('/auth/passkey/authenticate/finish');
+  const begin = await request.post('/auth/passkey/authenticate/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/authenticate/finish', {
+    headers: { origin: 'http://localhost:3000' },
+    data: { challengeId, credential: { test: 'ok' } },
+  });
   expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Unknown credential');
 });
 
 test('Function: credentialIdFrom — POST authenticate finish without credential id is 400', async ({

@@ -220,10 +220,10 @@ booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
-`InvoicePayer`; `PostgresAuthStore` and `migrateAuthSchema`, which need
-`DATABASE_URL`), that test still exists and asserts the default-boot outcome
-that proves it is not invoked (verification `503`, or a healthy process with
-`DATABASE_URL` blank).
+`InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`, and
+`mapGiftQueryRow`, which need `DATABASE_URL`), that test still exists and
+asserts the default-boot outcome that proves it is not invoked (verification
+`503`, or a healthy process with `DATABASE_URL` blank).
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
