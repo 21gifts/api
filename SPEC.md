@@ -723,7 +723,11 @@ Spend-worker proof. Body `{ "id", "preimage" }`. Proof is the **preimage**;
 
 Same 503/401 as `POST /invoices` when unconfigured or unauthorized.
 
-Unknown id → **404** (including after sweep/restart). Matching preimage →
+Bad JSON or missing `id`/`preimage` → **400**
+`{ "error": "Expected a JSON body with id and preimage" }`.
+
+Unknown id → **404** `{ "error": "Invoice not found" }` (including after
+sweep/restart). Matching preimage →
 **200** even after the 15-minute unpaid TTL, as long as the row is still in
 memory. Expired unpaid **without** a matching preimage → **409**
 `{ "error": "Invoice expired" }`. Hash mismatch on an unexpired invoice →
