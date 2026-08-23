@@ -131,6 +131,7 @@ function extractEndpoints() {
     'auth.ts': '/auth',
     'me.ts': '/me',
     'lightning-address.ts': '/lightning-address',
+    'stats.ts': '/gifts/stats',
     'brand.ts': '',
     'debug.ts': '/debug/accounts',
   };

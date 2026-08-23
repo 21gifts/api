@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-23 (auth persistence + debug).
+**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats).
 
 ---
 
@@ -14,7 +14,9 @@ Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
 local boots). When `DATABASE_URL` is set, the process migrates the auth
 schema and uses `PostgresAuthStore` — accounts, challenges, sessions, and
 pending address verifications survive a restart. A missing or unreachable
-database URL that is set is fail-loud at boot.
+database URL that is set is fail-loud at boot. Public gift statistics
+(`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
+without it the process still boots and returns empty stats.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -55,6 +57,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
 | GET    | `/lightning-address`                         | none                    | Resolve LUD-16 metadata (cached)           |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer` | Operator account listing (`DEBUG_TOKEN`)   |
+| GET    | `/gifts/stats`                               | none                    | Aggregated outbound gift statistics        |
 
 ### `GET /healthz`
 
@@ -523,6 +526,47 @@ Environment:
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
 
+### `GET /gifts/stats`
+
+Public aggregated outbound gift statistics. No auth. The body never includes
+invoices, fees, or wallet identifiers.
+
+When `DATABASE_URL` is unset the in-memory store is empty. When it is set,
+the process queries the `gift` table (`paid_at`, `amount_sats`,
+`recipient_wos_user` only). A query failure is **503**.
+
+**Response** `200`:
+
+```json
+{
+  "totalSats": 0,
+  "giftCount": 0,
+  "recipientCount": 0,
+  "firstPaidAt": null,
+  "lastPaidAt": null,
+  "spendOverTime": [],
+  "byRecipient": [],
+  "byMonth": []
+}
+```
+
+| Field            | Type                               | Meaning                                              |
+| ---------------- | ---------------------------------- | ---------------------------------------------------- |
+| `totalSats`      | number                             | Sum of gift amounts (sats; fees excluded)            |
+| `giftCount`      | number                             | Number of outbound gifts                             |
+| `recipientCount` | number                             | Distinct recipient handles                           |
+| `firstPaidAt`    | string or null                     | ISO-8601 of the earliest gift                        |
+| `lastPaidAt`     | string or null                     | ISO-8601 of the latest gift                          |
+| `spendOverTime`  | `{ day, sats, cumulativeSats }[]`  | UTC days from first through last; gaps are `sats: 0` |
+| `byRecipient`    | `{ recipient, giftCount, sats }[]` | Sorted by sats descending, then name                 |
+| `byMonth`        | `{ month, giftCount, sats }[]`     | UTC `YYYY-MM`, chronological                         |
+
+**Response** `503`:
+
+```json
+{ "error": "Gift stats are unavailable" }
+```
+
 ---
 
 ## Not implemented (v1, decided in CONCEPT — no HTTP paths)
@@ -551,7 +595,8 @@ NOSTR events (profiles, campaigns, replies). Not wired yet.
 
 **Readiness probe.** `/healthz` remains liveness-only. A readiness check of
 downstream dependencies is still planned. The LUD-16 metadata cache on
-`GET /lightning-address` is in-memory only.
+`GET /lightning-address` is in-memory only. Gift statistics read Postgres
+when `DATABASE_URL` is set.
 
 **Moderator-only endpoints.** Content hide/unhide and related Moderator
 actions. Role values exist on the account model; `GET /debug/accounts` is

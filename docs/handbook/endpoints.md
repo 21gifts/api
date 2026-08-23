@@ -56,6 +56,13 @@
 - **Used by:** Modern browsers preferring SVG icons.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /gifts/stats
+
+- **Purpose:** Public JSON of outbound gift totals: `totalSats`, `giftCount`, `recipientCount`, date range, `spendOverTime`, `byRecipient`, `byMonth`. No invoices.
+- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws.
+- **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy).
+- **Auth:** Public.
+
 ## Endpoint: GET /healthz
 
 - **Purpose:** Liveness. `{ status: 'ok', service, version }`. Not logged as http.request.

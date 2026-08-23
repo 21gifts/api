@@ -101,7 +101,11 @@ Donate button and the api still does not fetch or pay the gift invoice.
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.
 
-HTTP cited: `/lightning-address` (see `SPEC.md`).
+HTTP cited: `/lightning-address`, `/gifts/stats` (see `SPEC.md`).
+
+Public gift totals are **Shipped** as `GET /gifts/stats` (amounts, UTC
+spend-over-time, per person, per month). No invoices. The app statistics
+page consumes that route.
 
 Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 

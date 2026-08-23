@@ -1,5 +1,19 @@
 # Functions
 
+## Function: buildGiftStats
+
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, recipients, months).
+- **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`).
+- **Returns / side effects:** `GiftStats`. Empty input yields zeros and empty arrays. No I/O.
+- **Used by:** `giftsStatsRoutes`.
+
+## Function: giftsStatsRoutes
+
+- **Purpose:** Hono sub-app for `GET /gifts/stats`.
+- **Inputs:** `{ store: GiftStore }`.
+- **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.failed` on store errors (503).
+- **Used by:** `createApp`.
+
 ## Function: InMemoryAuthStore
 
 - **Purpose:** Process-local AuthStore: challenges, accounts, sessions, verifications. Evicts expired challenges/sessions on write. `listAccounts` returns every account oldest-first.
@@ -49,12 +63,33 @@
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ accounts }` otherwise. Logs `debug.accounts.listed` with count, never the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
+## Function: InMemoryGiftStore
+
+- **Purpose:** Process-local GiftStore seeded at construction. Default empty so the process boots without a database.
+- **Inputs:** Optional `GiftRow[]`. `listOutbound()` copies and sorts by `paidAt`.
+- **Returns / side effects:** Promise of rows. Does not mutate the seed array.
+- **Used by:** `createApp` default `giftStore`.
+
 ## Function: InMemoryLnAddressCache
 
 - **Purpose:** TTL cache for successful LUD-16 metadata resolves.
 - **Inputs:** `get(address, now)`, `put(entry, now)`. TTL from `LN_ADDRESS_CACHE_TTL_MS`.
 - **Returns / side effects:** `get` returns `CachedLnAddress` or `null`.
 - **Used by:** `lightningAddressRoutes`.
+
+## Function: mapGiftQueryRow
+
+- **Purpose:** Maps a SQL `gift` row (`paid_at`, `amount_sats`, `recipient_wos_user`) onto a `GiftRow`.
+- **Inputs:** `GiftQueryRow` (Date or string timestamp; numeric/string/bigint sats).
+- **Returns / side effects:** `{ paidAt, amountSats, recipientWosUser }`. No I/O.
+- **Used by:** Production `QueryGiftStore` query in `src/index.ts`.
+
+## Function: QueryGiftStore
+
+- **Purpose:** GiftStore that delegates `listOutbound` to an injected query (Postgres in production).
+- **Inputs:** `() => Promise<GiftRow[]>`.
+- **Returns / side effects:** The query result. Errors propagate to the route (503).
+- **Used by:** `src/index.ts` when `DATABASE_URL` is set.
 
 ## Function: UnconfiguredInvoicePayer
 
@@ -107,8 +142,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, and `/debug/accounts`.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, and gifts/stats.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore).
 - **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 

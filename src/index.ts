@@ -10,6 +10,8 @@
 import { SQL } from 'bun';
 import { openAuthStore } from './lib/auth/open-store';
 import type { SqlClient } from './lib/auth/sql';
+import { mapGiftQueryRow } from './lib/gift';
+import { QueryGiftStore } from './lib/gift-store';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -29,8 +31,33 @@ function createBunSqlClient(databaseUrl: string): SqlClient {
 if (import.meta.main) {
   const addr = resolveBindAddr(undefined, process.env);
   const { host, port } = parseBindAddr(addr);
-  const store = await openAuthStore(process.env['DATABASE_URL'], createBunSqlClient);
-  const app = createApp({ authStore: store });
+  const databaseUrl = process.env['DATABASE_URL'];
+  let sqlClient: SqlClient | undefined;
+  const store = await openAuthStore(databaseUrl, (url) => {
+    sqlClient = createBunSqlClient(url);
+    return sqlClient;
+  });
+  const giftSql = sqlClient;
+  const giftStore =
+    giftSql === undefined
+      ? undefined
+      : new QueryGiftStore(async () => {
+          const rows = await giftSql.query<{
+            paid_at: Date | string;
+            amount_sats: number | string | bigint;
+            recipient_wos_user: string;
+          }>(
+            `SELECT paid_at, amount_sats, recipient_wos_user
+             FROM gift
+             WHERE direction = 'outbound'
+             ORDER BY paid_at ASC`,
+          );
+          return rows.map((row) => mapGiftQueryRow(row));
+        });
+  const app =
+    giftStore === undefined
+      ? createApp({ authStore: store })
+      : createApp({ authStore: store, giftStore });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
 }

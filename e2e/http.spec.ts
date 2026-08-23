@@ -123,3 +123,10 @@ test('GET /lightning-address without address is 400', async ({ request }) => {
   const res = await request.get('/lightning-address');
   expect(res.status()).toBe(400);
 });
+
+test('GET /gifts/stats is empty without a database', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number };
+  expect(body.giftCount).toBe(0);
+});
