@@ -44,29 +44,29 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                    | Purpose                                    |
-| ------ | -------------------------------------------- | ----------------------- | ------------------------------------------ |
-| GET    | `/healthz`                                   | none                    | Liveness                                   |
-| GET    | `/info`                                      | none                    | Service identity                           |
-| GET    | `/favicon.ico`                               | none                    | Brand mark (favicon)                       |
-| GET    | `/favicon.svg`                               | none                    | Brand mark (SVG favicon)                   |
-| GET    | `/apple-touch-icon.png`                      | none                    | Brand mark (Apple touch icon)              |
-| GET    | `/auth/lnurl`                                | none                    | Issue LNURL-auth challenge                 |
-| GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
-| GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
-| POST   | `/auth/passkey/register/begin`               | none                    | Issue WebAuthn creation options            |
-| POST   | `/auth/passkey/register/finish`              | none                    | Verify attestation, issue session          |
-| POST   | `/auth/passkey/authenticate/begin`           | none                    | Issue WebAuthn request options             |
-| POST   | `/auth/passkey/authenticate/finish`          | none                    | Verify assertion, issue session            |
-| GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
-| POST   | `/me/name`                                   | Bearer                  | Set/replace display name                   |
-| POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
-| DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
-| POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
-| GET    | `/lightning-address`                         | none                    | Resolve LUD-16 metadata (cached)           |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer` | Operator account listing (`DEBUG_TOKEN`)   |
-| GET    | `/gifts/stats`                               | none                    | Aggregated outbound gift statistics        |
+| Method | Path                                         | Auth                     | Purpose                                    |
+| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------ |
+| GET    | `/healthz`                                   | none                     | Liveness                                   |
+| GET    | `/info`                                      | none                     | Service identity                           |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                       |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                   |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)              |
+| GET    | `/auth/lnurl`                                | none                     | Issue LNURL-auth challenge                 |
+| GET    | `/auth/lnurl/callback`                       | none (wallet)            | LUD-04 callback                            |
+| GET    | `/auth/session`                              | `X-Poll-Token`           | App polls for the session                  |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options            |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session          |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options             |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session            |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                    |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                   |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace receiver address (unverified) |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                             |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment     |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics        |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)       |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof           |
 
