@@ -136,6 +136,7 @@ describe('InMemoryAuthStore', () => {
       id: 'acc-1',
       linkingKey: KEY,
       role: 'basis' as const,
+      name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: 1,
