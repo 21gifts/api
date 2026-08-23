@@ -8,7 +8,7 @@
  * excluded from coverage.
  */
 import { startDailyGiftsFromEnv } from './lib/daily-gifts/scheduler';
-import { invoicePayerFromEnv } from './lib/lndhub-invoice-payer';
+import { invoicePayerFromEnv } from './lib/wos-invoice-payer';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */

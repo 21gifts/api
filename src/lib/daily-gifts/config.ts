@@ -1,5 +1,4 @@
 import { normalizeLightningAddress } from '@/lib/lightning-address';
-import { parseLndhubBaseUrl } from '@/lib/lndhub';
 
 /** One static recipient from `DAILY_GIFTS_RECIPIENTS`. */
 export interface DailyGiftRecipient {
@@ -9,9 +8,8 @@ export interface DailyGiftRecipient {
 
 /** Parsed, validated daily-gifts operator configuration. */
 export interface DailyGiftsConfig {
-  lndhubUrl: string;
-  login: string;
-  password: string;
+  apiToken: string;
+  apiSecret: string;
   recipients: DailyGiftRecipient[];
   dailyCapUsd: number;
   rateMinUsd: number;
@@ -28,7 +26,7 @@ const MAX_RECIPIENT_USD = 10_000;
 /**
  * Parse daily-gifts configuration from the environment.
  *
- * Required: `LNDHUB_URL`, `LNDHUB_LOGIN`, `LNDHUB_PASSWORD`,
+ * Required: `WOS_API_TOKEN`, `WOS_API_SECRET`,
  * `DAILY_GIFTS_RECIPIENTS` (JSON array), `DAILY_CAP_USD`, `RATE_MIN_USD`,
  * `RATE_MAX_USD`, `DAILY_GIFTS_LOG_PATH`. Optional: `DAILY_GIFTS_HOUR`
  * (default 20), `DAILY_GIFTS_TZ` (must be Europe/Zurich when set).
@@ -40,20 +38,13 @@ const MAX_RECIPIENT_USD = 10_000;
 export function parseDailyGiftsConfig(
   env: Record<string, string | undefined>,
 ): { ok: true; config: DailyGiftsConfig } | { ok: false; reason: string } {
-  const lndhubUrl = requireNonEmpty(env, 'LNDHUB_URL');
-  if (lndhubUrl === null) {
-    return { ok: false, reason: 'missing_LNDHUB_URL' };
+  const apiToken = requireNonEmpty(env, 'WOS_API_TOKEN');
+  if (apiToken === null) {
+    return { ok: false, reason: 'missing_WOS_API_TOKEN' };
   }
-  if (parseLndhubBaseUrl(lndhubUrl) === null) {
-    return { ok: false, reason: 'invalid_LNDHUB_URL' };
-  }
-  const login = requireNonEmpty(env, 'LNDHUB_LOGIN');
-  if (login === null) {
-    return { ok: false, reason: 'missing_LNDHUB_LOGIN' };
-  }
-  const password = requireNonEmpty(env, 'LNDHUB_PASSWORD');
-  if (password === null) {
-    return { ok: false, reason: 'missing_LNDHUB_PASSWORD' };
+  const apiSecret = requireNonEmpty(env, 'WOS_API_SECRET');
+  if (apiSecret === null) {
+    return { ok: false, reason: 'missing_WOS_API_SECRET' };
   }
   const logPath = requireNonEmpty(env, 'DAILY_GIFTS_LOG_PATH');
   if (logPath === null) {
@@ -94,9 +85,8 @@ export function parseDailyGiftsConfig(
   return {
     ok: true,
     config: {
-      lndhubUrl,
-      login,
-      password,
+      apiToken,
+      apiSecret,
       recipients: recipientsResult.recipients,
       dailyCapUsd,
       rateMinUsd,

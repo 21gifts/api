@@ -5,7 +5,7 @@ import type { GiftLogFs } from '@/lib/daily-gifts/log';
 import { FileGiftLog, nodeGiftLogFs } from '@/lib/daily-gifts/log';
 import type { WorkerRunResult } from '@/lib/daily-gifts/worker';
 import { runDailyGifts } from '@/lib/daily-gifts/worker';
-import { LndhubClient } from '@/lib/lndhub';
+import { WosClient } from '@/lib/wos';
 import { requestAmountInvoice } from '@/lib/lnurl-pay';
 import { logEvent } from '@/lib/log';
 
@@ -162,10 +162,9 @@ export function startDailyGiftsFromEnv(
   const now = deps.now ?? Date.now;
   const schedule = deps.schedule ?? nodeTimeoutSchedule;
 
-  const client = new LndhubClient({
-    baseUrl: config.lndhubUrl,
-    login: config.login,
-    password: config.password,
+  const client = new WosClient({
+    apiToken: config.apiToken,
+    apiSecret: config.apiSecret,
     fetchImpl,
   });
   const log = new FileGiftLog({ path: config.logPath, fs });

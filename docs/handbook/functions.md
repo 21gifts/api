@@ -215,7 +215,7 @@
 - **Purpose:** Decode integer satoshis from a mainnet BOLT11 amount prefix.
 - **Inputs:** `bolt11` string (case-insensitive). Only `lnbc` is accepted.
 - **Returns / side effects:** `{ ok: true, sats }` or `{ ok: false, reason: 'no_amount' | 'invalid' }`. No signature verify.
-- **Used by:** `runDailyGifts` before LNDHub `payinvoice`.
+- **Used by:** `runDailyGifts` before Wallet of Satoshi payment.
 
 Amount-only check so the payout worker can reject a provider invoice that does not match the intended sats.
 
@@ -233,32 +233,32 @@ Amount-only check so the payout worker can reject a provider invoice that does n
 - **Returns / side effects:** `{ ok: true, usdPerBtc }` or `{ ok: false, reason: 'unavailable' | 'implausible' }`. 15s timeout.
 - **Used by:** `runDailyGifts`. Fail-closed: a missing or implausible rate pays nobody.
 
-## Function: parseLndhubBaseUrl
+## Function: signWosRequest
 
-- **Purpose:** Accept only `https://lightning.space/…` LNDHub base URLs.
-- **Inputs:** Raw URL string.
-- **Returns / side effects:** Normalised `URL` with trailing slashes stripped, or `null`.
-- **Used by:** `LndhubClient`, `parseDailyGiftsConfig`, `invoicePayerFromEnv`.
+- **Purpose:** HMAC-SHA256 of `endpoint + nonce + apiToken + body` for WoS POSTs.
+- **Inputs:** `apiSecret`, `endpoint`, `nonce`, `apiToken`, JSON `body`.
+- **Returns / side effects:** Lower-case hex digest. Never logs inputs.
+- **Used by:** `WosClient.payInvoice`.
 
-## Function: LndhubClient
+## Function: WosClient
 
-- **Purpose:** lightning.space LNDHub HTTP client: `auth`, `getbalance`, `payinvoice`.
-- **Inputs:** `baseUrl`, `login`, `password`, injected `fetchImpl`, optional `clock`.
+- **Purpose:** Wallet of Satoshi REST client: GET balance, signed POST payment.
+- **Inputs:** `apiToken`, `apiSecret`, injected `fetchImpl`, optional nonce factory.
 - **Returns / side effects:** Balance in sats; pay result `paid` / `failed` / `uncertain`. Never logs secrets.
-- **Used by:** `LndhubInvoicePayer` and `runDailyGifts`. Token cached; one 401 re-auth.
+- **Used by:** `WosInvoicePayer` and `runDailyGifts`. Host pinned to `www.livingroomofsatoshi.com`.
 
-## Function: LndhubInvoicePayer
+## Function: WosInvoicePayer
 
-- **Purpose:** `InvoicePayer` adapter over `LndhubClient` for address verification.
-- **Inputs:** Constructor takes an `LndhubClient`. `payInvoice(bolt11)`.
+- **Purpose:** `InvoicePayer` adapter over `WosClient` for address verification.
+- **Inputs:** Constructor takes a `WosClient`. `payInvoice(bolt11)`.
 - **Returns / side effects:** `isConfigured()` is true. Paid → `{ ok: true }`; failed/uncertain → `{ ok: false, reason: 'payment_failed' }`.
-- **Used by:** `invoicePayerFromEnv` when LNDHub env is complete.
+- **Used by:** `invoicePayerFromEnv` when WoS env is complete.
 
 ## Function: invoicePayerFromEnv
 
-- **Purpose:** Build a payer from `LNDHUB_URL` / `LNDHUB_LOGIN` / `LNDHUB_PASSWORD`.
+- **Purpose:** Build a payer from `WOS_API_TOKEN` / `WOS_API_SECRET`.
 - **Inputs:** Env slice and `fetchImpl`.
-- **Returns / side effects:** `LndhubInvoicePayer` or `UnconfiguredInvoicePayer`. Emits `lndhub.unconfigured` without secrets.
+- **Returns / side effects:** `WosInvoicePayer` or `UnconfiguredInvoicePayer`. Emits `wos.unconfigured` without secrets.
 - **Used by:** Boot path in `src/index.ts`. Process still boots when unset.
 
 ## Function: parseDailyGiftsConfig
@@ -268,7 +268,7 @@ Amount-only check so the payout worker can reject a provider invoice that does n
 - **Returns / side effects:** `{ ok: true, config }` or `{ ok: false, reason }`. No throw.
 - **Used by:** `startDailyGiftsFromEnv`.
 
-Required vars include LNDHub credentials, recipient JSON, USD cap, Kraken corridor, and `DAILY_GIFTS_LOG_PATH`. Hour defaults to 20; timezone must be Europe/Zurich.
+Required vars include WoS API token/secret, recipient JSON, USD cap, Kraken corridor, and `DAILY_GIFTS_LOG_PATH`. Hour defaults to 20; timezone must be Europe/Zurich.
 
 ## Function: zurichDate
 
@@ -301,8 +301,8 @@ Required vars include LNDHub credentials, recipient JSON, USD cap, Kraken corrid
 ## Function: runDailyGifts
 
 - **Purpose:** One fail-closed daily payout run for "today" in Europe/Zurich.
-- **Inputs:** `WorkerDeps` (config, LNDHub client, fetch, log, fs, clock, `requestInvoice`).
-- **Returns / side effects:** Counts plus optional `aborted`. Pays sequentially; WAL `sending` before `payinvoice`.
+- **Inputs:** `WorkerDeps` (config, payout client, fetch, log, fs, clock, `requestInvoice`).
+- **Returns / side effects:** Counts plus optional `aborted`. Pays sequentially; WAL `sending` before Wallet of Satoshi payment.
 - **Used by:** `startDailyGiftsScheduler` via `startDailyGiftsFromEnv`.
 
 Aborts without new payments on lock, corrupt log, bad rate, USD cap, or insufficient balance (remaining sats + 1% headroom). LNURL/decode failures are not logged (safe retry).

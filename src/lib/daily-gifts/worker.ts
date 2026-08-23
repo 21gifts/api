@@ -5,14 +5,14 @@ import type { FetchFn } from '@/lib/btc-usd-rate';
 import type { DailyGiftsConfig } from '@/lib/daily-gifts/config';
 import type { FileGiftLog, GiftLogEntry, GiftLogFs } from '@/lib/daily-gifts/log';
 import { replayDay, zurichDate } from '@/lib/daily-gifts/log';
-import type { LndhubClient } from '@/lib/lndhub';
+import type { PayoutClient } from '@/lib/wos';
 import type { LnurlPayResult } from '@/lib/lnurl-pay';
 import { logEvent } from '@/lib/log';
 
 /** Injected collaborators for {@link runDailyGifts}. */
 export type WorkerDeps = {
   config: DailyGiftsConfig;
-  client: LndhubClient;
+  client: PayoutClient;
   fetchImpl: FetchFn;
   log: FileGiftLog;
   fs: GiftLogFs;
@@ -44,7 +44,7 @@ export type WorkerRunResult = {
  * remaining recipient. Stops at Zurich midnight without logging unattempted
  * rows. Unlocks in `finally`.
  *
- * @param deps - Config, LNDHub client, log, clock, and invoice helper.
+ * @param deps - Config, payout client, log, clock, and invoice helper.
  * @returns Per-day counts and optional abort reason.
  */
 export async function runDailyGifts(deps: WorkerDeps): Promise<WorkerRunResult> {
@@ -183,7 +183,6 @@ export async function runDailyGifts(deps: WorkerDeps): Promise<WorkerRunResult> 
           status: 'paid',
           timestamp: new Date(now()).toISOString(),
           payment_hash: pay.paymentHash,
-          preimage: pay.preimage,
         };
         await log.append(paidEntry);
         entries = [...entries, paidEntry];

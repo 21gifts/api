@@ -3,14 +3,13 @@ import type { FetchFn } from '@/lib/btc-usd-rate';
 import type { DailyGiftsConfig } from '@/lib/daily-gifts/config';
 import { FileGiftLog, type GiftLogFs } from '@/lib/daily-gifts/log';
 import { runDailyGifts } from '@/lib/daily-gifts/worker';
-import { LndhubClient } from '@/lib/lndhub';
+import { WosClient } from '@/lib/wos';
 import type { LnurlPayResult } from '@/lib/lnurl-pay';
 
 const ADDRESS = 'alice@walletofsatoshi.com';
 const CONFIG: DailyGiftsConfig = {
-  lndhubUrl: 'https://lightning.space/lndhub/ext',
-  login: 'u',
-  password: 'p',
+  apiToken: 'tok',
+  apiSecret: 'sec',
   recipients: [{ address: ADDRESS, usd: 1 }],
   dailyCapUsd: 50,
   rateMinUsd: 10_000,
@@ -33,14 +32,11 @@ function tickerFetch(price = 100_000): FetchFn {
     if (url.includes('kraken.com')) {
       return jsonResponse({ error: [], result: { XXBTZUSD: { c: [price] } } });
     }
-    if (url.endsWith('/auth')) {
-      return jsonResponse({ access_token: 't' });
+    if (url.endsWith('/wallet/balance')) {
+      return jsonResponse({ btc: 0.01 });
     }
-    if (url.endsWith('/getbalance')) {
-      return jsonResponse({ BTC: { AvailableBalance: 1_000_000 } });
-    }
-    if (url.endsWith('/payinvoice')) {
-      return jsonResponse({ payment_preimage: 'pre', payment_hash: 'hash' });
+    if (url.endsWith('/wallet/payment')) {
+      return jsonResponse({ status: 'PAID', transactionId: 'hash' });
     }
     return jsonResponse({}, 404);
   };
@@ -71,11 +67,10 @@ function memoryFs(locked = false): GiftLogFs & { files: Map<string, string> } {
   };
 }
 
-function client(fetchImpl: FetchFn): LndhubClient {
-  return new LndhubClient({
-    baseUrl: CONFIG.lndhubUrl,
-    login: 'u',
-    password: 'p',
+function client(fetchImpl: FetchFn): WosClient {
+  return new WosClient({
+    apiToken: CONFIG.apiToken,
+    apiSecret: CONFIG.apiSecret,
     fetchImpl,
   });
 }
@@ -217,9 +212,8 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/auth')) return jsonResponse({ access_token: 't' });
-      if (url.endsWith('/getbalance')) {
-        return jsonResponse({ BTC: { AvailableBalance: 1 } });
+      if (url.endsWith('/wallet/balance')) {
+        return jsonResponse({ btc: 0.00000001 });
       }
       return jsonResponse({}, 404);
     };
@@ -242,11 +236,10 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/auth')) return jsonResponse({ access_token: 't' });
-      if (url.endsWith('/getbalance')) {
-        return jsonResponse({ BTC: { AvailableBalance: 1_000_000 } });
+      if (url.endsWith('/wallet/balance')) {
+        return jsonResponse({ btc: 0.01 });
       }
-      return jsonResponse({ payment_error: 'Invalid invoice' });
+      return jsonResponse({ message: 'Invalid invoice' }, 400);
     };
     const failed = await runDailyGifts({
       config: CONFIG,
@@ -265,11 +258,10 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/auth')) return jsonResponse({ access_token: 't' });
-      if (url.endsWith('/getbalance')) {
-        return jsonResponse({ BTC: { AvailableBalance: 1_000_000 } });
+      if (url.endsWith('/wallet/balance')) {
+        return jsonResponse({ btc: 0.01 });
       }
-      return jsonResponse({ payment_error: 'pending', payment_hash: 'h' });
+      return jsonResponse({ status: 'PENDING', transactionId: 'h' });
     };
     const uncertain = await runDailyGifts({
       config: CONFIG,
@@ -325,11 +317,10 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/auth')) return jsonResponse({ access_token: 't' });
-      if (url.endsWith('/getbalance')) {
-        return jsonResponse({ BTC: { AvailableBalance: 1_000_000 } });
+      if (url.endsWith('/wallet/balance')) {
+        return jsonResponse({ btc: 0.01 });
       }
-      return jsonResponse({ payment_error: 'pending' });
+      return jsonResponse({ status: 'PENDING' });
     };
     const result = await runDailyGifts({
       config: CONFIG,

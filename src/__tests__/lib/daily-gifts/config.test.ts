@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { parseDailyGiftsConfig } from '@/lib/daily-gifts/config';
 
 const BASE_ENV = {
-  LNDHUB_URL: 'https://lightning.space/lndhub/ext',
-  LNDHUB_LOGIN: 'user',
-  LNDHUB_PASSWORD: 'pass',
+  WOS_API_TOKEN: 'tok',
+  WOS_API_SECRET: 'sec',
   DAILY_GIFTS_RECIPIENTS: JSON.stringify([{ address: 'alice@walletofsatoshi.com', usd: 2 }]),
   DAILY_CAP_USD: '100',
   RATE_MIN_USD: '10000',
@@ -42,16 +41,12 @@ describe('parseDailyGiftsConfig', () => {
       false,
     );
     expect(parseDailyGiftsConfig({ ...BASE_ENV, DAILY_GIFTS_RECIPIENTS: '   ' }).ok).toBe(false);
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, LNDHUB_URL: '' }).ok).toBe(false);
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, LNDHUB_LOGIN: undefined }).ok).toBe(false);
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, LNDHUB_PASSWORD: '  ' }).ok).toBe(false);
+    expect(parseDailyGiftsConfig({ ...BASE_ENV, WOS_API_TOKEN: '' }).ok).toBe(false);
+    expect(parseDailyGiftsConfig({ ...BASE_ENV, WOS_API_SECRET: undefined }).ok).toBe(false);
     expect(parseDailyGiftsConfig({ ...BASE_ENV, DAILY_GIFTS_LOG_PATH: '' }).ok).toBe(false);
   });
 
-  it('rejects invalid LNDHub URL and rate corridor', () => {
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, LNDHUB_URL: 'https://evil.example' }).ok).toBe(
-      false,
-    );
+  it('rejects invalid rate corridor', () => {
     expect(
       parseDailyGiftsConfig({
         ...BASE_ENV,

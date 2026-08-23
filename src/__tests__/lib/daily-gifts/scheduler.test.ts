@@ -9,9 +9,8 @@ import {
 import type { GiftLogFs } from '@/lib/daily-gifts/log';
 
 const CONFIG: DailyGiftsConfig = {
-  lndhubUrl: 'https://lightning.space/lndhub/ext',
-  login: 'u',
-  password: 'p',
+  apiToken: 'tok',
+  apiSecret: 'sec',
   recipients: [{ address: 'alice@walletofsatoshi.com', usd: 2 }],
   dailyCapUsd: 50,
   rateMinUsd: 10_000,
@@ -164,9 +163,8 @@ describe('startDailyGiftsFromEnv', () => {
   it('defaults fs, now, and pid when omitted', () => {
     const h = startDailyGiftsFromEnv(
       {
-        LNDHUB_URL: CONFIG.lndhubUrl,
-        LNDHUB_LOGIN: 'u',
-        LNDHUB_PASSWORD: 'p',
+        WOS_API_TOKEN: CONFIG.apiToken,
+        WOS_API_SECRET: CONFIG.apiSecret,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -197,9 +195,8 @@ describe('startDailyGiftsFromEnv', () => {
     };
     const h = startDailyGiftsFromEnv(
       {
-        LNDHUB_URL: CONFIG.lndhubUrl,
-        LNDHUB_LOGIN: 'u',
-        LNDHUB_PASSWORD: 'p',
+        WOS_API_TOKEN: CONFIG.apiToken,
+        WOS_API_SECRET: CONFIG.apiSecret,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -243,22 +240,18 @@ describe('startDailyGiftsFromEnv', () => {
       if (url.includes('/lnurlp/callback')) {
         return json({ pr: 'lnbc20u1qqqq' });
       }
-      if (url.endsWith('/auth')) {
-        return json({ access_token: 't' });
+      if (url.endsWith('/wallet/balance')) {
+        return json({ btc: 0.01 });
       }
-      if (url.endsWith('/getbalance')) {
-        return json({ BTC: { AvailableBalance: 1_000_000 } });
-      }
-      if (url.endsWith('/payinvoice')) {
-        return json({ payment_preimage: 'pre', payment_hash: 'h' });
+      if (url.endsWith('/wallet/payment')) {
+        return json({ status: 'PAID', transactionId: 'h' });
       }
       return new Response(null, { status: 404 });
     };
     const h = startDailyGiftsFromEnv(
       {
-        LNDHUB_URL: CONFIG.lndhubUrl,
-        LNDHUB_LOGIN: 'u',
-        LNDHUB_PASSWORD: 'p',
+        WOS_API_TOKEN: CONFIG.apiToken,
+        WOS_API_SECRET: CONFIG.apiSecret,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -291,9 +284,8 @@ describe('startDailyGiftsFromEnv', () => {
     };
     const h = startDailyGiftsFromEnv(
       {
-        LNDHUB_URL: CONFIG.lndhubUrl,
-        LNDHUB_LOGIN: 'u',
-        LNDHUB_PASSWORD: 'p',
+        WOS_API_TOKEN: CONFIG.apiToken,
+        WOS_API_SECRET: CONFIG.apiSecret,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
