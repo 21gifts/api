@@ -244,14 +244,18 @@ test('Function: requestPayInvoice — default boot never pays; verification is 5
   request,
 }) => {
   const { token } = await login(request);
-  await request.post('/me/lightning-address', {
+  const linked = await request.post('/me/lightning-address', {
     headers: bearer(token),
-    data: { address: 'alice@walletofsatoshi.com' },
+    data: { address: 'alice@not-a-lnurlp.invalid' },
   });
+  expect(linked.status()).toBe(200);
   const res = await request.post('/me/lightning-address/verification', {
     headers: bearer(token),
   });
   expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe(
+    'Verification payments are not configured',
+  );
 });
 
 test('Function: confirmVerification — confirm without a pending payment is 409', async ({

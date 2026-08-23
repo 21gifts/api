@@ -17,7 +17,7 @@ function e2eText() {
     console.error('E2E MISSING: e2e/ directory does not exist');
     process.exit(1);
   }
-  const files = walk(E2E_DIR, (p) => /\.(ts|js|mjs)$/.test(p));
+  const files = walk(E2E_DIR, (p) => p.endsWith('.spec.ts'));
   if (files.length === 0) {
     console.error('E2E MISSING: e2e/ has no spec files');
     process.exit(1);
