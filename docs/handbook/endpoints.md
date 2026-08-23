@@ -42,6 +42,34 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /auth/passkey/authenticate/begin
+
+- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Used by:** App passkey sign-in.
+- **Auth:** Public.
+
+## Endpoint: POST /auth/passkey/authenticate/finish
+
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`.
+- **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey sign-in.
+- **Auth:** Public (proof is the assertion).
+
+## Endpoint: POST /auth/passkey/register/begin
+
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Does not persist the account yet.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Used by:** App passkey account creation.
+- **Auth:** Public.
+
+## Endpoint: POST /auth/passkey/register/finish
+
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account, issues `{ token, account }`. Requires `Origin`.
+- **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey account creation.
+- **Auth:** Public (proof is the attestation).
+
 ## Endpoint: GET /favicon.ico
 
 - **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark. `Content-Type: image/x-icon`, `Cache-Control: public, max-age=86400`.

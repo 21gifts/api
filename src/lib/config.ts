@@ -6,10 +6,12 @@
  * LNURL-auth callback host, which is the domain the wallet derives its
  * `linkingKey` against. A wrong host would silently split account identities,
  * so a missing or empty value is treated as a hard misconfiguration rather
- * than a guessed default. Verification TTL and micro-payment amounts for
- * Lightning Address proof-of-control also live here, as does the in-memory
- * LUD-16 metadata cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant,
- * not an environment variable).
+ * than a guessed default. `WEBAUTHN_RP_ID` pins the passkey relying party
+ * the same way (missing → passkey routes 500; the process still boots).
+ * Verification TTL and micro-payment amounts for Lightning Address
+ * proof-of-control also live here, as does the in-memory LUD-16 metadata
+ * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
+ * environment variable).
  */
 
 /** Lifetime of an unclaimed LNURL-auth `k1` challenge, in milliseconds. */
@@ -80,4 +82,75 @@ export function resolveAllowedOrigins(env: Record<string, string | undefined>): 
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
+}
+
+/**
+ * Normalise `WEBAUTHN_RP_ID`. A missing or blank value yields `null` — passkey
+ * routes fail closed rather than guessing `localhost` or the apex.
+ *
+ * @param raw - The raw env value, or `undefined` when unset.
+ * @returns The trimmed RP ID, or `null`.
+ */
+export function normalizeWebAuthnRpId(raw: string | undefined): string | null {
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+  return raw.trim();
+}
+
+/**
+ * Origins whose hostname is the RP ID or a subdomain of it.
+ *
+ * `https://app.21.gifts` matches RP ID `21.gifts`; `http://localhost:3000`
+ * does not. Invalid origin strings are dropped.
+ *
+ * @param rpId - Configured WebAuthn RP ID.
+ * @param allowedOrigins - CORS allowlist (or an override).
+ * @returns Origins that may complete a ceremony for `rpId`.
+ */
+export function expectedOriginsForRpId(rpId: string, allowedOrigins: string[]): string[] {
+  return allowedOrigins.filter((origin) => {
+    try {
+      const host = new URL(origin).hostname;
+      return host === rpId || host.endsWith(`.${rpId}`);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Resolved WebAuthn relying-party config used by the passkey routes.
+ */
+export interface WebAuthnRuntimeConfig {
+  /** RP ID presented to authenticators. */
+  rpId: string;
+  /** Human-readable RP name. */
+  rpName: string;
+  /** Origins allowed to finish a ceremony for this RP ID. */
+  expectedOrigins: string[];
+}
+
+/**
+ * Resolve WebAuthn runtime config from the environment and CORS origins.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @param allowedOrigins - Browser origins CORS already allows.
+ * @returns The config, or `null` when the RP ID is missing or no origin matches it.
+ */
+export function resolveWebAuthnConfig(
+  env: Record<string, string | undefined>,
+  allowedOrigins: string[],
+): WebAuthnRuntimeConfig | null {
+  const rpId = normalizeWebAuthnRpId(env['WEBAUTHN_RP_ID']);
+  if (rpId === null) {
+    return null;
+  }
+  const expectedOrigins = expectedOriginsForRpId(rpId, allowedOrigins);
+  if (expectedOrigins.length === 0) {
+    return null;
+  }
+  const rpNameRaw = env['WEBAUTHN_RP_NAME'];
+  const rpName = rpNameRaw === undefined || rpNameRaw.trim() === '' ? '21.gifts' : rpNameRaw.trim();
+  return { rpId, rpName, expectedOrigins };
 }

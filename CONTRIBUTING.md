@@ -55,16 +55,19 @@ api/
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
+│   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
-│   │       ├── store.ts      # AuthStore port + in-memory adapter
+│   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL
 │   │       ├── postgres-store.ts  # Durable AuthStore
-│   │       └── open-store.ts # DATABASE_URL → memory or Postgres
+│   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
+│   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
-│       │   └── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
+│       │   ├── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
+│       │   └── fake-passkey.ts   # PasskeyCeremony test double
 │       ├── integration/
 │       │   └── auth-flow.test.ts
 │       ├── lib/
@@ -83,12 +86,14 @@ api/
 │       │   ├── gift-store.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
+│       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
 │       │       ├── store.test.ts
 │       │       ├── schema.test.ts
 │       │       ├── sql.test.ts
 │       │       ├── postgres-store.test.ts
-│       │       └── open-store.test.ts
+│       │       ├── open-store.test.ts
+│       │       └── webauthn.test.ts
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts

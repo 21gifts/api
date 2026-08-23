@@ -360,4 +360,189 @@ describe('InMemoryAuthStore', () => {
     await store.deleteVerification('acc');
     expect(await store.getVerification('acc')).toBeUndefined();
   });
+
+  it('stores two passkey accounts without clobbering the linkingKey index', () => {
+    const store = new InMemoryAuthStore();
+    store.createAccount({
+      id: 'p1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.createAccount({
+      id: 'p2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.createAccount({
+      id: 'ln',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(store.getAccount('p1')?.id).toBe('p1');
+    expect(store.getAccount('p2')?.id).toBe('p2');
+    expect(store.findAccountByLinkingKey(KEY)?.id).toBe('ln');
+  });
+
+  it('keeps the LNURL index when updateAccount only changes the address', () => {
+    const store = new InMemoryAuthStore();
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.updateAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'a@b.com',
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(store.findAccountByLinkingKey(KEY)?.lightningAddress).toBe('a@b.com');
+  });
+
+  it('drops the linkingKey index when updateAccount clears it', () => {
+    const store = new InMemoryAuthStore();
+    store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.updateAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(store.findAccountByLinkingKey(KEY)).toBeUndefined();
+    expect(store.getAccount('acc')?.linkingKey).toBeNull();
+  });
+
+  it('indexes a linkingKey added on updateAccount', () => {
+    const store = new InMemoryAuthStore();
+    store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    store.updateAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(store.findAccountByLinkingKey(KEY)?.id).toBe('acc');
+  });
+
+  it('stores and retrieves a passkey challenge and credential', () => {
+    const store = new InMemoryAuthStore();
+    store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1,
+    });
+    store.updatePasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: true,
+      createdAt: 1,
+    });
+    expect(store.getPasskeyChallenge('ch')?.consumed).toBe(true);
+    expect(store.getPasskeyChallenge('missing')).toBeUndefined();
+    store.createPasskeyCredential({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    store.updatePasskeyCredential({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 2,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(store.getPasskeyCredential('cred')?.signCount).toBe(2);
+    expect(store.getPasskeyCredential('missing')).toBeUndefined();
+  });
+
+  it('evicts an expired passkey challenge on a later create', () => {
+    const store = new InMemoryAuthStore();
+    store.createPasskeyChallenge({
+      id: 'old',
+      type: 'authenticate',
+      challenge: 'c',
+      accountId: null,
+      consumed: false,
+      createdAt: T0,
+    });
+    store.createPasskeyChallenge({
+      id: 'new',
+      type: 'authenticate',
+      challenge: 'c',
+      accountId: null,
+      consumed: false,
+      createdAt: T0 + CHALLENGE_TTL_MS + 1,
+    });
+    expect(store.getPasskeyChallenge('old')).toBeUndefined();
+    expect(store.getPasskeyChallenge('new')?.id).toBe('new');
+  });
+
+  it('keeps a still-valid passkey challenge on a later create', () => {
+    const store = new InMemoryAuthStore();
+    store.createPasskeyChallenge({
+      id: 'a',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: T0,
+    });
+    store.createPasskeyChallenge({
+      id: 'b',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: T0 + 1000,
+    });
+    expect(store.getPasskeyChallenge('a')?.id).toBe('a');
+  });
 });

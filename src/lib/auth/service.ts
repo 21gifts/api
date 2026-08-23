@@ -187,9 +187,28 @@ export async function claimSession(
   if (!consumed) {
     return { status: 'used' };
   }
+  const issued = await issueSession(store, now, account);
+  return { status: 'authenticated', token: issued.token, account: issued.account };
+}
+
+/**
+ * Mint a bearer session for an already-authenticated account.
+ *
+ * Shared by LNURL-auth {@link claimSession} and the passkey finish paths.
+ *
+ * @param store - Auth persistence port.
+ * @param now - Current time in epoch milliseconds.
+ * @param account - The account the session should authenticate.
+ * @returns The new token and the same account.
+ */
+export async function issueSession(
+  store: AuthStore,
+  now: number,
+  account: Account,
+): Promise<{ token: string; account: Account }> {
   const token = randomHex(32);
   await store.createSession({ token, accountId: account.id, createdAt: now });
-  return { status: 'authenticated', token, account };
+  return { token, account };
 }
 
 /**

@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-22.
+**Status**: draft, in active iteration. Last revised 2026-08-23.
 
 ---
 
@@ -59,23 +59,33 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below).
 
-### Login: LNURL-auth only
+### Login: Passkey first, LNURL-auth remains
 
-- **LNURL-auth (LUD-04) is the only login method in v1.** No email, no
-  password, no passkey. The wallet scans a QR (or opens a `lightning:` deep
-  link), signs the server's `k1` challenge, and the session is bound to the
-  wallet's per-domain `linkingKey` — which is the account identifier.
+- **Passkey is the first login method.** A discoverable platform passkey
+  (WebAuthn, `residentKey` required, `userVerification` required) creates or
+  unlocks an account. No email, no password. The api stores the credential
+  public key and issues a session bound to `Account.id`. `linkingKey` is
+  `null` until a wallet is bound (binding is not in this increment).
+- **LNURL-auth (LUD-04) remains** for wallet-first accounts. The wallet scans
+  a QR (or opens a `lightning:` deep link), signs the server's `k1`
+  challenge, and that session is bound to the wallet's per-domain
+  `linkingKey`. Passkey and LNURL are **parallel identity namespaces** — a
+  passkey account and an LNURL account are not merged.
 - Works with Wallet of Satoshi (Classic since 2023; Self-Custody/Spark since
   app v3.2.5, 2026-02-04), Phoenix, Breez, Zeus, Alby, and others.
-- **Accepted trade-off (decided 2026-07-05)**: if the user loses the wallet
-  or its LNURL-auth key changes (e.g. the WoS Classic → Spark migration
-  generates a new seed), the account is unrecoverable in v1. Linking multiple
-  wallets to one account as a mitigation is deferred.
-- The auth callback host pins the `linkingKey` domain and is **fixed** to
-  `21.gifts` (PRD) / `dev.21.gifts` (DEV). The api process still listens at
-  `api.21.gifts` / `dev-api.21.gifts`; the app same-origin-proxies
+- **RP ID is pinned per environment** via `WEBAUTHN_RP_ID` (`21.gifts` /
+  `dev.21.gifts` / `localhost`) so credentials do not fragment across
+  `app.21.gifts` vs the apex. Expected origins are the CORS allowlist
+  filtered to that RP ID.
+- **Accepted trade-off**: losing the passkey (and any platform sync) or the
+  LNURL wallet still loses that namespace's account. Email/password recovery
+  stays out. Passkey + PRF → NIP-06 remains the post-v1 non-custodial
+  identity; this increment is login only.
+- The LNURL-auth callback host pins the `linkingKey` domain and is **fixed**
+  to `21.gifts` (PRD) / `dev.21.gifts` (DEV). The api process still listens
+  at `api.21.gifts` / `dev-api.21.gifts`; the app same-origin-proxies
   `/auth/lnurl/callback` so wallets hit the apex. Changing this host later
-  would invalidate every account identity.
+  would invalidate LNURL account identities.
 
 ### Donor upgrade (custodial, v1 only)
 
@@ -352,8 +362,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — app:
 
-- Sign-in via LNURL-auth (QR + `lightning:` deep link; session bound to the
-  wallet's `linkingKey`)
+- Sign-in via passkey (discoverable WebAuthn; session on `Account.id`) or
+  LNURL-auth (QR + `lightning:` deep link; session bound to the wallet's
+  `linkingKey`)
 - Receiver profile UI: name, photo, story, Lightning Address (+ verified
   badge via micro-payment nonce)
 - Public campaign feed (rendered from api response)
@@ -368,6 +379,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - LNURL-auth endpoints: `k1` challenge issuance, signature verification,
   replay protection, session issuance
+- Passkey endpoints: WebAuthn register/authenticate begin+finish, session
+  issuance, `linkingKey` nullable, RP ID pinned by `WEBAUTHN_RP_ID`
 - Donor wallet storage: encrypted `lndhub://` credentials
   (`lightning.space` only), balance preflight
 - Recurring-gift scheduler + fail-closed payout worker (see "v1 Transitional
@@ -390,8 +403,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Passkey + PRF → NOSTR identity (NIP-06) — moves to the non-custodial phase
 - Client-side event signing (v1 signs server-side with custodial keys)
-- Any second login method or account recovery (no email, no backup auth —
-  accepted risk, see "v1 Transitional Model")
+- Email / password login or account recovery (passkey sync is the only
+  extra factor; LNURL remains a parallel namespace, not a merge)
 - Linking multiple LNURL-auth wallets to one account
 - Non-custodial donor spending (replaces the v1 `lndhub://` deposit)
 - Private DMs (NIP-17 sealed messages)
@@ -644,6 +657,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-07-05 | v1 account model: Basis (login + receive, default for every account) and Moderator (content moderation); donor is an upgrade, not a role                                                                                                                                           |
 | 2026-07-05 | v1 login: **LNURL-auth (LUD-04) only** — no email, no password, no passkey; `linkingKey` = account identifier; lockout risk explicitly accepted; auth callback host pinned to `api.21.gifts` / `dev-api.21.gifts`                                                                  |
 | 2026-08-22 | Auth callback host (wallet `linkingKey` domain) moved to the public apex `21.gifts` / `dev.21.gifts`. Supersedes the 2026-07-05 pin to `api.21.gifts`. App public URL is the apex; `app.21.gifts` stays a transitional alias. In-memory accounts from the old host do not survive. |
+| 2026-08-23 | v1 login: **passkey first** (discoverable WebAuthn, session on `Account.id`, `linkingKey` nullable) plus LNURL-auth as a parallel namespace (no merge). RP ID pinned by `WEBAUTHN_RP_ID`. Passkey+PRF→NIP-06 still deferred.                                                       |
 | 2026-07-05 | v1 donor spending: custodial via deposited `lndhub://` export, restricted to `lightning.space` wallets; explicit transitional deviation from Core Principles 2/5, replaced by a non-custodial setup later                                                                          |
 | 2026-07-05 | Recurring daily gifts are a v1 feature: server-side scheduler in the api with fail-closed payout semantics                                                                                                                                                                         |
 | 2026-07-05 | Receiver verification: micro-payment with one-time nonce in the LUD-12 comment (WoS-compatible, min 1 sat); no LUD-21 dependency (WoS lacks it)                                                                                                                                    |

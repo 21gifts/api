@@ -5,6 +5,8 @@ import { infoRoute } from '@/routes/info';
 import { brandRoutes, readPublicBrandFile } from '@/routes/brand';
 import type { BrandReader } from '@/routes/brand';
 import { authRoutes } from '@/routes/auth';
+import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
+import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
@@ -62,6 +64,15 @@ export interface AppDeps {
    * {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
+  /** Raw `WEBAUTHN_RP_ID` (default: `process.env.WEBAUTHN_RP_ID`). */
+  webAuthnRpId?: string;
+  /** Raw `WEBAUTHN_RP_NAME` (default: `process.env.WEBAUTHN_RP_NAME`). */
+  webAuthnRpName?: string;
+  /**
+   * WebAuthn generate/verify collaborator (default:
+   * {@link SimpleWebAuthnPasskeyCeremony}).
+   */
+  passkeyCeremony?: PasskeyCeremony;
 }
 
 /**
@@ -88,6 +99,9 @@ export function createApp(deps: AppDeps = {}): Hono {
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
+  const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
+  const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
+  const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
 
   const app = new Hono();
 
@@ -109,7 +123,18 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
-  app.route('/auth', authRoutes({ store, now, publicBaseUrl }));
+  app.route(
+    '/auth',
+    authRoutes({
+      store,
+      now,
+      publicBaseUrl,
+      allowedOrigins,
+      webAuthnRpId,
+      webAuthnRpName,
+      passkeyCeremony,
+    }),
+  );
   app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
   app.route(
     '/lightning-address',

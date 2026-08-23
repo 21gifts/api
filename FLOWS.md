@@ -22,17 +22,27 @@ product stays warm and direct — people helping people.
 
 ---
 
-## 1. Sign-in — **Shipped**
+## 1. Sign-in — **Shipped** (API) / **Sketch** (app passkey CTA)
 
 The landing page at `/` is the marketing site (pitch, how-it-works, FAQ) with
 **Log in** / **Ask for help** to `/login` and **Send help** to `/donate`.
-`/login` is the LNURL-auth surface (`LoginCard`). The LUD-04 callback host
-is the public apex (`21.gifts` / `dev.21.gifts`).
+`/login` is the sign-in surface (`LoginCard`). The LUD-04 callback host is
+the public apex (`21.gifts` / `dev.21.gifts`). Passkey RP ID is
+`WEBAUTHN_RP_ID`.
 
 On mount the app rehydrates a persisted session token via `GET /me`. A **401**
 clears the token; a transient failure does not.
 
-**Steps**
+**Passkey (first login, HTTP shipped)**
+
+1. App calls `POST /auth/passkey/register/begin` (new account) or
+   `POST /auth/passkey/authenticate/begin` (returning).
+2. Browser runs `navigator.credentials.create` / `get` with the returned
+   `options` (no WebAuthn library in the app).
+3. App posts the credential to the matching `…/finish` with the page
+   `Origin`. The api verifies and returns `{ token, account }` immediately.
+
+**LNURL-auth (parallel namespace, still shipped)**
 
 1. App calls `GET /auth/lnurl` and shows a QR of the uppercased `lnurl` plus
    a `lightning:` deep link. The poll token is **never** put in the QR.
@@ -44,14 +54,15 @@ clears the token; a transient failure does not.
    `Authorization: Bearer` on subsequent calls.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a shortened `linkingKey`, a name form, a
-Lightning Address form, and **Sign out**.
+`/profile` route yet. It shows a shortened `linkingKey` when one is present,
+a name form, a Lightning Address form, and **Sign out**.
 
-Auth is LNURL-auth only. No email, no password, no passkey. Losing the wallet
-or a linking-key change is unrecoverable in v1 (CONCEPT accepted trade-off) —
-there is no recovery screen.
+Passkey and LNURL accounts are not merged. No email, no password. Losing the
+passkey (and platform sync) or the wallet still loses that namespace.
 
-HTTP cited: `/auth/lnurl`, `/auth/lnurl/callback`, `/auth/session`, `/me`.
+HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
+`/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
+`/auth/lnurl`, `/auth/lnurl/callback`, `/auth/session`, `/me`, `/me/name`.
 
 ---
 

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats).
+**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats, passkey login).
 
 ---
 
@@ -49,6 +49,10 @@ Public base URLs used in examples:
 | GET    | `/auth/lnurl`                                | none                    | Issue LNURL-auth challenge                 |
 | GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
 | GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
+| POST   | `/auth/passkey/register/begin`               | none                    | Issue WebAuthn creation options            |
+| POST   | `/auth/passkey/register/finish`              | none                    | Verify attestation, issue session          |
+| POST   | `/auth/passkey/authenticate/begin`           | none                    | Issue WebAuthn request options             |
+| POST   | `/auth/passkey/authenticate/finish`          | none                    | Verify assertion, issue session            |
 | GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
 | POST   | `/me/name`                                   | Bearer                  | Set/replace display name                   |
 | POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
@@ -228,6 +232,91 @@ consumed. `account` is the stored account object:
 The app then calls authenticated routes with
 `Authorization: Bearer <token>`.
 
+### `POST /auth/passkey/register/begin`
+
+Starts a discoverable-credential registration. No body. Does not persist an
+account until finish.
+
+When `WEBAUTHN_RP_ID` is unset or no CORS origin matches that RP ID:
+
+**Response** `500`:
+
+```json
+{ "error": "Server auth is not configured" }
+```
+
+Otherwise **Response** `200`:
+
+```json
+{
+  "challengeId": "<64 hex chars>",
+  "options": { "challenge": "<base64url>", "rp": { "id": "21.gifts", "name": "21.gifts" } }
+}
+```
+
+`options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
+`userVerification` required, attestation `none`). `user.id` is the pending
+account UUID encoded as UTF-8. The process still boots without
+`WEBAUTHN_RP_ID` — only these routes fail closed.
+
+### `POST /auth/passkey/register/finish`
+
+Verifies the attestation and issues a session immediately (no poll).
+
+Body:
+
+```json
+{ "challengeId": "<hex>", "credential": {} }
+```
+
+`credential` is the browser `RegistrationResponseJSON`. The request `Origin`
+must be in the RP ID's expected origins (CORS allowlist filtered to that RP
+ID).
+
+| Status | Body                                                                  | When                                              |
+| ------ | --------------------------------------------------------------------- | ------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing or no matching origin               |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                   |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                             |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already succeeded                          |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                       |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                    |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential |
+
+**Response** `200`:
+
+```json
+{
+  "token": "<hex>",
+  "account": {
+    "id": "<uuid>",
+    "linkingKey": null,
+    "role": "basis",
+    "name": null,
+    "lightningAddress": null,
+    "lightningAddressVerified": false,
+    "createdAt": 0
+  }
+}
+```
+
+### `POST /auth/passkey/authenticate/begin`
+
+Starts a discoverable-credential assertion. `allowCredentials` is empty.
+Same 500 as register begin when WebAuthn is unconfigured.
+
+**Response** `200`: `{ "challengeId", "options" }` where `options` is
+`PublicKeyCredentialRequestOptionsJSON`.
+
+### `POST /auth/passkey/authenticate/finish`
+
+Verifies the assertion against a stored credential, updates `signCount`,
+issues a session. Body shape matches register finish. Extra 400:
+`{ "error": "Unknown credential" }` when the assertion `id` is missing or
+not stored. Success body matches register finish (`linkingKey` is whatever
+the account currently has).
+
 ### `GET /me`
 
 Returns the account bound to the bearer session.
@@ -252,15 +341,15 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                           |
-| -------------------------- | -------------- | ------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                 |
-| `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)               |
-| `role`                     | string         | `basis` or `moderator`                            |
-| `name`                     | string \| null | Display name, or `null` until set                 |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                  |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm) |
-| `createdAt`                | number         | Creation time (epoch ms)                          |
+| Field                      | Type           | Meaning                                                             |
+| -------------------------- | -------------- | ------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                   |
+| `linkingKey`               | string \| null | Wallet LNURL-auth linking key (hex), or `null` for passkey accounts |
+| `role`                     | string         | `basis` or `moderator`                                              |
+| `name`                     | string \| null | Display name, or `null` until set                                   |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                    |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                   |
+| `createdAt`                | number         | Creation time (epoch ms)                                            |
 
 ### `POST /me/name`
 
