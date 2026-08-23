@@ -21,6 +21,7 @@ export default defineConfig({
       ...process.env,
       BIND_ADDR: '127.0.0.1:3000',
       PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+      DATABASE_URL: '',
       DEBUG_TOKEN: 'e2e-debug-token',
       WEBAUTHN_RP_ID: 'localhost',
       CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',

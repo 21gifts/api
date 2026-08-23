@@ -351,6 +351,10 @@ test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer i
 }) => {
   const res = await request.get('/debug/accounts');
   expect(res.status()).toBe(401);
+  const wrong = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer wrong-token' },
+  });
+  expect(wrong.status()).toBe(401);
 });
 
 test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({
@@ -371,10 +375,14 @@ test('Function: compareAccountsForList — debug listing is ordered by createdAt
 
 test('Function: meRoutes unlink — DELETE clears the linked address', async ({ request }) => {
   const { token } = await login(request);
-  await request.post('/me/lightning-address', {
+  const linked = await request.post('/me/lightning-address', {
     headers: bearer(token),
     data: { address: 'alice@walletofsatoshi.com' },
   });
+  expect(linked.status()).toBe(200);
+  expect(((await linked.json()) as { lightningAddress: string }).lightningAddress).toBe(
+    'alice@walletofsatoshi.com',
+  );
   const res = await request.delete('/me/lightning-address', { headers: bearer(token) });
   expect(res.status()).toBe(200);
   expect(((await res.json()) as { lightningAddress: string | null }).lightningAddress).toBeNull();
