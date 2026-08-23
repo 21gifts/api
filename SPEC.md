@@ -4,15 +4,17 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-23.
+**Status**: living document. Last revised 2026-08-23 (auth persistence + debug).
 
 ---
 
 ## Implemented HTTP surface (normative)
 
-The process holds all auth state in memory (`InMemoryAuthStore`). There is no
-durable database yet: restarting the process clears challenges, accounts,
-sessions, and pending address verifications.
+Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
+local boots). When `DATABASE_URL` is set, the process migrates the auth
+schema and uses `PostgresAuthStore` — accounts, challenges, sessions, and
+pending address verifications survive a restart. A missing or unreachable
+database URL that is set is fail-loud at boot.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -52,6 +54,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
 | GET    | `/lightning-address`                         | none                    | Resolve LUD-16 metadata (cached)           |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer` | Operator account listing (`DEBUG_TOKEN`)   |
 
 ### `GET /healthz`
 
@@ -471,7 +474,54 @@ Success → **Response** `200`:
 **Cache**: successful resolves are stored in process memory for **5 minutes**
 (`LN_ADDRESS_CACHE_TTL_MS`). A cache hit does not call the provider. Process
 restart clears the cache. There is no durable (Postgres) cache yet. No auth.
-No new environment variables; the process still boots with zero extra config.
+No new environment variables for this route; the process still boots with
+zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
+
+### `GET /debug/accounts`
+
+Operator listing of every stored account. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. Session tokens and verification nonces are never returned.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "accounts": [
+    {
+      "id": "<uuid>",
+      "linkingKey": "<hex>",
+      "role": "basis",
+      "name": null,
+      "lightningAddress": null,
+      "lightningAddressVerified": false,
+      "createdAt": 0
+    }
+  ]
+}
+```
+
+Accounts are ordered by `createdAt` ascending, then `id`. An empty store
+returns `"accounts": []`.
+
+Environment:
+
+| Variable       | Meaning                                                                 |
+| -------------- | ----------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
 
 ---
 
@@ -499,14 +549,13 @@ account's events server-side. Not wired yet.
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
 NOSTR events (profiles, campaigns, replies). Not wired yet.
 
-**Durable persistence (Postgres) and a readiness probe.** Auth and future data
-need a durable store; a readiness probe that checks downstream dependencies is
-planned alongside that. Today only `/healthz` (liveness) exists. The LUD-16
-metadata cache on `GET /lightning-address` is in-memory only; a durable
-Postgres cache is later.
+**Readiness probe.** `/healthz` remains liveness-only. A readiness check of
+downstream dependencies is still planned. The LUD-16 metadata cache on
+`GET /lightning-address` is in-memory only.
 
 **Moderator-only endpoints.** Content hide/unhide and related Moderator
-actions. Role values exist on the account model; no moderator routes yet.
+actions. Role values exist on the account model; `GET /debug/accounts` is
+an operator token route, not a moderator session.
 
 ---
 

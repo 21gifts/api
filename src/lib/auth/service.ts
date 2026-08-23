@@ -29,14 +29,20 @@ export interface StartChallengeResult {
  * @param now - Current time in epoch milliseconds.
  * @returns The `lnurl`, its `k1`, and the challenge TTL in seconds.
  */
-export function startChallenge(
+export async function startChallenge(
   store: AuthStore,
   baseUrl: string,
   now: number,
-): StartChallengeResult {
+): Promise<StartChallengeResult> {
   const k1 = randomHex(32);
   const pollToken = randomHex(32);
-  store.createChallenge({ k1, pollToken, status: 'pending', accountId: null, createdAt: now });
+  await store.createChallenge({
+    k1,
+    pollToken,
+    status: 'pending',
+    accountId: null,
+    createdAt: now,
+  });
   const callback = `${baseUrl}/auth/lnurl/callback?tag=login&k1=${k1}`;
   return {
     lnurl: encodeLnurl(callback),
@@ -70,12 +76,12 @@ export type CallbackResult =
  * @returns `{ ok: true, accountId, firstLogin }` on success, or
  *   `{ ok: false, reason }` otherwise.
  */
-export function completeCallback(
+export async function completeCallback(
   store: AuthStore,
   now: number,
   params: CallbackParams,
-): CallbackResult {
-  const challenge = store.getChallenge(params.k1);
+): Promise<CallbackResult> {
+  const challenge = await store.getChallenge(params.k1);
   if (challenge === undefined) {
     return { ok: false, reason: 'Unknown or expired challenge' };
   }
@@ -91,8 +97,8 @@ export function completeCallback(
   if (!verifyAuthSig(params.k1, params.sig, linkingKey)) {
     return { ok: false, reason: 'Invalid signature' };
   }
-  const { account, firstLogin } = upsertAccount(store, linkingKey, now);
-  store.updateChallenge({ ...challenge, status: 'authenticated', accountId: account.id });
+  const { account, firstLogin } = await upsertAccount(store, linkingKey, now);
+  await store.updateChallenge({ ...challenge, status: 'authenticated', accountId: account.id });
   return { ok: true, accountId: account.id, firstLogin };
 }
 
@@ -101,12 +107,12 @@ export function completeCallback(
  *
  * @returns The account and whether this call created the row.
  */
-function upsertAccount(
+async function upsertAccount(
   store: AuthStore,
   linkingKey: string,
   now: number,
-): { account: Account; firstLogin: boolean } {
-  const existing = store.findAccountByLinkingKey(linkingKey);
+): Promise<{ account: Account; firstLogin: boolean }> {
+  const existing = await store.findAccountByLinkingKey(linkingKey);
   if (existing !== undefined) {
     return { account: existing, firstLogin: false };
   }
@@ -119,7 +125,7 @@ function upsertAccount(
     lightningAddressVerified: false,
     createdAt: now,
   };
-  store.createAccount(account);
+  await store.createAccount(account);
   return { account, firstLogin: true };
 }
 
@@ -140,8 +146,12 @@ export type SessionResult =
  * @param pollToken - The secret poll token returned by {@link startChallenge}.
  * @returns The current status, plus the token + account when authenticated.
  */
-export function claimSession(store: AuthStore, now: number, pollToken: string): SessionResult {
-  const challenge = store.getChallengeByPollToken(pollToken);
+export async function claimSession(
+  store: AuthStore,
+  now: number,
+  pollToken: string,
+): Promise<SessionResult> {
+  const challenge = await store.getChallengeByPollToken(pollToken);
   if (challenge === undefined || now - challenge.createdAt > CHALLENGE_TTL_MS) {
     return { status: 'expired' };
   }
@@ -156,14 +166,14 @@ export function claimSession(store: AuthStore, now: number, pollToken: string): 
   if (accountId === null) {
     return { status: 'expired' };
   }
-  const account = store.getAccount(accountId);
+  const account = await store.getAccount(accountId);
   /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
   if (account === undefined) {
     return { status: 'expired' };
   }
   const token = randomHex(32);
-  store.createSession({ token, accountId: account.id, createdAt: now });
-  store.updateChallenge({ ...challenge, status: 'consumed' });
+  await store.createSession({ token, accountId: account.id, createdAt: now });
+  await store.updateChallenge({ ...challenge, status: 'consumed' });
   return { status: 'authenticated', token, account };
 }
 
@@ -175,12 +185,16 @@ export function claimSession(store: AuthStore, now: number, pollToken: string): 
  * @param token - The bearer session token.
  * @returns The authenticated account, or `null` when unknown or expired.
  */
-export function resolveSession(store: AuthStore, now: number, token: string): Account | null {
-  const session = store.getSession(token);
+export async function resolveSession(
+  store: AuthStore,
+  now: number,
+  token: string,
+): Promise<Account | null> {
+  const session = await store.getSession(token);
   if (session === undefined || now - session.createdAt > SESSION_TTL_MS) {
     return null;
   }
-  const account = store.getAccount(session.accountId);
+  const account = await store.getAccount(session.accountId);
   /* v8 ignore next 3 -- a session always references an existing account in-memory */
   if (account === undefined) {
     return null;

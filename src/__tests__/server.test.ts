@@ -57,6 +57,12 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('returns 503 on /debug/accounts when debugToken is blank', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/accounts');
+    expect(res.status).toBe(503);
+  });
+
   it('emits http.request for GET /info', async () => {
     await createApp().request('/info');
     const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
