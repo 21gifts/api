@@ -155,7 +155,7 @@ describe('POST /me/name', () => {
   });
 
   it('rejects a malformed JSON body', async () => {
-    const res = await mount(seededStore()).request('/me/name', {
+    const res = await mount(await seededStore()).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: 'not json',
@@ -165,7 +165,7 @@ describe('POST /me/name', () => {
   });
 
   it('rejects a body without a name string', async () => {
-    const res = await mount(seededStore()).request('/me/name', {
+    const res = await mount(await seededStore()).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -175,7 +175,7 @@ describe('POST /me/name', () => {
   });
 
   it('rejects an empty name', async () => {
-    const res = await mount(seededStore()).request('/me/name', {
+    const res = await mount(await seededStore()).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: '   ' }),
@@ -185,7 +185,7 @@ describe('POST /me/name', () => {
   });
 
   it('rejects an over-long name', async () => {
-    const res = await mount(seededStore()).request('/me/name', {
+    const res = await mount(await seededStore()).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'A'.repeat(81) }),
@@ -195,7 +195,7 @@ describe('POST /me/name', () => {
   });
 
   it('rejects a name with a newline', async () => {
-    const res = await mount(seededStore()).request('/me/name', {
+    const res = await mount(await seededStore()).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Ada\nLovelace' }),
@@ -205,7 +205,7 @@ describe('POST /me/name', () => {
   });
 
   it('trims, stores, and returns the name', async () => {
-    const store = seededStore();
+    const store = await seededStore();
     const res = await mount(store).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -214,14 +214,14 @@ describe('POST /me/name', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { name: string | null };
     expect(body.name).toBe('Ada');
-    expect(store.getAccount('acc')?.name).toBe('Ada');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
     ).toBe(true);
   });
 
   it('keeps a previously stored lightning address when setting a name', async () => {
-    const store = seededStore({ lightningAddress: ADDRESS });
+    const store = await seededStore({ lightningAddress: ADDRESS });
     const res = await mount(store).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -234,13 +234,13 @@ describe('POST /me/name', () => {
   });
 
   it('replaces an existing name', async () => {
-    const store = seededStore();
-    const existing = store.getAccount('acc');
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
     if (existing === undefined) {
       return;
     }
-    store.updateAccount({ ...existing, name: 'Ada' });
+    await store.updateAccount({ ...existing, name: 'Ada' });
     const res = await mount(store).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -248,7 +248,7 @@ describe('POST /me/name', () => {
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { name: string }).name).toBe('Bob');
-    expect(store.getAccount('acc')?.name).toBe('Bob');
+    expect((await store.getAccount('acc'))?.name).toBe('Bob');
   });
 });
 
