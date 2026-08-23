@@ -141,8 +141,13 @@ export function confirmVerification(
     return { ok: false, code: 'bad_nonce' };
   }
 
+  const current = store.getAccount(account.id);
+  if (current === undefined) {
+    return { ok: false, code: 'no_pending' };
+  }
+
   const record = store.getVerification(account.id);
-  if (record === undefined || record.address !== account.lightningAddress) {
+  if (record === undefined || record.address !== current.lightningAddress) {
     return { ok: false, code: 'no_pending' };
   }
 
@@ -156,7 +161,7 @@ export function confirmVerification(
   }
 
   const updated: Account = {
-    ...account,
+    ...current,
     lightningAddressVerified: true,
   };
   store.updateAccount(updated);

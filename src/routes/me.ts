@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import { normalizeDisplayName } from '@/lib/name';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
@@ -9,9 +10,9 @@ import type { FetchFn } from '@/lib/lnurl-pay';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
- * `/me` — the authenticated account and its editable profile (the receiver's
- * Lightning Address), including proof-of-control verification. Shares the
- * {@link AuthStore} instance with `/auth`.
+ * `/me` — the authenticated account and its editable profile (display name
+ * and the receiver's Lightning Address), including proof-of-control
+ * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -31,6 +32,7 @@ interface AccountResponse {
   id: string;
   linkingKey: string;
   role: string;
+  name: string | null;
   lightningAddress: string | null;
   lightningAddressVerified: boolean;
   createdAt: number;
@@ -60,17 +62,38 @@ function authedAccount(deps: MeRouteDeps, header: string | undefined): Account |
   return resolveSession(deps.store, deps.now(), token);
 }
 
+/**
+ * Re-read the account after an await so a concurrent profile write is not
+ * overwritten by a stale spread of the pre-await snapshot.
+ *
+ * @param deps - Store and collaborators.
+ * @param id - Account id from the authorized snapshot.
+ * @returns The latest stored account, or `null` if it disappeared.
+ */
+function storedAccount(deps: MeRouteDeps, id: string): Account | null {
+  const current = deps.store.getAccount(id);
+  /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
+  if (current === undefined) {
+    return null;
+  }
+  return current;
+}
+
 /** Project an account to its public JSON shape. */
 function serializeAccount(account: Account): AccountResponse {
   return {
     id: account.id,
     linkingKey: account.linkingKey,
     role: account.role,
+    name: account.name,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
     createdAt: account.createdAt,
   };
 }
+
+/** Body schema for setting a display name. */
+const nameBody = z.object({ name: z.string() });
 
 /** Body schema for linking a Lightning Address. */
 const addressBody = z.object({ address: z.string() });
@@ -82,7 +105,8 @@ const confirmBody = z.object({ nonce: z.string() });
  * Build the `/me` route group.
  *
  * @param deps - Shared store, clock, payer, and fetch.
- * @returns A Hono app exposing account, link/unlink, and verification routes.
+ * @returns A Hono app exposing account, display-name, link/unlink, and
+ * verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
@@ -92,6 +116,29 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       return c.json(serializeAccount(account), 200);
+    })
+    .post('/name', async (c) => {
+      const account = authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = nameBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "name" string' }, 400);
+      }
+      const name = normalizeDisplayName(parsed.data.name);
+      if (name === null) {
+        return c.json({ error: 'Name must be 1–80 characters' }, 400);
+      }
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, name };
+      deps.store.updateAccount(updated);
+      logEvent('account.name.set', { accountId: current.id });
+      return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = authedAccount(deps, c.req.header('authorization'));
@@ -106,15 +153,20 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       // Linking a (new) address resets any prior verified state; proof of control
       // is a separate step. Any in-flight verification is dropped with the link.
       const updated: Account = {
-        ...account,
+        ...current,
         lightningAddress: address,
         lightningAddressVerified: false,
       };
       deps.store.updateAccount(updated);
-      deps.store.deleteVerification(account.id);
+      deps.store.deleteVerification(current.id);
       logEvent('account.lightning_address.linked', {
         accountId: account.id,
         address,
@@ -126,8 +178,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       const updated: Account = {
-        ...account,
+        ...current,
         lightningAddress: null,
         lightningAddressVerified: false,
       };

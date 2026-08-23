@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-22 (apex origin).
+**Status**: living document. Last revised 2026-08-23.
 
 ---
 
@@ -46,6 +46,7 @@ Public base URLs used in examples:
 | GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
 | GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
 | GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
+| POST   | `/me/name`                                   | Bearer                  | Set/replace display name                   |
 | POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
 | DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
 | POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
@@ -211,6 +212,7 @@ consumed. `account` is the stored account object:
   "id": "<uuid>",
   "linkingKey": "<hex>",
   "role": "basis",
+  "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0
@@ -237,6 +239,7 @@ Missing or invalid bearer → **Response** `401`:
   "id": "<uuid>",
   "linkingKey": "<hex>",
   "role": "basis",
+  "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0
@@ -248,9 +251,36 @@ Missing or invalid bearer → **Response** `401`:
 | `id`                       | string         | Opaque account id                                 |
 | `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)               |
 | `role`                     | string         | `basis` or `moderator`                            |
+| `name`                     | string \| null | Display name, or `null` until set                 |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                  |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm) |
 | `createdAt`                | number         | Creation time (epoch ms)                          |
+
+### `POST /me/name`
+
+Set or replace the account display name. Body:
+
+```json
+{ "name": "Ada" }
+```
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `name` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"name\" string" }
+```
+
+Name is empty after trim, longer than 80 characters, or contains a C0
+control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
+
+```json
+{ "error": "Name must be 1–80 characters" }
+```
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`). The stored value is trimmed. Names are not unique.
 
 ### `POST /me/lightning-address`
 
