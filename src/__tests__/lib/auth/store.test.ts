@@ -35,6 +35,35 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('refuses to re-authenticate an already authenticated challenge', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createChallenge({
+      k1: 'k1',
+      pollToken: 'pt',
+      status: 'pending',
+      accountId: null,
+      createdAt: 1,
+    });
+    expect(
+      await store.updateChallenge({
+        k1: 'k1',
+        pollToken: 'pt',
+        status: 'authenticated',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updateChallenge({
+        k1: 'k1',
+        pollToken: 'pt',
+        status: 'authenticated',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
   it('refuses to consume a challenge that is not authenticated', async () => {
     const store = new InMemoryAuthStore();
     await store.createChallenge({
@@ -99,6 +128,23 @@ describe('InMemoryAuthStore', () => {
 
   it('returns undefined for an unknown poll token', async () => {
     expect(await new InMemoryAuthStore().getChallengeByPollToken('missing')).toBeUndefined();
+  });
+
+  it('ignores a second createAccount with the same linkingKey', async () => {
+    const store = new InMemoryAuthStore();
+    const first = {
+      id: 'acc-1',
+      linkingKey: KEY,
+      role: 'basis' as const,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    };
+    await store.createAccount(first);
+    await store.createAccount({ ...first, id: 'acc-2', createdAt: 2 });
+    expect((await store.getAccount('acc-1'))?.id).toBe('acc-1');
+    expect(await store.getAccount('acc-2')).toBeUndefined();
+    expect((await store.listAccounts()).map((row) => row.id)).toEqual(['acc-1']);
   });
 
   it('stores an account and finds it by id and by linkingKey', async () => {

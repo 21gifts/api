@@ -3,7 +3,7 @@
 ## Function: InMemoryAuthStore
 
 - **Purpose:** Process-local AuthStore: challenges, accounts, sessions, verifications. Evicts expired challenges/sessions on write. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `Account`, `Session`, `AddressVerification`).
+- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when the `linkingKey` already exists. `updateChallenge` returns false when the row is missing or the previous status does not match.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 

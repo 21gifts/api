@@ -81,6 +81,7 @@ api/
 │       │       ├── service.test.ts
 │       │       ├── store.test.ts
 │       │       ├── schema.test.ts
+│       │       ├── sql.test.ts
 │       │       ├── postgres-store.test.ts
 │       │       └── open-store.test.ts
 │       └── routes/

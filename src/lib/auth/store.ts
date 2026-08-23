@@ -152,10 +152,13 @@ export class InMemoryAuthStore implements AuthStore {
 
   async updateChallenge(challenge: Challenge): Promise<boolean> {
     const current = this.#challenges.get(challenge.k1);
-    if (challenge.status === 'authenticated' && current?.status !== 'pending') {
+    if (current === undefined) {
       return false;
     }
-    if (challenge.status === 'consumed' && current?.status !== 'authenticated') {
+    if (challenge.status === 'authenticated' && current.status !== 'pending') {
+      return false;
+    }
+    if (challenge.status === 'consumed' && current.status !== 'authenticated') {
       return false;
     }
     this.#challenges.set(challenge.k1, challenge);
@@ -168,6 +171,9 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async createAccount(account: Account): Promise<void> {
+    if (this.#accountsByLinkingKey.has(account.linkingKey)) {
+      return;
+    }
     this.#accounts.set(account.id, account);
     this.#accountsByLinkingKey.set(account.linkingKey, account.id);
   }

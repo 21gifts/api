@@ -65,7 +65,8 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, and brand reader.
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader, and
+ *   debugToken.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
