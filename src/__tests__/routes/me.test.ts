@@ -57,6 +57,7 @@ function seededStore(
     id: 'acc',
     linkingKey: LINKING_KEY,
     role: 'basis',
+    name: null,
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
     createdAt: 1_000_000,
@@ -131,13 +132,110 @@ describe('GET /me', () => {
     const body = (await res.json()) as {
       id: string;
       role: string;
+      name: string | null;
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
+    expect(body.name).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
+  });
+});
+
+describe('POST /me/name', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/name', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a malformed JSON body', async () => {
+    const res = await mount(seededStore()).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "name" string' });
+  });
+
+  it('rejects a body without a name string', async () => {
+    const res = await mount(seededStore()).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "name" string' });
+  });
+
+  it('rejects an empty name', async () => {
+    const res = await mount(seededStore()).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '   ' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
+  });
+
+  it('rejects an over-long name', async () => {
+    const res = await mount(seededStore()).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'A'.repeat(81) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
+  });
+
+  it('rejects a name with a newline', async () => {
+    const res = await mount(seededStore()).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada\nLovelace' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
+  });
+
+  it('trims, stores, and returns the name', async () => {
+    const store = seededStore();
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '  Ada  ' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string | null };
+    expect(body.name).toBe('Ada');
+    expect(store.getAccount('acc')?.name).toBe('Ada');
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
+    ).toBe(true);
+  });
+
+  it('replaces an existing name', async () => {
+    const store = seededStore();
+    const existing = store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      return;
+    }
+    store.updateAccount({ ...existing, name: 'Ada' });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Bob' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { name: string }).name).toBe('Bob');
+    expect(store.getAccount('acc')?.name).toBe('Bob');
   });
 });
 
@@ -521,6 +619,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       id: 'acc',
       linkingKey: LINKING_KEY,
       role: 'basis',
+      name: null,
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
       createdAt: 1_000_000,

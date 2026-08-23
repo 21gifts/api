@@ -6,7 +6,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-22.
+**Status**: living document. Last revised 2026-08-23.
 
 ---
 
@@ -44,8 +44,8 @@ clears the token; a transient failure does not.
    `Authorization: Bearer` on subsequent calls.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a shortened `linkingKey`, a Lightning Address
-form, and **Sign out**.
+`/profile` route yet. It shows a shortened `linkingKey`, a name form, a
+Lightning Address form, and **Sign out**.
 
 Auth is LNURL-auth only. No email, no password, no passkey. Losing the wallet
 or a linking-key change is unrecoverable in v1 (CONCEPT accepted trade-off) —
@@ -55,7 +55,7 @@ HTTP cited: `/auth/lnurl`, `/auth/lnurl/callback`, `/auth/session`, `/me`.
 
 ---
 
-## 2. Profile — **Shipped** (address) + **Sketch** (identity copy)
+## 2. Profile — **Shipped** (address, name) + **Sketch** (photo / story)
 
 ### Address — **Shipped**
 
@@ -79,14 +79,14 @@ Until an invoice payer is injected, start returns **503**
 boots. Live verification payments do **not** work today. Edit or unlink clears
 any pending verification (`SPEC.md`).
 
-There is no name, photo, or story editor in the app today.
+The signed-in view can set a display name (`POST /me/name`). There is no
+photo or story editor in the app today.
 
-### Identity copy — **Sketch**
+### Identity copy — **Shipped** (name) + **Sketch** (photo / story)
 
-Receiver profile UI will add name, photo, and story. In v1 those become
-custodial `kind:0` metadata signed server-side. **No HTTP for this yet**; it
-lands in the PR that implements it. Do not invent `POST /me/profile` or any
-other path.
+Receiver name is stored on the account (`POST /me/name`). Photo and story
+will become custodial `kind:0` metadata signed server-side. **No HTTP for
+photo/story yet**. Do not invent `POST /me/profile`.
 
 ---
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import { normalizeDisplayName } from '@/lib/name';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
@@ -9,9 +10,9 @@ import type { FetchFn } from '@/lib/lnurl-pay';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
- * `/me` — the authenticated account and its editable profile (the receiver's
- * Lightning Address), including proof-of-control verification. Shares the
- * {@link AuthStore} instance with `/auth`.
+ * `/me` — the authenticated account and its editable profile (display name
+ * and the receiver's Lightning Address), including proof-of-control
+ * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -31,6 +32,7 @@ interface AccountResponse {
   id: string;
   linkingKey: string;
   role: string;
+  name: string | null;
   lightningAddress: string | null;
   lightningAddressVerified: boolean;
   createdAt: number;
@@ -66,11 +68,15 @@ function serializeAccount(account: Account): AccountResponse {
     id: account.id,
     linkingKey: account.linkingKey,
     role: account.role,
+    name: account.name,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
     createdAt: account.createdAt,
   };
 }
+
+/** Body schema for setting a display name. */
+const nameBody = z.object({ name: z.string() });
 
 /** Body schema for linking a Lightning Address. */
 const addressBody = z.object({ address: z.string() });
@@ -92,6 +98,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       return c.json(serializeAccount(account), 200);
+    })
+    .post('/name', async (c) => {
+      const account = authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = nameBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "name" string' }, 400);
+      }
+      const name = normalizeDisplayName(parsed.data.name);
+      if (name === null) {
+        return c.json({ error: 'Name must be 1–80 characters' }, 400);
+      }
+      const updated: Account = { ...account, name };
+      deps.store.updateAccount(updated);
+      logEvent('account.name.set', { accountId: account.id });
+      return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = authedAccount(deps, c.req.header('authorization'));

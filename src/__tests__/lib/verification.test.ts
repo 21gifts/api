@@ -17,6 +17,7 @@ function account(overrides: Partial<Account> = {}): Account {
     id: 'acc',
     linkingKey: `02${'a'.repeat(64)}`,
     role: 'basis',
+    name: null,
     lightningAddress: ADDRESS,
     lightningAddressVerified: false,
     createdAt: T0,

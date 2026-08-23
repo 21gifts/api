@@ -72,7 +72,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current account JSON (id, linkingKey prefix fields, lightning address, verified flag, role).
+- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag).
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -89,6 +89,13 @@
 - **Purpose:** Triggers the 1-sat proof-of-control payment. JSON `{ status: 'sent', expiresInSeconds, sats }`. The nonce is **not** returned to the client; it is only in the LUD-12 wallet comment.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 409 `{ error: 'No Lightning Address linked' }` or `{ error: 'Lightning Address already verified' }`; 502 `{ error: 'Lightning Address did not accept the verification payment' }`; 503 `{ error: 'Verification payments are not configured' }`.
 - **Used by:** App `startLightningAddressVerification`.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/name
+
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no control characters).
+- **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
+- **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: POST /me/lightning-address/verification/confirm

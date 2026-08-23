@@ -211,6 +211,7 @@ consumed. `account` is the stored account object:
   "id": "<uuid>",
   "linkingKey": "<hex>",
   "role": "basis",
+  "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0
@@ -237,6 +238,7 @@ Missing or invalid bearer → **Response** `401`:
   "id": "<uuid>",
   "linkingKey": "<hex>",
   "role": "basis",
+  "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0
@@ -248,9 +250,36 @@ Missing or invalid bearer → **Response** `401`:
 | `id`                       | string         | Opaque account id                                 |
 | `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)               |
 | `role`                     | string         | `basis` or `moderator`                            |
+| `name`                     | string \| null | Display name, or `null` until set                 |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                  |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm) |
 | `createdAt`                | number         | Creation time (epoch ms)                          |
+
+### `POST /me/name`
+
+Set or replace the account display name. Body:
+
+```json
+{ "name": "Ada" }
+```
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `name` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"name\" string" }
+```
+
+Name is empty after trim, longer than 80 characters, or contains a control
+character → **Response** `400`:
+
+```json
+{ "error": "Name must be 1–80 characters" }
+```
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`). The stored value is trimmed. Names are not unique.
 
 ### `POST /me/lightning-address`
 

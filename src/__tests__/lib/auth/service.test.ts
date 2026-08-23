@@ -72,6 +72,7 @@ describe('completeCallback', () => {
     const account = store.findAccountByLinkingKey(w.key);
     expect(result).toEqual({ ok: true, accountId: account?.id, firstLogin: true });
     expect(account?.role).toBe('basis');
+    expect(account?.name).toBeNull();
     expect(store.getChallenge(k1)?.status).toBe('authenticated');
     expect(store.getChallenge(k1)?.accountId).toBe(account?.id);
   });
@@ -162,6 +163,7 @@ describe('resolveSession', () => {
       id: 'acc',
       linkingKey: KEY,
       role: 'basis',
+      name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: T0,
@@ -176,6 +178,7 @@ describe('resolveSession', () => {
       id: 'acc',
       linkingKey: KEY,
       role: 'basis',
+      name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: T0,

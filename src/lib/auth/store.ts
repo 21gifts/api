@@ -22,6 +22,8 @@ export interface Account {
   linkingKey: string;
   /** Permission tier. */
   role: AccountRole;
+  /** Display name, or `null` until the user sets one. */
+  name: string | null;
   /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
   lightningAddress: string | null;
   /**
