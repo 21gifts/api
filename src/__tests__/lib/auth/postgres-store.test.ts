@@ -262,4 +262,133 @@ describe('PostgresAuthStore', () => {
       /Unknown challenge status/,
     );
   });
+
+  it('evicts expired passkey challenges then inserts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 5_000,
+    });
+    expect(sql.executes[0]?.text).toMatch(/DELETE FROM passkey_challenge/);
+    expect(sql.executes[0]?.params[0]).toBe(5_000 - CHALLENGE_TTL_MS);
+    expect(sql.executes[1]?.text).toMatch(/INSERT INTO passkey_challenge/);
+  });
+
+  it('maps a passkey challenge row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'authenticate',
+        challenge: 'c',
+        account_id: null,
+        consumed: false,
+        created_at: new Date(1_000),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toEqual({
+      id: 'ch',
+      type: 'authenticate',
+      challenge: 'c',
+      accountId: null,
+      consumed: false,
+      createdAt: 1_000,
+    });
+  });
+
+  it('returns undefined for a missing passkey challenge', async () => {
+    expect(await new PostgresAuthStore(new MockSql()).getPasskeyChallenge('x')).toBeUndefined();
+  });
+
+  it('updates a passkey challenge only while unconsumed', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'ch' }];
+    const ok = await new PostgresAuthStore(sql).updatePasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: true,
+      createdAt: 1,
+    });
+    expect(ok).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/consumed = false/);
+  });
+
+  it('returns false when the passkey challenge CAS matches no row', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).updatePasskeyChallenge({
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        accountId: null,
+        consumed: true,
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('inserts and maps a passkey credential including a bytea key', async () => {
+    const sql = new MockSql();
+    const key = new Uint8Array([1, 2, 3]);
+    const store = new PostgresAuthStore(sql);
+    await store.createPasskeyCredential({
+      credentialId: 'cred',
+      publicKey: key,
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO passkey_credential/);
+    sql.nextRows = [
+      {
+        credential_id: 'cred',
+        public_key: key,
+        sign_count: 4,
+        account_id: 'acc',
+        created_at: new Date(1),
+      },
+    ];
+    expect(await store.getPasskeyCredential('cred')).toEqual({
+      credentialId: 'cred',
+      publicKey: key,
+      signCount: 4,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    await store.updatePasskeyCredential({
+      credentialId: 'cred',
+      publicKey: key,
+      signCount: 5,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(sql.executes[1]?.text).toMatch(/UPDATE passkey_credential/);
+  });
+
+  it('returns undefined for a missing passkey credential', async () => {
+    expect(await new PostgresAuthStore(new MockSql()).getPasskeyCredential('x')).toBeUndefined();
+  });
+
+  it('rejects an unknown passkey challenge type', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'nope',
+        challenge: 'c',
+        account_id: null,
+        consumed: false,
+        created_at: new Date(1),
+      },
+    ];
+    await expect(new PostgresAuthStore(sql).getPasskeyChallenge('ch')).rejects.toThrow(
+      /Unknown passkey challenge type/,
+    );
+  });
 });

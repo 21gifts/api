@@ -8,13 +8,16 @@ import type {
   AuthStore,
   Challenge,
   ChallengeStatus,
+  PasskeyChallenge,
+  PasskeyChallengeType,
+  PasskeyCredential,
   Session,
 } from '@/lib/auth/store';
 
 /** Row shape of `account`. */
 interface AccountRow {
   id: string;
-  linking_key: string;
+  linking_key: string | null;
   role: string;
   name: string | null;
   lightning_address: string | null;
@@ -43,6 +46,25 @@ interface VerificationRow {
   account_id: string;
   address: string;
   nonce: string;
+  created_at: Date | string;
+}
+
+/** Row shape of `passkey_challenge`. */
+interface PasskeyChallengeRow {
+  id: string;
+  type: string;
+  challenge: string;
+  account_id: string | null;
+  consumed: boolean;
+  created_at: Date | string;
+}
+
+/** Row shape of `passkey_credential`. */
+interface PasskeyCredentialRow {
+  credential_id: string;
+  public_key: Uint8Array;
+  sign_count: number;
+  account_id: string;
   created_at: Date | string;
 }
 
@@ -247,6 +269,91 @@ export class PostgresAuthStore implements AuthStore {
     await this.#sql.execute('DELETE FROM address_verification WHERE account_id = $1', [accountId]);
   }
 
+  async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
+    await this.#evictExpiredPasskeyChallenges(challenge.createdAt);
+    await this.#sql.execute(
+      `INSERT INTO passkey_challenge (id, type, challenge, account_id, consumed, created_at)
+       VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0))`,
+      [
+        challenge.id,
+        challenge.type,
+        challenge.challenge,
+        challenge.accountId,
+        challenge.consumed,
+        challenge.createdAt,
+      ],
+    );
+  }
+
+  async getPasskeyChallenge(id: string): Promise<PasskeyChallenge | undefined> {
+    const rows = await this.#sql.query<PasskeyChallengeRow>(
+      `SELECT id, type, challenge, account_id, consumed, created_at
+       FROM passkey_challenge WHERE id = $1`,
+      [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPasskeyChallenge(row);
+  }
+
+  async updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `UPDATE passkey_challenge
+       SET type = $2, challenge = $3, account_id = $4, consumed = $5,
+           created_at = to_timestamp($6::double precision / 1000.0)
+       WHERE id = $1 AND consumed = false
+       RETURNING id`,
+      [
+        challenge.id,
+        challenge.type,
+        challenge.challenge,
+        challenge.accountId,
+        challenge.consumed,
+        challenge.createdAt,
+      ],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async createPasskeyCredential(credential: PasskeyCredential): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+       VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))`,
+      [
+        credential.credentialId,
+        credential.publicKey,
+        credential.signCount,
+        credential.accountId,
+        credential.createdAt,
+      ],
+    );
+  }
+
+  async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
+    const rows = await this.#sql.query<PasskeyCredentialRow>(
+      `SELECT credential_id, public_key, sign_count, account_id, created_at
+       FROM passkey_credential WHERE credential_id = $1`,
+      [credentialId],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPasskeyCredential(row);
+  }
+
+  async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE passkey_credential
+       SET public_key = $2, sign_count = $3, account_id = $4,
+           created_at = to_timestamp($5::double precision / 1000.0)
+       WHERE credential_id = $1`,
+      [
+        credential.credentialId,
+        credential.publicKey,
+        credential.signCount,
+        credential.accountId,
+        credential.createdAt,
+      ],
+    );
+  }
+
   async #evictExpiredChallenges(now: number): Promise<void> {
     const cutoff = now - CHALLENGE_TTL_MS;
     await this.#sql.execute(
@@ -259,6 +366,14 @@ export class PostgresAuthStore implements AuthStore {
     const cutoff = now - SESSION_TTL_MS;
     await this.#sql.execute(
       'DELETE FROM auth_session WHERE created_at < to_timestamp($1::double precision / 1000.0)',
+      [cutoff],
+    );
+  }
+
+  async #evictExpiredPasskeyChallenges(now: number): Promise<void> {
+    const cutoff = now - CHALLENGE_TTL_MS;
+    await this.#sql.execute(
+      'DELETE FROM passkey_challenge WHERE created_at < to_timestamp($1::double precision / 1000.0)',
       [cutoff],
     );
   }
@@ -317,6 +432,34 @@ function mapVerification(row: VerificationRow): AddressVerification {
     accountId: row.account_id,
     address: row.address,
     nonce: row.nonce,
+    createdAt: epochMs(row.created_at),
+  };
+}
+
+function parsePasskeyChallengeType(raw: string): PasskeyChallengeType {
+  if (raw === 'register' || raw === 'authenticate') {
+    return raw;
+  }
+  throw new Error(`Unknown passkey challenge type "${raw}"`);
+}
+
+function mapPasskeyChallenge(row: PasskeyChallengeRow): PasskeyChallenge {
+  return {
+    id: row.id,
+    type: parsePasskeyChallengeType(row.type),
+    challenge: row.challenge,
+    accountId: row.account_id,
+    consumed: row.consumed,
+    createdAt: epochMs(row.created_at),
+  };
+}
+
+function mapPasskeyCredential(row: PasskeyCredentialRow): PasskeyCredential {
+  return {
+    credentialId: row.credential_id,
+    publicKey: row.public_key,
+    signCount: row.sign_count,
+    accountId: row.account_id,
     createdAt: epochMs(row.created_at),
   };
 }
