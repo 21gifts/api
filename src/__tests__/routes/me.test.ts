@@ -220,6 +220,19 @@ describe('POST /me/name', () => {
     ).toBe(true);
   });
 
+  it('keeps a previously stored lightning address when setting a name', async () => {
+    const store = seededStore({ lightningAddress: ADDRESS });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string | null; lightningAddress: string | null };
+    expect(body.name).toBe('Ada');
+    expect(body.lightningAddress).toBe(ADDRESS);
+  });
+
   it('replaces an existing name', async () => {
     const store = seededStore();
     const existing = store.getAccount('acc');

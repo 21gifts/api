@@ -62,6 +62,19 @@ function authedAccount(deps: MeRouteDeps, header: string | undefined): Account |
   return resolveSession(deps.store, deps.now(), token);
 }
 
+/**
+ * Re-read the account after an await so a concurrent profile write is not
+ * overwritten by a stale spread of the pre-await snapshot.
+ *
+ * @param deps - Store and collaborators.
+ * @param id - Account id from the authorized snapshot.
+ * @returns The latest stored account, or `null` if it disappeared.
+ */
+function storedAccount(deps: MeRouteDeps, id: string): Account | null {
+  /* v8 ignore next -- the account persists for the in-memory store's lifetime */
+  return deps.store.getAccount(id) ?? null;
+}
+
 /** Project an account to its public JSON shape. */
 function serializeAccount(account: Account): AccountResponse {
   return {
@@ -113,9 +126,14 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (name === null) {
         return c.json({ error: 'Name must be 1–80 characters' }, 400);
       }
-      const updated: Account = { ...account, name };
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, name };
       deps.store.updateAccount(updated);
-      logEvent('account.name.set', { accountId: account.id });
+      logEvent('account.name.set', { accountId: current.id });
       return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
@@ -131,15 +149,20 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       // Linking a (new) address resets any prior verified state; proof of control
       // is a separate step. Any in-flight verification is dropped with the link.
       const updated: Account = {
-        ...account,
+        ...current,
         lightningAddress: address,
         lightningAddressVerified: false,
       };
       deps.store.updateAccount(updated);
-      deps.store.deleteVerification(account.id);
+      deps.store.deleteVerification(current.id);
       logEvent('account.lightning_address.linked', {
         accountId: account.id,
         address,
@@ -151,8 +174,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const current = storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       const updated: Account = {
-        ...account,
+        ...current,
         lightningAddress: null,
         lightningAddressVerified: false,
       };
