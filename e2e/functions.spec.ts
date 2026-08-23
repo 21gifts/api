@@ -196,7 +196,7 @@ test('Function: meRoutes — GET /me with bearer is 200', async ({ request }) =>
   expect(me.status()).toBe(200);
 });
 
-test('Function: normalizeLightningAddress — POST rejects garbage and lowercases a valid address', async ({
+test('Function: normalizeLightningAddress — POST rejects garbage and stores a trimmed valid address', async ({
   request,
 }) => {
   const { token } = await login(request);
@@ -207,11 +207,11 @@ test('Function: normalizeLightningAddress — POST rejects garbage and lowercase
   expect(bad.status()).toBe(400);
   const ok = await request.post('/me/lightning-address', {
     headers: bearer(token),
-    data: { address: 'Alice@walletofsatoshi.com' },
+    data: { address: '  Alice@walletofsatoshi.com  ' },
   });
   expect(ok.status()).toBe(200);
   const body = (await ok.json()) as { lightningAddress: string };
-  expect(body.lightningAddress).toBe('alice@walletofsatoshi.com');
+  expect(body.lightningAddress).toBe('Alice@walletofsatoshi.com');
 });
 
 test('Function: startVerification — POST without a linked address is 409', async ({ request }) => {

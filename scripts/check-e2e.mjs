@@ -51,7 +51,9 @@ for (const spec of [...endpoints].sort()) {
 
 const functions = extractFunctions(path.join(ROOT, 'src'));
 for (const name of [...functions].sort()) {
-  if (!text.includes(`Function: ${name}`)) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const titleRe = new RegExp(`test\\((['"\`])Function: ${escaped}\\b`);
+  if (!titleRe.test(text)) {
     missing.push(`Function ${name} has no e2e test title Function: ${name}`);
   }
 }

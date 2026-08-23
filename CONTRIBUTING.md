@@ -125,10 +125,13 @@ api/
 │   └── gift.sql              # gift table used by GET /gifts/stats
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
-│   ├── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+│   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
 │   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
-│   └── http.spec.ts          # Playwright against a booted Bun process
+│   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
+│   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
+│   └── helpers/
+│       └── wallet.ts         # secp256k1 LUD-04 signer for login e2e
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
@@ -214,10 +217,13 @@ deviation and is rejected.
 
 Every HTTP endpoint **must** have at least one Playwright request against a
 booted server (`bun src/index.ts`). Every exported function/class **must** have
-a Playwright test whose title contains `Function: <Name>` and that exercises
-that export through HTTP on the booted process (not `app.request()`).
+a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
+booted process over HTTP (not `app.request()`). If an export is unreachable on
+the default boot surface (today: `requestPayInvoice`, which needs a configured
+`InvoicePayer`), that test still exists and asserts the default-boot outcome
+that proves it is not invoked (verification `503`).
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
-`request.get/post/delete` or a function has no `Function: <Name>` title.
+`request.get/post/delete` or a function has no `test(…Function: <Name>` title.
 Adding a route or export without an e2e call in the **same PR** is an
 undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
 
