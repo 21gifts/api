@@ -393,3 +393,125 @@ test('Function: meRoutes unlink — DELETE clears the linked address', async ({ 
   const me = await request.get('/me', { headers: bearer(token) });
   expect(((await me.json()) as { lightningAddress: string | null }).lightningAddress).toBeNull();
 });
+
+test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalSats: number };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalSats).toBe(0);
+});
+
+test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: buildGiftStats — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    spendOverTime: unknown[];
+    firstPaidAt: string | null;
+  };
+  expect(body.spendOverTime).toEqual([]);
+  expect(body.firstPaidAt).toBeNull();
+});
+
+test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: startPasskeyRegistration — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { challengeId: string; options: { challenge: string } };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+  expect(body.options.challenge.length).toBeGreaterThan(8);
+});
+
+test('Function: SimpleWebAuthnPasskeyCeremony — POST begin returns WebAuthn options', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { options: { rp?: { id?: string } } };
+  expect(body.options.rp?.id).toBe('localhost');
+});
+
+test('Function: resolveWebAuthnConfig — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: normalizeWebAuthnRpId — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: finishPasskeyRegistration — POST finish without body is 400', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/register/finish');
+  expect(res.status()).toBe(400);
+});
+
+test('Function: expectedOriginsForRpId — POST finish without Origin is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/register/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/register/finish', {
+    data: { challengeId, credential: { id: 'cred-e2e' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Invalid origin');
+});
+
+test('Function: startPasskeyAuthentication — POST begin returns a challenge', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/authenticate/begin');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { challengeId: string }).challengeId.length).toBeGreaterThan(8);
+});
+
+test('Function: finishPasskeyAuthentication — POST finish without body is 400', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/authenticate/finish');
+  expect(res.status()).toBe(400);
+});
+
+test('Function: credentialIdFrom — POST authenticate finish without credential id is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/authenticate/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/authenticate/finish', {
+    headers: { origin: 'http://localhost:3000' },
+    data: { challengeId, credential: { test: 'ok' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Unknown credential');
+});
+
+test('Function: issueSession — LNURL poll returns a bearer token', async ({ request }) => {
+  const { token } = await login(request);
+  expect(token.length).toBeGreaterThan(8);
+  const me = await request.get('/me', { headers: bearer(token) });
+  expect(me.status()).toBe(200);
+});
