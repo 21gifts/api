@@ -163,7 +163,7 @@ test('Function: verifyAuthSig — a bad signature is ERROR', async ({ request })
   const wallet = newWallet();
   const start = await startChallenge(request);
   const res = await request.get(
-    `/auth/lnurl/callback?tag=login&k1=${start.k1}&sig=${'00'.repeat(32)}&key=${wallet.key}`,
+    `/auth/lnurl/callback?tag=login&k1=${start.k1}&sig=${wallet.sign(start.k1, { prehash: true })}&key=${wallet.key}`,
   );
   expect(res.status()).toBe(200);
   expect(((await res.json()) as { status: string }).status).toBe('ERROR');
@@ -239,6 +239,10 @@ test('Function: normalizeLightningAddress — POST rejects garbage and stores a 
   expect(ok.status()).toBe(200);
   const body = (await ok.json()) as { lightningAddress: string };
   expect(body.lightningAddress).toBe('Alice@walletofsatoshi.com');
+  const me = await request.get('/me', { headers: bearer(token) });
+  expect(((await me.json()) as { lightningAddress: string }).lightningAddress).toBe(
+    'Alice@walletofsatoshi.com',
+  );
 });
 
 test('Function: startVerification — POST without a linked address is 409', async ({ request }) => {
@@ -386,4 +390,6 @@ test('Function: meRoutes unlink — DELETE clears the linked address', async ({ 
   const res = await request.delete('/me/lightning-address', { headers: bearer(token) });
   expect(res.status()).toBe(200);
   expect(((await res.json()) as { lightningAddress: string | null }).lightningAddress).toBeNull();
+  const me = await request.get('/me', { headers: bearer(token) });
+  expect(((await me.json()) as { lightningAddress: string | null }).lightningAddress).toBeNull();
 });
