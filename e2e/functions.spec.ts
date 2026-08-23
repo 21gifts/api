@@ -206,6 +206,23 @@ test('Function: meRoutes — GET /me with bearer is 200', async ({ request }) =>
   expect(me.status()).toBe(200);
 });
 
+test('Function: normalizeDisplayName — POST /me/name trims and rejects empty', async ({
+  request,
+}) => {
+  const { token } = await login(request);
+  const empty = await request.post('/me/name', {
+    headers: bearer(token),
+    data: { name: '   ' },
+  });
+  expect(empty.status()).toBe(400);
+  const ok = await request.post('/me/name', {
+    headers: bearer(token),
+    data: { name: '  Ada  ' },
+  });
+  expect(ok.status()).toBe(200);
+  expect(((await ok.json()) as { name: string }).name).toBe('Ada');
+});
+
 test('Function: normalizeLightningAddress — POST rejects garbage and stores a trimmed valid address', async ({
   request,
 }) => {
