@@ -2,8 +2,8 @@
  * Display-name validation for an account profile.
  *
  * Names are free-form labels, not unique usernames. Empty, over-long, or
- * control-character input is rejected so a bad value cannot be stored and
- * re-served on every `/me` response.
+ * C0/DEL control-character input (`charCode < 32` or `=== 127`) is rejected
+ * so a bad value cannot be stored and re-served on every `/me` response.
  */
 
 /** Maximum stored length after trim. */

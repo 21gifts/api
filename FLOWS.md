@@ -79,9 +79,6 @@ Until an invoice payer is injected, start returns **503**
 boots. Live verification payments do **not** work today. Edit or unlink clears
 any pending verification (`SPEC.md`).
 
-The signed-in view can set a display name (`POST /me/name`). There is no
-photo or story editor in the app today.
-
 ### Identity copy — **Shipped** (name) + **Sketch** (photo / story)
 
 Receiver name is stored on the account (`POST /me/name`). Photo and story

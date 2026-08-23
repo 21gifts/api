@@ -88,7 +88,8 @@ const confirmBody = z.object({ nonce: z.string() });
  * Build the `/me` route group.
  *
  * @param deps - Shared store, clock, payer, and fetch.
- * @returns A Hono app exposing account, link/unlink, and verification routes.
+ * @returns A Hono app exposing account, display-name, link/unlink, and
+ * verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
