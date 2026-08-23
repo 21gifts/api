@@ -38,7 +38,8 @@ api/
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
-│   │   └── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   └── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
@@ -49,6 +50,11 @@ api/
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
+│   │   ├── bolt11.ts         # Decode BOLT11 payment hash + amount
+│   │   ├── proof.ts          # sha256(preimage) === payment hash
+│   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
+│   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper

@@ -35,6 +35,15 @@ export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
 /** In-memory TTL for a successful LUD-16 metadata resolve, in milliseconds. */
 export const LN_ADDRESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/** Minimum gift invoice amount, in millisatoshis (1 sat). */
+export const GIFT_INVOICE_MIN_MSAT = 1_000;
+
+/** Maximum gift invoice amount, in millisatoshis (10 million sats). */
+export const GIFT_INVOICE_MAX_MSAT = 10_000_000_000;
+
+/** Lifetime of an unpaid gift invoice awaiting proof, in milliseconds. */
+export const GIFT_INVOICE_TTL_MS = 15 * 60 * 1000;
+
 /**
  * Normalise the configured public base URL used to build LNURL-auth callbacks.
  *

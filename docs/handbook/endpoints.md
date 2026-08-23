@@ -105,6 +105,20 @@
 - **Used by:** Humans and service catalogs.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: POST /invoices
+
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }`. Resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount; 502 provider did not issue a matching invoice.
+- **Used by:** the external spend worker before paying via lightning.space.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
+## Endpoint: POST /invoices/proof
+
+- **Purpose:** Spend-worker only. Body `{ id, preimage }`. Accepts the payment preimage as proof (`sha256(preimage)` must equal the stored payment hash). Idempotent for the same preimage.
+- **Errors:** 503 unconfigured; 401 unauthorized; 400 bad body or hash mismatch; 404 unknown id; 409 expired or already paid with a different preimage.
+- **Used by:** the external spend worker after LNDHub `payinvoice` returns a preimage.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
 ## Endpoint: GET /lightning-address
 
 - **Purpose:** Query `address=local@domain`. Resolves LUD-16, cached 5 minutes on success.

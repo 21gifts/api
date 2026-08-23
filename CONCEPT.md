@@ -124,8 +124,8 @@ verify the invoice amount via decode → pay through the donor's stored LNDHub
 credentials. Payout semantics are
 fail-closed: per-day idempotency log, ambiguous outcomes quarantined as
 "uncertain" and never auto-retried the same day, balance preflight before the
-first payment, and a per-donor daily cap. A standalone reference script with
-exactly these semantics exists and will be ported into the api payout worker.
+first payment, and a per-donor daily cap. Paying is an external worker: this api issues invoices
+(`POST /invoices`) and verifies the preimage (`POST /invoices/proof`).
 
 ### NOSTR in v1
 
@@ -668,6 +668,8 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-15 | Receiver address verification endpoints: `POST /me/lightning-address/verification` and `…/confirm`; api pays 1 sat (or provider `minSendable` ≤ 10 sat) with a LUD-12 comment nonce; **503** until an invoice payer is wired (process still boots)                                 |
 | 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                           |
 | 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                        |
+| 2026-08-23 | Spend-worker invoice HTTP: `POST /invoices` fetches a recipient BOLT11 via LNURL-pay; `POST /invoices/proof` accepts the payment preimage. Paying is the external spend worker via lightning.space LNDHub — this api does not store LNDHub credentials or pay. `SPEND_API_TOKEN` optional (503 until set). |
+
 
 ---
 

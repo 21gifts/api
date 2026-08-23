@@ -98,6 +98,62 @@
 - **Returns / side effects:** `{ ok: false, reason: 'not_configured' }` — it does not throw.
 - **Used by:** Default `createApp` `invoicePayer`.
 
+## Function: checkSpendAuth
+
+- **Purpose:** Timing-safe compare of the spend-worker Bearer token to `SPEND_API_TOKEN`.
+- **Inputs:** Configured token (may be unset) and the raw `Authorization` header.
+- **Returns / side effects:** `unconfigured` | `unauthorized` | `ok`. Does not throw on length mismatch.
+- **Used by:** `invoiceRoutes`.
+
+## Function: decodeBolt11
+
+- **Purpose:** Read payment hash and millisat amount from a BOLT11 string via `light-bolt11-decoder`.
+- **Inputs:** `pr` string; optional test decoder.
+- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure.
+- **Used by:** `invoiceRoutes` after LNURL-pay returns `pr`.
+
+## Function: InMemoryInvoiceStore
+
+- **Purpose:** Process-local store of gift invoices issued for the spend worker.
+- **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`.
+- **Returns / side effects:** Lookups return the row or `undefined`. Restart clears the map.
+- **Used by:** Default `createApp` `invoiceStore`; `invoiceRoutes`.
+
+## Function: invoiceRoutes
+
+- **Purpose:** Hono sub-app for spend-worker invoice issue and preimage proof.
+- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch.
+- **Returns / side effects:** Hono app mounted at `/invoices`.
+- **Used by:** `createApp`.
+
+## Function: newInvoiceId
+
+- **Purpose:** 16 random bytes as 32 lowercase hex characters.
+- **Inputs:** None (uses `crypto.getRandomValues`).
+- **Returns / side effects:** Unguessable invoice id string.
+- **Used by:** `POST /invoices`.
+
+## Function: normalizeHex32
+
+- **Purpose:** Accept a 32-byte hex string (any case, trimmed).
+- **Inputs:** Raw hex string.
+- **Returns / side effects:** Lowercase 64-char hex or `null`.
+- **Used by:** `preimageMatchesHash`.
+
+## Function: preimageMatchesHash
+
+- **Purpose:** Lightning proof-of-payment: `sha256(preimage)` equals the invoice payment hash.
+- **Inputs:** Preimage hex and payment-hash hex.
+- **Returns / side effects:** `true` only on a 32-byte match.
+- **Used by:** `POST /invoices/proof`.
+
+## Function: requestGiftInvoice
+
+- **Purpose:** LNURL-pay fetch for gift amounts: no 10-sat cap, comment optional, amount not raised to minSendable.
+- **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl.
+- **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
+- **Used by:** `POST /invoices`.
+
 ## Function: authRoutes
 
 - **Purpose:** Hono sub-app for LNURL-auth and passkey login.
