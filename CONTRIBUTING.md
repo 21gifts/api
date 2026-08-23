@@ -223,7 +223,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`), that test still exists and asserts the default-boot outcome
 that proves it is not invoked (verification `503`).
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
-`request.get/post/delete` or a function has no `test(…Function: <Name>` title.
+`request.get/post/delete` or a function has no matching
+`test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
 Adding a route or export without an e2e call in the **same PR** is an
 undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
 
