@@ -104,7 +104,14 @@ export class PostgresAuthStore implements AuthStore {
       `UPDATE account
        SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
            created_at = to_timestamp($7::double precision / 1000.0)
-       WHERE id = $1`,
+       WHERE id = $1
+         AND (
+           $2::text IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM account other
+             WHERE other.linking_key = $2 AND other.id <> $1
+           )
+         )`,
       [
         account.id,
         account.linkingKey,
@@ -125,6 +132,10 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    await this.#sql.execute('DELETE FROM account WHERE id = $1', [id]);
   }
 
   async listAccounts(): Promise<Account[]> {
@@ -223,10 +234,12 @@ export class PostgresAuthStore implements AuthStore {
     return rows[0] !== undefined;
   }
 
-  async createPasskeyCredential(credential: PasskeyCredential): Promise<void> {
-    await this.#sql.execute(
+  async createPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const rows = await this.#sql.query<{ credential_id: string }>(
       `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-       VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))`,
+       VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))
+       ON CONFLICT (credential_id) DO NOTHING
+       RETURNING credential_id`,
       [
         credential.credentialId,
         credential.publicKey,
@@ -235,6 +248,7 @@ export class PostgresAuthStore implements AuthStore {
         credential.createdAt,
       ],
     );
+    return rows[0] !== undefined;
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
@@ -250,16 +264,9 @@ export class PostgresAuthStore implements AuthStore {
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
     await this.#sql.execute(
       `UPDATE passkey_credential
-       SET public_key = $2, sign_count = $3, account_id = $4,
-           created_at = to_timestamp($5::double precision / 1000.0)
+       SET sign_count = GREATEST(sign_count, $2)
        WHERE credential_id = $1`,
-      [
-        credential.credentialId,
-        credential.publicKey,
-        credential.signCount,
-        credential.accountId,
-        credential.createdAt,
-      ],
+      [credential.credentialId, credential.signCount],
     );
   }
 

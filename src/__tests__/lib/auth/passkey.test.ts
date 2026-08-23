@@ -128,6 +128,30 @@ describe('passkey registration', () => {
     );
     expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
   });
+
+  it('rejects register finish when the credential id is already stored', async () => {
+    class DupStore extends InMemoryAuthStore {
+      override async createPasskeyCredential(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new DupStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+    const pending = await store.getPasskeyChallenge(begin.challengeId);
+    expect(pending?.accountId).toEqual(expect.any(String));
+    expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
+  });
 });
 
 describe('passkey authentication', () => {

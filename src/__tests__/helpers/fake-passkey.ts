@@ -34,7 +34,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
-   * Succeeds only when `response` is `{ test: 'ok' }`.
+   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed).
    *
    * @param input - Attestation payload from the finish body.
    * @returns Fixed credential `cred-1`, or `{ ok: false }`.
@@ -78,7 +78,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
-   * Succeeds when `response` is `{ test: 'ok', credentialId }`. `{ test: 'replay' }`
+   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed). `{ test: 'replay' }`
    * fails so clone-detection / verify-fail branches are reachable.
    *
    * @param input - Assertion payload from the finish body.
