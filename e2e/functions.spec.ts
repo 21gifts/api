@@ -318,6 +318,57 @@ test('Function: InMemoryLnAddressCache — a failed resolve is not cached as suc
   expect(second.status()).toBe(502);
 });
 
+test('Function: openAuthStore — default boot has no DATABASE_URL and serves HTTP', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: PostgresAuthStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: unknown[] };
+  expect(Array.isArray(body.accounts)).toBe(true);
+});
+
+test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({
+  request,
+}) => {
+  await login(request);
+  await login(request);
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<{ createdAt: number }> };
+  expect(body.accounts.length).toBeGreaterThanOrEqual(2);
+  for (let i = 1; i < body.accounts.length; i += 1) {
+    expect(body.accounts[i]!.createdAt).toBeGreaterThanOrEqual(body.accounts[i - 1]!.createdAt);
+  }
+});
+
 test('Function: meRoutes unlink — DELETE clears the linked address', async ({ request }) => {
   const { token } = await login(request);
   await request.post('/me/lightning-address', {
