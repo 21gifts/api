@@ -59,8 +59,10 @@ for (const name of [...functions].sort()) {
   }
 }
 
-if (screens.size === 0 && endpoints.size === 0 && functions.size === 0) {
-  console.error('E2E: no screens, endpoints, or functions discovered — refusing to pass');
+if (endpoints.size === 0 || functions.size === 0) {
+  console.error(
+    `E2E: discovery empty — screens=${screens.size} endpoints=${endpoints.size} functions=${functions.size}`,
+  );
   process.exit(1);
 }
 
