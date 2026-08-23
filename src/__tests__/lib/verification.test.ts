@@ -294,23 +294,21 @@ describe('confirmVerification', () => {
 
   it('returns no_pending when the linked address no longer matches the record', () => {
     const store = new InMemoryAuthStore();
+    const acc = account({ lightningAddress: 'bob@getalby.com' });
+    store.createAccount(acc);
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    const result = confirmVerification(
-      store,
-      T0,
-      account({ lightningAddress: 'bob@getalby.com' }),
-      'a'.repeat(32),
-    );
+    const result = confirmVerification(store, T0, acc, 'a'.repeat(32));
     expect(result).toEqual({ ok: false, code: 'no_pending' });
   });
 
   it('returns expired and deletes the record when past the TTL', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -329,6 +327,7 @@ describe('confirmVerification', () => {
 
   it('returns mismatch for a wrong nonce', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -343,6 +342,7 @@ describe('confirmVerification', () => {
 
   it('returns mismatch when nonce lengths differ', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -362,6 +362,7 @@ describe('confirmVerification', () => {
     expect(Buffer.byteLength(submitted, 'utf8')).not.toBe(Buffer.byteLength(stored, 'utf8'));
 
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
