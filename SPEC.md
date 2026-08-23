@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-22 (apex origin).
+**Status**: living document. Last revised 2026-08-23.
 
 ---
 
@@ -46,6 +46,7 @@ Public base URLs used in examples:
 | GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
 | GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
 | GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
+| POST   | `/me/name`                                   | Bearer                  | Set/replace display name                   |
 | POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
 | DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
 | POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
@@ -271,8 +272,8 @@ Body is not JSON with a `name` string → **Response** `400`:
 { "error": "Expected a JSON body with a \"name\" string" }
 ```
 
-Name is empty after trim, longer than 80 characters, or contains a control
-character → **Response** `400`:
+Name is empty after trim, longer than 80 characters, or contains a C0
+control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 
 ```json
 { "error": "Name must be 1–80 characters" }
