@@ -54,7 +54,10 @@ if (import.meta.main) {
           );
           return rows.map((row) => mapGiftQueryRow(row));
         });
-  const app = createApp({ authStore: store, giftStore });
+  const app =
+    giftStore === undefined
+      ? createApp({ authStore: store })
+      : createApp({ authStore: store, giftStore });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
 }

@@ -233,13 +233,13 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default                      | Purpose                                                                                                           |
-| ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                    |
-| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                              |
-| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.   |
+| Variable          | Default                      | Purpose                                                                                                                                                                               |
+| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                                                                                        |
+| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                                                                                  |
+| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
 | `DATABASE_URL`    | _(unset → in-memory)_        | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
-| `DEBUG_TOKEN`     | _(unset → debug off)_        | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                       |
+| `DEBUG_TOKEN`     | _(unset → debug off)_        | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
