@@ -71,8 +71,12 @@ function authedAccount(deps: MeRouteDeps, header: string | undefined): Account |
  * @returns The latest stored account, or `null` if it disappeared.
  */
 function storedAccount(deps: MeRouteDeps, id: string): Account | null {
-  /* v8 ignore next -- the account persists for the in-memory store's lifetime */
-  return deps.store.getAccount(id) ?? null;
+  const current = deps.store.getAccount(id);
+  /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
+  if (current === undefined) {
+    return null;
+  }
+  return current;
 }
 
 /** Project an account to its public JSON shape. */

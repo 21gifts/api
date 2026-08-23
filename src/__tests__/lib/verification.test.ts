@@ -286,6 +286,7 @@ describe('confirmVerification', () => {
 
   it('returns no_pending when there is no verification record', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     expect(confirmVerification(store, T0, account(), 'a'.repeat(32))).toEqual({
       ok: false,
       code: 'no_pending',
