@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
  * Fail if e2e/ does not cover every exported function/class and every HTTP
- * endpoint. A screen needs page.goto of that path; an endpoint needs
+ * endpoint. A function needs a Playwright test title containing
+ * `Function: <Name>`; a screen needs page.goto of that path; an endpoint needs
  * request.get/post/delete of that path. Run from the repo root.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { extractEndpoints, extractScreens, walk } from './check-handbook.mjs';
+import { extractEndpoints, extractFunctions, extractScreens, walk } from './check-handbook.mjs';
 
 const ROOT = process.cwd();
 const E2E_DIR = path.join(ROOT, 'e2e');
@@ -48,6 +49,13 @@ for (const spec of [...endpoints].sort()) {
   }
 }
 
+const functions = extractFunctions(path.join(ROOT, 'src'));
+for (const name of [...functions].sort()) {
+  if (!text.includes(`Function: ${name}`)) {
+    missing.push(`Function ${name} has no e2e test title Function: ${name}`);
+  }
+}
+
 if (screens.size === 0 && endpoints.size === 0) {
   console.error('E2E: no screens or endpoints discovered — refusing to pass');
   process.exit(1);
@@ -61,4 +69,6 @@ if (missing.length) {
   process.exit(1);
 }
 
-console.log(`E2E complete: ${screens.size} screens, ${endpoints.size} endpoints.`);
+console.log(
+  `E2E complete: ${screens.size} screens, ${endpoints.size} endpoints, ${functions.size} functions.`,
+);

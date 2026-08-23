@@ -213,10 +213,13 @@ deviation and is rejected.
 ### E2E (hard requirement)
 
 Every HTTP endpoint **must** have at least one Playwright request against a
-booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
-endpoint has no matching `request.get/post/delete`. Adding a route without an
-e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
-`e2e:check` then `e2e`.
+booted server (`bun src/index.ts`). Every exported function/class **must** have
+a Playwright test whose title contains `Function: <Name>` and that exercises
+that export through HTTP on the booted process (not `app.request()`).
+`bun run e2e:check` **fails the PR** if an endpoint has no matching
+`request.get/post/delete` or a function has no `Function: <Name>` title.
+Adding a route or export without an e2e call in the **same PR** is an
+undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
 
 ### Tests
 
