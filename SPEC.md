@@ -17,15 +17,15 @@ sessions, and pending address verifications.
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
 `UnconfiguredInvoicePayer` makes start verification return **503**. When
-`WOS_API_TOKEN` / `WOS_API_SECRET` are set, boot injects `WosInvoicePayer`
-so verification can pay from a Wallet of Satoshi account. Public
+`PHOENIXD_URL` / `PHOENIXD_PASSWORD` are set, boot injects `PhoenixdInvoicePayer`
+so verification can pay from the operator phoenixd node. Public
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache;
 it does not fetch or pay invoices.
 
 An in-process daily-gifts worker (no HTTP) runs when operator env is
 complete: static USD recipients, Kraken XBTUSD conversion, BOLT11 amount
-check, Wallet of Satoshi pay, durable JSONL idempotency log. See
-CONTRIBUTING for the env vars. Donor-upgrade HTTP is still not implemented.
+check, phoenixd pay, durable JSONL idempotency log. See CONTRIBUTING for
+the env vars. Donor-upgrade HTTP is still not implemented.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -464,9 +464,8 @@ account may become a donor by depositing an LNDHub export restricted to
 URLs are rejected. Not wired yet.
 
 **Recurring daily gifts — HTTP/UI still not implemented.** The fail-closed
-in-process worker is wired from operator Wallet of Satoshi env (no
-`/me/recurring` routes). Per-account donor configuration lands with
-donor-upgrade HTTP.
+in-process worker is wired from operator phoenixd env (no `/me/recurring`
+routes). Per-account donor configuration lands with donor-upgrade HTTP.
 
 **Custodial per-account NOSTR identities + server-side signing.** On sign-up
 the api would generate a keypair, store `nsec` encrypted, and sign that

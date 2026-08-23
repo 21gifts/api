@@ -100,10 +100,10 @@ the provider's `minSendable` if higher, capped at 10 sat) with a one-time
 nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi allows 255
 characters); the user reads the nonce from the wallet's transaction history
 and enters it in the app (`POST /me/lightning-address/verification` +
-`…/confirm`). When WoS env is unset, start still returns 503
-(`UnconfiguredInvoicePayer`); when `WOS_API_TOKEN` / `WOS_API_SECRET` are
-set, boot injects `WosInvoicePayer`. The process still boots either way.
-No LUD-21 dependency — WoS does not implement LNURL-verify.
+`…/confirm`). When phoenixd env is unset, start still returns 503
+(`UnconfiguredInvoicePayer`); when `PHOENIXD_URL` / `PHOENIXD_PASSWORD` are
+set, boot injects `PhoenixdInvoicePayer`. The process still boots either way.
+No LUD-21 dependency — Wallet of Satoshi does not implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
@@ -112,8 +112,9 @@ recipients. A server-side scheduler in the api executes them daily —
 resolve LUD-16 → convert USD → sats via the configured exchange-rate source
 (fail-closed: no payment on a missing or implausible rate) → fetch invoice →
 verify the invoice amount via decode → pay. The **operator dogfood worker**
-(no HTTP) pays through Wallet of Satoshi env credentials, not
-lightning.space. Per-account stored LNDHub credentials remain the
+(no HTTP) pays through the official phoenixd HTTP API, not lightning.space
+and not an unofficial Wallet of Satoshi REST client. Recipients stay
+Lightning Addresses. Per-account stored LNDHub credentials remain the
 unimplemented donor-upgrade HTTP path. Payout semantics are
 fail-closed: per-day idempotency log, ambiguous outcomes quarantined as
 "uncertain" and never auto-retried the same day, balance preflight before the
@@ -657,6 +658,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                                                                                                            |
 | 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                                                                                                         |
 | 2026-08-23 | Recurring-gift payout worker ported in-process: operator env (Wallet of Satoshi API token/secret + USD recipient JSON + durable JSONL log), daily 20:00 Europe/Zurich, fail-closed Kraken corridor and balance preflight. Donor-upgrade HTTP still later. WoS env also injects `WosInvoicePayer` for verification. lightning.space is not the operator payout rail. |
+| 2026-08-23 | Operator payout rail replaced with the official phoenixd HTTP API (`GET /getbalance`, `POST /payinvoice`). Recipients remain Lightning Addresses. Unofficial Wallet of Satoshi REST and lightning.space LNDHub are not the operator rail. `PHOENIXD_*` env also injects `PhoenixdInvoicePayer` for verification.                                                    |
 
 ---
 

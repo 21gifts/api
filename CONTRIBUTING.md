@@ -44,8 +44,9 @@ api/
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── bolt11-amount.ts  # BOLT11 HRP amount → sats
 │   │   ├── btc-usd-rate.ts   # Kraken XBTUSD + USD→sats
-│   │   ├── wos.ts            # Wallet of Satoshi REST client
-│   │   ├── wos-invoice-payer.ts  # InvoicePayer adapter + env factory
+│   │   ├── payout-client.ts  # PayoutClient port (balance + pay BOLT11)
+│   │   ├── phoenixd.ts       # Official phoenixd HTTP client (ACINQ)
+│   │   ├── phoenixd-invoice-payer.ts  # InvoicePayer adapter + env factory
 │   │   ├── daily-gifts/      # in-process fail-closed payout worker (no HTTP)
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
@@ -220,8 +221,8 @@ Currently:
 | `BIND_ADDR`              | `0.0.0.0:3000`               | Listen address                                                                                                  |
 | `SERVICE_VERSION`        | `0.1.0`                      | Surfaced via `/info`                                                                                            |
 | `PUBLIC_BASE_URL`        | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
-| `WOS_API_TOKEN`          | _(unset)_                    | Wallet of Satoshi API token (read + HMAC identity). Secret.                                                     |
-| `WOS_API_SECRET`         | _(unset)_                    | Wallet of Satoshi HMAC secret for POST. Secret.                                                                 |
+| `PHOENIXD_URL`           | _(unset)_                    | phoenixd HTTP base URL (`http://127.0.0.1:9740`). No userinfo in the URL.                                       |
+| `PHOENIXD_PASSWORD`      | _(unset)_                    | phoenixd HTTP password (Basic auth, empty username). Secret.                                                    |
 | `DAILY_GIFTS_RECIPIENTS` | _(unset)_                    | JSON array `[{ "address": "alice@walletofsatoshi.com", "usd": 2 }]`. Env only — not a file.                     |
 | `DAILY_CAP_USD`          | _(unset)_                    | Abort a run if the recipient USD sum exceeds this cap.                                                          |
 | `RATE_MIN_USD`           | _(unset)_                    | Inclusive lower bound for the Kraken XBTUSD last-trade price.                                                   |

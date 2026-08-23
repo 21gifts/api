@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { parseDailyGiftsConfig } from '@/lib/daily-gifts/config';
 
 const BASE_ENV = {
-  WOS_API_TOKEN: 'tok',
-  WOS_API_SECRET: 'sec',
+  PHOENIXD_URL: 'http://127.0.0.1:9740',
+  PHOENIXD_PASSWORD: 'pw',
   DAILY_GIFTS_RECIPIENTS: JSON.stringify([{ address: 'alice@walletofsatoshi.com', usd: 2 }]),
   DAILY_CAP_USD: '100',
   RATE_MIN_USD: '10000',
@@ -18,6 +18,7 @@ describe('parseDailyGiftsConfig', () => {
     if (!result.ok) return;
     expect(result.config.hour).toBe(20);
     expect(result.config.timeZone).toBe('Europe/Zurich');
+    expect(result.config.phoenixdUrl).toBe('http://127.0.0.1:9740');
     expect(result.config.recipients).toEqual([{ address: 'alice@walletofsatoshi.com', usd: 2 }]);
     expect(result.config.dailyCapUsd).toBe(100);
   });
@@ -41,8 +42,9 @@ describe('parseDailyGiftsConfig', () => {
       false,
     );
     expect(parseDailyGiftsConfig({ ...BASE_ENV, DAILY_GIFTS_RECIPIENTS: '   ' }).ok).toBe(false);
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, WOS_API_TOKEN: '' }).ok).toBe(false);
-    expect(parseDailyGiftsConfig({ ...BASE_ENV, WOS_API_SECRET: undefined }).ok).toBe(false);
+    expect(parseDailyGiftsConfig({ ...BASE_ENV, PHOENIXD_URL: '' }).ok).toBe(false);
+    expect(parseDailyGiftsConfig({ ...BASE_ENV, PHOENIXD_PASSWORD: undefined }).ok).toBe(false);
+    expect(parseDailyGiftsConfig({ ...BASE_ENV, PHOENIXD_URL: 'ftp://x' }).ok).toBe(false);
     expect(parseDailyGiftsConfig({ ...BASE_ENV, DAILY_GIFTS_LOG_PATH: '' }).ok).toBe(false);
   });
 

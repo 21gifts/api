@@ -215,7 +215,7 @@
 - **Purpose:** Decode integer satoshis from a mainnet BOLT11 amount prefix.
 - **Inputs:** `bolt11` string (case-insensitive). Only `lnbc` is accepted.
 - **Returns / side effects:** `{ ok: true, sats }` or `{ ok: false, reason: 'no_amount' | 'invalid' }`. No signature verify.
-- **Used by:** `runDailyGifts` before Wallet of Satoshi payment.
+- **Used by:** `runDailyGifts` before phoenixd payment.
 
 Amount-only check so the payout worker can reject a provider invoice that does not match the intended sats.
 
@@ -233,32 +233,32 @@ Amount-only check so the payout worker can reject a provider invoice that does n
 - **Returns / side effects:** `{ ok: true, usdPerBtc }` or `{ ok: false, reason: 'unavailable' | 'implausible' }`. 15s timeout.
 - **Used by:** `runDailyGifts`. Fail-closed: a missing or implausible rate pays nobody.
 
-## Function: signWosRequest
+## Function: parsePhoenixdBaseUrl
 
-- **Purpose:** HMAC-SHA256 of `endpoint + nonce + apiToken + body` for WoS POSTs.
-- **Inputs:** `apiSecret`, `endpoint`, `nonce`, `apiToken`, JSON `body`.
-- **Returns / side effects:** Lower-case hex digest. Never logs inputs.
-- **Used by:** `WosClient.payInvoice`.
+- **Purpose:** Normalize a phoenixd HTTP base URL.
+- **Inputs:** Raw URL string.
+- **Returns / side effects:** `{ ok: true, baseUrl }` or `{ ok: false, reason: 'invalid_url' }`. Rejects non-http(s), userinfo, query, and hash.
+- **Used by:** `parseDailyGiftsConfig` and `invoicePayerFromEnv`.
 
-## Function: WosClient
+## Function: PhoenixdClient
 
-- **Purpose:** Wallet of Satoshi REST client: GET balance, signed POST payment.
-- **Inputs:** `apiToken`, `apiSecret`, injected `fetchImpl`, optional nonce factory.
-- **Returns / side effects:** Balance in sats; pay result `paid` / `failed` / `uncertain`. Never logs secrets.
-- **Used by:** `WosInvoicePayer` and `runDailyGifts`. Host pinned to `www.livingroomofsatoshi.com`.
+- **Purpose:** Official phoenixd HTTP client: GET `/getbalance`, POST `/payinvoice`.
+- **Inputs:** Normalized `baseUrl`, HTTP `password`, injected `fetchImpl`.
+- **Returns / side effects:** Balance in sats (`balanceSat`); pay result `paid` / `failed` / `uncertain`. Never logs secrets, invoices, or preimages.
+- **Used by:** `PhoenixdInvoicePayer` and `runDailyGifts`.
 
-## Function: WosInvoicePayer
+## Function: PhoenixdInvoicePayer
 
-- **Purpose:** `InvoicePayer` adapter over `WosClient` for address verification.
-- **Inputs:** Constructor takes a `WosClient`. `payInvoice(bolt11)`.
+- **Purpose:** `InvoicePayer` adapter over `PhoenixdClient` for address verification.
+- **Inputs:** Constructor takes a `PhoenixdClient`. `payInvoice(bolt11)`.
 - **Returns / side effects:** `isConfigured()` is true. Paid → `{ ok: true }`; failed/uncertain → `{ ok: false, reason: 'payment_failed' }`.
-- **Used by:** `invoicePayerFromEnv` when WoS env is complete.
+- **Used by:** `invoicePayerFromEnv` when phoenixd env is complete.
 
 ## Function: invoicePayerFromEnv
 
-- **Purpose:** Build a payer from `WOS_API_TOKEN` / `WOS_API_SECRET`.
+- **Purpose:** Build a payer from `PHOENIXD_URL` / `PHOENIXD_PASSWORD`.
 - **Inputs:** Env slice and `fetchImpl`.
-- **Returns / side effects:** `WosInvoicePayer` or `UnconfiguredInvoicePayer`. Emits `wos.unconfigured` without secrets.
+- **Returns / side effects:** `PhoenixdInvoicePayer` or `UnconfiguredInvoicePayer`. Emits `phoenixd.unconfigured` without secrets.
 - **Used by:** Boot path in `src/index.ts`. Process still boots when unset.
 
 ## Function: parseDailyGiftsConfig
@@ -302,7 +302,7 @@ Required vars include WoS API token/secret, recipient JSON, USD cap, Kraken corr
 
 - **Purpose:** One fail-closed daily payout run for "today" in Europe/Zurich.
 - **Inputs:** `WorkerDeps` (config, payout client, fetch, log, fs, clock, `requestInvoice`).
-- **Returns / side effects:** Counts plus optional `aborted`. Pays sequentially; WAL `sending` before Wallet of Satoshi payment.
+- **Returns / side effects:** Counts plus optional `aborted`. Pays sequentially; WAL `sending` before phoenixd payment.
 - **Used by:** `startDailyGiftsScheduler` via `startDailyGiftsFromEnv`.
 
 Aborts without new payments on lock, corrupt log, bad rate, USD cap, or insufficient balance (remaining sats + 1% headroom). LNURL/decode failures are not logged (safe retry).

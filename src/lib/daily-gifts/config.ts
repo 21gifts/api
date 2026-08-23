@@ -1,4 +1,5 @@
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import { parsePhoenixdBaseUrl } from '@/lib/phoenixd';
 
 /** One static recipient from `DAILY_GIFTS_RECIPIENTS`. */
 export interface DailyGiftRecipient {
@@ -8,8 +9,8 @@ export interface DailyGiftRecipient {
 
 /** Parsed, validated daily-gifts operator configuration. */
 export interface DailyGiftsConfig {
-  apiToken: string;
-  apiSecret: string;
+  phoenixdUrl: string;
+  phoenixdPassword: string;
   recipients: DailyGiftRecipient[];
   dailyCapUsd: number;
   rateMinUsd: number;
@@ -26,7 +27,7 @@ const MAX_RECIPIENT_USD = 10_000;
 /**
  * Parse daily-gifts configuration from the environment.
  *
- * Required: `WOS_API_TOKEN`, `WOS_API_SECRET`,
+ * Required: `PHOENIXD_URL`, `PHOENIXD_PASSWORD`,
  * `DAILY_GIFTS_RECIPIENTS` (JSON array), `DAILY_CAP_USD`, `RATE_MIN_USD`,
  * `RATE_MAX_USD`, `DAILY_GIFTS_LOG_PATH`. Optional: `DAILY_GIFTS_HOUR`
  * (default 20), `DAILY_GIFTS_TZ` (must be Europe/Zurich when set).
@@ -38,13 +39,17 @@ const MAX_RECIPIENT_USD = 10_000;
 export function parseDailyGiftsConfig(
   env: Record<string, string | undefined>,
 ): { ok: true; config: DailyGiftsConfig } | { ok: false; reason: string } {
-  const apiToken = requireNonEmpty(env, 'WOS_API_TOKEN');
-  if (apiToken === null) {
-    return { ok: false, reason: 'missing_WOS_API_TOKEN' };
+  const rawUrl = requireNonEmpty(env, 'PHOENIXD_URL');
+  if (rawUrl === null) {
+    return { ok: false, reason: 'missing_PHOENIXD_URL' };
   }
-  const apiSecret = requireNonEmpty(env, 'WOS_API_SECRET');
-  if (apiSecret === null) {
-    return { ok: false, reason: 'missing_WOS_API_SECRET' };
+  const urlParsed = parsePhoenixdBaseUrl(rawUrl);
+  if (!urlParsed.ok) {
+    return { ok: false, reason: 'invalid_PHOENIXD_URL' };
+  }
+  const phoenixdPassword = requireNonEmpty(env, 'PHOENIXD_PASSWORD');
+  if (phoenixdPassword === null) {
+    return { ok: false, reason: 'missing_PHOENIXD_PASSWORD' };
   }
   const logPath = requireNonEmpty(env, 'DAILY_GIFTS_LOG_PATH');
   if (logPath === null) {
@@ -85,8 +90,8 @@ export function parseDailyGiftsConfig(
   return {
     ok: true,
     config: {
-      apiToken,
-      apiSecret,
+      phoenixdUrl: urlParsed.baseUrl,
+      phoenixdPassword,
       recipients: recipientsResult.recipients,
       dailyCapUsd,
       rateMinUsd,

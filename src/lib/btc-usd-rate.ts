@@ -5,7 +5,7 @@
  * no invoice is paid when the corridor check rejects the ticker.
  */
 
-/** Minimal fetch used by rate and LNDHub clients (tests inject a stub). */
+/** Minimal fetch used by rate and payout clients (tests inject a stub). */
 export type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /** Successful USD-per-BTC rate, or a collapsed failure reason. */

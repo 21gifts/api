@@ -117,13 +117,13 @@ restricted to `lightning.space` (custodial v1 compromise). Account-stored
 credentials are **not** wired; **no HTTP**.
 
 The fail-closed payout **worker** is in-process: operator env
-(`WOS_API_TOKEN` / `WOS_API_SECRET`, `DAILY_GIFTS_RECIPIENTS` as USD JSON,
+(`PHOENIXD_URL` / `PHOENIXD_PASSWORD`, `DAILY_GIFTS_RECIPIENTS` as USD JSON,
 `DAILY_GIFTS_LOG_PATH`) starts a scheduler at 20:00 Europe/Zurich. It
 resolves each LUD-16 address, converts USD → sats via Kraken (fail-closed
-corridor), decode-checks the invoice amount, and pays via Wallet of
-Satoshi. Per-day idempotency, uncertain outcomes quarantined, balance
-preflight, and a daily USD cap apply (CONCEPT). **No HTTP, no UI today.**
-Do not invent `/me/donor`, `/me/recurring`, or scheduler paths.
+corridor), decode-checks the invoice amount, and pays via phoenixd
+(`POST /payinvoice`). Per-day idempotency, uncertain outcomes quarantined,
+balance preflight, and a daily USD cap apply (CONCEPT). **No HTTP, no UI
+today.** Do not invent `/me/donor`, `/me/recurring`, or scheduler paths.
 
 ---
 

@@ -9,8 +9,8 @@ import {
 import type { GiftLogFs } from '@/lib/daily-gifts/log';
 
 const CONFIG: DailyGiftsConfig = {
-  apiToken: 'tok',
-  apiSecret: 'sec',
+  phoenixdUrl: 'http://127.0.0.1:9740',
+  phoenixdPassword: 'pw',
   recipients: [{ address: 'alice@walletofsatoshi.com', usd: 2 }],
   dailyCapUsd: 50,
   rateMinUsd: 10_000,
@@ -163,8 +163,8 @@ describe('startDailyGiftsFromEnv', () => {
   it('defaults fs, now, and pid when omitted', () => {
     const h = startDailyGiftsFromEnv(
       {
-        WOS_API_TOKEN: CONFIG.apiToken,
-        WOS_API_SECRET: CONFIG.apiSecret,
+        PHOENIXD_URL: CONFIG.phoenixdUrl,
+        PHOENIXD_PASSWORD: CONFIG.phoenixdPassword,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -195,8 +195,8 @@ describe('startDailyGiftsFromEnv', () => {
     };
     const h = startDailyGiftsFromEnv(
       {
-        WOS_API_TOKEN: CONFIG.apiToken,
-        WOS_API_SECRET: CONFIG.apiSecret,
+        PHOENIXD_URL: CONFIG.phoenixdUrl,
+        PHOENIXD_PASSWORD: CONFIG.phoenixdPassword,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -240,18 +240,18 @@ describe('startDailyGiftsFromEnv', () => {
       if (url.includes('/lnurlp/callback')) {
         return json({ pr: 'lnbc20u1qqqq' });
       }
-      if (url.endsWith('/wallet/balance')) {
-        return json({ btc: 0.01 });
+      if (url.endsWith('/getbalance')) {
+        return json({ balanceSat: 1_000_000 });
       }
-      if (url.endsWith('/wallet/payment')) {
-        return json({ status: 'PAID', transactionId: 'h' });
+      if (url.endsWith('/payinvoice')) {
+        return json({ paymentHash: 'ab'.repeat(32), paymentPreimage: 'cd'.repeat(32) });
       }
       return new Response(null, { status: 404 });
     };
     const h = startDailyGiftsFromEnv(
       {
-        WOS_API_TOKEN: CONFIG.apiToken,
-        WOS_API_SECRET: CONFIG.apiSecret,
+        PHOENIXD_URL: CONFIG.phoenixdUrl,
+        PHOENIXD_PASSWORD: CONFIG.phoenixdPassword,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',
@@ -284,8 +284,8 @@ describe('startDailyGiftsFromEnv', () => {
     };
     const h = startDailyGiftsFromEnv(
       {
-        WOS_API_TOKEN: CONFIG.apiToken,
-        WOS_API_SECRET: CONFIG.apiSecret,
+        PHOENIXD_URL: CONFIG.phoenixdUrl,
+        PHOENIXD_PASSWORD: CONFIG.phoenixdPassword,
         DAILY_GIFTS_RECIPIENTS: JSON.stringify(CONFIG.recipients),
         DAILY_CAP_USD: '50',
         RATE_MIN_USD: '10000',

@@ -11,7 +11,7 @@ export type PayInvoiceResult =
   { ok: true } | { ok: false; reason: 'not_configured' | 'payment_failed' };
 
 /**
- * Pays a BOLT11 invoice. Implementations may talk to LNDHub, LND, or any
+ * Pays a BOLT11 invoice. Implementations may talk to phoenixd, LND, or any
  * other backend; the verification domain only needs success or a reason.
  */
 export interface InvoicePayer {

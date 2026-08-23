@@ -47,11 +47,11 @@ It handles everything that doesn't have to run client-side:
 It explicitly **does not** hold keys, sign events, or proxy LNURL-pay flows —
 those are the app's job.
 
-**Daily gifts (operator, no HTTP):** when `WOS_API_TOKEN` / `WOS_API_SECRET`,
+**Daily gifts (operator, no HTTP):** when `PHOENIXD_URL` / `PHOENIXD_PASSWORD`,
 `DAILY_GIFTS_RECIPIENTS`, rate corridor, cap, and `DAILY_GIFTS_LOG_PATH` are
 set, the process runs a fail-closed payout once per day at 20:00 Europe/Zurich
-from a Wallet of Satoshi account (see CONTRIBUTING). The process still boots
-if they are unset.
+from a phoenixd node (see CONTRIBUTING). Recipients are Lightning Addresses.
+The process still boots if they are unset.
 
 ## Stack
 

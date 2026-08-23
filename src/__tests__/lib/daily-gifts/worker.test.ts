@@ -3,13 +3,17 @@ import type { FetchFn } from '@/lib/btc-usd-rate';
 import type { DailyGiftsConfig } from '@/lib/daily-gifts/config';
 import { FileGiftLog, type GiftLogFs } from '@/lib/daily-gifts/log';
 import { runDailyGifts } from '@/lib/daily-gifts/worker';
-import { WosClient } from '@/lib/wos';
+import type { PayoutClient } from '@/lib/payout-client';
+import { PhoenixdClient } from '@/lib/phoenixd';
 import type { LnurlPayResult } from '@/lib/lnurl-pay';
 
 const ADDRESS = 'alice@walletofsatoshi.com';
+const HASH = 'ab'.repeat(32);
+const PREIMAGE = 'cd'.repeat(32);
+
 const CONFIG: DailyGiftsConfig = {
-  apiToken: 'tok',
-  apiSecret: 'sec',
+  phoenixdUrl: 'http://127.0.0.1:9740',
+  phoenixdPassword: 'pw',
   recipients: [{ address: ADDRESS, usd: 1 }],
   dailyCapUsd: 50,
   rateMinUsd: 10_000,
@@ -32,11 +36,11 @@ function tickerFetch(price = 100_000): FetchFn {
     if (url.includes('kraken.com')) {
       return jsonResponse({ error: [], result: { XXBTZUSD: { c: [price] } } });
     }
-    if (url.endsWith('/wallet/balance')) {
-      return jsonResponse({ btc: 0.01 });
+    if (url.endsWith('/getbalance')) {
+      return jsonResponse({ balanceSat: 1_000_000 });
     }
-    if (url.endsWith('/wallet/payment')) {
-      return jsonResponse({ status: 'PAID', transactionId: 'hash' });
+    if (url.endsWith('/payinvoice')) {
+      return jsonResponse({ paymentHash: HASH, paymentPreimage: PREIMAGE });
     }
     return jsonResponse({}, 404);
   };
@@ -67,10 +71,10 @@ function memoryFs(locked = false): GiftLogFs & { files: Map<string, string> } {
   };
 }
 
-function client(fetchImpl: FetchFn): WosClient {
-  return new WosClient({
-    apiToken: CONFIG.apiToken,
-    apiSecret: CONFIG.apiSecret,
+function client(fetchImpl: FetchFn): PhoenixdClient {
+  return new PhoenixdClient({
+    baseUrl: CONFIG.phoenixdUrl,
+    password: CONFIG.phoenixdPassword,
     fetchImpl,
   });
 }
@@ -212,8 +216,8 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/wallet/balance')) {
-        return jsonResponse({ btc: 0.00000001 });
+      if (url.endsWith('/getbalance')) {
+        return jsonResponse({ balanceSat: 1 });
       }
       return jsonResponse({}, 404);
     };
@@ -236,8 +240,8 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/wallet/balance')) {
-        return jsonResponse({ btc: 0.01 });
+      if (url.endsWith('/getbalance')) {
+        return jsonResponse({ balanceSat: 1_000_000 });
       }
       return jsonResponse({ message: 'Invalid invoice' }, 400);
     };
@@ -258,10 +262,10 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/wallet/balance')) {
-        return jsonResponse({ btc: 0.01 });
+      if (url.endsWith('/getbalance')) {
+        return jsonResponse({ balanceSat: 1_000_000 });
       }
-      return jsonResponse({ status: 'PENDING', transactionId: 'h' });
+      return jsonResponse({ paymentHash: HASH }, 503);
     };
     const uncertain = await runDailyGifts({
       config: CONFIG,
@@ -317,15 +321,53 @@ describe('runDailyGifts', () => {
       if (url.includes('kraken.com')) {
         return jsonResponse({ error: [], result: { XXBTZUSD: { c: [100_000] } } });
       }
-      if (url.endsWith('/wallet/balance')) {
-        return jsonResponse({ btc: 0.01 });
+      if (url.endsWith('/getbalance')) {
+        return jsonResponse({ balanceSat: 1_000_000 });
       }
-      return jsonResponse({ status: 'PENDING' });
+      return jsonResponse({ paymentHash: HASH });
     };
     const result = await runDailyGifts({
       config: CONFIG,
       client: client(fetchImpl),
       fetchImpl,
+      log: new FileGiftLog({ path: CONFIG.logPath, fs }),
+      fs,
+      now: () => NOW,
+      requestInvoice: async () => ({ ok: true, pr: 'lnbc10u1qqqq', payMsat: 1_000_000 }),
+    });
+    expect(result.uncertain).toBe(1);
+    expect(fs.files.get(CONFIG.logPath) ?? '').not.toContain('payment_hash');
+  });
+
+  it('logs uncertain with a payment hash when the client supplies one', async () => {
+    const fs = memoryFs();
+    const stub: PayoutClient = {
+      getBalanceSats: async () => ({ ok: true, sats: 1_000_000 }),
+      payInvoice: async () => ({ status: 'uncertain', reason: 'pending', paymentHash: HASH }),
+    };
+    const result = await runDailyGifts({
+      config: CONFIG,
+      client: stub,
+      fetchImpl: tickerFetch(),
+      log: new FileGiftLog({ path: CONFIG.logPath, fs }),
+      fs,
+      now: () => NOW,
+      requestInvoice: async () => ({ ok: true, pr: 'lnbc10u1qqqq', payMsat: 1_000_000 }),
+    });
+    expect(result.uncertain).toBe(1);
+    expect(fs.files.get(CONFIG.logPath) ?? '').toContain(`"payment_hash":"${HASH}"`);
+  });
+
+  it('omits payment_hash when the uncertain result has an empty hash', async () => {
+    const fs = memoryFs();
+    const stub: PayoutClient = {
+      getBalanceSats: async () => ({ ok: true, sats: 1_000_000 }),
+      payInvoice: async () => ({ status: 'uncertain', reason: 'pending', paymentHash: '' }),
+    };
+    const result = await runDailyGifts({
+      config: CONFIG,
+      client: stub,
+      fetchImpl: tickerFetch(),
       log: new FileGiftLog({ path: CONFIG.logPath, fs }),
       fs,
       now: () => NOW,

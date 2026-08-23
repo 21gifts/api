@@ -5,7 +5,7 @@ import type { FetchFn } from '@/lib/btc-usd-rate';
 import type { DailyGiftsConfig } from '@/lib/daily-gifts/config';
 import type { FileGiftLog, GiftLogEntry, GiftLogFs } from '@/lib/daily-gifts/log';
 import { replayDay, zurichDate } from '@/lib/daily-gifts/log';
-import type { PayoutClient } from '@/lib/wos';
+import type { PayoutClient } from '@/lib/payout-client';
 import type { LnurlPayResult } from '@/lib/lnurl-pay';
 import { logEvent } from '@/lib/log';
 
@@ -183,6 +183,7 @@ export async function runDailyGifts(deps: WorkerDeps): Promise<WorkerRunResult> 
           status: 'paid',
           timestamp: new Date(now()).toISOString(),
           payment_hash: pay.paymentHash,
+          preimage: pay.preimage,
         };
         await log.append(paidEntry);
         entries = [...entries, paidEntry];
