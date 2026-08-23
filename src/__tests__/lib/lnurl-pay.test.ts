@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requestPayInvoice, type FetchFn } from '@/lib/lnurl-pay';
+import { requestAmountInvoice, requestPayInvoice, type FetchFn } from '@/lib/lnurl-pay';
 import { VERIFICATION_AMOUNT_CAP_MSAT } from '@/lib/config';
 
 const ADDRESS = 'alice@walletofsatoshi.com';
@@ -293,6 +293,135 @@ describe('requestPayInvoice', () => {
       amountMsat: 1000,
       comment: COMMENT,
       fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+});
+
+describe('requestAmountInvoice', () => {
+  it('fetches an exact amount without a comment', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const result = await requestAmountInvoice({
+      address: ADDRESS,
+      amountMsat: 2000,
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: true, pr: PR, payMsat: 2000 });
+    expect(calls[1]).toContain('amount=2000');
+    expect(calls[1]).not.toContain('comment=');
+  });
+
+  it('rejects amounts outside min/max and does not raise to minSendable', async () => {
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 5000,
+        maxSendable: 10_000,
+      });
+    expect(await requestAmountInvoice({ address: ADDRESS, amountMsat: 1000, fetchImpl })).toEqual({
+      ok: false,
+      reason: 'unreachable',
+    });
+    expect(await requestAmountInvoice({ address: ADDRESS, amountMsat: 20_000, fetchImpl })).toEqual(
+      { ok: false, reason: 'unreachable' },
+    );
+  });
+
+  it('requires commentAllowed when a comment is provided', async () => {
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+        commentAllowed: 2,
+      });
+    expect(
+      await requestAmountInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        comment: 'toolong',
+        fetchImpl,
+      }),
+    ).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
+  it('attaches a comment when allowed', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      calls.push(String(input));
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const result = await requestAmountInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      comment: 'hi',
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls[1]).toContain('comment=hi');
+  });
+
+  it('maps a failed invoice callback to unreachable', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+        });
+      }
+      return new Response('nope', { status: 200 });
+    };
+    expect(await requestAmountInvoice({ address: ADDRESS, amountMsat: 1000, fetchImpl })).toEqual({
+      ok: false,
+      reason: 'unreachable',
+    });
+  });
+
+  it('rejects a comment when commentAllowed is missing', async () => {
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+      });
+    expect(
+      await requestAmountInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        comment: 'hi',
+        fetchImpl,
+      }),
+    ).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
+  it('maps resolve failure to unreachable', async () => {
+    const result = await requestAmountInvoice({
+      address: 'not-an-address',
+      amountMsat: 1000,
+      fetchImpl: async () => {
+        throw new Error('no');
+      },
     });
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });

@@ -113,19 +113,17 @@ Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 ## 4. Recurring gifts — **Sketch**
 
 **Prerequisite**: the donor upgrades by depositing a `lndhub://` export
-restricted to `lightning.space` (custodial v1 compromise). Not wired; **no
-HTTP**.
+restricted to `lightning.space` (custodial v1 compromise). Account-stored
+credentials are **not** wired; **no HTTP**.
 
-Then: configure recurring **daily** gifts as fixed **USD** amounts to a list
-of recipients. A server-side scheduler in the api would:
-
-1. Resolve each recipient's LUD-16 address
-2. Convert USD → sats via the configured rate (fail-closed)
-3. Fetch an invoice, decode-verify the amount, pay via the stored LNDHub
-
-Per-day idempotency, uncertain outcomes quarantined, balance preflight, and a
-per-donor daily cap apply (CONCEPT). **No HTTP, no UI today.** Do not invent
-`/me/donor`, `/me/recurring`, or scheduler paths.
+The fail-closed payout **worker** is in-process: operator env
+(`LNDHUB_*`, `DAILY_GIFTS_RECIPIENTS` as USD JSON, `DAILY_GIFTS_LOG_PATH`)
+starts a scheduler at 20:00 Europe/Zurich. It resolves each LUD-16 address,
+converts USD → sats via Kraken (fail-closed corridor), decode-checks the
+invoice amount, and pays via LNDHub. Per-day idempotency, uncertain
+outcomes quarantined, balance preflight, and a daily USD cap apply
+(CONCEPT). **No HTTP, no UI today.** Do not invent `/me/donor`,
+`/me/recurring`, or scheduler paths.
 
 ---
 

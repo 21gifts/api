@@ -79,6 +79,60 @@ export async function requestPayInvoice(args: RequestPayInvoiceArgs): Promise<Ln
 }
 
 /**
+ * Request a BOLT11 invoice for an exact millisatoshi amount (no verification cap).
+ *
+ * Unlike {@link requestPayInvoice}, the amount is not raised to `minSendable`
+ * and must already lie within `[minSendable, maxSendable]`. When `comment` is
+ * omitted or empty, the comment query param and `commentAllowed` check are
+ * skipped. Used by the daily-gifts payout worker.
+ *
+ * @param args - Address, exact amount, optional comment, and injected fetch.
+ * @returns `{ ok: true, pr, payMsat }` or `{ ok: false, reason: 'unreachable' }`.
+ */
+export async function requestAmountInvoice(args: {
+  address: string;
+  amountMsat: number;
+  fetchImpl: FetchFn;
+  comment?: string;
+}): Promise<LnurlPayResult> {
+  const resolved = await resolveLnurlp({
+    address: args.address,
+    fetchImpl: args.fetchImpl,
+  });
+  if (!resolved.ok) {
+    return { ok: false, reason: 'unreachable' };
+  }
+  const metadata = resolved.metadata;
+
+  const payMsat = args.amountMsat;
+  if (payMsat < metadata.minSendable || payMsat > metadata.maxSendable) {
+    return { ok: false, reason: 'unreachable' };
+  }
+
+  const comment = args.comment;
+  const hasComment = comment !== undefined && comment !== '';
+  if (hasComment) {
+    const commentAllowed = metadata.commentAllowed;
+    if (commentAllowed === undefined || commentAllowed < comment.length) {
+      return { ok: false, reason: 'unreachable' };
+    }
+  }
+
+  const callbackUrl = new URL(metadata.callback);
+  callbackUrl.searchParams.set('amount', String(payMsat));
+  if (hasComment) {
+    callbackUrl.searchParams.set('comment', comment);
+  }
+
+  const invoice = await fetchJson(args.fetchImpl, callbackUrl.toString(), lnurlpInvoiceSchema);
+  if (invoice === null) {
+    return { ok: false, reason: 'unreachable' };
+  }
+
+  return { ok: true, pr: invoice.pr, payMsat };
+}
+
+/**
  * GET `url`, parse JSON, and validate with `schema`. Any network, HTTP, JSON,
  * or schema failure yields `null` (mapped to `unreachable` by the caller).
  */

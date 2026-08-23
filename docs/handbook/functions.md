@@ -209,3 +209,135 @@
 - **Inputs:** `k1`, `sig`, `key` hex.
 - **Returns / side effects:** `true` iff the wallet signed this challenge.
 - **Used by:** `completeCallback`.
+
+## Function: decodeBolt11AmountSats
+
+- **Purpose:** Decode integer satoshis from a mainnet BOLT11 amount prefix.
+- **Inputs:** `bolt11` string (case-insensitive). Only `lnbc` is accepted.
+- **Returns / side effects:** `{ ok: true, sats }` or `{ ok: false, reason: 'no_amount' | 'invalid' }`. No signature verify.
+- **Used by:** `runDailyGifts` before LNDHub `payinvoice`.
+
+Amount-only check so the payout worker can reject a provider invoice that does not match the intended sats.
+
+## Function: usdToSats
+
+- **Purpose:** Convert a USD amount to integer satoshis at a USD-per-BTC rate.
+- **Inputs:** `usd`, `usdPerBtc` (both numbers).
+- **Returns / side effects:** `Math.round(usd / usdPerBtc * 1e8)`.
+- **Used by:** `runDailyGifts`.
+
+## Function: fetchKrakenXbtUsd
+
+- **Purpose:** Fetch Kraken XBTUSD last trade and corridor-check it.
+- **Inputs:** Injected `fetchImpl`, inclusive `minUsd`/`maxUsd`.
+- **Returns / side effects:** `{ ok: true, usdPerBtc }` or `{ ok: false, reason: 'unavailable' | 'implausible' }`. 15s timeout.
+- **Used by:** `runDailyGifts`. Fail-closed: a missing or implausible rate pays nobody.
+
+## Function: parseLndhubBaseUrl
+
+- **Purpose:** Accept only `https://lightning.space/…` LNDHub base URLs.
+- **Inputs:** Raw URL string.
+- **Returns / side effects:** Normalised `URL` with trailing slashes stripped, or `null`.
+- **Used by:** `LndhubClient`, `parseDailyGiftsConfig`, `invoicePayerFromEnv`.
+
+## Function: LndhubClient
+
+- **Purpose:** lightning.space LNDHub HTTP client: `auth`, `getbalance`, `payinvoice`.
+- **Inputs:** `baseUrl`, `login`, `password`, injected `fetchImpl`, optional `clock`.
+- **Returns / side effects:** Balance in sats; pay result `paid` / `failed` / `uncertain`. Never logs secrets.
+- **Used by:** `LndhubInvoicePayer` and `runDailyGifts`. Token cached; one 401 re-auth.
+
+## Function: LndhubInvoicePayer
+
+- **Purpose:** `InvoicePayer` adapter over `LndhubClient` for address verification.
+- **Inputs:** Constructor takes an `LndhubClient`. `payInvoice(bolt11)`.
+- **Returns / side effects:** `isConfigured()` is true. Paid → `{ ok: true }`; failed/uncertain → `{ ok: false, reason: 'payment_failed' }`.
+- **Used by:** `invoicePayerFromEnv` when LNDHub env is complete.
+
+## Function: invoicePayerFromEnv
+
+- **Purpose:** Build a payer from `LNDHUB_URL` / `LNDHUB_LOGIN` / `LNDHUB_PASSWORD`.
+- **Inputs:** Env slice and `fetchImpl`.
+- **Returns / side effects:** `LndhubInvoicePayer` or `UnconfiguredInvoicePayer`. Emits `lndhub.unconfigured` without secrets.
+- **Used by:** Boot path in `src/index.ts`. Process still boots when unset.
+
+## Function: parseDailyGiftsConfig
+
+- **Purpose:** Parse operator daily-gifts env into a typed config.
+- **Inputs:** Env slice. Recipients JSON in `DAILY_GIFTS_RECIPIENTS`.
+- **Returns / side effects:** `{ ok: true, config }` or `{ ok: false, reason }`. No throw.
+- **Used by:** `startDailyGiftsFromEnv`.
+
+Required vars include LNDHub credentials, recipient JSON, USD cap, Kraken corridor, and `DAILY_GIFTS_LOG_PATH`. Hour defaults to 20; timezone must be Europe/Zurich.
+
+## Function: zurichDate
+
+- **Purpose:** Calendar date `YYYY-MM-DD` in Europe/Zurich.
+- **Inputs:** Epoch milliseconds.
+- **Returns / side effects:** Date string used as the idempotency day key.
+- **Used by:** `runDailyGifts` and the payment log.
+
+## Function: replayDay
+
+- **Purpose:** Replay JSONL rows for one address on one Zurich date.
+- **Inputs:** `entries`, `date`, `address`.
+- **Returns / side effects:** `paid` / `uncertain` / `clear`. Dangling `sending` becomes `uncertain`; `failed` after `sending` is retryable (`clear`).
+- **Used by:** `runDailyGifts` skip logic.
+
+## Function: FileGiftLog
+
+- **Purpose:** Append-only JSONL gift log with injected filesystem.
+- **Inputs:** `{ path, fs }`. `load()` / `append(entry)`.
+- **Returns / side effects:** Load returns entries or `corrupt`. Append writes one JSON line.
+- **Used by:** `runDailyGifts`. Tests inject an in-memory `GiftLogFs`.
+
+## Function: nodeGiftLogFs
+
+- **Purpose:** Real filesystem adapter: append+fsync, mkdir, exclusive `wx` lock.
+- **Inputs:** None. Methods take paths and a pid for the lock file.
+- **Returns / side effects:** `readFile` returns `null` on ENOENT. `tryLock` is exclusive. `unlock` unlinks.
+- **Used by:** Production `startDailyGiftsFromEnv`. Lock path is `logPath + '.lock'`.
+
+## Function: runDailyGifts
+
+- **Purpose:** One fail-closed daily payout run for "today" in Europe/Zurich.
+- **Inputs:** `WorkerDeps` (config, LNDHub client, fetch, log, fs, clock, `requestInvoice`).
+- **Returns / side effects:** Counts plus optional `aborted`. Pays sequentially; WAL `sending` before `payinvoice`.
+- **Used by:** `startDailyGiftsScheduler` via `startDailyGiftsFromEnv`.
+
+Aborts without new payments on lock, corrupt log, bad rate, USD cap, or insufficient balance (remaining sats + 1% headroom). LNURL/decode failures are not logged (safe retry).
+
+## Function: nodeTimeoutSchedule
+
+- **Purpose:** Production `setTimeout` adapter for the daily-gifts scheduler.
+- **Inputs:** `ms` delay and callback `fn`.
+- **Returns / side effects:** `{ cancel }` which clears the timeout.
+- **Used by:** `startDailyGiftsFromEnv` when no `schedule` is injected.
+
+## Function: msUntilNextHour
+
+- **Purpose:** Delay until the next local `hour:00:00` in a time zone (DST-safe).
+- **Inputs:** `nowMs`, `hour` 0–23, IANA `timeZone`.
+- **Returns / side effects:** Non-negative milliseconds. Exact instant returns 0.
+- **Used by:** `startDailyGiftsScheduler`.
+
+## Function: startDailyGiftsScheduler
+
+- **Purpose:** In-process timer loop: wait, run, reschedule.
+- **Inputs:** Config, `run` callback, clock, `schedule` factory (tests inject; production uses `setTimeout`).
+- **Returns / side effects:** `{ stop }`. Overlapping runs skipped. Run errors logged as `daily_gifts.run.error`.
+- **Used by:** `startDailyGiftsFromEnv`. Does not start from `createApp`.
+
+## Function: startDailyGiftsFromEnv
+
+- **Purpose:** Parse env and start the scheduler, or no-op when misconfigured.
+- **Inputs:** Env plus `fetchImpl` and optional fs/clock/schedule/pid.
+- **Returns / side effects:** `{ stop }`. Parse failure emits `daily_gifts.unconfigured` and does not throw.
+- **Used by:** Boot path in `src/index.ts`.
+
+## Function: requestAmountInvoice
+
+- **Purpose:** LNURL-pay invoice for an exact millisatoshi amount (no verification cap).
+- **Inputs:** `address`, `amountMsat`, `fetchImpl`, optional `comment`.
+- **Returns / side effects:** `{ ok: true, pr, payMsat }` or `{ ok: false, reason: 'unreachable' }`. Does not raise to `minSendable`.
+- **Used by:** `runDailyGifts`. Comment omitted unless provided and `commentAllowed` permits it.

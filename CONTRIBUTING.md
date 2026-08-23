@@ -42,6 +42,11 @@ api/
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
+│   │   ├── bolt11-amount.ts  # BOLT11 HRP amount → sats
+│   │   ├── btc-usd-rate.ts   # Kraken XBTUSD + USD→sats
+│   │   ├── lndhub.ts         # lightning.space LNDHub client
+│   │   ├── lndhub-invoice-payer.ts  # InvoicePayer adapter + env factory
+│   │   ├── daily-gifts/      # in-process fail-closed payout worker (no HTTP)
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
@@ -210,11 +215,21 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default                      | Purpose                                                                                                         |
-| ----------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                  |
-| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                            |
-| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
+| Variable                 | Default                      | Purpose                                                                                                         |
+| ------------------------ | ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`              | `0.0.0.0:3000`               | Listen address                                                                                                  |
+| `SERVICE_VERSION`        | `0.1.0`                      | Surfaced via `/info`                                                                                            |
+| `PUBLIC_BASE_URL`        | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
+| `LNDHUB_URL`             | _(unset)_                    | lightning.space LNDHub base (`https://lightning.space/v1/lndhub`). Other hosts are rejected.                    |
+| `LNDHUB_LOGIN`           | _(unset)_                    | LNDHub login from `lndhub://LOGIN:PASSWORD@…`. Secret.                                                          |
+| `LNDHUB_PASSWORD`        | _(unset)_                    | LNDHub password. Secret.                                                                                        |
+| `DAILY_GIFTS_RECIPIENTS` | _(unset)_                    | JSON array `[{ "address": "alice@walletofsatoshi.com", "usd": 2 }]`. Env only — not a file.                     |
+| `DAILY_CAP_USD`          | _(unset)_                    | Abort a run if the recipient USD sum exceeds this cap.                                                          |
+| `RATE_MIN_USD`           | _(unset)_                    | Inclusive lower bound for the Kraken XBTUSD last-trade price.                                                   |
+| `RATE_MAX_USD`           | _(unset)_                    | Inclusive upper bound for that price. Out of band → no payments.                                                |
+| `DAILY_GIFTS_LOG_PATH`   | _(unset)_                    | Durable JSONL payment log. Required to start the scheduler; no default.                                         |
+| `DAILY_GIFTS_HOUR`       | `20`                         | Local hour 0–23 in Europe/Zurich.                                                                               |
+| `DAILY_GIFTS_TZ`         | `Europe/Zurich`              | Must be `Europe/Zurich` if set.                                                                                 |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
