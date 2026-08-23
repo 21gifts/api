@@ -269,20 +269,20 @@ test('Function: confirmVerification — confirm without a pending payment is 409
 test('Function: lightningAddressRoutes — GET with a public address is 502 when LNURL-pay is unreachable', async ({
   request,
 }) => {
-  const res = await request.get('/lightning-address?address=alice@example.com');
+  const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(res.status()).toBe(502);
 });
 
-test('Function: resolveLnurlp — GET alice@example.com is 502', async ({ request }) => {
-  const res = await request.get('/lightning-address?address=alice@example.com');
+test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
+  const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(res.status()).toBe(502);
 });
 
 test('Function: InMemoryLnAddressCache — a failed resolve is not cached as success', async ({
   request,
 }) => {
-  const first = await request.get('/lightning-address?address=alice@example.com');
-  const second = await request.get('/lightning-address?address=alice@example.com');
+  const first = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
+  const second = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(first.status()).toBe(502);
   expect(second.status()).toBe(502);
 });
