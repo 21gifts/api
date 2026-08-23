@@ -109,3 +109,17 @@ test('GET /lightning-address without address is 400', async ({ request }) => {
   const res = await request.get('/lightning-address');
   expect(res.status()).toBe(400);
 });
+
+test('POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('POST /invoices/proof unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});

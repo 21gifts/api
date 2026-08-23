@@ -36,7 +36,8 @@ api/
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
-│   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
+│   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
+│   │   └── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
@@ -47,6 +48,11 @@ api/
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
+│   │   ├── bolt11.ts         # Decode BOLT11 payment hash + amount
+│   │   ├── proof.ts          # sha256(preimage) === payment hash
+│   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
+│   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify

@@ -7,11 +7,14 @@ import type { BrandReader } from '@/routes/brand';
 import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
+import { invoiceRoutes } from '@/routes/invoices';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
+import { InMemoryInvoiceStore } from '@/lib/invoice-store';
+import type { InvoiceStore } from '@/lib/invoice-store';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
@@ -48,6 +51,13 @@ export interface AppDeps {
    * `/apple-touch-icon.png` (default: {@link readPublicBrandFile}).
    */
   readBrand?: BrandReader;
+  /**
+   * Spend-worker shared secret (default: `process.env.SPEND_API_TOKEN`).
+   * Unset → `POST /invoices` returns 503.
+   */
+  spendApiToken?: string;
+  /** Gift invoices issued for the spend worker (default: in-memory). */
+  invoiceStore?: InvoiceStore;
 }
 
 /**
@@ -59,7 +69,8 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, and brand reader.
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader,
+ *   spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -71,6 +82,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
+  const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
+  const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
 
   const app = new Hono();
 
@@ -98,6 +111,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
+  app.route('/invoices', invoiceRoutes({ spendApiToken, store: invoiceStore, now, fetchImpl }));
 
   return app;
 }
