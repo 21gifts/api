@@ -8,8 +8,11 @@ import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
+import { giftsStatsRoutes } from '@/routes/stats';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
+import type { GiftStore } from '@/lib/gift-store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -54,6 +57,11 @@ export interface AppDeps {
    * blank → `GET /debug/accounts` returns 503.
    */
   debugToken?: string;
+  /**
+   * Outbound gifts for public statistics (default: empty
+   * {@link InMemoryGiftStore}).
+   */
+  giftStore?: GiftStore;
 }
 
 /**
@@ -65,8 +73,8 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader, and
- *   debugToken.
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader,
+ *   debugToken, and gift store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -79,6 +87,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
+  const giftStore = deps.giftStore ?? new InMemoryGiftStore();
 
   const app = new Hono();
 
@@ -107,6 +116,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
+  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore }));
 
   return app;
 }
