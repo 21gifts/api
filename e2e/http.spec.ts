@@ -105,6 +105,20 @@ test('POST /me/lightning-address/verification/confirm without bearer is 401', as
   expect(res.status()).toBe(401);
 });
 
+test('GET /debug/accounts without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/accounts');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: unknown[] };
+  expect(Array.isArray(body.accounts)).toBe(true);
+});
+
 test('GET /lightning-address without address is 400', async ({ request }) => {
   const res = await request.get('/lightning-address');
   expect(res.status()).toBe(400);

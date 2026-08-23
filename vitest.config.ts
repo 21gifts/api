@@ -25,6 +25,7 @@ export default defineConfig({
         'src/**/*.test.ts',
         'src/**/__tests__/**',
         'src/types/**', // type-only modules contribute no executable code
+        'src/lib/auth/sql.ts', // SqlClient interface only; Bun adapter lives in index.ts
       ],
       thresholds: {
         lines: 100,

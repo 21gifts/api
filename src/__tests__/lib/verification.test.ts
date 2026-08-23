@@ -139,7 +139,7 @@ describe('startVerification', () => {
   it('pays the invoice, stores a verification record, and returns sats + TTL', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
+    await store.createAccount(acc);
     const paid: string[] = [];
     const payer: InvoicePayer = {
       isConfigured: () => true,
@@ -183,7 +183,7 @@ describe('startVerification', () => {
       /^21gifts [0-9a-f]{32}$/,
     );
 
-    const record = store.getVerification('acc');
+    const record = await store.getVerification('acc');
     expect(record).toBeDefined();
     expect(record?.address).toBe(ADDRESS);
     expect(record?.nonce).toMatch(/^[0-9a-f]{32}$/);
@@ -193,11 +193,11 @@ describe('startVerification', () => {
   it('returns no_address and stores nothing when the address is unlinked after pay', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
+    await store.createAccount(acc);
     const payer: InvoicePayer = {
       isConfigured: () => true,
       payInvoice: async () => {
-        store.updateAccount({ ...acc, lightningAddress: null });
+        await store.updateAccount({ ...acc, lightningAddress: null });
         return { ok: true };
       },
     };
@@ -209,17 +209,17 @@ describe('startVerification', () => {
       account: acc,
     });
     expect(result).toEqual({ ok: false, code: 'no_address' });
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 
   it('returns unreachable and stores nothing when the address changes after pay', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
+    await store.createAccount(acc);
     const payer: InvoicePayer = {
       isConfigured: () => true,
       payInvoice: async () => {
-        store.updateAccount({ ...acc, lightningAddress: OTHER_ADDRESS });
+        await store.updateAccount({ ...acc, lightningAddress: OTHER_ADDRESS });
         return { ok: true };
       },
     };
@@ -231,17 +231,17 @@ describe('startVerification', () => {
       account: acc,
     });
     expect(result).toEqual({ ok: false, code: 'unreachable' });
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 
   it('returns already_verified and stores nothing when verified after pay', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
+    await store.createAccount(acc);
     const payer: InvoicePayer = {
       isConfigured: () => true,
       payInvoice: async () => {
-        store.updateAccount({ ...acc, lightningAddressVerified: true });
+        await store.updateAccount({ ...acc, lightningAddressVerified: true });
         return { ok: true };
       },
     };
@@ -253,7 +253,7 @@ describe('startVerification', () => {
       account: acc,
     });
     expect(result).toEqual({ ok: false, code: 'already_verified' });
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 
   it('returns no_address and stores nothing when the account is missing after pay', async () => {
@@ -271,137 +271,137 @@ describe('startVerification', () => {
       account: account(),
     });
     expect(result).toEqual({ ok: false, code: 'no_address' });
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 });
 
 describe('confirmVerification', () => {
-  it('returns bad_nonce for an empty / whitespace-only nonce', () => {
+  it('returns bad_nonce for an empty / whitespace-only nonce', async () => {
     const store = new InMemoryAuthStore();
-    expect(confirmVerification(store, T0, account(), '   ')).toEqual({
+    expect(await confirmVerification(store, T0, account(), '   ')).toEqual({
       ok: false,
       code: 'bad_nonce',
     });
   });
 
-  it('returns no_pending when there is no verification record', () => {
+  it('returns no_pending when there is no verification record', async () => {
     const store = new InMemoryAuthStore();
-    store.createAccount(account());
-    expect(confirmVerification(store, T0, account(), 'a'.repeat(32))).toEqual({
+    await store.createAccount(account());
+    expect(await confirmVerification(store, T0, account(), 'a'.repeat(32))).toEqual({
       ok: false,
       code: 'no_pending',
     });
   });
 
-  it('returns no_pending when the linked address no longer matches the record', () => {
+  it('returns no_pending when the linked address no longer matches the record', async () => {
     const store = new InMemoryAuthStore();
     const acc = account({ lightningAddress: 'bob@getalby.com' });
-    store.createAccount(acc);
-    store.putVerification({
+    await store.createAccount(acc);
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    const result = confirmVerification(store, T0, acc, 'a'.repeat(32));
+    const result = await confirmVerification(store, T0, acc, 'a'.repeat(32));
     expect(result).toEqual({ ok: false, code: 'no_pending' });
   });
 
-  it('returns expired and deletes the record when past the TTL', () => {
+  it('returns expired and deletes the record when past the TTL', async () => {
     const store = new InMemoryAuthStore();
-    store.createAccount(account());
-    store.putVerification({
+    await store.createAccount(account());
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    const result = confirmVerification(
+    const result = await confirmVerification(
       store,
       T0 + VERIFICATION_TTL_MS + 1,
       account(),
       'a'.repeat(32),
     );
     expect(result).toEqual({ ok: false, code: 'expired' });
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 
-  it('returns mismatch for a wrong nonce', () => {
+  it('returns mismatch for a wrong nonce', async () => {
     const store = new InMemoryAuthStore();
-    store.createAccount(account());
-    store.putVerification({
+    await store.createAccount(account());
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    expect(confirmVerification(store, T0, account(), 'b'.repeat(32))).toEqual({
+    expect(await confirmVerification(store, T0, account(), 'b'.repeat(32))).toEqual({
       ok: false,
       code: 'mismatch',
     });
   });
 
-  it('returns mismatch when nonce lengths differ', () => {
+  it('returns mismatch when nonce lengths differ', async () => {
     const store = new InMemoryAuthStore();
-    store.createAccount(account());
-    store.putVerification({
+    await store.createAccount(account());
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    expect(confirmVerification(store, T0, account(), 'short')).toEqual({
+    expect(await confirmVerification(store, T0, account(), 'short')).toEqual({
       ok: false,
       code: 'mismatch',
     });
   });
 
-  it('returns mismatch when UTF-8 byte length differs at the same JS .length', () => {
+  it('returns mismatch when UTF-8 byte length differs at the same JS .length', async () => {
     const stored = 'a'.repeat(32);
     const submitted = 'é'.repeat(32);
     expect(submitted.length).toBe(stored.length);
     expect(Buffer.byteLength(submitted, 'utf8')).not.toBe(Buffer.byteLength(stored, 'utf8'));
 
     const store = new InMemoryAuthStore();
-    store.createAccount(account());
-    store.putVerification({
+    await store.createAccount(account());
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: stored,
       createdAt: T0,
     });
-    expect(confirmVerification(store, T0, account(), submitted)).toEqual({
+    expect(await confirmVerification(store, T0, account(), submitted)).toEqual({
       ok: false,
       code: 'mismatch',
     });
   });
 
-  it('returns no_pending when the account is gone', () => {
+  it('returns no_pending when the account is gone', async () => {
     const store = new InMemoryAuthStore();
-    store.putVerification({
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'c'.repeat(32),
       createdAt: T0,
     });
-    expect(confirmVerification(store, T0, account(), 'c'.repeat(32))).toEqual({
+    expect(await confirmVerification(store, T0, account(), 'c'.repeat(32))).toEqual({
       ok: false,
       code: 'no_pending',
     });
   });
 
-  it('keeps a name set after the confirm snapshot was taken', () => {
+  it('keeps a name set after the confirm snapshot was taken', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
-    store.putVerification({
+    await store.createAccount(acc);
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'c'.repeat(32),
       createdAt: T0,
     });
-    store.updateAccount({ ...acc, name: 'Ada' });
-    const result = confirmVerification(store, T0, acc, 'c'.repeat(32));
+    await store.updateAccount({ ...acc, name: 'Ada' });
+    const result = await confirmVerification(store, T0, acc, 'c'.repeat(32));
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;
@@ -410,21 +410,21 @@ describe('confirmVerification', () => {
     expect(result.account.lightningAddressVerified).toBe(true);
   });
 
-  it('sets verified, deletes the record, and returns the updated account', () => {
+  it('sets verified, deletes the record, and returns the updated account', async () => {
     const store = new InMemoryAuthStore();
     const acc = account();
-    store.createAccount(acc);
-    store.putVerification({
+    await store.createAccount(acc);
+    await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'c'.repeat(32),
       createdAt: T0,
     });
-    const result = confirmVerification(store, T0, acc, '  ' + 'c'.repeat(32) + '  ');
+    const result = await confirmVerification(store, T0, acc, '  ' + 'c'.repeat(32) + '  ');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.account.lightningAddressVerified).toBe(true);
-    expect(store.getAccount('acc')?.lightningAddressVerified).toBe(true);
-    expect(store.getVerification('acc')).toBeUndefined();
+    expect((await store.getAccount('acc'))?.lightningAddressVerified).toBe(true);
+    expect(await store.getVerification('acc')).toBeUndefined();
   });
 });

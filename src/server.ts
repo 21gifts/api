@@ -7,6 +7,7 @@ import type { BrandReader } from '@/routes/brand';
 import { authRoutes } from '@/routes/auth';
 import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
+import { debugRoutes } from '@/routes/debug';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -48,6 +49,11 @@ export interface AppDeps {
    * `/apple-touch-icon.png` (default: {@link readPublicBrandFile}).
    */
   readBrand?: BrandReader;
+  /**
+   * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
+   * blank → `GET /debug/accounts` returns 503.
+   */
+  debugToken?: string;
 }
 
 /**
@@ -59,7 +65,8 @@ export interface AppDeps {
  * single factory so the test surface matches production exactly.
  *
  * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, and brand reader.
+ *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader, and
+ *   debugToken.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -71,6 +78,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
+  const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
 
   const app = new Hono();
 
@@ -98,6 +106,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
+  app.route('/debug/accounts', debugRoutes({ store, debugToken }));
 
   return app;
 }

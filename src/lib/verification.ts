@@ -89,7 +89,7 @@ export async function startVerification(
 
   // Re-load after pay so a concurrent unlink / re-link / verify does not
   // leave a pending record for an address the account no longer holds.
-  const current = store.getAccount(account.id);
+  const current = await store.getAccount(account.id);
   if (current === undefined || current.lightningAddress === null) {
     return { ok: false, code: 'no_address' };
   }
@@ -100,7 +100,7 @@ export async function startVerification(
     return { ok: false, code: 'already_verified' };
   }
 
-  store.putVerification({
+  await store.putVerification({
     accountId: account.id,
     address: paidAddress,
     nonce,
@@ -130,29 +130,29 @@ export async function startVerification(
  * @param nonceRaw - Nonce as submitted by the client (trimmed before check).
  * @returns Success with the updated account, or a tagged failure code.
  */
-export function confirmVerification(
+export async function confirmVerification(
   store: AuthStore,
   now: number,
   account: Account,
   nonceRaw: string,
-): ConfirmVerificationResult {
+): Promise<ConfirmVerificationResult> {
   const nonce = nonceRaw.trim();
   if (nonce === '') {
     return { ok: false, code: 'bad_nonce' };
   }
 
-  const current = store.getAccount(account.id);
+  const current = await store.getAccount(account.id);
   if (current === undefined) {
     return { ok: false, code: 'no_pending' };
   }
 
-  const record = store.getVerification(account.id);
+  const record = await store.getVerification(account.id);
   if (record === undefined || record.address !== current.lightningAddress) {
     return { ok: false, code: 'no_pending' };
   }
 
   if (now - record.createdAt > VERIFICATION_TTL_MS) {
-    store.deleteVerification(account.id);
+    await store.deleteVerification(account.id);
     return { ok: false, code: 'expired' };
   }
 
@@ -164,8 +164,8 @@ export function confirmVerification(
     ...current,
     lightningAddressVerified: true,
   };
-  store.updateAccount(updated);
-  store.deleteVerification(account.id);
+  await store.updateAccount(updated);
+  await store.deleteVerification(account.id);
   return { ok: true, account: updated };
 }
 

@@ -54,7 +54,10 @@ export function bearerToken(header: string | undefined): string | null {
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
-function authedAccount(deps: MeRouteDeps, header: string | undefined): Account | null {
+async function authedAccount(
+  deps: MeRouteDeps,
+  header: string | undefined,
+): Promise<Account | null> {
   const token = bearerToken(header);
   if (token === null) {
     return null;
@@ -70,8 +73,8 @@ function authedAccount(deps: MeRouteDeps, header: string | undefined): Account |
  * @param id - Account id from the authorized snapshot.
  * @returns The latest stored account, or `null` if it disappeared.
  */
-function storedAccount(deps: MeRouteDeps, id: string): Account | null {
-  const current = deps.store.getAccount(id);
+async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | null> {
+  const current = await deps.store.getAccount(id);
   /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
   if (current === undefined) {
     return null;
@@ -110,15 +113,15 @@ const confirmBody = z.object({ nonce: z.string() });
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
-    .get('/', (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+    .get('/', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       return c.json(serializeAccount(account), 200);
     })
     .post('/name', async (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -130,18 +133,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (name === null) {
         return c.json({ error: 'Name must be 1–80 characters' }, 400);
       }
-      const current = storedAccount(deps, account.id);
+      const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const updated: Account = { ...current, name };
-      deps.store.updateAccount(updated);
+      await deps.store.updateAccount(updated);
       logEvent('account.name.set', { accountId: current.id });
       return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -153,7 +156,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
-      const current = storedAccount(deps, account.id);
+      const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
@@ -165,20 +168,20 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         lightningAddress: address,
         lightningAddressVerified: false,
       };
-      deps.store.updateAccount(updated);
-      deps.store.deleteVerification(current.id);
+      await deps.store.updateAccount(updated);
+      await deps.store.deleteVerification(current.id);
       logEvent('account.lightning_address.linked', {
         accountId: account.id,
         address,
       });
       return c.json(serializeAccount(updated), 200);
     })
-    .delete('/lightning-address', (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+    .delete('/lightning-address', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const current = storedAccount(deps, account.id);
+      const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
@@ -188,13 +191,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         lightningAddress: null,
         lightningAddressVerified: false,
       };
-      deps.store.updateAccount(updated);
-      deps.store.deleteVerification(account.id);
+      await deps.store.updateAccount(updated);
+      await deps.store.deleteVerification(account.id);
       logEvent('account.lightning_address.unlinked', { accountId: account.id });
       return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address/verification', async (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -232,7 +235,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       );
     })
     .post('/lightning-address/verification/confirm', async (c) => {
-      const account = authedAccount(deps, c.req.header('authorization'));
+      const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -240,7 +243,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with a "nonce" string' }, 400);
       }
-      const result = confirmVerification(deps.store, deps.now(), account, parsed.data.nonce);
+      const result = await confirmVerification(deps.store, deps.now(), account, parsed.data.nonce);
       if (!result.ok) {
         switch (result.code) {
           case 'bad_nonce':

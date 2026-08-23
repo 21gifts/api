@@ -36,23 +36,23 @@ const callbackQuery = z.object({
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
   return new Hono()
-    .get('/lnurl', (c) => {
+    .get('/lnurl', async (c) => {
       const baseUrl = normalizePublicBaseUrl(deps.publicBaseUrl);
       if (baseUrl === null) {
         console.error('PUBLIC_BASE_URL is not configured; cannot issue an LNURL-auth challenge.');
         return c.json({ error: 'Server auth is not configured' }, 500);
       }
-      const challenge = startChallenge(deps.store, baseUrl, deps.now());
+      const challenge = await startChallenge(deps.store, baseUrl, deps.now());
       logEvent('auth.challenge.issued', { k1: challenge.k1 });
       return c.json(challenge, 200);
     })
-    .get('/lnurl/callback', (c) => {
+    .get('/lnurl/callback', async (c) => {
       const parsed = callbackQuery.safeParse(c.req.query());
       if (!parsed.success) {
         logEvent('auth.login.denied', { reason: 'Missing k1, sig, or key' });
         return c.json({ status: 'ERROR', reason: 'Missing k1, sig, or key' }, 200);
       }
-      const result = completeCallback(deps.store, deps.now(), parsed.data);
+      const result = await completeCallback(deps.store, deps.now(), parsed.data);
       if (!result.ok) {
         logEvent('auth.login.denied', { reason: result.reason });
         return c.json({ status: 'ERROR', reason: result.reason }, 200);
@@ -65,14 +65,14 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       });
       return c.json({ status: 'OK' }, 200);
     })
-    .get('/session', (c) => {
+    .get('/session', async (c) => {
       // The poll is authorized by the secret X-Poll-Token (never in the QR), not
       // by the public k1 — a header, so it stays out of the request access log.
       const pollToken = c.req.header('x-poll-token');
       if (pollToken === undefined) {
         return c.json({ status: 'expired' }, 200);
       }
-      const result = claimSession(deps.store, deps.now(), pollToken);
+      const result = await claimSession(deps.store, deps.now(), pollToken);
       if (result.status === 'authenticated') {
         logEvent('auth.session.issued', { accountId: result.account.id });
       }

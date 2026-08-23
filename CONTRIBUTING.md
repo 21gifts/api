@@ -36,7 +36,8 @@ api/
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
-│   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
+│   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
+│   │   └── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
@@ -48,10 +49,15 @@ api/
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
+│   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
-│   │       └── store.ts      # AuthStore port + in-memory adapter (+ verification records)
+│   │       ├── store.ts      # AuthStore port + in-memory adapter
+│   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
+│   │       ├── schema.ts     # AUTH_SCHEMA_SQL
+│   │       ├── postgres-store.ts  # Durable AuthStore
+│   │       └── open-store.ts # DATABASE_URL → memory or Postgres
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
@@ -69,24 +75,31 @@ api/
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
+│       │   ├── debug-token.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
 │       │       ├── service.test.ts
-│       │       └── store.test.ts
+│       │       ├── store.test.ts
+│       │       ├── schema.test.ts
+│       │       ├── sql.test.ts
+│       │       ├── postgres-store.test.ts
+│       │       └── open-store.test.ts
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts
 │           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
-│           └── lightning-address.test.ts
+│           ├── lightning-address.test.ts
+│           └── debug.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
 │   └── endpoints.md
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
-│   └── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+│   ├── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+│   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
 │   └── http.spec.ts          # Playwright against a booted Bun process
 ├── playwright.config.ts
@@ -212,11 +225,13 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default                      | Purpose                                                                                                         |
-| ----------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                  |
-| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                            |
-| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set. |
+| Variable          | Default                      | Purpose                                                                                                           |
+| ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                    |
+| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                              |
+| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.   |
+| `DATABASE_URL`    | _(unset → in-memory)_        | Postgres connection string. When set, auth state is migrated and stored durably. Unset keeps `InMemoryAuthStore`. |
+| `DEBUG_TOKEN`     | _(unset → debug off)_        | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                       |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
