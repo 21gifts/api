@@ -17,6 +17,7 @@ function account(overrides: Partial<Account> = {}): Account {
     id: 'acc',
     linkingKey: `02${'a'.repeat(64)}`,
     role: 'basis',
+    name: null,
     lightningAddress: ADDRESS,
     lightningAddressVerified: false,
     createdAt: T0,
@@ -285,6 +286,7 @@ describe('confirmVerification', () => {
 
   it('returns no_pending when there is no verification record', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     expect(confirmVerification(store, T0, account(), 'a'.repeat(32))).toEqual({
       ok: false,
       code: 'no_pending',
@@ -293,23 +295,21 @@ describe('confirmVerification', () => {
 
   it('returns no_pending when the linked address no longer matches the record', () => {
     const store = new InMemoryAuthStore();
+    const acc = account({ lightningAddress: 'bob@getalby.com' });
+    store.createAccount(acc);
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
       nonce: 'a'.repeat(32),
       createdAt: T0,
     });
-    const result = confirmVerification(
-      store,
-      T0,
-      account({ lightningAddress: 'bob@getalby.com' }),
-      'a'.repeat(32),
-    );
+    const result = confirmVerification(store, T0, acc, 'a'.repeat(32));
     expect(result).toEqual({ ok: false, code: 'no_pending' });
   });
 
   it('returns expired and deletes the record when past the TTL', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -328,6 +328,7 @@ describe('confirmVerification', () => {
 
   it('returns mismatch for a wrong nonce', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -342,6 +343,7 @@ describe('confirmVerification', () => {
 
   it('returns mismatch when nonce lengths differ', () => {
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -361,6 +363,7 @@ describe('confirmVerification', () => {
     expect(Buffer.byteLength(submitted, 'utf8')).not.toBe(Buffer.byteLength(stored, 'utf8'));
 
     const store = new InMemoryAuthStore();
+    store.createAccount(account());
     store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -371,6 +374,40 @@ describe('confirmVerification', () => {
       ok: false,
       code: 'mismatch',
     });
+  });
+
+  it('returns no_pending when the account is gone', () => {
+    const store = new InMemoryAuthStore();
+    store.putVerification({
+      accountId: 'acc',
+      address: ADDRESS,
+      nonce: 'c'.repeat(32),
+      createdAt: T0,
+    });
+    expect(confirmVerification(store, T0, account(), 'c'.repeat(32))).toEqual({
+      ok: false,
+      code: 'no_pending',
+    });
+  });
+
+  it('keeps a name set after the confirm snapshot was taken', () => {
+    const store = new InMemoryAuthStore();
+    const acc = account();
+    store.createAccount(acc);
+    store.putVerification({
+      accountId: 'acc',
+      address: ADDRESS,
+      nonce: 'c'.repeat(32),
+      createdAt: T0,
+    });
+    store.updateAccount({ ...acc, name: 'Ada' });
+    const result = confirmVerification(store, T0, acc, 'c'.repeat(32));
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.account.name).toBe('Ada');
+    expect(result.account.lightningAddressVerified).toBe(true);
   });
 
   it('sets verified, deletes the record, and returns the updated account', () => {

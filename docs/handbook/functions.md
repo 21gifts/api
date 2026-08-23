@@ -107,10 +107,17 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes.
+- **Purpose:** Authenticated account routes (name, Lightning Address, verification).
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
+
+## Function: normalizeDisplayName
+
+- **Purpose:** Trim and validate an account display name (1–80 characters, no C0/DEL controls).
+- **Inputs:** `raw` string.
+- **Returns / side effects:** Trimmed name or `null`.
+- **Used by:** `POST /me/name`.
 
 ## Function: normalizeLightningAddress
 

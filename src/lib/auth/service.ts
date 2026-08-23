@@ -114,6 +114,7 @@ function upsertAccount(
     id: crypto.randomUUID(),
     linkingKey,
     role: 'basis',
+    name: null,
     lightningAddress: null,
     lightningAddressVerified: false,
     createdAt: now,

@@ -35,11 +35,12 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
-│   │   ├── me.ts             # GET /me; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   └── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
+│   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
@@ -60,6 +61,7 @@ api/
 │       ├── lib/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
+│       │   ├── name.test.ts
 │       │   ├── lightning-address.test.ts
 │       │   ├── invoice-payer.test.ts
 │       │   ├── lnurlp.test.ts
