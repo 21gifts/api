@@ -238,7 +238,15 @@ export async function finishPasskeyAuthentication(
   if (!verified.ok) {
     return { ok: false, error: 'Invalid passkey' };
   }
-  await store.updatePasskeyCredential({ ...stored, signCount: verified.newSignCount });
+  const latest = await store.getPasskeyCredential(stored.credentialId);
+  /* v8 ignore next 3 -- credential cannot vanish mid-request in the in-memory store */
+  if (latest === undefined) {
+    return { ok: false, error: 'Unknown credential' };
+  }
+  await store.updatePasskeyCredential({
+    ...latest,
+    signCount: Math.max(latest.signCount, verified.newSignCount),
+  });
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }

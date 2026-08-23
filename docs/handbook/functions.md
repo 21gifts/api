@@ -303,7 +303,7 @@
 
 ## Function: expectedOriginsForRpId
 
-- **Purpose:** Filters CORS origins to those whose hostname equals the RP ID or is a subdomain of it.
+- **Purpose:** Filters CORS origins to those whose hostname equals the RP ID, or `app.<rpId>` (no general subdomain suffix).
 - **Inputs:** `rpId`, `allowedOrigins`.
 - **Returns / side effects:** Matching origin strings; invalid URLs dropped.
 - **Used by:** `resolveWebAuthnConfig`.
