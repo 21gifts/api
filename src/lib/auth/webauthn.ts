@@ -76,6 +76,8 @@ export interface PasskeyCeremony {
  */
 export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
   /**
+   * Build WebAuthn creation options via SimpleWebAuthn.
+   *
    * @param input - RP and user entity for `generateRegistrationOptions`.
    * @returns Challenge plus creation options (residentKey required).
    */
@@ -102,6 +104,8 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
+   * Verify a registration attestation via SimpleWebAuthn.
+   *
    * @param input - Attestation to verify.
    * @returns Stored credential fields, or `{ ok: false }`.
    */
@@ -141,6 +145,8 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
+   * Build WebAuthn request options via SimpleWebAuthn.
+   *
    * @param input - RP id for a discoverable-credential assertion.
    * @returns Challenge plus request options (`allowCredentials` empty).
    */
@@ -156,6 +162,8 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
+   * Verify an authentication assertion via SimpleWebAuthn.
+   *
    * @param input - Assertion plus the stored credential.
    * @returns The updated sign count, or `{ ok: false }`.
    */

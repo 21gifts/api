@@ -34,7 +34,7 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
-│   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
+│   │   ├── auth.ts           # LNURL-auth + passkey: /auth/lnurl, /auth/session, /auth/passkey/…
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
@@ -238,13 +238,15 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default                      | Purpose                                                                                                                                                                               |
-| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                                                                                        |
-| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                                                                                  |
-| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
-| `DATABASE_URL`    | _(unset → in-memory)_        | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
-| `DEBUG_TOKEN`     | _(unset → debug off)_        | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
+| Variable           | Default                         | Purpose                                                                                                                                                                               |
+| ------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`        | `0.0.0.0:3000`                  | Listen address                                                                                                                                                                        |
+| `SERVICE_VERSION`  | `0.1.0`                         | Surfaced via `/info`                                                                                                                                                                  |
+| `PUBLIC_BASE_URL`  | _(none — required for auth)_    | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
+| `DATABASE_URL`     | _(unset → in-memory)_           | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
+| `DEBUG_TOKEN`      | _(unset → debug off)_           | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
+| `WEBAUTHN_RP_ID`   | _(none — required for passkey)_ | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
+| `WEBAUTHN_RP_NAME` | `21.gifts`                      | Human-readable RP name.                                                                                                                                                               |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant

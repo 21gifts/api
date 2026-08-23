@@ -86,6 +86,16 @@ describe('expectedOriginsForRpId', () => {
   it('does not treat localhost as the production RP ID', () => {
     expect(expectedOriginsForRpId('21.gifts', ['http://localhost:3000'])).toEqual([]);
   });
+
+  it('does not treat the dev apex as a production RP origin', () => {
+    expect(
+      expectedOriginsForRpId('21.gifts', [
+        'https://21.gifts',
+        'https://dev.21.gifts',
+        'https://dev-app.21.gifts',
+      ]),
+    ).toEqual(['https://21.gifts']);
+  });
 });
 
 describe('resolveWebAuthnConfig', () => {

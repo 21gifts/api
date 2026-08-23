@@ -10,6 +10,8 @@ import type {
  */
 export class FakePasskeyCeremony implements PasskeyCeremony {
   /**
+   * Return a fixed creation challenge for tests.
+   *
    * @param input - RP and user entity (user fields unused by the fake).
    * @returns A fixed challenge and a stub creation-options object.
    */
@@ -58,6 +60,8 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
+   * Return a fixed assertion challenge for tests.
+   *
    * @param input - RP id for the stub request options.
    * @returns A fixed challenge and a stub request-options object.
    */

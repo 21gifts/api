@@ -99,10 +99,16 @@ export function normalizeWebAuthnRpId(raw: string | undefined): string | null {
 }
 
 /**
- * Origins whose hostname is the RP ID or a subdomain of it.
+ * Extra hostname label allowed in front of the RP ID (transitional `app.*`
+ * alias). `dev.21.gifts` must not match RP ID `21.gifts`.
+ */
+const WEBAUTHN_RP_EXTRA_LABELS = new Set(['app']);
+
+/**
+ * Origins whose hostname is the RP ID, or `app.<rpId>`.
  *
- * `https://app.21.gifts` matches RP ID `21.gifts`; `http://localhost:3000`
- * does not. Invalid origin strings are dropped.
+ * `https://app.21.gifts` matches RP ID `21.gifts`; `https://dev.21.gifts` and
+ * `http://localhost:3000` do not. Invalid origin strings are dropped.
  *
  * @param rpId - Configured WebAuthn RP ID.
  * @param allowedOrigins - CORS allowlist (or an override).
@@ -112,7 +118,14 @@ export function expectedOriginsForRpId(rpId: string, allowedOrigins: string[]): 
   return allowedOrigins.filter((origin) => {
     try {
       const host = new URL(origin).hostname;
-      return host === rpId || host.endsWith(`.${rpId}`);
+      if (host === rpId) {
+        return true;
+      }
+      if (!host.endsWith(`.${rpId}`)) {
+        return false;
+      }
+      const prefix = host.slice(0, -(rpId.length + 1));
+      return WEBAUTHN_RP_EXTRA_LABELS.has(prefix);
     } catch {
       return false;
     }

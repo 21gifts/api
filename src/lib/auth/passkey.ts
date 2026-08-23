@@ -117,6 +117,7 @@ export async function finishPasskeyRegistration(
     return loaded;
   }
   const challenge = loaded.challenge;
+  await consumeChallenge(store, challenge);
   const verified = await ceremony.verifyRegistration({
     response: credential,
     expectedChallenge: challenge.challenge,
@@ -150,7 +151,6 @@ export async function finishPasskeyRegistration(
     accountId,
     createdAt: now,
   });
-  await consumeChallenge(store, challenge);
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }
@@ -213,6 +213,7 @@ export async function finishPasskeyAuthentication(
     return loaded;
   }
   const challenge = loaded.challenge;
+  await consumeChallenge(store, challenge);
   const credentialId = credentialIdFrom(credential);
   if (credentialId === null) {
     return { ok: false, error: 'Unknown credential' };
@@ -220,6 +221,10 @@ export async function finishPasskeyAuthentication(
   const stored = await store.getPasskeyCredential(credentialId);
   if (stored === undefined) {
     return { ok: false, error: 'Unknown credential' };
+  }
+  const account = await store.getAccount(stored.accountId);
+  if (account === undefined) {
+    return { ok: false, error: 'Unknown or expired challenge' };
   }
   const verified = await ceremony.verifyAuthentication({
     response: credential,
@@ -234,11 +239,6 @@ export async function finishPasskeyAuthentication(
     return { ok: false, error: 'Invalid passkey' };
   }
   await store.updatePasskeyCredential({ ...stored, signCount: verified.newSignCount });
-  const account = await store.getAccount(stored.accountId);
-  if (account === undefined) {
-    return { ok: false, error: 'Unknown or expired challenge' };
-  }
-  await consumeChallenge(store, challenge);
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }
