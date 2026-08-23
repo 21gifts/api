@@ -124,8 +124,8 @@ Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
 ## 4. Recurring gifts — **Sketch**
 
-**Prerequisite**: paying is out of this process. The private worker
-the external spend worker holds lightning.space LNDHub credentials and calls:
+**Prerequisite**: paying is out of this process. The external spend
+worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)

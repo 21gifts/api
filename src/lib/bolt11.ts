@@ -1,4 +1,4 @@
-import decodeBolt11Lib from 'light-bolt11-decoder';
+import * as bolt11 from 'light-bolt11-decoder';
 
 /**
  * Fields the spend-invoice path needs from a BOLT11 string.
@@ -16,7 +16,15 @@ interface Bolt11Section {
   value?: unknown;
 }
 
-const decoder = decodeBolt11Lib as (pr: string) => { sections?: Bolt11Section[] };
+/**
+ * Call `light-bolt11-decoder.decode` regardless of CJS default-vs-named interop.
+ *
+ * @param pr - BOLT11 string.
+ * @returns Decoder result with `sections`.
+ */
+function libraryDecode(pr: string): { sections?: Bolt11Section[] } {
+  return (bolt11 as { decode: (invoice: string) => { sections?: Bolt11Section[] } }).decode(pr);
+}
 
 /**
  * Decode a BOLT11 payment request into payment hash and amount.
@@ -34,7 +42,7 @@ export function decodeBolt11(
 ): DecodedBolt11 | null {
   let sections: Bolt11Section[];
   try {
-    const decoded = (decodeImpl ?? decoder)(pr);
+    const decoded = (decodeImpl ?? libraryDecode)(pr);
     sections = decoded.sections ?? [];
   } catch {
     return null;

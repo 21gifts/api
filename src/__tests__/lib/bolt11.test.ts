@@ -77,4 +77,14 @@ describe('decodeBolt11', () => {
   it('returns null for a garbage invoice using the library decode', () => {
     expect(decodeBolt11('not-an-invoice')).toBeNull();
   });
+
+  it('decodes a real BOLT11 fixture without an injected decoder', () => {
+    // BOLT11 spec example: 2500u = 250_000_000 msat, payment_hash all known bytes.
+    const pr =
+      'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
+    const decoded = decodeBolt11(pr);
+    expect(decoded).not.toBeNull();
+    expect(decoded?.amountMsat).toBe(250_000_000);
+    expect(decoded?.paymentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

@@ -86,6 +86,11 @@ api/
 │       │   ├── ln-address-cache.test.ts
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
+│       │   ├── gift-invoice.test.ts
+│       │   ├── bolt11.test.ts
+│       │   ├── proof.test.ts
+│       │   ├── spend-auth.test.ts
+│       │   ├── invoice-store.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
 │       │   ├── gift.test.ts
@@ -108,7 +113,8 @@ api/
 │           ├── me.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
-│           └── stats.test.ts
+│           ├── stats.test.ts
+│           └── invoices.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
@@ -254,6 +260,7 @@ Currently:
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
 | `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                               |
 | `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                              |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                     |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant

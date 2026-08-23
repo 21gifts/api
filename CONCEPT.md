@@ -107,15 +107,14 @@ implement LNURL-verify.
 ### Recurring gifts (v1 feature)
 
 Donors can configure recurring daily gifts: fixed USD amounts to a list of
-recipients. A server-side scheduler in the api executes them daily —
-resolve LUD-16 → convert USD → sats via the configured exchange-rate source
-(fail-closed: no payment on a missing or implausible rate) → fetch invoice →
-verify the invoice amount via decode → pay through the donor's stored LNDHub
-credentials. Payout semantics are
-fail-closed: per-day idempotency log, ambiguous outcomes quarantined as
-"uncertain" and never auto-retried the same day, balance preflight before the
-first payment, and a per-donor daily cap. Paying is an external worker: this api issues invoices
-(`POST /invoices`) and verifies the preimage (`POST /invoices/proof`).
+recipients. This api does not pay. It issues BOLT11 invoices
+(`POST /invoices`, LNURL-pay to the recipient) and verifies the payment
+preimage (`POST /invoices/proof`). An external worker holds lightning.space
+LNDHub credentials, pays, and submits the proof. Payout semantics on that
+worker are fail-closed: per-day idempotency log, ambiguous outcomes
+quarantined as "uncertain" and never auto-retried the same day, balance
+preflight before the first payment, and a per-donor daily cap. Recurring
+donor UI and an in-process scheduler are not HTTP yet.
 
 ### NOSTR in v1
 
