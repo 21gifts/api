@@ -104,19 +104,41 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapChallenge(row);
   }
 
-  async updateChallenge(challenge: Challenge): Promise<void> {
-    await this.#sql.execute(
-      `UPDATE auth_challenge
-       SET poll_token = $2, status = $3, account_id = $4, created_at = to_timestamp($5::double precision / 1000.0)
-       WHERE k1 = $1`,
-      [
-        challenge.k1,
-        challenge.pollToken,
-        challenge.status,
-        challenge.accountId,
-        challenge.createdAt,
-      ],
+  async updateChallenge(challenge: Challenge): Promise<boolean> {
+    const expected =
+      challenge.status === 'authenticated'
+        ? 'pending'
+        : challenge.status === 'consumed'
+          ? 'authenticated'
+          : null;
+    const rows = await this.#sql.query<{ k1: string }>(
+      expected === null
+        ? `UPDATE auth_challenge
+           SET poll_token = $2, status = $3, account_id = $4, created_at = to_timestamp($5::double precision / 1000.0)
+           WHERE k1 = $1
+           RETURNING k1`
+        : `UPDATE auth_challenge
+           SET poll_token = $2, status = $3, account_id = $4, created_at = to_timestamp($5::double precision / 1000.0)
+           WHERE k1 = $1 AND status = $6
+           RETURNING k1`,
+      expected === null
+        ? [
+            challenge.k1,
+            challenge.pollToken,
+            challenge.status,
+            challenge.accountId,
+            challenge.createdAt,
+          ]
+        : [
+            challenge.k1,
+            challenge.pollToken,
+            challenge.status,
+            challenge.accountId,
+            challenge.createdAt,
+            expected,
+          ],
     );
+    return rows[0] !== undefined;
   }
 
   async findAccountByLinkingKey(linkingKey: string): Promise<Account | undefined> {
@@ -132,7 +154,8 @@ export class PostgresAuthStore implements AuthStore {
   async createAccount(account: Account): Promise<void> {
     await this.#sql.execute(
       `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))`,
+       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))
+       ON CONFLICT (linking_key) DO NOTHING`,
       [
         account.id,
         account.linkingKey,

@@ -102,16 +102,47 @@ describe('PostgresAuthStore', () => {
     expect(challenge?.createdAt).toBe(1_000);
   });
 
-  it('updates a challenge', async () => {
+  it('updates a challenge only from the expected previous status', async () => {
     const sql = new MockSql();
-    await new PostgresAuthStore(sql).updateChallenge({
+    sql.nextRows = [{ k1: 'k1' }];
+    const ok = await new PostgresAuthStore(sql).updateChallenge({
       k1: 'k1',
       pollToken: 'pt',
       status: 'consumed',
       accountId: 'acc',
       createdAt: 1,
     });
-    expect(sql.executes[0]?.text).toMatch(/UPDATE auth_challenge/);
+    expect(ok).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE auth_challenge/);
+    expect(sql.queries[0]?.params[5]).toBe('authenticated');
+  });
+
+  it('returns false when the challenge CAS matches no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const ok = await new PostgresAuthStore(sql).updateChallenge({
+      k1: 'k1',
+      pollToken: 'pt',
+      status: 'authenticated',
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(ok).toBe(false);
+    expect(sql.queries[0]?.params[5]).toBe('pending');
+  });
+
+  it('updates a pending challenge without a status CAS', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ k1: 'k1' }];
+    const ok = await new PostgresAuthStore(sql).updateChallenge({
+      k1: 'k1',
+      pollToken: 'pt',
+      status: 'pending',
+      accountId: null,
+      createdAt: 1,
+    });
+    expect(ok).toBe(true);
+    expect(sql.queries[0]?.text).not.toMatch(/AND status/);
   });
 
   it('maps account rows and lists them', async () => {
@@ -151,7 +182,7 @@ describe('PostgresAuthStore', () => {
       lightningAddressVerified: false,
       createdAt: 1,
     });
-    expect(sql.executes[0]?.text).toMatch(/INSERT INTO account/);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
   });
 

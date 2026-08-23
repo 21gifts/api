@@ -89,8 +89,12 @@ export interface AuthStore {
   getChallenge(k1: string): Promise<Challenge | undefined>;
   /** Look up a challenge by its secret poll token, or `undefined` if unknown. */
   getChallengeByPollToken(pollToken: string): Promise<Challenge | undefined>;
-  /** Overwrite a stored challenge (used to advance its lifecycle). */
-  updateChallenge(challenge: Challenge): Promise<void>;
+  /**
+   * Advance a stored challenge. Returns false when the expected previous
+   * status does not match (`authenticated` requires `pending`; `consumed`
+   * requires `authenticated`) so concurrent callbacks cannot steal the row.
+   */
+  updateChallenge(challenge: Challenge): Promise<boolean>;
   /** Find an account by its linkingKey, or `undefined` if not registered. */
   findAccountByLinkingKey(linkingKey: string): Promise<Account | undefined>;
   /** Persist a new account. */
@@ -146,8 +150,16 @@ export class InMemoryAuthStore implements AuthStore {
     return k1 === undefined ? undefined : this.#challenges.get(k1);
   }
 
-  async updateChallenge(challenge: Challenge): Promise<void> {
+  async updateChallenge(challenge: Challenge): Promise<boolean> {
+    const current = this.#challenges.get(challenge.k1);
+    if (challenge.status === 'authenticated' && current?.status !== 'pending') {
+      return false;
+    }
+    if (challenge.status === 'consumed' && current?.status !== 'authenticated') {
+      return false;
+    }
     this.#challenges.set(challenge.k1, challenge);
+    return true;
   }
 
   async findAccountByLinkingKey(linkingKey: string): Promise<Account | undefined> {

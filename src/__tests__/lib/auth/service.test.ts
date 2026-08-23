@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Challenge } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { encodeLnurl } from '@/lib/auth/lnurl';
 import { claimSession, completeCallback, resolveSession, startChallenge } from '@/lib/auth/service';
@@ -94,6 +94,24 @@ describe('completeCallback', () => {
     expect((await store.findAccountByLinkingKey(w.key))?.id).toBe(firstId);
   });
 
+  it('rejects when a concurrent callback already claimed the challenge', async () => {
+    class RejectAuth extends InMemoryAuthStore {
+      override async updateChallenge(challenge: Challenge): Promise<boolean> {
+        if (challenge.status === 'authenticated') {
+          return false;
+        }
+        return super.updateChallenge(challenge);
+      }
+    }
+    const store = new RejectAuth();
+    const { k1 } = await startChallenge(store, BASE, T0);
+    const w = newWallet();
+    expect(await completeCallback(store, T0, { k1, sig: w.sign(k1), key: w.key })).toEqual({
+      ok: false,
+      reason: 'Challenge already used',
+    });
+  });
+
   it('canonicalises the linkingKey so a differently-cased key is the same account', async () => {
     const store = new InMemoryAuthStore();
     const w = newWallet(); // w.key is lower-case hex
@@ -156,6 +174,21 @@ describe('claimSession', () => {
     expect(res.token).toMatch(/^[0-9a-f]{64}$/);
     expect((await store.getSession(res.token))?.accountId).toBe(res.account.id);
     expect((await store.getChallenge(k1))?.status).toBe('consumed');
+    expect(await claimSession(store, T0, pollToken)).toEqual({ status: 'used' });
+  });
+
+  it('reports used when a concurrent poll already consumed the challenge', async () => {
+    class RejectConsume extends InMemoryAuthStore {
+      override async updateChallenge(challenge: Challenge): Promise<boolean> {
+        if (challenge.status === 'consumed') {
+          return false;
+        }
+        return super.updateChallenge(challenge);
+      }
+    }
+    const store = new RejectConsume();
+    const w = newWallet();
+    const { pollToken } = await authenticatedChallenge(store, w);
     expect(await claimSession(store, T0, pollToken)).toEqual({ status: 'used' });
   });
 });

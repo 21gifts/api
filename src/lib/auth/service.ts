@@ -98,7 +98,14 @@ export async function completeCallback(
     return { ok: false, reason: 'Invalid signature' };
   }
   const { account, firstLogin } = await upsertAccount(store, linkingKey, now);
-  await store.updateChallenge({ ...challenge, status: 'authenticated', accountId: account.id });
+  const claimed = await store.updateChallenge({
+    ...challenge,
+    status: 'authenticated',
+    accountId: account.id,
+  });
+  if (!claimed) {
+    return { ok: false, reason: 'Challenge already used' };
+  }
   return { ok: true, accountId: account.id, firstLogin };
 }
 
@@ -126,7 +133,12 @@ async function upsertAccount(
     createdAt: now,
   };
   await store.createAccount(account);
-  return { account, firstLogin: true };
+  const stored = await store.findAccountByLinkingKey(linkingKey);
+  /* v8 ignore next 3 — createAccount always leaves a row for this linkingKey */
+  if (stored === undefined) {
+    return { account, firstLogin: true };
+  }
+  return { account: stored, firstLogin: stored.id === account.id };
 }
 
 /** Outcome of polling for a session on an authenticated challenge. */
@@ -171,9 +183,12 @@ export async function claimSession(
   if (account === undefined) {
     return { status: 'expired' };
   }
+  const consumed = await store.updateChallenge({ ...challenge, status: 'consumed' });
+  if (!consumed) {
+    return { status: 'used' };
+  }
   const token = randomHex(32);
   await store.createSession({ token, accountId: account.id, createdAt: now });
-  await store.updateChallenge({ ...challenge, status: 'consumed' });
   return { status: 'authenticated', token, account };
 }
 

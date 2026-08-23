@@ -22,6 +22,39 @@ describe('InMemoryAuthStore', () => {
     expect(await new InMemoryAuthStore().getChallenge('missing')).toBeUndefined();
   });
 
+  it('refuses to authenticate a challenge that is not pending', async () => {
+    const store = new InMemoryAuthStore();
+    expect(
+      await store.updateChallenge({
+        k1: 'missing',
+        pollToken: 'pt',
+        status: 'authenticated',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('refuses to consume a challenge that is not authenticated', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createChallenge({
+      k1: 'k1',
+      pollToken: 'pt',
+      status: 'pending',
+      accountId: null,
+      createdAt: 1,
+    });
+    expect(
+      await store.updateChallenge({
+        k1: 'k1',
+        pollToken: 'pt',
+        status: 'consumed',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
   it('overwrites a challenge on update', async () => {
     const store = new InMemoryAuthStore();
     await store.createChallenge({
@@ -31,13 +64,24 @@ describe('InMemoryAuthStore', () => {
       accountId: null,
       createdAt: 1,
     });
-    await store.updateChallenge({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'consumed',
-      accountId: 'acc',
-      createdAt: 1,
-    });
+    expect(
+      await store.updateChallenge({
+        k1: 'k1',
+        pollToken: 'pt',
+        status: 'authenticated',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updateChallenge({
+        k1: 'k1',
+        pollToken: 'pt',
+        status: 'consumed',
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
     expect((await store.getChallenge('k1'))?.status).toBe('consumed');
   });
 
