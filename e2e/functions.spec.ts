@@ -159,6 +159,16 @@ test('Function: verifyAuthSig — wallet callback is OK', async ({ request }) =>
   await completeCallback(request, start, wallet);
 });
 
+test('Function: verifyAuthSig — a bad signature is ERROR', async ({ request }) => {
+  const wallet = newWallet();
+  const start = await startChallenge(request);
+  const res = await request.get(
+    `/auth/lnurl/callback?tag=login&k1=${start.k1}&sig=${'00'.repeat(32)}&key=${wallet.key}`,
+  );
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { status: string }).status).toBe('ERROR');
+});
+
 test('Function: completeCallback — wallet callback is OK', async ({ request }) => {
   const wallet = newWallet();
   const start = await startChallenge(request);

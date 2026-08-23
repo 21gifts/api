@@ -23,7 +23,12 @@ function e2eText() {
     console.error('E2E MISSING: e2e/ has no spec files');
     process.exit(1);
   }
-  return files.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+  return files
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
 const text = e2eText();
