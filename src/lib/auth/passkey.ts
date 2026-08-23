@@ -117,7 +117,9 @@ export async function finishPasskeyRegistration(
     return loaded;
   }
   const challenge = loaded.challenge;
-  await consumeChallenge(store, challenge);
+  if (!(await consumeChallenge(store, challenge))) {
+    return { ok: false, error: 'Challenge already used' };
+  }
   const verified = await ceremony.verifyRegistration({
     response: credential,
     expectedChallenge: challenge.challenge,
@@ -213,7 +215,9 @@ export async function finishPasskeyAuthentication(
     return loaded;
   }
   const challenge = loaded.challenge;
-  await consumeChallenge(store, challenge);
+  if (!(await consumeChallenge(store, challenge))) {
+    return { ok: false, error: 'Challenge already used' };
+  }
   const credentialId = credentialIdFrom(credential);
   if (credentialId === null) {
     return { ok: false, error: 'Unknown credential' };
@@ -303,8 +307,9 @@ async function loadChallenge(
  * Mark a passkey challenge consumed so finish cannot mint a second session.
  *
  * @param store - Auth persistence port.
- * @param challenge - The challenge that just succeeded.
+ * @param challenge - The challenge that is being consumed now.
+ * @returns false when the row is missing or already consumed.
  */
-async function consumeChallenge(store: AuthStore, challenge: PasskeyChallenge): Promise<void> {
-  await store.updatePasskeyChallenge({ ...challenge, consumed: true });
+async function consumeChallenge(store: AuthStore, challenge: PasskeyChallenge): Promise<boolean> {
+  return store.updatePasskeyChallenge({ ...challenge, consumed: true });
 }

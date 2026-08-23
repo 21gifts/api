@@ -12,8 +12,9 @@
 
 Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
 local boots). When `DATABASE_URL` is set, the process migrates the auth
-schema and uses `PostgresAuthStore` — accounts, challenges, sessions, and
-pending address verifications survive a restart. A missing or unreachable
+schema and uses `PostgresAuthStore` — accounts, LNURL and passkey challenges,
+passkey credentials, sessions, and pending address verifications survive a
+restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. Public gift statistics
 (`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats.

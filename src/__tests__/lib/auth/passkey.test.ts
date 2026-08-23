@@ -52,7 +52,7 @@ describe('passkey registration', () => {
       return;
     }
     expect(finish.value.account.linkingKey).toBeNull();
-    expect(store.getPasskeyCredential('cred-1')?.accountId).toBe(finish.value.account.id);
+    expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(finish.value.account.id);
   });
 
   it('rejects an expired registration challenge', async () => {
@@ -74,7 +74,7 @@ describe('passkey registration', () => {
   it('rejects a register challenge with a null pending account id', async () => {
     const store = new InMemoryAuthStore();
     const ceremony = new FakePasskeyCeremony();
-    store.createPasskeyChallenge({
+    await store.createPasskeyChallenge({
       id: 'ch',
       type: 'register',
       challenge: 'test-challenge',
@@ -106,6 +106,27 @@ describe('passkey registration', () => {
       { test: 'ok' },
     );
     expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('rejects register finish when consume loses the race', async () => {
+    class RaceStore extends InMemoryAuthStore {
+      override async updatePasskeyChallenge(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new RaceStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
   });
 });
 
@@ -150,13 +171,13 @@ describe('passkey authentication', () => {
       return;
     }
     expect(finish.value.account.id).toBe(accountId);
-    expect(store.getPasskeyCredential('cred-1')?.signCount).toBe(1);
+    expect((await store.getPasskeyCredential('cred-1'))?.signCount).toBe(1);
   });
 
   it('rejects authentication when the account is gone', async () => {
     const store = new InMemoryAuthStore();
     const ceremony = new FakePasskeyCeremony();
-    store.createPasskeyCredential({
+    await store.createPasskeyCredential({
       credentialId: 'cred-1',
       publicKey: new Uint8Array([1, 2, 3]),
       signCount: 0,
@@ -174,5 +195,26 @@ describe('passkey authentication', () => {
       { test: 'ok', id: 'cred-1' },
     );
     expect(finish).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+  });
+
+  it('rejects authenticate finish when consume loses the race', async () => {
+    const { ceremony } = await seed();
+    class RaceStore extends InMemoryAuthStore {
+      override async updatePasskeyChallenge(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new RaceStore();
+    const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok', id: 'cred-1' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
   });
 });
