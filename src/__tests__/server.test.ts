@@ -84,6 +84,12 @@ describe('createApp', () => {
     expect(res.status).toBe(400);
   });
 
+  it('mounts /gifts/stats', async () => {
+    const res = await createApp().request('/gifts/stats');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ giftCount: 0, totalSats: 0 });
+  });
+
   it('returns 404 for unknown routes', async () => {
     const app = createApp();
     const res = await app.request('/does-not-exist');

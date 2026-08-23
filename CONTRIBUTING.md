@@ -37,7 +37,8 @@ api/
 │   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
-│   │   └── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
+│   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
+│   │   └── stats.ts          # GET /gifts/stats (public gift totals)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
@@ -50,6 +51,8 @@ api/
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
+│   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
+│   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
@@ -76,6 +79,8 @@ api/
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
+│       │   ├── gift.test.ts
+│       │   ├── gift-store.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
 │       │       ├── service.test.ts
@@ -91,11 +96,14 @@ api/
 │           ├── auth.test.ts
 │           ├── me.test.ts
 │           ├── lightning-address.test.ts
-│           └── debug.test.ts
+│           ├── debug.test.ts
+│           └── stats.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
 │   └── endpoints.md
+├── docs/schema/
+│   └── gift.sql              # gift table used by GET /gifts/stats
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request → exit 1

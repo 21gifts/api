@@ -103,6 +103,10 @@ There is no campaign feed and no Donate button in the app today. Do not invent
 
 HTTP cited: `/lightning-address` (see `SPEC.md`).
 
+Public gift totals are **Shipped** as `GET /gifts/stats` (amounts, UTC
+spend-over-time, per person, per month). No invoices. The app statistics
+page consumes that route.
+
 Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
 ---
