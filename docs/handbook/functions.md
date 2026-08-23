@@ -46,7 +46,7 @@
 
 - **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth and `QueryGiftStore`, or in-memory auth and `giftStore: undefined` when unset.
 - **Inputs:** `databaseUrl` (`undefined` / blank / `postgres://…`); optional `createClient` factory (required when the URL is set).
-- **Returns / side effects:** `{ authStore, giftStore }`. Calls `openAuthStore` (auth migrations when durable). Builds the outbound `gift` SELECT when the factory ran.
+- **Returns / side effects:** `{ authStore, giftStore }`. Calls `openAuthStore` (auth migrations when durable). Builds the outbound `gift` SELECT when the factory ran. Throws if the URL is set without a factory.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken

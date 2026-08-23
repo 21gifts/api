@@ -26,6 +26,7 @@ export interface BootStores {
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @returns Stores to inject into `createApp`.
+ * @throws If `databaseUrl` is set and `createClient` is omitted.
  */
 export async function openBootStores(
   databaseUrl: string | undefined,
