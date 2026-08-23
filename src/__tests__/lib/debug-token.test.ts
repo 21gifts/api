@@ -27,4 +27,8 @@ describe('bearerMatchesDebugToken', () => {
   it('trims the presented token', () => {
     expect(bearerMatchesDebugToken(TOKEN, `Bearer ${TOKEN}  `)).toBe(true);
   });
+
+  it('trims the configured token', () => {
+    expect(bearerMatchesDebugToken(`  ${TOKEN}  `, `Bearer ${TOKEN}`)).toBe(true);
+  });
 });

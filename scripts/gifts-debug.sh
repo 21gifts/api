@@ -78,7 +78,7 @@ cmd_accounts() {
 import json, sys
 data = json.load(sys.stdin)
 rows = data.get("accounts") or []
-keys = ["id", "linkingKey", "role", "lightningAddress", "lightningAddressVerified", "createdAt"]
+keys = ["id", "linkingKey", "role", "name", "lightningAddress", "lightningAddressVerified", "createdAt"]
 print("\t".join(keys))
 for row in rows:
     print("\t".join(str(row.get(k, "")) for k in keys))

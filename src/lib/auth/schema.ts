@@ -1,9 +1,11 @@
 /**
  * Idempotent DDL for the auth tables. Applied once at process boot when
- * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run.
+ * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
+ * `ALTER TABLE … ADD COLUMN IF NOT EXISTS` backfills `account.name` on
+ * databases created before that column existed.
  */
 
-/** Ordered `CREATE TABLE IF NOT EXISTS` statements for the auth schema. */
+/** Ordered CREATE/ALTER statements for the auth schema. */
 export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS account (
     id uuid PRIMARY KEY,

@@ -16,9 +16,9 @@
 
 ## Function: migrateAuthSchema
 
-- **Purpose:** Applies `AUTH_SCHEMA_SQL` (`CREATE TABLE IF NOT EXISTS`) in order.
+- **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE account ADD COLUMN IF NOT EXISTS name` for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification`.
+- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification` and backfills `account.name`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore

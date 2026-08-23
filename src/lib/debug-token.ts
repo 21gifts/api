@@ -15,7 +15,7 @@ export function bearerMatchesDebugToken(
     return false;
   }
   const provided = authorizationHeader.slice('Bearer '.length).trim();
-  const a = Buffer.from(debugToken, 'utf8');
+  const a = Buffer.from(debugToken.trim(), 'utf8');
   const b = Buffer.from(provided, 'utf8');
   if (a.length !== b.length) {
     return false;
