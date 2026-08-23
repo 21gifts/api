@@ -669,6 +669,14 @@ Spend-worker invoice fetch. The api resolves LUD-16, GETs the LNURL-pay
 callback, decodes the BOLT11, and stores `{ id, pr, paymentHash }` in memory.
 It does not pay.
 
+**Body:**
+
+```json
+{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional" }
+```
+
+`comment` is optional. `amountMsat` must be an integer in `1000..10000000000`.
+
 When `SPEND_API_TOKEN` is unset or blank:
 
 **Response** `503`:
@@ -679,7 +687,11 @@ When `SPEND_API_TOKEN` is unset or blank:
 
 Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
 
-Bad JSON, invalid address, or `amountMsat` outside `1000..10000000000` → **400**.
+Bad JSON or `amountMsat` outside `1000..10000000000` → **400**
+`{ "error": "Expected a JSON body with address and amountMsat" }`.
+
+Invalid Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
 
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
 
@@ -728,15 +740,14 @@ are **not** exposed as HTTP routes in this codebase yet. Paths and JSON for
 these land in the PR that implements them; this file is updated then. Do not
 treat the list below as inventing endpoints.
 
-**Donor upgrade (custodial `lndhub://` from lightning.space only).** Any
-account may become a donor by depositing an LNDHub export restricted to
-`lightning.space`. Credentials would be stored encrypted; arbitrary LNDHub
-URLs are rejected. Not wired yet.
+**Donor LNDHub credentials.** Paying uses lightning.space LNDHub in the
+external spend worker, not encrypted storage in this api. No `/me/donor`
+deposit route.
 
-**Recurring daily gifts UI and donor LNDHub deposit.** Donors will configure
-fixed USD amounts to recipients. Invoice fetch + preimage proof for an
-external payer is `POST /invoices` / `POST /invoices/proof`.
-No `/me/donor`, `/me/recurring`, or in-process scheduler yet.
+**Recurring daily gifts UI.** Donors will configure fixed USD amounts to
+recipients. Invoice fetch + preimage proof for the external payer is
+`POST /invoices` / `POST /invoices/proof`. No `/me/recurring` or in-process
+scheduler.
 
 **Custodial per-account NOSTR identities + server-side signing.** On sign-up
 the api would generate a keypair, store `nsec` encrypted, and sign that
