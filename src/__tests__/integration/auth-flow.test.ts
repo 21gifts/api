@@ -1,64 +1,43 @@
 import { describe, it, expect } from 'vitest';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { newWallet } from '@/__tests__/helpers/auth-vectors';
+import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
-describe('LNURL-auth end-to-end via createApp', () => {
-  it('logs in from challenge to /me and consumes the challenge exactly once', async () => {
+const ORIGIN = 'http://localhost:3000';
+
+describe('passkey auth end-to-end via createApp', () => {
+  it('registers a passkey and serves /me with the issued token', async () => {
     const store = new InMemoryAuthStore();
     const app = createApp({
       authStore: store,
-      now: () => 5_000_000,
-      publicBaseUrl: 'https://dev.21.gifts',
+      now: () => 1_000_000,
+      allowedOrigins: [ORIGIN],
+      webAuthnRpId: 'localhost',
+      passkeyCeremony: new FakePasskeyCeremony(),
     });
-
-    const start = (await (await app.request('/auth/lnurl')).json()) as {
-      k1: string;
-      lnurl: string;
-      pollToken: string;
-    };
-    expect(start.lnurl.startsWith('lnurl1')).toBe(true);
-
-    const wallet = newWallet();
-    const cb = await app.request(
-      `/auth/lnurl/callback?tag=login&k1=${start.k1}&sig=${wallet.sign(start.k1)}&key=${wallet.key}`,
-    );
-    expect(await cb.json()).toEqual({ status: 'OK' });
-
-    const sess = (await (
-      await app.request('/auth/session', { headers: { 'x-poll-token': start.pollToken } })
-    ).json()) as {
-      status: string;
+    const begin = (await (
+      await app.request('/auth/passkey/register/begin', { method: 'POST' })
+    ).json()) as { challengeId: string };
+    const finish = await app.request('/auth/passkey/register/finish', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({ challengeId: begin.challengeId, credential: { test: 'ok' } }),
+    });
+    expect(finish.status).toBe(200);
+    const body = (await finish.json()) as {
       token: string;
-      account: { linkingKey: string };
+      account: { linkingKey: string | null };
     };
-    expect(sess.status).toBe('authenticated');
-    expect(sess.account.linkingKey).toBe(wallet.key);
-
-    const me = await app.request('/me', { headers: { authorization: `Bearer ${sess.token}` } });
+    expect(body.account.linkingKey).toBeNull();
+    const me = await app.request('/me', { headers: { authorization: `Bearer ${body.token}` } });
     expect(me.status).toBe(200);
-    expect(((await me.json()) as { linkingKey: string }).linkingKey).toBe(wallet.key);
-
-    const again = (await (
-      await app.request('/auth/session', { headers: { 'x-poll-token': start.pollToken } })
-    ).json()) as {
-      status: string;
-    };
-    expect(again.status).toBe('used');
+    expect(((await me.json()) as { linkingKey: string | null }).linkingKey).toBeNull();
   });
 
-  it('reads PUBLIC_BASE_URL from the environment when no override is given', async () => {
-    const prev = process.env['PUBLIC_BASE_URL'];
-    process.env['PUBLIC_BASE_URL'] = 'https://dev.21.gifts';
-    try {
-      const res = await createApp().request('/auth/lnurl');
-      expect(res.status).toBe(200);
-    } finally {
-      if (prev === undefined) {
-        delete process.env['PUBLIC_BASE_URL'];
-      } else {
-        process.env['PUBLIC_BASE_URL'] = prev;
-      }
-    }
+  it('returns 500 from passkey begin when WEBAUTHN_RP_ID is unset', async () => {
+    const res = await createApp({ webAuthnRpId: '' }).request('/auth/passkey/register/begin', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(500);
   });
 });

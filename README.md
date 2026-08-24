@@ -79,7 +79,7 @@ bun run dev    # → http://localhost:3000/healthz
 bun run typecheck       # tsc --noEmit
 bun run lint            # eslint + prettier --check
 bun run handbook:check  # every function and HTTP endpoint must be documented
-bun run e2e:check       # every HTTP endpoint must have a Playwright request
+bun run e2e:check       # every HTTP endpoint request and Function: <Name> title
 bun run test:coverage   # vitest with 100% threshold
 bun run build           # bun build to dist/
 bun run e2e             # Playwright against bun src/index.ts
@@ -89,7 +89,6 @@ bun run e2e             # Playwright against bun src/index.ts
 
 | Variable               | Required          | Purpose                                                                                                                             |
 | ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLIC_BASE_URL`      | For LNURL-auth    | Pinned callback host (`https://21.gifts` / `https://dev.21.gifts`). Missing → `GET /auth/lnurl` returns 500; process still boots.   |
 | `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
 | `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                        |
 | `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                      |

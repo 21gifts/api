@@ -2,8 +2,12 @@
  * Gift statistics domain: outbound gift rows and pure aggregation.
  *
  * The HTTP surface never includes invoices or other payment secrets — only
- * amounts, UTC days, and Wallet of Satoshi recipient handles.
+ * amounts (sats, BTC, historical USD), UTC days, and Wallet of Satoshi
+ * recipient handles.
  */
+
+import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
+import { satsToBtcString, satsToUsdCents, usdCentsToString } from '@/lib/money';
 
 /** One outbound gift used as stats input. No invoice fields. */
 export interface GiftRow {
@@ -23,6 +27,14 @@ export interface SpendDay {
   sats: number;
   /** Running total of sats through this day inclusive. */
   cumulativeSats: number;
+  /** BTC string for `sats` (eight decimals). */
+  btc: string;
+  /** BTC string for `cumulativeSats`. */
+  cumulativeBtc: string;
+  /** USD string for that day's gifts at each gift's UTC-day rate. */
+  usd: string;
+  /** Running USD total through this day inclusive. */
+  cumulativeUsd: string;
 }
 
 /** Totals for one recipient. */
@@ -33,6 +45,10 @@ export interface RecipientSpend {
   giftCount: number;
   /** Sats paid to this recipient. */
   sats: number;
+  /** BTC string for `sats`. */
+  btc: string;
+  /** USD string (sum of per-gift historical conversions). */
+  usd: string;
 }
 
 /** Totals for one UTC calendar month. */
@@ -43,12 +59,30 @@ export interface MonthSpend {
   giftCount: number;
   /** Sats paid in this month. */
   sats: number;
+  /** BTC string for `sats`. */
+  btc: string;
+  /** USD string (sum of per-gift historical conversions). */
+  usd: string;
+}
+
+/** FX metadata attached to every stats payload. */
+export interface GiftStatsFx {
+  /** Quote pair. */
+  quote: 'BTC-USD';
+  /** Calendar-day basis for rate lookup. */
+  dayBasis: 'utc';
+  /** Persisted Coinbase Exchange daily-close source tag. */
+  source: typeof FX_SOURCE_COINBASE_DAILY_CLOSE;
 }
 
 /** Aggregated public gift statistics. */
 export interface GiftStats {
   /** Sum of `amountSats` across all rows. */
   totalSats: number;
+  /** BTC string for `totalSats`. */
+  totalBtc: string;
+  /** USD string (sum of per-gift historical conversions). */
+  totalUsd: string;
   /** Number of outbound gifts. */
   giftCount: number;
   /** Distinct recipient handles. */
@@ -63,6 +97,8 @@ export interface GiftStats {
   byRecipient: RecipientSpend[];
   /** Per-month totals, chronological. */
   byMonth: MonthSpend[];
+  /** Quote metadata (always present, including empty stats). */
+  fx: GiftStatsFx;
 }
 
 /** SQL shape selected from the `gift` table for stats (no invoice columns). */
@@ -76,6 +112,12 @@ export interface GiftQueryRow {
 }
 
 const MS_PER_DAY = 86_400_000;
+
+const EMPTY_FX: GiftStatsFx = {
+  quote: 'BTC-USD',
+  dayBasis: 'utc',
+  source: FX_SOURCE_COINBASE_DAILY_CLOSE,
+};
 
 /**
  * UTC calendar day `YYYY-MM-DD` from an instant.
@@ -128,17 +170,25 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
 /**
  * Aggregate outbound gifts into the public stats payload.
  *
- * Empty input yields zeros, null dates, and empty series. Days between the
- * first and last gift are filled with `sats: 0` so cumulative spend is a
- * continuous UTC series.
+ * Empty input yields zeros, null dates, empty series, and `fx` — no rates
+ * required. Non-empty input looks up each gift's UTC-day rate; a missing
+ * rate throws `Error('fx.rate.missing')`. Gap days in `spendOverTime` use
+ * zero sats/BTC/USD without needing a rate.
  *
  * @param rows - Outbound gifts (order does not matter).
+ * @param rates - UTC day → USD-per-BTC string for every gift day.
  * @returns Aggregated {@link GiftStats}.
+ * @throws `Error('fx.rate.missing')` when a gift day has no rate.
  */
-export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
+export function buildGiftStats(
+  rows: readonly GiftRow[],
+  rates: ReadonlyMap<string, string>,
+): GiftStats {
   if (rows.length === 0) {
     return {
       totalSats: 0,
+      totalBtc: satsToBtcString(0),
+      totalUsd: usdCentsToString(0),
       giftCount: 0,
       recipientCount: 0,
       firstPaidAt: null,
@@ -146,6 +196,7 @@ export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
       spendOverTime: [],
       byRecipient: [],
       byMonth: [],
+      fx: EMPTY_FX,
     };
   }
 
@@ -153,35 +204,59 @@ export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
   const first = sorted[0] as GiftRow;
   const last = sorted[sorted.length - 1] as GiftRow;
 
-  const byDay = new Map<string, number>();
-  const byRecipient = new Map<string, { giftCount: number; sats: number }>();
-  const byMonth = new Map<string, { giftCount: number; sats: number }>();
+  const byDaySats = new Map<string, number>();
+  const byDayUsdCents = new Map<string, number>();
+  const byRecipient = new Map<string, { giftCount: number; sats: number; usdCents: number }>();
+  const byMonth = new Map<string, { giftCount: number; sats: number; usdCents: number }>();
   let totalSats = 0;
+  let totalUsdCents = 0;
 
   for (const row of sorted) {
-    totalSats += row.amountSats;
     const day = utcDayString(row.paidAt);
-    byDay.set(day, (byDay.get(day) ?? 0) + row.amountSats);
-    const rec = byRecipient.get(row.recipientWosUser) ?? { giftCount: 0, sats: 0 };
+    const rate = rates.get(day);
+    if (rate === undefined) {
+      throw new Error('fx.rate.missing');
+    }
+    const usdCents = satsToUsdCents(row.amountSats, rate);
+    totalSats += row.amountSats;
+    totalUsdCents += usdCents;
+    byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
+    byDayUsdCents.set(day, (byDayUsdCents.get(day) ?? 0) + usdCents);
+
+    const rec = byRecipient.get(row.recipientWosUser) ?? { giftCount: 0, sats: 0, usdCents: 0 };
     rec.giftCount += 1;
     rec.sats += row.amountSats;
+    rec.usdCents += usdCents;
     byRecipient.set(row.recipientWosUser, rec);
+
     const month = utcMonthString(row.paidAt);
-    const mon = byMonth.get(month) ?? { giftCount: 0, sats: 0 };
+    const mon = byMonth.get(month) ?? { giftCount: 0, sats: 0, usdCents: 0 };
     mon.giftCount += 1;
     mon.sats += row.amountSats;
+    mon.usdCents += usdCents;
     byMonth.set(month, mon);
   }
 
   const spendOverTime: SpendDay[] = [];
   let cumulativeSats = 0;
+  let cumulativeUsdCents = 0;
   const startMs = utcDayMs(utcDayString(first.paidAt));
   const endMs = utcDayMs(utcDayString(last.paidAt));
   for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
     const day = new Date(ms).toISOString().slice(0, 10);
-    const sats = byDay.get(day) ?? 0;
+    const sats = byDaySats.get(day) ?? 0;
+    const usdCents = byDayUsdCents.get(day) ?? 0;
     cumulativeSats += sats;
-    spendOverTime.push({ day, sats, cumulativeSats });
+    cumulativeUsdCents += usdCents;
+    spendOverTime.push({
+      day,
+      sats,
+      cumulativeSats,
+      btc: satsToBtcString(sats),
+      cumulativeBtc: satsToBtcString(cumulativeSats),
+      usd: usdCentsToString(usdCents),
+      cumulativeUsd: usdCentsToString(cumulativeUsdCents),
+    });
   }
 
   const recipients: RecipientSpend[] = [...byRecipient.entries()]
@@ -189,6 +264,8 @@ export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
       recipient,
       giftCount: totals.giftCount,
       sats: totals.sats,
+      btc: satsToBtcString(totals.sats),
+      usd: usdCentsToString(totals.usdCents),
     }))
     .sort((a, b) => b.sats - a.sats || a.recipient.localeCompare(b.recipient));
 
@@ -197,11 +274,15 @@ export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
       month,
       giftCount: totals.giftCount,
       sats: totals.sats,
+      btc: satsToBtcString(totals.sats),
+      usd: usdCentsToString(totals.usdCents),
     }))
     .sort((a, b) => a.month.localeCompare(b.month));
 
   return {
     totalSats,
+    totalBtc: satsToBtcString(totalSats),
+    totalUsd: usdCentsToString(totalUsdCents),
     giftCount: sorted.length,
     recipientCount: byRecipient.size,
     firstPaidAt: first.paidAt.toISOString(),
@@ -209,5 +290,6 @@ export function buildGiftStats(rows: readonly GiftRow[]): GiftStats {
     spendOverTime,
     byRecipient: recipients,
     byMonth: months,
+    fx: EMPTY_FX,
   };
 }

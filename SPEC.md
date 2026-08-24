@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats, passkey login).
+**Status**: living document. Last revised 2026-08-24 (passkey-only login; gift stats BTC + historical USD via Coinbase daily close).
 
 ---
 
@@ -12,12 +12,18 @@
 
 Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
 local boots). When `DATABASE_URL` is set, the process migrates the auth
-schema and uses `PostgresAuthStore` — accounts, LNURL and passkey challenges,
+schema and uses `PostgresAuthStore` — accounts, passkey challenges,
 passkey credentials, sessions, and pending address verifications survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. Public gift statistics
 (`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
-without it the process still boots and returns empty stats.
+without it the process still boots and returns empty stats. Amounts are
+also expressed as BTC and historical USD using the UTC-calendar-day
+BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`).
+GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
+is older than one hour, and a past day whose `fetched_at` is still on that
+same UTC calendar day (intraday print not yet the settled close). Settled
+stored days are not re-fetched. A missing rate after ensure/fetch is **503**.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -33,8 +39,8 @@ still boots. This service does not pay invoices (no LNDHub client).
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `DELETE`, `OPTIONS`, with headers `Authorization`, `Content-Type`, and
-`X-Poll-Token`. Sessions and the poll token are sent as headers — no cookies,
+`POST`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
 Public base URLs used in examples:
@@ -51,9 +57,6 @@ Public base URLs used in examples:
 | GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                       |
 | GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                   |
 | GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)              |
-| GET    | `/auth/lnurl`                                | none                     | Issue LNURL-auth challenge                 |
-| GET    | `/auth/lnurl/callback`                       | none (wallet)            | LUD-04 callback                            |
-| GET    | `/auth/session`                              | `X-Poll-Token`           | App polls for the session                  |
 | POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options            |
 | POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session          |
 | POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options             |
@@ -130,114 +133,6 @@ Graph tags.
 `Cache-Control: public, max-age=86400`.
 
 **Response** `404`: empty body when the file is missing.
-
-### `GET /auth/lnurl`
-
-Issues an LNURL-auth (LUD-04) challenge for the browser app. The app renders
-`lnurl` as a QR / `lightning:` deep link and polls `/auth/session` with
-`pollToken`.
-
-When the public base URL is not configured:
-
-**Response** `500`:
-
-```json
-{ "error": "Server auth is not configured" }
-```
-
-Otherwise **Response** `200` — payload from `startChallenge`:
-
-```json
-{
-  "lnurl": "lnurl1…",
-  "k1": "<64 hex chars>",
-  "pollToken": "<64 hex chars>",
-  "expiresInSeconds": 600
-}
-```
-
-| Field              | Meaning                                                                 |
-| ------------------ | ----------------------------------------------------------------------- |
-| `lnurl`            | Bech32 `lnurl1…` encoding the wallet callback URL                       |
-| `k1`               | Public 32-byte challenge (hex); also embedded in the QR                 |
-| `pollToken`        | Secret; the app presents it on `/auth/session` (never placed in the QR) |
-| `expiresInSeconds` | Challenge TTL in seconds (currently 600)                                |
-
-### `GET /auth/lnurl/callback`
-
-Wallet-facing LUD-04 callback. Query parameters: `k1`, `sig`, `key`.
-
-LUD-04 uses **HTTP 200 for both success and error**; clients must read
-`status`.
-
-Missing or invalid query (schema failure) → **Response** `200`:
-
-```json
-{ "status": "ERROR", "reason": "Missing k1, sig, or key" }
-```
-
-Failed verify (unknown/expired/used challenge, bad signature, …) →
-**Response** `200`:
-
-```json
-{ "status": "ERROR", "reason": "<string from completeCallback>" }
-```
-
-Documented `reason` values from `completeCallback`:
-
-| `reason`                       | When                                 |
-| ------------------------------ | ------------------------------------ |
-| `Unknown or expired challenge` | `k1` not in the store                |
-| `Challenge already used`       | Challenge status is not `pending`    |
-| `Challenge expired`            | Past the challenge TTL               |
-| `Invalid signature`            | LUD-04 signature verification failed |
-
-Success → **Response** `200`:
-
-```json
-{ "status": "OK" }
-```
-
-On success the account for the wallet's `linkingKey` is upserted (created as
-role `basis` on first sight) and the challenge is marked authenticated.
-
-### `GET /auth/session`
-
-App polls after showing the QR. Authorization is the secret poll token in the
-`X-Poll-Token` header (not `k1`).
-
-Without `X-Poll-Token` → **Response** `200`:
-
-```json
-{ "status": "expired" }
-```
-
-With a token → **Response** `200` with one of the `claimSession` statuses:
-
-| `status`        | Body shape                                                          |
-| --------------- | ------------------------------------------------------------------- |
-| `pending`       | `{ "status": "pending" }` — wallet has not signed yet               |
-| `expired`       | `{ "status": "expired" }` — unknown token or challenge past TTL     |
-| `used`          | `{ "status": "used" }` — session already claimed for this challenge |
-| `authenticated` | `{ "status": "authenticated", "token": "<hex>", "account": { … } }` |
-
-On `authenticated`, a one-time session token is minted and the challenge is
-consumed. `account` is the stored account object:
-
-```json
-{
-  "id": "<uuid>",
-  "linkingKey": "<hex>",
-  "role": "basis",
-  "name": null,
-  "lightningAddress": null,
-  "lightningAddressVerified": false,
-  "createdAt": 0
-}
-```
-
-The app then calls authenticated routes with
-`Authorization: Bearer <token>`.
 
 ### `POST /auth/passkey/register/begin`
 
@@ -348,15 +243,15 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                                             |
-| -------------------------- | -------------- | ------------------------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                                   |
-| `linkingKey`               | string \| null | Wallet LNURL-auth linking key (hex), or `null` for passkey accounts |
-| `role`                     | string         | `basis` or `moderator`                                              |
-| `name`                     | string \| null | Display name, or `null` until set                                   |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                    |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                   |
-| `createdAt`                | number         | Creation time (epoch ms)                                            |
+| Field                      | Type           | Meaning                                                                 |
+| -------------------------- | -------------- | ----------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                       |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts |
+| `role`                     | string         | `basis` or `moderator`                                                  |
+| `name`                     | string \| null | Display name, or `null` until set                                       |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                        |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                       |
+| `createdAt`                | number         | Creation time (epoch ms)                                                |
 
 ### `POST /me/name`
 
@@ -627,35 +522,52 @@ Environment:
 Public aggregated outbound gift statistics. No auth. The body never includes
 invoices, fees, or wallet identifiers.
 
-When `DATABASE_URL` is unset the in-memory store is empty. When it is set,
-the process queries the `gift` table (`paid_at`, `amount_sats`,
-`recipient_wos_user` only). A query failure is **503**.
+When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
+**200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd`
+`"0.00"`, and `fx` present (no Coinbase call). When it is set, the process
+queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
+only) and ensures a BTC-USD daily close for each gift's UTC calendar day
+(from `btc_usd_daily`, fetching Coinbase only for missing days / stale
+UTC-today / after-midnight finalize of an intraday print). Each gift's sats
+are converted at **that day's** close (not spot). Gap days in
+`spendOverTime` are zero sats/BTC/USD and need no rate.
+A query failure or a still-missing rate after ensure is **503**.
 
 **Response** `200`:
 
 ```json
 {
   "totalSats": 0,
+  "totalBtc": "0.00000000",
+  "totalUsd": "0.00",
   "giftCount": 0,
   "recipientCount": 0,
   "firstPaidAt": null,
   "lastPaidAt": null,
   "spendOverTime": [],
   "byRecipient": [],
-  "byMonth": []
+  "byMonth": [],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close"
+  }
 }
 ```
 
-| Field            | Type                               | Meaning                                              |
-| ---------------- | ---------------------------------- | ---------------------------------------------------- |
-| `totalSats`      | number                             | Sum of gift amounts (sats; fees excluded)            |
-| `giftCount`      | number                             | Number of outbound gifts                             |
-| `recipientCount` | number                             | Distinct recipient handles                           |
-| `firstPaidAt`    | string or null                     | ISO-8601 of the earliest gift                        |
-| `lastPaidAt`     | string or null                     | ISO-8601 of the latest gift                          |
-| `spendOverTime`  | `{ day, sats, cumulativeSats }[]`  | UTC days from first through last; gaps are `sats: 0` |
-| `byRecipient`    | `{ recipient, giftCount, sats }[]` | Sorted by sats descending, then name                 |
-| `byMonth`        | `{ month, giftCount, sats }[]`     | UTC `YYYY-MM`, chronological                         |
+| Field            | Type                                                                      | Meaning                                                        |
+| ---------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `totalSats`      | number                                                                    | Sum of gift amounts (sats; fees excluded)                      |
+| `totalBtc`       | string                                                                    | `totalSats` as BTC with eight decimals                         |
+| `totalUsd`       | string                                                                    | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`) |
+| `giftCount`      | number                                                                    | Number of outbound gifts                                       |
+| `recipientCount` | number                                                                    | Distinct recipient handles                                     |
+| `firstPaidAt`    | string or null                                                            | ISO-8601 of the earliest gift                                  |
+| `lastPaidAt`     | string or null                                                            | ISO-8601 of the latest gift                                    |
+| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd }[]` | UTC days from first through last; gaps are zero sats/BTC/USD   |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd }[]`                              | Sorted by sats descending, then name                           |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd }[]`                                  | UTC `YYYY-MM`, chronological                                   |
+| `fx`             | `{ quote, dayBasis, source }`                                             | Always present; Coinbase Exchange daily close, UTC day basis   |
 
 **Response** `503`:
 

@@ -34,7 +34,7 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
-│   │   ├── auth.ts           # LNURL-auth + passkey: /auth/lnurl, /auth/session, /auth/passkey/…
+│   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
@@ -57,13 +57,16 @@ api/
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth store + optional QueryGiftStore
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore, BTC-USD rates
+│   │   ├── money.ts          # Sats/BTC strings and historical USD cents
+│   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
+│   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
-│   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
+│   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
-│   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
+│   │       ├── service.ts    # Session issuance and bearer resolution
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL
@@ -73,7 +76,6 @@ api/
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
-│       │   ├── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
 │       │   └── fake-passkey.ts   # PasskeyCeremony test double
 │       ├── integration/
 │       │   └── auth-flow.test.ts
@@ -95,10 +97,13 @@ api/
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
 │       │   ├── boot-stores.test.ts
+│       │   ├── money.test.ts
+│       │   ├── btc-usd-candles.test.ts
+│       │   ├── btc-usd-store.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   └── auth/
-│       │       ├── lnurl.test.ts
+│       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
 │       │       ├── store.test.ts
@@ -122,13 +127,15 @@ api/
 │   ├── functions.md
 │   └── endpoints.md
 ├── docs/schema/
-│   └── gift.sql              # gift table used by GET /gifts/stats
+│   ├── gift.sql              # gift table used by GET /gifts/stats
+│   └── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
-│   ├── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+│   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
 │   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
-│   └── http.spec.ts          # Playwright against a booted Bun process
+│   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
+│   └── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
@@ -213,10 +220,27 @@ deviation and is rejected.
 ### E2E (hard requirement)
 
 Every HTTP endpoint **must** have at least one Playwright request against a
-booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
-endpoint has no matching `request.get/post/delete`. Adding a route without an
-e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
-`e2e:check` then `e2e`.
+booted server (`bun src/index.ts`). Every exported function/class **must** have
+a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
+booted process over HTTP (not `app.request()`). If an export is unreachable on
+the default boot surface (today: `requestPayInvoice`, which needs a configured
+`InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
+`mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
+`fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`, and
+`resolveCandlesUrl`, which need `DATABASE_URL`; `InMemoryInvoiceStore`,
+`requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and
+`preimageMatchesHash`, which need `SPEND_API_TOKEN` and a reachable LNURL-pay;
+`satsToUsdCents` and `parseUsdPerBtc`, which need a non-empty gift list),
+that test still exists and asserts the default-boot outcome that proves it is
+not invoked (verification `503`, spend invoices unconfigured `503`, or a
+healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
+`DATABASE_URL` and `SPEND_API_TOKEN` to blank so those outcomes do not depend
+on the host environment.
+`bun run e2e:check` **fails the PR** if an endpoint has no matching
+`request.get/post/delete` or a function has no matching
+`test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
+Adding a route or export without an e2e call in the **same PR** is an
+undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
 
 ### Tests
 
@@ -252,17 +276,17 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable               | Default                                 | Purpose                                                                                                                                                                               |
-| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                        |
-| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                  |
-| `PUBLIC_BASE_URL`      | _(none — required for auth)_            | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
-| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
-| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
-| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                               |
-| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                              |
-| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                    |
+| Variable               | Default                                 | Purpose                                                                                                                                                                                                                                                                   |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                            |
+| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                      |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth and `btc_usd_daily` are migrated, `GET /gifts/stats` reads `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process). Unset keeps `InMemoryAuthStore` and empty gift stats. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                                                                                                               |
+| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                           |
+| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                   |
+| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                  |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                        |
+| `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                          |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant

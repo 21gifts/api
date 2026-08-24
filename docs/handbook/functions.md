@@ -2,22 +2,99 @@
 
 ## Function: buildGiftStats
 
-- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, recipients, months).
-- **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`).
-- **Returns / side effects:** `GiftStats`. Empty input yields zeros and empty arrays. No I/O.
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, recipients, months) including BTC strings and historical USD from per-gift day rates.
+- **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`) and `ReadonlyMap<string, string>` of UTC day → USD-per-BTC. Empty rows need no rates.
+- **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `fx`, and BTC/USD on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no rate. Gap days are zero sats/BTC/USD without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
 
 ## Function: giftsStatsRoutes
 
-- **Purpose:** Hono sub-app for `GET /gifts/stats`.
-- **Inputs:** `{ store: GiftStore }`.
-- **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.failed` on store errors (503).
+- **Purpose:** Hono sub-app for `GET /gifts/stats`. Empty gift list → empty stats 200 without Coinbase. Otherwise `ensureDays` for unique gift days; missing rate → 503.
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`).
+- **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.fx_incomplete` or `gifts.stats.failed` on 503 paths.
 - **Used by:** `createApp`.
+
+## Function: satsToBtcString
+
+- **Purpose:** Format non-negative integer sats as an eight-decimal BTC string.
+- **Inputs:** `sats` number (non-negative integer).
+- **Returns / side effects:** e.g. `"0.00001000"`. Throws on invalid sats. No I/O.
+- **Used by:** `buildGiftStats`.
+
+## Function: parseUsdPerBtc
+
+- **Purpose:** Parse a USD-per-BTC decimal string into an 8-decimal scaled `bigint`.
+- **Inputs:** Rate string (e.g. `"95000.12"`). Extra fractional digits round half-up.
+- **Returns / side effects:** `rate * 10^8` as `bigint`. Throws if invalid or `<= 0`. No I/O.
+- **Used by:** `satsToUsdCents`.
+
+## Function: satsToUsdCents
+
+- **Purpose:** Convert sats to USD cents at a USD-per-BTC rate using BigInt half-up (`sats * usd_scaled_8 / 10^14`).
+- **Inputs:** Non-negative integer `sats` and rate string.
+- **Returns / side effects:** Integer cents. Throws on bad sats/rate or if rounded cents exceed `Number.MAX_SAFE_INTEGER`. No I/O.
+- **Used by:** `buildGiftStats`.
+
+## Function: usdCentsToString
+
+- **Purpose:** Format non-negative integer cents as a two-decimal dollar string.
+- **Inputs:** `cents` number (non-negative integer).
+- **Returns / side effects:** e.g. `"1234.56"`. Throws on invalid cents. No I/O.
+- **Used by:** `buildGiftStats`.
+
+## Function: resolveCandlesUrl
+
+- **Purpose:** Resolve the Coinbase (or override) candles HTTP URL from env.
+- **Inputs:** `NodeJS.ProcessEnv` (`BTC_USD_CANDLES_URL`).
+- **Returns / side effects:** Trimmed override or `DEFAULT_BTC_USD_CANDLES_URL` when unset/blank. No I/O.
+- **Used by:** `openBootStores`.
+
+## Function: parseCoinbaseCandles
+
+- **Purpose:** Parse Coinbase candles JSON (`[time, low, high, open, close, volume]`) into `{ day, usdPerBtc }` rows.
+- **Inputs:** Parsed JSON body (must be an array).
+- **Returns / side effects:** Close rows; skips bad shape / non-positive close. Throws if body is not an array. No I/O.
+- **Used by:** `fetchDailyCloses`.
+
+## Function: fetchDailyCloses
+
+- **Purpose:** HTTP GET daily BTC-USD closes for an inclusive UTC day range (chunks of 300 days, `User-Agent: 21.gifts-api`, AbortSignal timeout).
+- **Inputs:** `{ fetchImpl, url, fromDay, toDay, timeoutMs? }` (`timeoutMs` default 8000).
+- **Returns / side effects:** `CandleClose[]`. Throws on invalid range, non-OK HTTP, or invalid JSON.
+- **Used by:** `PostgresBtcUsdStore.ensureDays`.
+
+## Function: migrateBtcUsdSchema
+
+- **Purpose:** Applies `BTC_USD_DAILY_SCHEMA_SQL` (`CREATE TABLE IF NOT EXISTS btc_usd_daily`).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute.
+- **Used by:** `openBootStores` when SQL opens.
+
+## Function: InMemoryBtcUsdStore
+
+- **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
+- **Inputs:** Optional `ReadonlyMap` or `Record` of day → rate. `ensureDays(days, nowMs)` returns the seed subset for valid requested days.
+- **Returns / side effects:** Map of available rates; missing days omitted. No network.
+- **Used by:** `createApp` / `giftsStatsRoutes` defaults; memory `openBootStores`.
+
+## Function: PostgresBtcUsdStore
+
+- **Purpose:** Durable `BtcUsdRateBook` over Postgres: SELECT requested days; fetch+upsert gaps, stale UTC-today (`fetched_at` older than 1h), and after-midnight finalize of an intraday print; skip candle days not requested; still-missing omitted (no throw).
+- **Inputs:** Constructor `{ sql, fetchImpl, candlesUrl, source? }`. `ensureDays(days, nowMs)`.
+- **Returns / side effects:** Day → rate map; still-missing days omitted (no throw). Writes `btc_usd_daily`.
+- **Used by:** `openBootStores` when SQL opens.
+
+## Function: fillRatesForGiftRange
+
+- **Purpose:** Boot helper: `SELECT min/max(paid_at)` for outbound gifts, then `ensureDays` for every UTC day from min through max.
+- **Inputs:** `SqlClient`, `BtcUsdRateBook`, `nowMs`.
+- **Returns / side effects:** Void. No-op when no outbound gifts. Does not catch — boot logs failures.
+- **Used by:** `openBootStores`.
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: LNURL challenges, passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateChallenge` / `updatePasskeyChallenge` return false when the row is missing or already consumed.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
@@ -32,7 +109,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential` and backfills `account.name` / nullable `linking_key`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -44,9 +121,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth and `QueryGiftStore`, or in-memory auth and `giftStore: undefined` when unset.
-- **Inputs:** `databaseUrl` (`undefined` / blank / `postgres://…`); optional `createClient` factory (required when the URL is set).
-- **Returns / side effects:** `{ authStore, giftStore }`. Calls `openAuthStore` (auth migrations when durable). Builds the outbound `gift` SELECT when the factory ran. Throws if the URL is set without a factory.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore: undefined`, and empty `InMemoryBtcUsdStore` when unset.
+- **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
+- **Returns / side effects:** `{ authStore, giftStore, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -163,8 +240,8 @@
 
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for LNURL-auth and passkey login.
-- **Inputs:** `AuthRouteDeps`: store, now, publicBaseUrl, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
+- **Purpose:** Hono sub-app for passkey register and authenticate.
+- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
 - **Returns / side effects:** Hono app mounted at `/auth`.
 - **Used by:** `createApp`.
 
@@ -182,20 +259,6 @@
 - **Returns / side effects:** Hono app with three GETs; 404 empty body if bytes missing.
 - **Used by:** `createApp` at `/`.
 
-## Function: claimSession
-
-- **Purpose:** Consumes an authenticated challenge and issues a session.
-- **Inputs:** `store`, `now`, `pollToken`.
-- **Returns / side effects:** `SessionResult` pending/authenticated/expired/used.
-- **Used by:** `GET /auth/session`.
-
-## Function: completeCallback
-
-- **Purpose:** Verifies wallet sig+key against k1, upserts account, marks challenge authenticated.
-- **Inputs:** `store`, `now`, `{ k1, sig, key }`.
-- **Returns / side effects:** `{ ok: true, accountId, firstLogin }` or `{ ok: false, reason }`.
-- **Used by:** `GET /auth/lnurl/callback`.
-
 ## Function: confirmVerification
 
 - **Purpose:** Checks the nonce the user read from the wallet payment comment (`21gifts <hex>`), not a nonce returned by startVerification.
@@ -206,16 +269,9 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore, spendApiToken, invoiceStore).
-- **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `btcUsdRates`, spendApiToken, invoiceStore).
+- **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
-
-## Function: encodeLnurl
-
-- **Purpose:** bech32-encodes an HTTPS URL as `lnurl1…` (LUD-01).
-- **Inputs:** `url` string.
-- **Returns / side effects:** Bech32 LNURL.
-- **Used by:** `startChallenge`.
 
 ## Function: healthRoute
 
@@ -261,17 +317,10 @@
 
 ## Function: normalizeLightningAddress
 
-- **Purpose:** Lowercases and validates `local@domain` LUD-16 shape.
+- **Purpose:** Trims and validates `local@domain` LUD-16 shape. Case is preserved.
 - **Inputs:** `raw` string.
-- **Returns / side effects:** Canonical address or `null`.
-- **Used by:** me lightning-address POST and public resolve.
-
-## Function: normalizePublicBaseUrl
-
-- **Purpose:** Trims trailing slash; rejects empty.
-- **Inputs:** raw env string or undefined.
-- **Returns / side effects:** Base URL or `null`. Auth routes then respond HTTP 500 `Server auth is not configured`.
-- **Used by:** `startChallenge` via auth routes.
+- **Returns / side effects:** Trimmed address or `null`.
+- **Used by:** me lightning-address POST, public resolve, and POST /invoices.
 
 ## Function: parseBindAddr
 
@@ -282,10 +331,10 @@
 
 ## Function: randomHex
 
-- **Purpose:** CSPRNG hex for k1 / poll tokens / session tokens / nonces.
+- **Purpose:** CSPRNG hex for session tokens, passkey challenge ids, and verification nonces.
 - **Inputs:** `byteLength`.
 - **Returns / side effects:** Lowercase hex.
-- **Used by:** Auth challenge + session + verification.
+- **Used by:** `issueSession`, passkey begin, verification nonce.
 
 ## Function: readPublicBrandFile
 
@@ -336,26 +385,12 @@
 - **Returns / side effects:** `Account` or `null`.
 - **Used by:** `meRoutes`.
 
-## Function: startChallenge
-
-- **Purpose:** Mints k1, poll token, LNURL pointing at `{base}/auth/lnurl/callback`.
-- **Inputs:** `store`, `now`, `baseUrl`.
-- **Returns / side effects:** `StartChallengeResult`.
-- **Used by:** `GET /auth/lnurl`.
-
 ## Function: startVerification
 
 - **Purpose:** Pays a 1-sat LNURL-pay invoice to the linked address and stores a nonce.
 - **Inputs:** `StartVerificationArgs` (store, payer, fetch, accountId, now).
 - **Returns / side effects:** Sent result or a `StartVerificationCode` (no address, payer down, …).
 - **Used by:** `POST /me/lightning-address/verification`.
-
-## Function: verifyAuthSig
-
-- **Purpose:** secp256k1 verify: DER sig of k1 by linkingKey.
-- **Inputs:** `k1`, `sig`, `key` hex.
-- **Returns / side effects:** `true` iff the wallet signed this challenge.
-- **Used by:** `completeCallback`.
 
 ## Function: credentialIdFrom
 
@@ -390,7 +425,7 @@
 - **Purpose:** Mints a bearer session token for an already-authenticated account.
 - **Inputs:** `store`, `now`, `account`.
 - **Returns / side effects:** `{ token, account }`; writes the session row.
-- **Used by:** `claimSession`, passkey finish paths.
+- **Used by:** passkey finish paths.
 
 ## Function: normalizeWebAuthnRpId
 

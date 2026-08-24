@@ -14,6 +14,7 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { invoiceRoutes } from '@/routes/invoices';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -28,16 +29,14 @@ import type { FetchFn } from '@/lib/lnurlp';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
- * implementations; tests inject a store, a fixed clock, or a base URL to drive
- * the auth flow deterministically.
+ * implementations; tests inject a store or a fixed clock to drive the auth
+ * flow deterministically.
  */
 export interface AppDeps {
   /** Shared auth persistence port (default: a fresh in-memory store). */
   authStore?: AuthStore;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
-  /** Pinned public base URL (default: `process.env.PUBLIC_BASE_URL`). */
-  publicBaseUrl?: string;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
   /**
@@ -83,6 +82,11 @@ export interface AppDeps {
   spendApiToken?: string;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
+  /**
+   * Historical BTC-USD rates for gift stats (default: empty
+   * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
+   */
+  btcUsdRates?: BtcUsdRateBook;
 }
 
 /**
@@ -93,15 +97,14 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
- * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader,
- *   debugToken, gift store, WebAuthn RP, spend token, and gift invoice store.
+ * @param deps - Optional overrides for the auth store, clock, invoice payer,
+ *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
+ *   BTC-USD rates, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;
-  const publicBaseUrl = deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'];
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
   const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
@@ -109,6 +112,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
+  const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -119,15 +123,14 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   app.use('*', requestLog());
   // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
-  // CORS covers the apex, transitional app.* aliases, and localhost. The
-  // LNURL-auth callback is proxied at the apex so wallets pin linkingKeys there.
-  // Bearer sessions + the X-Poll-Token are headers (no cookies), credentials off.
+  // CORS covers the apex, transitional app.* aliases, and localhost.
+  // Bearer sessions are headers (no cookies), credentials off.
   app.use(
     '*',
     cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type', 'X-Poll-Token'],
+      allowHeaders: ['Authorization', 'Content-Type'],
       maxAge: 86400,
     }),
   );
@@ -140,7 +143,6 @@ export function createApp(deps: AppDeps = {}): Hono {
     authRoutes({
       store,
       now,
-      publicBaseUrl,
       allowedOrigins,
       webAuthnRpId,
       webAuthnRpName,
@@ -153,7 +155,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
-  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore }));
+  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/invoices', invoiceRoutes({ spendApiToken, store: invoiceStore, now, fetchImpl }));
 
   return app;

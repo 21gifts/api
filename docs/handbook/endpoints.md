@@ -14,27 +14,6 @@
 - **Used by:** iOS home-screen icon crawlers.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
-## Endpoint: GET /auth/lnurl
-
-- **Purpose:** Creates a login challenge. JSON: lnurl, k1, pollToken.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `PUBLIC_BASE_URL` is unset.
-- **Used by:** App `startLnurlAuth`.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
-## Endpoint: GET /auth/lnurl/callback
-
-- **Purpose:** Wallet hits this with `k1`, `sig`, `key` (LUD-04). Success body `{ status: 'OK' }`. Query is never written to http.request logs.
-- **Errors:** HTTP 200 `{ status: 'ERROR', reason }` on missing params or bad signature (LUD-04).
-- **Used by:** Wallet of Satoshi / any LNURL-auth wallet.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
-## Endpoint: GET /auth/session
-
-- **Purpose:** Header `X-Poll-Token`. Returns pending until the callback succeeds, then `{ status: 'authenticated', token, account }`.
-- **Errors:** expired/used after TTL or reuse.
-- **Used by:** App `pollSession`.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
 ## Endpoint: GET /debug/accounts
 
 - **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `createdAt`). Same JSON fields as `GET /me`.
@@ -86,8 +65,8 @@
 
 ## Endpoint: GET /gifts/stats
 
-- **Purpose:** Public JSON of outbound gift totals: `totalSats`, `giftCount`, `recipientCount`, date range, `spendOverTime`, `byRecipient`, `byMonth`. No invoices.
-- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws.
+- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
+- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
 - **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy).
 - **Auth:** Public.
 

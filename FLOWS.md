@@ -6,7 +6,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-23.
+**Status**: living document. Last revised 2026-08-24.
 
 ---
 
@@ -22,12 +22,11 @@ product stays warm and direct — people helping people.
 
 ---
 
-## 1. Sign-in — **Shipped** (API) / **Sketch** (app passkey CTA)
+## 1. Sign-in — **Shipped**
 
 The landing page at `/` is the marketing site (pitch, how-it-works, FAQ) with
 **Log in** / **Ask for help** to `/login` and **Send help** to `/donate`.
-`/login` is the sign-in surface (`LoginCard`). The LUD-04 callback host is
-the public apex (`21.gifts` / `dev.21.gifts`). Passkey RP ID is
+`/login` is the passkey-only sign-in surface (`LoginCard`). Passkey RP ID is
 `WEBAUTHN_RP_ID`.
 
 On mount the app rehydrates a persisted session token via `GET /me`. A **401**
@@ -42,27 +41,18 @@ clears the token; a transient failure does not.
 3. App posts the credential to the matching `…/finish` with the page
    `Origin`. The api verifies and returns `{ token, account }` immediately.
 
-**LNURL-auth (parallel namespace, still shipped)**
-
-1. App calls `GET /auth/lnurl` and shows a QR of the uppercased `lnurl` plus
-   a `lightning:` deep link. The poll token is **never** put in the QR.
-2. App polls `GET /auth/session` with `X-Poll-Token`.
-3. The wallet signs `k1` at `GET /auth/lnurl/callback` (wallet-facing;
-   LUD-04 **200** + `status`).
-4. Poll returns `pending` / `expired` / `used` / `authenticated` as in
-   `SPEC.md`. On `authenticated`, the app stores the session and sends
-   `Authorization: Bearer` on subsequent calls.
+Login is passkey-only. LNURL-auth has been removed.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a shortened `linkingKey` when one is present,
-a name form, a Lightning Address form, and **Sign out**.
+`/profile` route yet. It shows a name form, a Lightning Address form, and
+**Sign out**.
 
-Passkey and LNURL accounts are not merged. No email, no password. Losing the
-passkey (and platform sync) or the wallet still loses that namespace.
+No email, no password. Losing the passkey (and platform sync) loses the
+account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/auth/lnurl`, `/auth/lnurl/callback`, `/auth/session`, `/me`, `/me/name`.
+`/me`, `/me/name`.
 
 ---
 
@@ -115,7 +105,8 @@ There is no campaign feed and no Donate button in the app today. Do not invent
 
 HTTP cited: `/lightning-address`, `/gifts/stats` (see `SPEC.md`).
 
-Public gift totals are **Shipped** as `GET /gifts/stats` (amounts, UTC
+Public gift totals are **Shipped** as `GET /gifts/stats` (sats, BTC, and
+historical USD at each gift's UTC-day Coinbase BTC-USD close; UTC
 spend-over-time, per person, per month). No invoices. The app statistics
 page consumes that route.
 

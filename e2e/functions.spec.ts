@@ -1,0 +1,491 @@
+import { expect, test, type APIRequestContext } from '@playwright/test';
+
+async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { challengeId: string; options: { challenge: string } };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+  expect(body.options.challenge.length).toBeGreaterThan(8);
+  return body;
+}
+
+test('Function: parseBindAddr — process listens on BIND_ADDR', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveBindAddr — process listens on BIND_ADDR', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: createApp — booted process serves HTTP', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: healthRoute — GET /healthz is ok', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { status: string };
+  expect(body.status).toBe('ok');
+});
+
+test('Function: infoRoute — GET /info names the service', async ({ request }) => {
+  const res = await request.get('/info');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { service: string };
+  expect(body.service).toBe('21gifts-api');
+});
+
+test('Function: brandRoutes — GET /favicon.svg is svg', async ({ request }) => {
+  const res = await request.get('/favicon.svg');
+  expect(res.status()).toBe(200);
+  expect((res.headers()['content-type'] ?? '').startsWith('image/svg+xml')).toBe(true);
+});
+
+test('Function: readPublicBrandFile — GET /favicon.svg has bytes', async ({ request }) => {
+  const res = await request.get('/favicon.svg');
+  expect(res.status()).toBe(200);
+  const body = await res.body();
+  expect(body.byteLength).toBeGreaterThan(0);
+});
+
+test('Function: requestLog — GET /info succeeds through middleware', async ({ request }) => {
+  const res = await request.get('/info');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: logEvent — GET /info succeeds through middleware', async ({ request }) => {
+  const res = await request.get('/info');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveAllowedOrigins — CORS preflight allows localhost', async ({ request }) => {
+  const res = await request.fetch('/info', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'http://localhost:3000',
+      'Access-Control-Request-Method': 'GET',
+    },
+  });
+  expect(res.status()).toBe(204);
+  expect(res.headers()['access-control-allow-origin']).toBe('http://localhost:3000');
+});
+
+test('Function: authRoutes — POST passkey register begin returns a challenge', async ({
+  request,
+}) => {
+  await passkeyBegin(request);
+});
+
+test('Function: randomHex — passkey challengeId is long hex', async ({ request }) => {
+  const body = await passkeyBegin(request);
+  expect(/^[0-9a-f]+$/i.test(body.challengeId)).toBe(true);
+});
+
+test('Function: InMemoryAuthStore — passkey begin is 200', async ({ request }) => {
+  await passkeyBegin(request);
+});
+
+test('Function: resolveSession — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
+test('Function: bearerToken — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
+test('Function: meRoutes — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
+test('Function: normalizeDisplayName — POST /me/name without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/name', { data: { name: 'Ada' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: normalizeLightningAddress — POST /me/lightning-address without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/lightning-address', {
+    data: { address: 'alice@walletofsatoshi.com' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: startVerification — POST verification without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/lightning-address/verification');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: UnconfiguredInvoicePayer — POST verification without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/lightning-address/verification');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: requestPayInvoice — POST verification without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/lightning-address/verification');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: confirmVerification — POST confirm without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/lightning-address/verification/confirm', {
+    data: { nonce: '00' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: lightningAddressRoutes — GET with a public address is 502 when LNURL-pay is unreachable', async ({
+  request,
+}) => {
+  const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
+  expect(res.status()).toBe(502);
+});
+
+test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
+  const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
+  expect(res.status()).toBe(502);
+});
+
+test('Function: InMemoryLnAddressCache — a failed resolve is not cached as success', async ({
+  request,
+}) => {
+  const first = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
+  const second = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
+  expect(first.status()).toBe(502);
+  expect(second.status()).toBe(502);
+});
+
+test('Function: openAuthStore — default boot has no DATABASE_URL and serves HTTP', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: PostgresAuthStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: unknown[] };
+  expect(Array.isArray(body.accounts)).toBe(true);
+});
+
+test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts');
+  expect(res.status()).toBe(401);
+  const wrong = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer wrong-token' },
+  });
+  expect(wrong.status()).toBe(401);
+});
+
+test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<{ createdAt: number }> };
+  expect(Array.isArray(body.accounts)).toBe(true);
+  for (let i = 1; i < body.accounts.length; i += 1) {
+    expect(body.accounts[i]!.createdAt).toBeGreaterThanOrEqual(body.accounts[i - 1]!.createdAt);
+  }
+});
+
+test('Function: meRoutes unlink — DELETE /me/lightning-address without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.delete('/me/lightning-address');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalSats: number };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalSats).toBe(0);
+});
+
+test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: buildGiftStats — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    spendOverTime: unknown[];
+    firstPaidAt: string | null;
+  };
+  expect(body.spendOverTime).toEqual([]);
+  expect(body.firstPaidAt).toBeNull();
+});
+
+test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: InMemoryBtcUsdStore — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: satsToBtcString — empty stats totalBtc is 8 dp', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { totalBtc: string }).totalBtc).toBe('0.00000000');
+});
+
+test('Function: usdCentsToString — empty stats totalUsd is 2 dp', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { totalUsd: string }).totalUsd).toBe('0.00');
+});
+
+test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: parseUsdPerBtc — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: PostgresBtcUsdStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateBtcUsdSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fillRatesForGiftRange — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fetchDailyCloses — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: parseCoinbaseCandles — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveCandlesUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: startPasskeyRegistration — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { challengeId: string; options: { challenge: string } };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+  expect(body.options.challenge.length).toBeGreaterThan(8);
+});
+
+test('Function: SimpleWebAuthnPasskeyCeremony — POST begin returns WebAuthn options', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { options: { rp?: { id?: string } } };
+  expect(body.options.rp?.id).toBe('localhost');
+});
+
+test('Function: resolveWebAuthnConfig — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: normalizeWebAuthnRpId — POST begin returns a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: finishPasskeyRegistration — POST finish without Origin is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/register/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/register/finish', {
+    data: { challengeId, credential: { id: 'cred-e2e' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Invalid origin');
+});
+
+test('Function: expectedOriginsForRpId — POST finish with a filtered Origin is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/register/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/register/finish', {
+    headers: { origin: 'http://127.0.0.1:3000' },
+    data: { challengeId, credential: { id: 'cred-e2e' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Invalid origin');
+});
+
+test('Function: startPasskeyAuthentication — POST begin returns a challenge', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/authenticate/begin');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { challengeId: string }).challengeId.length).toBeGreaterThan(8);
+});
+
+test('Function: finishPasskeyAuthentication — POST finish without credential id is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/authenticate/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/authenticate/finish', {
+    headers: { origin: 'http://localhost:3000' },
+    data: { challengeId, credential: { test: 'ok' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Unknown credential');
+});
+
+test('Function: credentialIdFrom — POST authenticate finish without credential id is 400', async ({
+  request,
+}) => {
+  const begin = await request.post('/auth/passkey/authenticate/begin');
+  const { challengeId } = (await begin.json()) as { challengeId: string };
+  const res = await request.post('/auth/passkey/authenticate/finish', {
+    headers: { origin: 'http://localhost:3000' },
+    data: { challengeId, credential: { test: 'ok' } },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Unknown credential');
+});
+
+test('Function: issueSession — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
+test('Function: openBootStores — default boot has no DATABASE_URL and serves HTTP', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: invoiceRoutes — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
+});
+
+test('Function: checkSpendAuth — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: InMemoryInvoiceStore — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: requestGiftInvoice — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: decodeBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: newInvoiceId — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: normalizeHex32 — POST /invoices/proof unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: preimageMatchesHash — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});

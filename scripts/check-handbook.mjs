@@ -188,7 +188,7 @@ function sectionComplete(body) {
   return bullets >= 3 && body.trim().length >= 80;
 }
 
-export { extractScreens, extractEndpoints, walk };
+export { extractScreens, extractEndpoints, extractFunctions, walk };
 
 const isMain = import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 

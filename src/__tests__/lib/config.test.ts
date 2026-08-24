@@ -1,37 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   expectedOriginsForRpId,
-  normalizePublicBaseUrl,
   normalizeWebAuthnRpId,
   resolveAllowedOrigins,
   resolveWebAuthnConfig,
 } from '@/lib/config';
-
-describe('normalizePublicBaseUrl', () => {
-  it('returns null when unset', () => {
-    expect(normalizePublicBaseUrl(undefined)).toBeNull();
-  });
-
-  it('returns null when blank', () => {
-    expect(normalizePublicBaseUrl('   ')).toBeNull();
-  });
-
-  it('strips a trailing slash', () => {
-    expect(normalizePublicBaseUrl('https://dev.21.gifts/')).toBe('https://dev.21.gifts');
-  });
-
-  it('strips multiple trailing slashes', () => {
-    expect(normalizePublicBaseUrl('https://21.gifts///')).toBe('https://21.gifts');
-  });
-
-  it('trims surrounding whitespace', () => {
-    expect(normalizePublicBaseUrl('  https://21.gifts  ')).toBe('https://21.gifts');
-  });
-
-  it('passes a clean url through unchanged', () => {
-    expect(normalizePublicBaseUrl('https://21.gifts')).toBe('https://21.gifts');
-  });
-});
 
 describe('resolveAllowedOrigins', () => {
   it('returns the default app surfaces when unset', () => {

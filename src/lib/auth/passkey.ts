@@ -1,4 +1,4 @@
-import { randomHex } from '@/lib/auth/lnurl';
+import { randomHex } from '@/lib/auth/hex';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore, PasskeyChallenge } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
