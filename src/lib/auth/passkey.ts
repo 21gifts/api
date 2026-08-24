@@ -89,7 +89,8 @@ export async function startPasskeyRegistration(
 
 /**
  * Complete passkey registration: verify attestation, persist the account and
- * credential, issue a session.
+ * credential, issue a session. A duplicate credential id rolls the new
+ * account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
