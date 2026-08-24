@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { buildGiftStats } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
-import { MemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { logEvent } from '@/lib/log';
 
 /** Collaborators the public gift-stats route needs. */
@@ -9,7 +9,7 @@ export interface GiftsStatsRouteDeps {
   /** Outbound gift source. */
   store: GiftStore;
   /**
-   * Historical BTC-USD rates (default: empty {@link MemoryBtcUsdStore}).
+   * Historical BTC-USD rates (default: empty {@link InMemoryBtcUsdStore}).
    * Empty boots stay empty 200 without calling Coinbase.
    */
   rates?: BtcUsdRateBook;
@@ -26,7 +26,7 @@ export interface GiftsStatsRouteDeps {
  * @returns A Hono app with `GET /`.
  */
 export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
-  const rates = deps.rates ?? new MemoryBtcUsdStore();
+  const rates = deps.rates ?? new InMemoryBtcUsdStore();
   const now = deps.now ?? Date.now;
 
   return new Hono().get('/', async (c) => {

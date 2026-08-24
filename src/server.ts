@@ -14,7 +14,7 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { invoiceRoutes } from '@/routes/invoices';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
-import { MemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -84,7 +84,7 @@ export interface AppDeps {
   invoiceStore?: InvoiceStore;
   /**
    * Historical BTC-USD rates for gift stats (default: empty
-   * {@link MemoryBtcUsdStore} — empty boots stay empty 200).
+   * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
    */
   btcUsdRates?: BtcUsdRateBook;
 }
@@ -112,7 +112,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
-  const btcUsdRates = deps.btcUsdRates ?? new MemoryBtcUsdStore();
+  const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();

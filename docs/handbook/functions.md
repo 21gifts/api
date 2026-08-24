@@ -10,7 +10,7 @@
 ## Function: giftsStatsRoutes
 
 - **Purpose:** Hono sub-app for `GET /gifts/stats`. Empty gift list → empty stats 200 without Coinbase. Otherwise `ensureDays` for unique gift days; missing rate → 503.
-- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `MemoryBtcUsdStore`, `Date.now`).
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`).
 - **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.fx_incomplete` or `gifts.stats.failed` on 503 paths.
 - **Used by:** `createApp`.
 
@@ -32,7 +32,7 @@
 
 - **Purpose:** Convert sats to USD cents at a USD-per-BTC rate using BigInt half-up (`sats * usd_scaled_8 / 10^14`).
 - **Inputs:** Non-negative integer `sats` and rate string.
-- **Returns / side effects:** Integer cents. Throws on bad sats/rate. No I/O.
+- **Returns / side effects:** Integer cents. Throws on bad sats/rate or if rounded cents exceed `Number.MAX_SAFE_INTEGER`. No I/O.
 - **Used by:** `buildGiftStats`.
 
 ## Function: usdCentsToString
@@ -70,7 +70,7 @@
 - **Returns / side effects:** Void; idempotent DDL execute.
 - **Used by:** `openBootStores` when SQL opens.
 
-## Function: MemoryBtcUsdStore
+## Function: InMemoryBtcUsdStore
 
 - **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
 - **Inputs:** Optional `ReadonlyMap` or `Record` of day → rate. `ensureDays(days, nowMs)` returns the seed subset for valid requested days.
@@ -79,7 +79,7 @@
 
 ## Function: PostgresBtcUsdStore
 
-- **Purpose:** Durable `BtcUsdRateBook` over Postgres: SELECT requested days, fetch+INSERT gaps (refresh UTC-today if `fetched_at` older than 1h); historical days insert-only on conflict.
+- **Purpose:** Durable `BtcUsdRateBook` over Postgres: SELECT requested days; fetch+upsert gaps, stale UTC-today (`fetched_at` older than 1h), and after-midnight finalize of an intraday print; skip candle days not requested; still-missing omitted (no throw).
 - **Inputs:** Constructor `{ sql, fetchImpl, candlesUrl, source? }`. `ensureDays(days, nowMs)`.
 - **Returns / side effects:** Day → rate map; still-missing days omitted (no throw). Writes `btc_usd_daily`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -121,7 +121,7 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore: undefined`, and empty `MemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore: undefined`, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
 - **Returns / side effects:** `{ authStore, giftStore, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory.
 - **Used by:** `src/index.ts` boot.

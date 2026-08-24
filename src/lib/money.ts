@@ -70,7 +70,7 @@ export function parseUsdPerBtc(rate: string): bigint {
  * @param sats - Non-negative integer satoshis.
  * @param usdPerBtc - USD per BTC decimal string.
  * @returns USD cents as a number.
- * @throws If `sats` is invalid or the rate cannot be parsed.
+ * @throws If `sats` is invalid, the rate cannot be parsed, or rounded cents exceed `Number.MAX_SAFE_INTEGER`.
  */
 export function satsToUsdCents(sats: number, usdPerBtc: string): number {
   if (!Number.isInteger(sats) || sats < 0) {
@@ -81,6 +81,9 @@ export function satsToUsdCents(sats: number, usdPerBtc: string): number {
   const quot = numer / CENTS_DIVISOR;
   const rem = numer % CENTS_DIVISOR;
   const rounded = rem * 2n >= CENTS_DIVISOR ? quot + 1n : quot;
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('usd cents overflow');
+  }
   return Number(rounded);
 }
 

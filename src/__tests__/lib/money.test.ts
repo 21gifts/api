@@ -77,6 +77,10 @@ describe('satsToUsdCents', () => {
     expect(() => satsToUsdCents(-1, '100000')).toThrow(/non-negative integer/);
     expect(() => satsToUsdCents(1.2, '100000')).toThrow(/non-negative integer/);
   });
+
+  it('throws when cents exceed MAX_SAFE_INTEGER', () => {
+    expect(() => satsToUsdCents(100_000_000, '100000000000000')).toThrow(/usd cents overflow/);
+  });
 });
 
 describe('usdCentsToString', () => {

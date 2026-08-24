@@ -19,9 +19,11 @@ database URL that is set is fail-loud at boot. Public gift statistics
 (`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and historical USD using the UTC-calendar-day
-BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`);
-the public GET does not call Coinbase once those days are stored. A missing
-rate after ensure/fetch is **503**.
+BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`).
+GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
+is older than one hour, and a past day whose `fetched_at` is still on that
+same UTC calendar day (intraday print not yet the settled close). Settled
+stored days are not re-fetched. A missing rate after ensure/fetch is **503**.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -526,8 +528,9 @@ When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
 only) and ensures a BTC-USD daily close for each gift's UTC calendar day
 (from `btc_usd_daily`, fetching Coinbase only for missing days / stale
-UTC-today). Each gift's sats are converted at **that day's** close (not
-spot). Gap days in `spendOverTime` are zero sats/BTC/USD and need no rate.
+UTC-today / after-midnight finalize of an intraday print). Each gift's sats
+are converted at **that day's** close (not spot). Gap days in
+`spendOverTime` are zero sats/BTC/USD and need no rate.
 A query failure or a still-missing rate after ensure is **503**.
 
 **Response** `200`:

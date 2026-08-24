@@ -2,7 +2,7 @@ import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import {
-  MemoryBtcUsdStore,
+  InMemoryBtcUsdStore,
   PostgresBtcUsdStore,
   fillRatesForGiftRange,
   migrateBtcUsdSchema,
@@ -41,7 +41,7 @@ export interface BootFxOptions {
  * `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`, and an
- * empty {@link MemoryBtcUsdStore}. A set URL asks `createClient` for one
+ * empty {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
  * `SqlClient`, migrates auth (via `openAuthStore`) then the FX table, builds
  * a {@link QueryGiftStore}, constructs {@link PostgresBtcUsdStore}, and
  * best-effort fills rates for the outbound gift day range (failures log
@@ -69,7 +69,7 @@ export async function openBootStores(
         },
   );
   if (sqlClient === undefined) {
-    return { authStore, giftStore: undefined, btcUsdRates: new MemoryBtcUsdStore() };
+    return { authStore, giftStore: undefined, btcUsdRates: new InMemoryBtcUsdStore() };
   }
 
   await migrateBtcUsdSchema(sqlClient);

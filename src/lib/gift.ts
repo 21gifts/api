@@ -6,6 +6,7 @@
  * recipient handles.
  */
 
+import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
 import { satsToBtcString, satsToUsdCents, usdCentsToString } from '@/lib/money';
 
 /** One outbound gift used as stats input. No invoice fields. */
@@ -71,7 +72,7 @@ export interface GiftStatsFx {
   /** Calendar-day basis for rate lookup. */
   dayBasis: 'utc';
   /** Persisted Coinbase Exchange daily-close source tag. */
-  source: 'coinbase-exchange-daily-close';
+  source: typeof FX_SOURCE_COINBASE_DAILY_CLOSE;
 }
 
 /** Aggregated public gift statistics. */
@@ -115,7 +116,7 @@ const MS_PER_DAY = 86_400_000;
 const EMPTY_FX: GiftStatsFx = {
   quote: 'BTC-USD',
   dayBasis: 'utc',
-  source: 'coinbase-exchange-daily-close',
+  source: FX_SOURCE_COINBASE_DAILY_CLOSE,
 };
 
 /**

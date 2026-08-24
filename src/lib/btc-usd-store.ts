@@ -23,9 +23,9 @@ const MS_PER_DAY = 86_400_000;
 const ONE_HOUR_MS = 3_600_000;
 
 /**
- * Load persisted rates; fetch and persist any missing days (and refresh
- * UTC-today when `fetched_at` is older than one hour). Never overwrite a
- * historical day.
+ * Load persisted rates; fetch and upsert days in needFetch (missing days,
+ * stale UTC-today, after-midnight finalize of an intraday print). Settled
+ * historical days are not re-fetched.
  */
 export interface BtcUsdRateBook {
   /**
@@ -59,7 +59,7 @@ export async function migrateBtcUsdSchema(sql: SqlClient): Promise<void> {
 /**
  * In-memory rate book. Returns the seed only — never HTTP.
  */
-export class MemoryBtcUsdStore implements BtcUsdRateBook {
+export class InMemoryBtcUsdStore implements BtcUsdRateBook {
   readonly #rates: ReadonlyMap<string, string>;
 
   /**
@@ -114,9 +114,9 @@ export class PostgresBtcUsdStore implements BtcUsdRateBook {
   }
 
   /**
-   * Load rates for `days`, fetching and inserting any gaps (and refreshing
-   * UTC-today when stale). Historical days are insert-only on conflict.
-   * Still-missing days are omitted — the caller decides on 503.
+   * Load rates for `days`. INSERT … ON CONFLICT DO UPDATE only for days in
+   * needFetch; extra candle days outside needFetch are skipped. Still-missing
+   * days are omitted — the caller decides on 503.
    *
    * @param days - Requested UTC days.
    * @param nowMs - Clock for today / one-hour refresh.
@@ -149,33 +149,29 @@ export class PostgresBtcUsdStore implements BtcUsdRateBook {
     }
 
     if (needFetch.length > 0) {
-      const sorted = [...needFetch].sort();
-      const fromDay = sorted[0] as string;
-      const toDay = sorted[sorted.length - 1] as string;
-      const closes = await fetchDailyCloses({
-        fetchImpl: this.#fetchImpl,
-        url: this.#candlesUrl,
-        fromDay,
-        toDay,
-      });
       const fetchedAt = new Date(nowMs).toISOString();
-      for (const close of closes) {
-        await this.#sql.execute(
-          `INSERT INTO btc_usd_daily (day, usd_per_btc, source, fetched_at)
-           VALUES ($1::date, $2::numeric, $3, $4::timestamptz)
-           ON CONFLICT (day) DO UPDATE SET
-             usd_per_btc = EXCLUDED.usd_per_btc,
-             source = EXCLUDED.source,
-             fetched_at = EXCLUDED.fetched_at
-           WHERE btc_usd_daily.day = $5::date`,
-          [
-            close.day,
-            close.usdPerBtc,
-            this.#source,
-            fetchedAt,
-            needFetch.includes(today) ? today : '0001-01-01',
-          ],
-        );
+      const wanted = new Set(needFetch);
+      for (const run of contiguousUtcRuns(needFetch)) {
+        const closes = await fetchDailyCloses({
+          fetchImpl: this.#fetchImpl,
+          url: this.#candlesUrl,
+          fromDay: run.fromDay,
+          toDay: run.toDay,
+        });
+        for (const close of closes) {
+          if (!wanted.has(close.day)) {
+            continue;
+          }
+          await this.#sql.execute(
+            `INSERT INTO btc_usd_daily (day, usd_per_btc, source, fetched_at)
+             VALUES ($1::date, $2::numeric, $3, $4::timestamptz)
+             ON CONFLICT (day) DO UPDATE SET
+               usd_per_btc = EXCLUDED.usd_per_btc,
+               source = EXCLUDED.source,
+               fetched_at = EXCLUDED.fetched_at`,
+            [close.day, close.usdPerBtc, this.#source, fetchedAt],
+          );
+        }
       }
     }
 
@@ -310,6 +306,34 @@ function normalizeDay(value: Date | string): string | null {
   }
   const day = value.length >= 10 ? value.slice(0, 10) : value;
   return isValidUtcDay(day) ? day : null;
+}
+
+/**
+ * Group unique valid UTC days into inclusive contiguous runs.
+ * Only called with a non-empty list (caller already guards).
+ *
+ * @param days - Unique valid UTC days (any order); must be non-empty.
+ * @returns Inclusive `{ fromDay, toDay }` spans with no interior gaps.
+ */
+function contiguousUtcRuns(days: readonly string[]): { fromDay: string; toDay: string }[] {
+  const sorted = [...days].sort();
+  const runs: { fromDay: string; toDay: string }[] = [];
+  let fromDay = sorted[0] as string;
+  let toDay = fromDay;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const day = sorted[i] as string;
+    const prevMs = Date.parse(`${toDay}T00:00:00.000Z`);
+    const dayMs = Date.parse(`${day}T00:00:00.000Z`);
+    if (dayMs === prevMs + MS_PER_DAY) {
+      toDay = day;
+      continue;
+    }
+    runs.push({ fromDay, toDay });
+    fromDay = day;
+    toDay = day;
+  }
+  runs.push({ fromDay, toDay });
+  return runs;
 }
 
 /**

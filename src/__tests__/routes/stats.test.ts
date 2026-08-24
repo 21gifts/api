@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { GiftRow } from '@/lib/gift';
-import { MemoryBtcUsdStore } from '@/lib/btc-usd-store';
+import { InMemoryBtcUsdStore } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { giftsStatsRoutes } from '@/routes/stats';
 import { createApp } from '@/server';
@@ -56,7 +56,7 @@ describe('GET /gifts/stats', () => {
   it('aggregates gifts when rates cover every gift day', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([GIFT]),
-      btcUsdRates: new MemoryBtcUsdStore({ '2026-06-01': '100000' }),
+      btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
     }).request('/gifts/stats');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -74,7 +74,7 @@ describe('GET /gifts/stats', () => {
   it('returns 503 when a gift day has no rate after ensureDays', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([GIFT]),
-      btcUsdRates: new MemoryBtcUsdStore(),
+      btcUsdRates: new InMemoryBtcUsdStore(),
     }).request('/gifts/stats');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });

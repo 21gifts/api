@@ -1,5 +1,5 @@
 -- BTC-USD daily closes used by GET /gifts/stats (historical FX per gift day).
--- Populated from Coinbase Exchange daily candles; historical days are insert-only.
+-- Populated from Coinbase Exchange daily candles; settled historical days are not re-fetched; missing days, stale UTC-today, and after-midnight finalize of an intraday print are upserted.
 
 CREATE TABLE IF NOT EXISTS btc_usd_daily (
   day date PRIMARY KEY,

@@ -3,7 +3,7 @@ import { openBootStores } from '@/lib/boot-stores';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
-import { MemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
+import { InMemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 
 function unusedClient(): SqlClient {
@@ -35,21 +35,21 @@ describe('openBootStores', () => {
     warn.mockRestore();
   });
 
-  it('returns in-memory auth, no gift store, and MemoryBtcUsdStore when unset', async () => {
+  it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when unset', async () => {
     const factory = vi.fn(() => unusedClient());
     const { authStore, giftStore, btcUsdRates } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
-    expect(btcUsdRates).toBeInstanceOf(MemoryBtcUsdStore);
+    expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(factory).not.toHaveBeenCalled();
   });
 
-  it('returns in-memory auth, no gift store, and MemoryBtcUsdStore when blank', async () => {
+  it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when blank', async () => {
     const factory = vi.fn(() => unusedClient());
     const { authStore, giftStore, btcUsdRates } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
-    expect(btcUsdRates).toBeInstanceOf(MemoryBtcUsdStore);
+    expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(factory).not.toHaveBeenCalled();
   });
 
