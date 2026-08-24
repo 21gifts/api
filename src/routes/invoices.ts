@@ -3,12 +3,17 @@ import { z } from 'zod';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
-import { newInvoiceId, type InvoiceStore } from '@/lib/invoice-store';
+import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
-import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { preimageMatchesHash } from '@/lib/proof';
 import { checkSpendAuth } from '@/lib/spend-auth';
+import {
+  NoopGiftRecorder,
+  recipientHandleFromAddress,
+  type GiftRecorder,
+} from '@/lib/gift-recorder';
+import { logEvent } from '@/lib/log';
 
 /**
  * Spend-worker invoice routes: fetch a recipient BOLT11 via LNURL-pay, then
@@ -25,6 +30,11 @@ export interface InvoiceRouteDeps {
   now: () => number;
   /** Injected fetch for LNURL-pay. */
   fetchImpl: FetchFn;
+  /**
+   * Persist a proven gift into `gift` for `/gifts/stats`. Default no-op.
+   * Insert failures are logged; proof still returns 200.
+   */
+  giftRecorder?: GiftRecorder;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -63,10 +73,28 @@ function authGate(
 /**
  * Build the `/invoices` route group.
  *
- * @param deps - Token, store, clock, fetch.
+ * @param deps - Token, store, clock, fetch, optional gift recorder.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
+  const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+
+  async function persistProvenGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+    try {
+      await giftRecorder.recordOutbound({
+        paidAt: new Date(paidAtMs),
+        amountSats: Math.floor(invoice.amountMsat / 1000),
+        feeSats: 0,
+        recipientWosUser: recipientHandleFromAddress(invoice.address),
+        lightningInvoice: invoice.pr,
+        description: '21gifts daily',
+        sourceWallet: 'lightning.space',
+      });
+    } catch {
+      logEvent('gifts.record_failed', { id: invoice.id });
+    }
+  }
+
   return new Hono()
     .post('/', async (c) => {
       const denied = authGate(
@@ -127,6 +155,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const id = newInvoiceId();
       deps.store.put({
         id,
+        address,
         pr: fetched.pr,
         paymentHash: decoded.paymentHash,
         amountMsat,
@@ -175,6 +204,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           invoice.preimage === parsed.data.preimage.trim().toLowerCase() &&
           preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)
         ) {
+          await persistProvenGift(invoice, invoice.paidAt);
           return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
         }
         return c.json({ error: 'Invoice already paid' }, 409);
@@ -183,6 +213,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         const preimage = parsed.data.preimage.trim().toLowerCase();
         deps.store.markPaid(invoice.id, preimage, now);
         logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
+        await persistProvenGift(invoice, now);
         return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
       }
       if (now >= invoice.expiresAt) {

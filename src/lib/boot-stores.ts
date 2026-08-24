@@ -11,6 +11,7 @@ import {
 import { resolveCandlesUrl, type FetchFn } from '@/lib/btc-usd-candles';
 import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
 
 /** Auth, gift, and FX persistence produced from `DATABASE_URL`. */
@@ -22,6 +23,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   giftStore: GiftStore | undefined;
+  /**
+   * Inserts proven spend gifts into `gift`, or `undefined` when no SQL
+   * client was opened so `createApp` keeps the no-op recorder.
+   */
+  giftRecorder: GiftRecorder | undefined;
   /** BTC-USD rate book (memory when no SQL; Postgres otherwise). */
   btcUsdRates: BtcUsdRateBook;
 }
@@ -40,10 +46,11 @@ export interface BootFxOptions {
  * Open auth, optional gift persistence, and the BTC-USD rate book from
  * `DATABASE_URL`.
  *
- * Blank or unset URL yields in-memory auth, `giftStore: undefined`, and an
- * empty {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
- * `SqlClient`, migrates auth (via `openAuthStore`) then the FX table, builds
- * a {@link QueryGiftStore}, constructs {@link PostgresBtcUsdStore}, and
+ * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
+ * `giftRecorder: undefined`, and an empty {@link InMemoryBtcUsdStore}. A set
+ * URL asks `createClient` for one `SqlClient`, migrates auth (via
+ * `openAuthStore`) then the FX table, builds a {@link QueryGiftStore} and
+ * {@link SqlGiftRecorder}, constructs {@link PostgresBtcUsdStore}, and
  * best-effort fills rates for the outbound gift day range (failures log
  * `gifts.fx.boot_fill.failed` and do not throw).
  *
@@ -69,7 +76,12 @@ export async function openBootStores(
         },
   );
   if (sqlClient === undefined) {
-    return { authStore, giftStore: undefined, btcUsdRates: new InMemoryBtcUsdStore() };
+    return {
+      authStore,
+      giftStore: undefined,
+      giftRecorder: undefined,
+      btcUsdRates: new InMemoryBtcUsdStore(),
+    };
   }
 
   await migrateBtcUsdSchema(sqlClient);
@@ -99,5 +111,6 @@ export async function openBootStores(
     );
     return rows.map((row) => mapGiftQueryRow(row));
   });
-  return { authStore, giftStore, btcUsdRates };
+  const giftRecorder = new SqlGiftRecorder(giftSql);
+  return { authStore, giftStore, giftRecorder, btcUsdRates };
 }

@@ -34,7 +34,10 @@ does not fetch or pay invoices.
 Spend-worker invoice routes (`POST /invoices`, `POST /invoices/proof`) fetch a
 BOLT11 via LNURL-pay and accept a preimage proof. They require
 `SPEND_API_TOKEN`; when it is unset the routes return **503** and the process
-still boots. This service does not pay invoices (no LNDHub client).
+still boots. This service does not pay invoices (no LNDHub client). A matching
+proof inserts an outbound row into `gift` when `DATABASE_URL` is set (no-op
+without it) so `GET /gifts/stats` includes the payment. Insert failure logs
+`gifts.record_failed` and still returns **200**.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -650,6 +653,14 @@ memory. Expired unpaid **without** a matching preimage → **409**
 **400** `{ "error": "Proof does not match invoice" }`. Already paid with a
 different preimage → **409** `{ "error": "Invoice already paid" }`. Same
 preimage → **200** idempotent.
+
+A matching proof (including the same-preimage idempotent 200) inserts one
+outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
+`lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
+handle from the invoice address, description `21gifts daily`,
+`source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
+Insert errors log `gifts.record_failed` and do not change the HTTP
+response.
 
 Success → **Response** `200`:
 

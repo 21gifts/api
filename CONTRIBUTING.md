@@ -55,9 +55,10 @@ api/
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
+│   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore, BTC-USD rates
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, BTC-USD rates
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
@@ -94,6 +95,7 @@ api/
 │       │   ├── proof.test.ts
 │       │   ├── spend-auth.test.ts
 │       │   ├── invoice-store.test.ts
+│       │   ├── gift-recorder.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
 │       │   ├── boot-stores.test.ts
@@ -226,10 +228,12 @@ booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
-`fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`, and
-`resolveCandlesUrl`, which need `DATABASE_URL`; `InMemoryInvoiceStore`,
-`requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and
-`preimageMatchesHash`, which need `SPEND_API_TOKEN` and a reachable LNURL-pay;
+`fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
+`resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
+`InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
+`normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
+`recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
+LNURL-pay;
 `satsToUsdCents` and `parseUsdPerBtc`, which need a non-empty gift list),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, or a
@@ -276,17 +280,17 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable               | Default                                 | Purpose                                                                                                                                                                                                                                                                   |
-| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                            |
-| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                      |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth and `btc_usd_daily` are migrated, `GET /gifts/stats` reads `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process). Unset keeps `InMemoryAuthStore` and empty gift stats. |
-| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                                                                                                               |
-| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                           |
-| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                   |
-| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                  |
-| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                        |
-| `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                          |
+| Variable               | Default                                 | Purpose                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                               |
+| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                         |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth and `btc_usd_daily` are migrated, `GET /gifts/stats` reads `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, empty gift stats, and a no-op gift recorder. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                  |
+| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                              |
+| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                      |
+| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                                                                                                     |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                                                                                                           |
+| `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                                                                                                             |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
