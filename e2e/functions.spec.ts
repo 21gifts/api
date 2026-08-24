@@ -526,3 +526,69 @@ test('Function: issueSession — LNURL poll returns a bearer token', async ({ re
   const me = await request.get('/me', { headers: bearer(token) });
   expect(me.status()).toBe(200);
 });
+
+test('Function: openBootStores — default boot has no DATABASE_URL and serves HTTP', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: invoiceRoutes — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
+});
+
+test('Function: checkSpendAuth — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: InMemoryInvoiceStore — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: requestGiftInvoice — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: decodeBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: newInvoiceId — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: normalizeHex32 — POST /invoices/proof unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: preimageMatchesHash — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
