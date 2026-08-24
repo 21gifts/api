@@ -139,7 +139,8 @@ Graph tags.
 Starts a discoverable-credential registration. No body. Does not persist an
 account until finish.
 
-When `WEBAUTHN_RP_ID` is unset or no CORS origin matches that RP ID:
+When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
+`dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
 **Response** `500`:
 
@@ -175,16 +176,16 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                  | When                                              |
-| ------ | --------------------------------------------------------------------- | ------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing or no matching origin               |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                   |
-| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                             |
-| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                |
-| 400    | `{ "error": "Challenge already used" }`                               | Finish already succeeded                          |
-| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                       |
-| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                    |
-| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential |
+| Status | Body                                                                  | When                                                                |
+| ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin          |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                                     |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                                               |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                                  |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted; challenge is consumed before verification |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                                         |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                                      |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential                   |
 
 **Response** `200`:
 

@@ -107,10 +107,18 @@ export interface Session {
 export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
-  /** Overwrite a stored account (used to update its profile fields). */
+  /**
+   * Overwrite a stored account. A non-null `linkingKey` owned by another id
+   * is refused (in-memory no-op; Postgres `UPDATE` matches no row).
+   */
   updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
+  /**
+   * Drop an account row. Used to roll back `finishPasskeyRegistration` when
+   * the credential insert loses a duplicate-id race.
+   */
+  deleteAccount(id: string): Promise<void>;
   /**
    * Every stored account, oldest first (then `id` ascending).
    * Used by the operator debug listing; never includes session tokens.
@@ -135,11 +143,17 @@ export interface AuthStore {
    * or already consumed so concurrent finishes cannot mint two sessions.
    */
   updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean>;
-  /** Persist a verified passkey credential. */
-  createPasskeyCredential(credential: PasskeyCredential): Promise<void>;
+  /**
+   * Persist a verified passkey credential. Returns false when the id is
+   * already stored so two adapters reject duplicates the same way.
+   */
+  createPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
-  /** Overwrite a stored passkey credential (used to advance `signCount`). */
+  /**
+   * Advance `signCount` without decreasing it (GREATEST / in-process max).
+   * Does not rebind `accountId` or `publicKey`.
+   */
   updatePasskeyCredential(credential: PasskeyCredential): Promise<void>;
 }
 
@@ -167,6 +181,12 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async updateAccount(account: Account): Promise<void> {
+    if (account.linkingKey !== null) {
+      const ownerId = this.#accountsByLinkingKey.get(account.linkingKey);
+      if (ownerId !== undefined && ownerId !== account.id) {
+        return;
+      }
+    }
     const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
@@ -178,6 +198,17 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, account);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
+    }
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    const previous = this.#accounts.get(id);
+    if (previous === undefined) {
+      return;
+    }
+    this.#accounts.delete(id);
+    if (previous.linkingKey !== null) {
+      this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
   }
 
@@ -228,8 +259,12 @@ export class InMemoryAuthStore implements AuthStore {
     return true;
   }
 
-  async createPasskeyCredential(credential: PasskeyCredential): Promise<void> {
+  async createPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    if (this.#passkeyCredentials.has(credential.credentialId)) {
+      return false;
+    }
     this.#passkeyCredentials.set(credential.credentialId, credential);
+    return true;
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
@@ -237,7 +272,14 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
-    this.#passkeyCredentials.set(credential.credentialId, credential);
+    const current = this.#passkeyCredentials.get(credential.credentialId);
+    if (current === undefined) {
+      return;
+    }
+    this.#passkeyCredentials.set(credential.credentialId, {
+      ...current,
+      signCount: Math.max(current.signCount, credential.signCount),
+    });
   }
 
   /** Drop passkey challenges older than the TTL. */

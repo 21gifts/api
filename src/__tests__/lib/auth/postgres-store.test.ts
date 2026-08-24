@@ -75,6 +75,28 @@ describe('PostgresAuthStore', () => {
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+  });
+
+  it('updateAccount SQL refuses a linking_key owned by another id', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).updateAccount({
+      id: 'pk',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
+  });
+
+  it('deletes an account by id', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).deleteAccount('acc');
+    expect(sql.executes[0]?.text).toMatch(/DELETE FROM account WHERE id = \$1/);
+    expect(sql.executes[0]?.params).toEqual(['acc']);
   });
 
   it('evicts expired sessions then inserts', async () => {
@@ -212,14 +234,28 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     const key = new Uint8Array([1, 2, 3]);
     const store = new PostgresAuthStore(sql);
-    await store.createPasskeyCredential({
-      credentialId: 'cred',
-      publicKey: key,
-      signCount: 0,
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    expect(sql.executes[0]?.text).toMatch(/INSERT INTO passkey_credential/);
+    sql.nextRows = [{ credential_id: 'cred' }];
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO passkey_credential/);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    sql.nextRows = [];
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
     sql.nextRows = [
       {
         credential_id: 'cred',
@@ -243,7 +279,7 @@ describe('PostgresAuthStore', () => {
       accountId: 'acc',
       createdAt: 1,
     });
-    expect(sql.executes[1]?.text).toMatch(/UPDATE passkey_credential/);
+    expect(sql.executes[0]?.text).toMatch(/GREATEST\(sign_count, \$2\)/);
   });
 
   it('returns undefined for a missing passkey credential', async () => {

@@ -24,7 +24,7 @@
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public.
 
@@ -38,7 +38,7 @@
 ## Endpoint: POST /auth/passkey/register/begin
 
 - **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Does not persist the account yet.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
 - **Used by:** App passkey account creation.
 - **Auth:** Public.
 
