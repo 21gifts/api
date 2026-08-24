@@ -109,7 +109,8 @@ export interface AuthStore {
   createAccount(account: Account): Promise<void>;
   /**
    * Overwrite a stored account. A non-null `linkingKey` owned by another id
-   * is refused (in-memory no-op; Postgres `UPDATE` matches no row).
+   * is refused (in-memory no-op; Postgres `UPDATE` matches no row or a
+   * `linking_key` unique_violation is swallowed).
    */
   updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */
@@ -151,10 +152,12 @@ export interface AuthStore {
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
   /**
-   * Advance `signCount` without decreasing it (GREATEST / in-process max).
-   * Does not rebind `accountId` or `publicKey`.
+   * Atomically advance `signCount` for clone detection.
+   * Succeeds only when `(newCount === 0 && stored === 0)` or `newCount > stored`.
+   * Does not rebind `accountId` or `publicKey`. Returns false when the row is
+   * missing or the CAS predicate fails.
    */
-  updatePasskeyCredential(credential: PasskeyCredential): Promise<void>;
+  updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
 }
 
 /**
@@ -271,15 +274,22 @@ export class InMemoryAuthStore implements AuthStore {
     return this.#passkeyCredentials.get(credentialId);
   }
 
-  async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
+  async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
     const current = this.#passkeyCredentials.get(credential.credentialId);
     if (current === undefined) {
-      return;
+      return false;
+    }
+    const accepted =
+      (credential.signCount === 0 && current.signCount === 0) ||
+      credential.signCount > current.signCount;
+    if (!accepted) {
+      return false;
     }
     this.#passkeyCredentials.set(credential.credentialId, {
       ...current,
-      signCount: Math.max(current.signCount, credential.signCount),
+      signCount: credential.signCount,
     });
+    return true;
   }
 
   /** Drop passkey challenges older than the TTL. */

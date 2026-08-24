@@ -78,11 +78,12 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   }
 
   /**
-   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed). `{ test: 'replay' }`
-   * fails so clone-detection / verify-fail branches are reachable.
+   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed) with
+   * `signCount + 1`. `{ test: 'zero' }` succeeds with `newSignCount` 0 so the
+   * authenticator 0/0 path is reachable. `{ test: 'replay' }` fails.
    *
    * @param input - Assertion payload from the finish body.
-   * @returns `signCount + 1` on success.
+   * @returns A new sign count on success, or `{ ok: false }`.
    */
   async verifyAuthentication(input: {
     response: unknown;
@@ -95,6 +96,9 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   }): Promise<{ ok: true; newSignCount: number } | { ok: false; reason: string }> {
     if (isSentinel(input.response, 'replay')) {
       return { ok: false, reason: 'Invalid passkey' };
+    }
+    if (isSentinel(input.response, 'zero')) {
+      return { ok: true, newSignCount: 0 };
     }
     if (isSentinel(input.response, 'ok')) {
       return { ok: true, newSignCount: input.signCount + 1 };

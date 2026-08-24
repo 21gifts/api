@@ -192,7 +192,7 @@ export async function startPasskeyAuthentication(
 }
 
 /**
- * Complete passkey authentication: verify assertion, bump signCount, issue a session.
+ * Complete passkey authentication: verify assertion, CAS-update signCount, issue a session.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -253,10 +253,13 @@ export async function finishPasskeyAuthentication(
   if (latest === undefined) {
     return { ok: false, error: 'Unknown credential' };
   }
-  await store.updatePasskeyCredential({
+  const accepted = await store.updatePasskeyCredential({
     ...latest,
-    signCount: Math.max(latest.signCount, verified.newSignCount),
+    signCount: verified.newSignCount,
   });
+  if (!accepted) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }

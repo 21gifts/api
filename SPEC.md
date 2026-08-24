@@ -215,7 +215,9 @@ Same 500 as register begin when WebAuthn is unconfigured.
 ### `POST /auth/passkey/authenticate/finish`
 
 Verifies the assertion against a stored credential, updates `signCount`,
-issues a session. Body shape matches register finish. Extra 400:
+issues a session. A non-increasing `signCount` is refused as
+`{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
+Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
 not stored. Success body matches register finish (`linkingKey` is whatever
 the account currently has).

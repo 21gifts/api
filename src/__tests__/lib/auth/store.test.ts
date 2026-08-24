@@ -346,29 +346,35 @@ describe('InMemoryAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
-    await store.updatePasskeyCredential({
-      credentialId: 'cred',
-      publicKey: new Uint8Array([1]),
-      signCount: 2,
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    await store.updatePasskeyCredential({
-      credentialId: 'cred',
-      publicKey: new Uint8Array([1]),
-      signCount: 1,
-      accountId: 'acc',
-      createdAt: 1,
-    });
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 2,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 1,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
     expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(2);
     expect((await store.getPasskeyCredential('cred'))?.accountId).toBe('acc');
-    await store.updatePasskeyCredential({
-      credentialId: 'cred',
-      publicKey: new Uint8Array([9]),
-      signCount: 3,
-      accountId: 'other',
-      createdAt: 99,
-    });
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([9]),
+        signCount: 3,
+        accountId: 'other',
+        createdAt: 99,
+      }),
+    ).toBe(true);
     expect(await store.getPasskeyCredential('cred')).toEqual({
       credentialId: 'cred',
       publicKey: new Uint8Array([1]),
@@ -377,14 +383,86 @@ describe('InMemoryAuthStore', () => {
       createdAt: 1,
     });
     expect(await store.getPasskeyCredential('missing')).toBeUndefined();
-    await store.updatePasskeyCredential({
-      credentialId: 'missing',
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'missing',
+        publicKey: new Uint8Array([1]),
+        signCount: 9,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(await store.getPasskeyCredential('missing')).toBeUndefined();
+  });
+
+  it('accepts a 0/0 signCount update and refuses an equal counter', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyCredential({
+      credentialId: 'cred',
       publicKey: new Uint8Array([1]),
-      signCount: 9,
+      signCount: 0,
       accountId: 'acc',
       createdAt: 1,
     });
-    expect(await store.getPasskeyCredential('missing')).toBeUndefined();
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(0);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(3);
+  });
+
+  it('lets only the first of two sequential N+1 signCount updates succeed', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyCredential({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 4,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    const next = {
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 5,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.updatePasskeyCredential(next)).toBe(true);
+    expect(await store.updatePasskeyCredential(next)).toBe(false);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(5);
   });
 
   it('refuses to let updateAccount steal another account linkingKey', async () => {

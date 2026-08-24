@@ -94,13 +94,13 @@
 ## Function: InMemoryAuthStore
 
 - **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` never decreases `signCount` and does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials. Passkey `signCount` advances with `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials. Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
@@ -408,9 +408,9 @@
 
 ## Function: finishPasskeyAuthentication
 
-- **Purpose:** Verifies a discoverable-credential assertion, updates signCount, issues a session.
+- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`.
 - **Used by:** `POST /auth/passkey/authenticate/finish`.
 
 ## Function: finishPasskeyRegistration
