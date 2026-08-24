@@ -538,7 +538,7 @@ api ensures a BTC-USD close for that UTC day and converts each gift at **that
 day's** close. An empty matching set is 200 without Coinbase. A query failure
 or a still-missing rate is **503**.
 
-**Response** `200`:
+**Response** `200` (empty day):
 
 ```json
 {
@@ -556,8 +556,51 @@ or a still-missing rate is **503**.
 }
 ```
 
-`gifts[]` items: `{ paidAt, amountSats, amountBtc, amountUsd, recipient }`,
-ordered by `paidAt` then `recipient`.
+**Response** `200` (one gift):
+
+```json
+{
+  "day": "2026-06-01",
+  "giftCount": 1,
+  "totalSats": 500,
+  "totalBtc": "0.00000500",
+  "totalUsd": "0.50",
+  "gifts": [
+    {
+      "paidAt": "2026-06-01T08:00:00.000Z",
+      "amountSats": 500,
+      "amountBtc": "0.00000500",
+      "amountUsd": "0.50",
+      "recipient": "alice"
+    }
+  ],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close"
+  }
+}
+```
+
+| Field       | Type                                                        | Meaning                                                      |
+| ----------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
+| `day`       | string                                                      | UTC `YYYY-MM-DD` of the query                                |
+| `giftCount` | number                                                      | Number of gifts that UTC day                                 |
+| `totalSats` | number                                                      | Sum of gift amounts (sats; fees excluded)                    |
+| `totalBtc`  | string                                                      | `totalSats` as BTC with eight decimals                       |
+| `totalUsd`  | string                                                      | Sum of per-gift USD at **this** day's close (`"0.50"`)       |
+| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`              |
+| `fx`        | `{ quote, dayBasis, source }`                               | Always present; Coinbase Exchange daily close, UTC day basis |
+
+`gifts[]` item:
+
+| Field        | Type   | Meaning                                   |
+| ------------ | ------ | ----------------------------------------- |
+| `paidAt`     | string | ISO-8601 instant (`toISOString`, UTC `Z`) |
+| `amountSats` | number | Gift amount in sats                       |
+| `amountBtc`  | string | Same amount as BTC with eight decimals    |
+| `amountUsd`  | string | USD at this UTC day's close (`"0.50"`)    |
+| `recipient`  | string | Recipient handle (`recipient_wos_user`)   |
 
 **Response** `503`: `{ "error": "Gift stats are unavailable" }`.
 
