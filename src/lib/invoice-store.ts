@@ -13,6 +13,8 @@ import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
 export interface GiftInvoice {
   /** 32 hex chars, unguessable id returned to the spend worker. */
   id: string;
+  /** Recipient Lightning Address used to fetch `pr`. */
+  address: string;
   /** BOLT11 payment request (`pr`). */
   pr: string;
   /** 32-byte payment hash, lowercase hex. */
@@ -101,6 +103,7 @@ export class InMemoryInvoiceStore implements InvoiceStore {
     }
     const paid: GiftInvoice = {
       id: current.id,
+      address: current.address,
       pr: current.pr,
       paymentHash: current.paymentHash,
       amountMsat: current.amountMsat,

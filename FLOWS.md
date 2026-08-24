@@ -121,7 +121,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash)
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats`
 
 Recurring **daily** gifts as fixed **USD** amounts and the donor UI are still
 a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or scheduler paths.

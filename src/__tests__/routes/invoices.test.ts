@@ -193,6 +193,7 @@ describe('POST /invoices/proof', () => {
   function unpaid(overrides?: Partial<GiftInvoice>): GiftInvoice {
     return {
       id: 'ab'.repeat(16),
+      address: ADDRESS,
       pr: PR,
       paymentHash: MATCHING_HASH,
       amountMsat: 1000,
@@ -305,10 +306,16 @@ describe('POST /invoices/proof', () => {
 
   it('returns 200 and stores the preimage on a matching proof', async () => {
     store.put(unpaid());
+    const recorded: unknown[] = [];
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore: store,
       now: () => 100,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
     }).request(
       '/invoices/proof',
       auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
@@ -321,19 +328,66 @@ describe('POST /invoices/proof', () => {
     });
     expect(store.get(unpaid().id)?.paidAt).toBe(100);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.paid')).toBe(true);
+    expect(recorded).toEqual([
+      {
+        paidAt: new Date(100),
+        amountSats: 1,
+        feeSats: 0,
+        recipientWosUser: 'alice',
+        lightningInvoice: PR,
+        description: '21gifts daily',
+        sourceWallet: 'lightning.space',
+      },
+    ]);
   });
 
-  it('returns 200 idempotently for the same preimage', async () => {
-    store.put(unpaid({ paidAt: 5, preimage: PREIMAGE }));
+  it('returns 200 when gift recording fails', async () => {
+    store.put(unpaid());
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore: store,
       now: () => 100,
+      giftRecorder: {
+        recordOutbound: async () => {
+          throw new Error('db');
+        },
+      },
     }).request(
       '/invoices/proof',
       auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.record_failed')).toBe(true);
+  });
+
+  it('returns 200 idempotently for the same preimage', async () => {
+    store.put(unpaid({ paidAt: 5, preimage: PREIMAGE }));
+    const recorded: unknown[] = [];
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      now: () => 100,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded).toEqual([
+      {
+        paidAt: new Date(5),
+        amountSats: 1,
+        feeSats: 0,
+        recipientWosUser: 'alice',
+        lightningInvoice: PR,
+        description: '21gifts daily',
+        sourceWallet: 'lightning.space',
+      },
+    ]);
   });
 
   it('returns 409 when already paid with a different preimage', async () => {

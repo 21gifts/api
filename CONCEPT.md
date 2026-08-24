@@ -78,7 +78,8 @@ Any account can additionally become a donor and spend money:
   `lightning.space` LNDHub wallet. This api does not store LNDHub
   credentials and does not pay.
 - The api issues recipient BOLT11 invoices (`POST /invoices`) and verifies
-  the payment preimage (`POST /invoices/proof`).
+  the payment preimage (`POST /invoices/proof`). A matching proof records
+  the outbound gift for public `GET /gifts/stats`.
 - This remains a v1 custody compromise (the worker can spend), documented
   because it contradicts the non-custodial target; that replacement retires
   it.
@@ -101,7 +102,8 @@ implement LNURL-verify.
 Donors can configure recurring daily gifts: fixed USD amounts to a list of
 recipients. This api does not pay. It issues BOLT11 invoices
 (`POST /invoices`, LNURL-pay to the recipient) and verifies the payment
-preimage (`POST /invoices/proof`). An external worker holds lightning.space
+preimage (`POST /invoices/proof`). A matching proof records the outbound
+gift for public `GET /gifts/stats`. An external worker holds lightning.space
 LNDHub credentials, pays, and submits the proof. Payout semantics on that
 worker are fail-closed: per-day idempotency log, ambiguous outcomes
 quarantined as "uncertain" and never auto-retried the same day, balance
@@ -645,6 +647,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                                                                                                                                                                                                        |
 | 2026-08-23 | Spend-worker invoice HTTP: `POST /invoices` fetches a recipient BOLT11 via LNURL-pay; `POST /invoices/proof` accepts the payment preimage. Paying is the external spend worker via lightning.space LNDHub — this api does not store LNDHub credentials or pay. `SPEND_API_TOKEN` optional (503 until set). **Supersedes** the 2026-07-05 in-api scheduler/LNDHub-pay decision and the 2026-08-15 “gift invoices stay browser-side” note for the spend-worker path. |
 | 2026-08-24 | v1 login is **passkey only**; LNURL-auth (LUD-04) endpoints, QR login, and `/auth/session` poll removed. `linkingKey` remains a nullable historical column. LNURL-pay (donate / invoices / address verification) is unchanged. **Supersedes** the 2026-07-05 LNURL-auth-only login decision.                                                                                                                                                                       |
+| 2026-08-24 | Matching `POST /invoices/proof` inserts an outbound `gift` row when `DATABASE_URL` is set so `GET /gifts/stats` includes spend-worker payments. Insert failure logs `gifts.record_failed` and still returns 200. Memory boots keep a no-op recorder.                                                                                                                                                                                                               |
 
 ---
 
