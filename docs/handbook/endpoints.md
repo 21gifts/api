@@ -63,6 +63,13 @@
 - **Used by:** Modern browsers preferring SVG icons.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /gifts
+
+- **Purpose:** Public JSON of outbound gifts for one UTC day (`?day=YYYY-MM-DD`): `giftCount`, totals, `gifts[]` (`paidAt`, `amountSats`, `amountBtc`, `amountUsd`, `recipient`), and `fx`. USD uses that UTC day's Coinbase close. Empty day is 200 with zeros (no Coinbase). No invoices.
+- **Errors:** 400 `{ "error": "Expected a UTC day (YYYY-MM-DD)" }` when `day` is missing or not a real date; 503 `{ "error": "Gift stats are unavailable" }` on store/rate failure (`gifts.day.fx_incomplete` / `gifts.day.failed`).
+- **Used by:** App day page (`GET /gifts` same-origin proxy).
+- **Auth:** Public.
+
 ## Endpoint: GET /gifts/stats
 
 - **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.

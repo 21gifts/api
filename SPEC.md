@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-24 (passkey-only login; gift stats BTC + historical USD via Coinbase daily close).
+**Status**: living document. Last revised 2026-08-24 (passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -16,7 +16,7 @@ schema and uses `PostgresAuthStore` — accounts, passkey challenges,
 passkey credentials, sessions, and pending address verifications survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. Public gift statistics
-(`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
+(`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and historical USD using the UTC-calendar-day
 BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`).
@@ -36,7 +36,7 @@ BOLT11 via LNURL-pay and accept a preimage proof. They require
 `SPEND_API_TOKEN`; when it is unset the routes return **503** and the process
 still boots. This service does not pay invoices (no LNDHub client). A matching
 proof inserts an outbound row into `gift` when `DATABASE_URL` is set (no-op
-without it) so `GET /gifts/stats` includes the payment. Insert failure logs
+without it) so `GET /gifts/stats` and `GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
@@ -72,6 +72,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)   |
 | GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics        |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)       |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof           |
@@ -522,6 +523,43 @@ Environment:
 | -------------- | ----------------------------------------------------------------------- |
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
+
+### `GET /gifts`
+
+Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.
+No auth. The body never includes invoices, fees, or wallet identifiers.
+
+Missing, blank, or impossible `day` (`2026-02-31`) → **400**
+`{ "error": "Expected a UTC day (YYYY-MM-DD)" }`.
+
+When `DATABASE_URL` is unset the in-memory gift store is empty — **200** with
+zeros, `gifts: []`, and `fx` (no Coinbase). When gifts exist for that day, the
+api ensures a BTC-USD close for that UTC day and converts each gift at **that
+day's** close. An empty matching set is 200 without Coinbase. A query failure
+or a still-missing rate is **503**.
+
+**Response** `200`:
+
+```json
+{
+  "day": "2026-06-01",
+  "giftCount": 0,
+  "totalSats": 0,
+  "totalBtc": "0.00000000",
+  "totalUsd": "0.00",
+  "gifts": [],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close"
+  }
+}
+```
+
+`gifts[]` items: `{ paidAt, amountSats, amountBtc, amountUsd, recipient }`,
+ordered by `paidAt` then `recipient`.
+
+**Response** `503`: `{ "error": "Gift stats are unavailable" }`.
 
 ### `GET /gifts/stats`
 

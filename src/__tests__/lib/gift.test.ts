@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildGiftStats, mapGiftQueryRow, type GiftRow } from '@/lib/gift';
+import {
+  buildGiftDay,
+  buildGiftStats,
+  isUtcDay,
+  mapGiftQueryRow,
+  utcDayFromPaidAt,
+  type GiftRow,
+} from '@/lib/gift';
 
 function row(paidAt: string, amountSats: number, recipientWosUser: string): GiftRow {
   return { paidAt: new Date(paidAt), amountSats, recipientWosUser };
@@ -179,5 +186,78 @@ describe('buildGiftStats', () => {
       { month: '2026-04', giftCount: 0, sats: 0, btc: '0.00000000', usd: '0.00' },
       { month: '2026-05', giftCount: 1, sats: 2000, btc: '0.00002000', usd: '2.00' },
     ]);
+  });
+});
+
+describe('isUtcDay', () => {
+  it('accepts a real UTC calendar day', () => {
+    expect(isUtcDay('2026-08-24')).toBe(true);
+  });
+
+  it('rejects non-dates and impossible calendar days', () => {
+    expect(isUtcDay('2026-02-31')).toBe(false);
+    expect(isUtcDay('foo')).toBe(false);
+    expect(isUtcDay('2026-13-01')).toBe(false);
+  });
+});
+
+describe('utcDayFromPaidAt', () => {
+  it('returns the UTC calendar day', () => {
+    expect(utcDayFromPaidAt(new Date('2026-08-24T12:03:56.405Z'))).toBe('2026-08-24');
+  });
+});
+
+describe('buildGiftDay', () => {
+  it('returns zeros without rates when no gifts fall on that day', () => {
+    expect(
+      buildGiftDay('2026-06-01', [row('2026-06-02T00:00:00.000Z', 10, 'alice')], new Map()),
+    ).toEqual({
+      day: '2026-06-01',
+      giftCount: 0,
+      totalSats: 0,
+      totalBtc: '0.00000000',
+      totalUsd: '0.00',
+      gifts: [],
+      fx: FX,
+    });
+  });
+
+  it('lists two gifts on that day and ignores other days', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [
+        row('2026-06-01T15:00:00.000Z', 1000, 'alice'),
+        row('2026-06-02T00:00:00.000Z', 50, 'skip'),
+        row('2026-06-01T08:00:00.000Z', 500, 'bob'),
+      ],
+      RATE_100K,
+    );
+    expect(listed.giftCount).toBe(2);
+    expect(listed.totalSats).toBe(1500);
+    expect(listed.totalBtc).toBe('0.00001500');
+    expect(listed.totalUsd).toBe('1.50');
+    expect(listed.gifts.map((g) => g.recipient)).toEqual(['bob', 'alice']);
+    expect(listed.gifts[0]).toEqual({
+      paidAt: '2026-06-01T08:00:00.000Z',
+      amountSats: 500,
+      amountBtc: '0.00000500',
+      amountUsd: '0.50',
+      recipient: 'bob',
+    });
+  });
+
+  it('breaks paidAt ties by recipient name', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [row('2026-06-01T12:00:00.000Z', 1, 'zeta'), row('2026-06-01T12:00:00.000Z', 1, 'alpha')],
+      RATE_100K,
+    );
+    expect(listed.gifts.map((g) => g.recipient)).toEqual(['alpha', 'zeta']);
+  });
+
+  it('throws fx.rate.missing when a listed gift has no rate', () => {
+    expect(() =>
+      buildGiftDay('2026-06-01', [row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map()),
+    ).toThrow('fx.rate.missing');
   });
 });
