@@ -83,7 +83,8 @@ export class SqlGiftRecorder implements GiftRecorder {
 }
 
 /**
- * Stats handle from a Lightning Address: WoS local-part, else the local-part.
+ * Stats handle from a Lightning Address: local-part before `@`, or the
+ * whole string if there is no `@`.
  *
  * @param address - Normalised `local@domain`.
  * @returns `recipient_wos_user` value.
