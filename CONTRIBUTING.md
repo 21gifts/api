@@ -228,10 +228,12 @@ booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
-`fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`, and
-`resolveCandlesUrl`, which need `DATABASE_URL`; `InMemoryInvoiceStore`,
-`requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and
-`preimageMatchesHash`, which need `SPEND_API_TOKEN` and a reachable LNURL-pay;
+`fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
+`resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
+`InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
+`normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
+`recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
+LNURL-pay;
 `satsToUsdCents` and `parseUsdPerBtc`, which need a non-empty gift list),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, or a
