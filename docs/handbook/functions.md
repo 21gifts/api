@@ -215,7 +215,7 @@
 - **Purpose:** `GiftRecorder` that ignores the row — used when `DATABASE_URL` is unset so proof still returns 200.
 - **Inputs:** `recordOutbound(record)` with a `GiftRecord`.
 - **Returns / side effects:** Resolves immediately. No SQL.
-- **Used by:** `invoiceRoutes` default; memory `openBootStores`.
+- **Used by:** `invoiceRoutes` default when `giftRecorder` is omitted.
 
 ## Function: SqlGiftRecorder
 
