@@ -125,10 +125,13 @@ api/
 │   └── gift.sql              # gift table used by GET /gifts/stats
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
-│   ├── check-e2e.mjs         # CI gate: missing endpoint request → exit 1
+│   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
 │   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
-│   └── http.spec.ts          # Playwright against a booted Bun process
+│   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
+│   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
+│   └── helpers/
+│       └── wallet.ts         # secp256k1 LUD-04 signer for login e2e
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
@@ -213,10 +216,24 @@ deviation and is rejected.
 ### E2E (hard requirement)
 
 Every HTTP endpoint **must** have at least one Playwright request against a
-booted server (`bun src/index.ts`). `bun run e2e:check` **fails the PR** if an
-endpoint has no matching `request.get/post/delete`. Adding a route without an
-e2e call in the **same PR** is an undeclared deviation and is rejected. CI runs
-`e2e:check` then `e2e`.
+booted server (`bun src/index.ts`). Every exported function/class **must** have
+a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
+booted process over HTTP (not `app.request()`). If an export is unreachable on
+the default boot surface (today: `requestPayInvoice`, which needs a configured
+`InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`, and
+`mapGiftQueryRow`, which need `DATABASE_URL`; `InMemoryInvoiceStore`,
+`requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and
+`preimageMatchesHash`, which need `SPEND_API_TOKEN` and a reachable LNURL-pay),
+that test still exists and asserts the default-boot outcome that proves it is
+not invoked (verification `503`, spend invoices unconfigured `503`, or a
+healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
+`DATABASE_URL` and `SPEND_API_TOKEN` to blank so those outcomes do not depend
+on the host environment.
+`bun run e2e:check` **fails the PR** if an endpoint has no matching
+`request.get/post/delete` or a function has no matching
+`test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
+Adding a route or export without an e2e call in the **same PR** is an
+undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
 
 ### Tests
 
