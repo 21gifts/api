@@ -42,6 +42,34 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /auth/passkey/authenticate/begin
+
+- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Used by:** App passkey sign-in.
+- **Auth:** Public.
+
+## Endpoint: POST /auth/passkey/authenticate/finish
+
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`.
+- **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey sign-in.
+- **Auth:** Public (proof is the assertion).
+
+## Endpoint: POST /auth/passkey/register/begin
+
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Does not persist the account yet.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset or no CORS origin matches it.
+- **Used by:** App passkey account creation.
+- **Auth:** Public.
+
+## Endpoint: POST /auth/passkey/register/finish
+
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account, issues `{ token, account }`. Requires `Origin`.
+- **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey account creation.
+- **Auth:** Public (proof is the attestation).
+
 ## Endpoint: GET /favicon.ico
 
 - **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark. `Content-Type: image/x-icon`, `Cache-Control: public, max-age=86400`.
@@ -76,6 +104,20 @@
 - **Errors:** 200 JSON.
 - **Used by:** Humans and service catalogs.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /invoices
+
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 502 provider did not issue a matching invoice.
+- **Used by:** the external spend worker before paying via lightning.space.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
+## Endpoint: POST /invoices/proof
+
+- **Purpose:** Spend-worker only. Body `{ id, preimage }`. Accepts the payment preimage as proof (`sha256(preimage)` must equal the stored payment hash). Idempotent for the same preimage.
+- **Errors:** 503 unconfigured; 401 unauthorized; 400 bad body or hash mismatch on an unexpired invoice; 404 unknown id (including after unpaid sweep/restart); 409 expired without a matching preimage, or already paid with a different preimage. Matching preimage is 200 after TTL while the row remains.
+- **Used by:** the external spend worker after LNDHub `payinvoice` returns a preimage.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
 ## Endpoint: GET /lightning-address
 

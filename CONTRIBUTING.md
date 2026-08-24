@@ -34,14 +34,15 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
-│   │   ├── auth.ts           # LNURL-auth: /auth/lnurl, /auth/lnurl/callback, /auth/session
+│   │   ├── auth.ts           # LNURL-auth + passkey: /auth/lnurl, /auth/session, /auth/passkey/…
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
-│   │   └── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   └── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
+│   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
@@ -49,22 +50,31 @@ api/
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
+│   │   ├── bolt11.ts         # Decode BOLT11 payment hash + amount
+│   │   ├── proof.ts          # sha256(preimage) === payment hash
+│   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
+│   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth store + optional QueryGiftStore
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
 │   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
+│   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
-│   │       ├── store.ts      # AuthStore port + in-memory adapter
+│   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL
 │   │       ├── postgres-store.ts  # Durable AuthStore
-│   │       └── open-store.ts # DATABASE_URL → memory or Postgres
+│   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
+│   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
-│       │   └── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
+│       │   ├── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
+│       │   └── fake-passkey.ts   # PasskeyCeremony test double
 │       ├── integration/
 │       │   └── auth-flow.test.ts
 │       ├── lib/
@@ -77,18 +87,26 @@ api/
 │       │   ├── ln-address-cache.test.ts
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
+│       │   ├── gift-invoice.test.ts
+│       │   ├── bolt11.test.ts
+│       │   ├── proof.test.ts
+│       │   ├── spend-auth.test.ts
+│       │   ├── invoice-store.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
+│       │   ├── boot-stores.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   └── auth/
 │       │       ├── lnurl.test.ts
+│       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
 │       │       ├── store.test.ts
 │       │       ├── schema.test.ts
 │       │       ├── sql.test.ts
 │       │       ├── postgres-store.test.ts
-│       │       └── open-store.test.ts
+│       │       ├── open-store.test.ts
+│       │       └── webauthn.test.ts
 │       └── routes/
 │           ├── health.test.ts
 │           ├── info.test.ts
@@ -97,7 +115,8 @@ api/
 │           ├── me.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
-│           └── stats.test.ts
+│           ├── stats.test.ts
+│           └── invoices.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
@@ -233,13 +252,17 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable          | Default                      | Purpose                                                                                                                                                                               |
-| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`       | `0.0.0.0:3000`               | Listen address                                                                                                                                                                        |
-| `SERVICE_VERSION` | `0.1.0`                      | Surfaced via `/info`                                                                                                                                                                  |
-| `PUBLIC_BASE_URL` | _(none — required for auth)_ | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
-| `DATABASE_URL`    | _(unset → in-memory)_        | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
-| `DEBUG_TOKEN`     | _(unset → debug off)_        | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
+| Variable               | Default                                 | Purpose                                                                                                                                                                               |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                        |
+| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                  |
+| `PUBLIC_BASE_URL`      | _(none — required for auth)_            | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
+| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
+| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                               |
+| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                              |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                    |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant

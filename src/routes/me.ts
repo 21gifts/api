@@ -30,7 +30,7 @@ export interface MeRouteDeps {
 /** The public JSON shape of an account. */
 interface AccountResponse {
   id: string;
-  linkingKey: string;
+  linkingKey: string | null;
   role: string;
   name: string | null;
   lightningAddress: string | null;

@@ -16,23 +16,23 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: challenges, accounts, sessions, verifications. Evicts expired challenges/sessions on write. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when the `linkingKey` already exists. `updateChallenge` returns false when the row is missing or the previous status does not match.
+- **Purpose:** Process-local AuthStore: LNURL challenges, passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateChallenge` / `updatePasskeyChallenge` return false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
 
 ## Function: migrateAuthSchema
 
-- **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE account ADD COLUMN IF NOT EXISTS name` for existing databases).
+- **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification` and backfills `account.name`.
+- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential` and backfills `account.name` / nullable `linking_key`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -40,6 +40,13 @@
 - **Purpose:** Chooses in-memory vs Postgres AuthStore from `DATABASE_URL`.
 - **Inputs:** URL or blank/undefined; `createClient` factory required when the URL is set (boot supplies Bun SQL; tests inject a mock).
 - **Returns / side effects:** `InMemoryAuthStore` if unset; otherwise migrate then `PostgresAuthStore`. Throws if the URL is set without a factory.
+- **Used by:** `openBootStores`.
+
+## Function: openBootStores
+
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth and `QueryGiftStore`, or in-memory auth and `giftStore: undefined` when unset.
+- **Inputs:** `databaseUrl` (`undefined` / blank / `postgres://…`); optional `createClient` factory (required when the URL is set).
+- **Returns / side effects:** `{ authStore, giftStore }`. Calls `openAuthStore` (auth migrations when durable). Builds the outbound `gift` SELECT when the factory ran. Throws if the URL is set without a factory.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -82,14 +89,14 @@
 - **Purpose:** Maps a SQL `gift` row (`paid_at`, `amount_sats`, `recipient_wos_user`) onto a `GiftRow`.
 - **Inputs:** `GiftQueryRow` (Date or string timestamp; numeric/string/bigint sats).
 - **Returns / side effects:** `{ paidAt, amountSats, recipientWosUser }`. No I/O.
-- **Used by:** Production `QueryGiftStore` query in `src/index.ts`.
+- **Used by:** Production `QueryGiftStore` query in `openBootStores`.
 
 ## Function: QueryGiftStore
 
 - **Purpose:** GiftStore that delegates `listOutbound` to an injected query (Postgres in production).
 - **Inputs:** `() => Promise<GiftRow[]>`.
 - **Returns / side effects:** The query result. Errors propagate to the route (503).
-- **Used by:** `src/index.ts` when `DATABASE_URL` is set.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: UnconfiguredInvoicePayer
 
@@ -98,10 +105,66 @@
 - **Returns / side effects:** `{ ok: false, reason: 'not_configured' }` — it does not throw.
 - **Used by:** Default `createApp` `invoicePayer`.
 
+## Function: checkSpendAuth
+
+- **Purpose:** Timing-safe compare of the spend-worker Bearer token to `SPEND_API_TOKEN`.
+- **Inputs:** Configured token (may be unset) and the raw `Authorization` header.
+- **Returns / side effects:** `unconfigured` | `unauthorized` | `ok`. Does not throw on length mismatch.
+- **Used by:** `invoiceRoutes`.
+
+## Function: decodeBolt11
+
+- **Purpose:** Read payment hash and millisat amount from a BOLT11 string via `light-bolt11-decoder`.
+- **Inputs:** `pr` string; optional test decoder.
+- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure.
+- **Used by:** `invoiceRoutes` after LNURL-pay returns `pr`.
+
+## Function: InMemoryInvoiceStore
+
+- **Purpose:** Process-local store of gift invoices issued for the spend worker.
+- **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`, `sweep(now)`.
+- **Returns / side effects:** Lookups return the row or `undefined`. `sweep` drops unpaid rows after expiry plus one extra TTL (409 tombstone window); paid rows stay for proof idempotency. Restart clears the map.
+- **Used by:** Default `createApp` `invoiceStore`; `invoiceRoutes`.
+
+## Function: invoiceRoutes
+
+- **Purpose:** Hono sub-app for spend-worker invoice issue and preimage proof.
+- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch.
+- **Returns / side effects:** Hono app mounted at `/invoices`.
+- **Used by:** `createApp`.
+
+## Function: newInvoiceId
+
+- **Purpose:** 16 random bytes as 32 lowercase hex characters.
+- **Inputs:** None (uses `crypto.getRandomValues`).
+- **Returns / side effects:** Unguessable invoice id string.
+- **Used by:** `POST /invoices`.
+
+## Function: normalizeHex32
+
+- **Purpose:** Accept a 32-byte hex string (any case, trimmed).
+- **Inputs:** Raw hex string.
+- **Returns / side effects:** Lowercase 64-char hex or `null`.
+- **Used by:** `preimageMatchesHash`.
+
+## Function: preimageMatchesHash
+
+- **Purpose:** Lightning proof-of-payment: `sha256(preimage)` equals the invoice payment hash.
+- **Inputs:** Preimage hex and payment-hash hex.
+- **Returns / side effects:** `true` only on a 32-byte match.
+- **Used by:** `POST /invoices/proof`.
+
+## Function: requestGiftInvoice
+
+- **Purpose:** LNURL-pay fetch for gift amounts: no 10-sat cap, comment optional, amount not raised to minSendable.
+- **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl.
+- **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
+- **Used by:** `POST /invoices`.
+
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for LNURL-auth.
-- **Inputs:** `AuthRouteDeps`: store, now, publicBaseUrl.
+- **Purpose:** Hono sub-app for LNURL-auth and passkey login.
+- **Inputs:** `AuthRouteDeps`: store, now, publicBaseUrl, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
 - **Returns / side effects:** Hono app mounted at `/auth`.
 - **Used by:** `createApp`.
 
@@ -142,8 +205,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, and gifts/stats.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore, spendApiToken, invoiceStore).
 - **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -264,7 +327,7 @@
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
 - **Inputs:** address + fetchImpl.
 - **Returns / side effects:** Callback URL + min/max sendable or error.
-- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`.
+- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`.
 
 ## Function: resolveSession
 
@@ -293,3 +356,73 @@
 - **Inputs:** `k1`, `sig`, `key` hex.
 - **Returns / side effects:** `true` iff the wallet signed this challenge.
 - **Used by:** `completeCallback`.
+
+## Function: credentialIdFrom
+
+- **Purpose:** Reads the WebAuthn credential `id` from an untyped finish body.
+- **Inputs:** Unknown `credential` JSON.
+- **Returns / side effects:** Non-empty string id, or `null`.
+- **Used by:** `finishPasskeyAuthentication`.
+
+## Function: expectedOriginsForRpId
+
+- **Purpose:** Filters CORS origins to those whose hostname equals the RP ID, or `app.<rpId>` (no general subdomain suffix).
+- **Inputs:** `rpId`, `allowedOrigins`.
+- **Returns / side effects:** Matching origin strings; invalid URLs dropped.
+- **Used by:** `resolveWebAuthnConfig`.
+
+## Function: finishPasskeyAuthentication
+
+- **Purpose:** Verifies a discoverable-credential assertion, updates signCount, issues a session.
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`.
+- **Used by:** `POST /auth/passkey/authenticate/finish`.
+
+## Function: finishPasskeyRegistration
+
+- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session.
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`.
+- **Used by:** `POST /auth/passkey/register/finish`.
+
+## Function: issueSession
+
+- **Purpose:** Mints a bearer session token for an already-authenticated account.
+- **Inputs:** `store`, `now`, `account`.
+- **Returns / side effects:** `{ token, account }`; writes the session row.
+- **Used by:** `claimSession`, passkey finish paths.
+
+## Function: normalizeWebAuthnRpId
+
+- **Purpose:** Trims `WEBAUTHN_RP_ID`; missing/blank is `null` (fail closed on passkey routes).
+- **Inputs:** Raw env string or `undefined`.
+- **Returns / side effects:** Trimmed RP ID or `null`.
+- **Used by:** `resolveWebAuthnConfig`.
+
+## Function: resolveWebAuthnConfig
+
+- **Purpose:** Builds RP ID, RP name, and expected origins for passkey ceremonies.
+- **Inputs:** env slice (`WEBAUTHN_RP_ID`, optional `WEBAUTHN_RP_NAME`) and CORS origins.
+- **Returns / side effects:** `WebAuthnRuntimeConfig` or `null` when unconfigured.
+- **Used by:** `authRoutes` passkey handlers.
+
+## Function: SimpleWebAuthnPasskeyCeremony
+
+- **Purpose:** Production `PasskeyCeremony` wrapping `@simplewebauthn/server` (residentKey + userVerification required).
+- **Inputs:** Generate/verify methods take RP/user fields or browser JSON plus stored credential material.
+- **Returns / side effects:** Options JSON + challenge, or `{ ok: false, reason }` on verify failure.
+- **Used by:** `createApp` default `passkeyCeremony`.
+
+## Function: startPasskeyAuthentication
+
+- **Purpose:** Mints discoverable-credential request options (`allowCredentials` empty).
+- **Inputs:** store, ceremony, config, now.
+- **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
+- **Used by:** `POST /auth/passkey/authenticate/begin`.
+
+## Function: startPasskeyRegistration
+
+- **Purpose:** Mints WebAuthn creation options and a pending account UUID (row created only on finish).
+- **Inputs:** store, ceremony, config, now.
+- **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
+- **Used by:** `POST /auth/passkey/register/begin`.

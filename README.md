@@ -44,8 +44,10 @@ It handles everything that doesn't have to run client-side:
 - **Discovery** — recent campaigns, ordering, future categories / search
 - **Anti-abuse** — rate-limiting, spam scoring, malformed-event rejection
 
-It explicitly **does not** hold keys, sign events, or proxy LNURL-pay flows —
-those are the app's job.
+It explicitly **does not** hold keys or sign events for the non-custodial
+target (v1 signs custodial identities server-side). Guest Donate LNURL-pay
+stays in the browser; the spend-worker path is the exception
+(`POST /invoices` fetches a recipient BOLT11, this api still does not pay).
 
 ## Stack
 
@@ -82,6 +84,15 @@ bun run test:coverage   # vitest with 100% threshold
 bun run build           # bun build to dist/
 bun run e2e             # Playwright against bun src/index.ts
 ```
+
+## Runtime configuration
+
+| Variable               | Required          | Purpose                                                                                                                             |
+| ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_BASE_URL`      | For LNURL-auth    | Pinned callback host (`https://21.gifts` / `https://dev.21.gifts`). Missing → `GET /auth/lnurl` returns 500; process still boots.   |
+| `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
+| `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                        |
+| `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                      |
 
 ## Documentation
 

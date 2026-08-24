@@ -19,7 +19,7 @@ export interface DebugRouteDeps {
 /** Public JSON shape of an account (same fields as `/me`). */
 interface AccountResponse {
   id: string;
-  linkingKey: string;
+  linkingKey: string | null;
   role: string;
   name: string | null;
   lightningAddress: string | null;

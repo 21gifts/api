@@ -11,12 +11,20 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 /** Account permission tier. Role assignment stays operator-side in v1. */
 export type AccountRole = 'basis' | 'moderator';
 
-/** A registered account, keyed to a wallet's per-domain LNURL-auth linkingKey. */
+/**
+ * A registered account.
+ *
+ * Identity is {@link Account.id}. `linkingKey` is set for LNURL-auth accounts
+ * and `null` for passkey accounts that have not bound a wallet.
+ */
 export interface Account {
   /** Opaque unique account id. */
   id: string;
-  /** The wallet's compressed public linkingKey (hex) — the account identity. */
-  linkingKey: string;
+  /**
+   * The wallet's compressed public linkingKey (hex), or `null` when the
+   * account was created via passkey and no LNURL wallet is bound.
+   */
+  linkingKey: string | null;
   /** Permission tier. */
   role: AccountRole;
   /** Display name, or `null` until the user sets one. */
@@ -64,6 +72,42 @@ export interface Challenge {
   status: ChallengeStatus;
   /** The authenticated account id, or `null` until a wallet signs the challenge. */
   accountId: string | null;
+  /** Issue time (epoch ms). */
+  createdAt: number;
+}
+
+/** A discoverable WebAuthn credential bound to an account. */
+export interface PasskeyCredential {
+  /** Credential id as base64url (WebAuthn `id`). */
+  credentialId: string;
+  /** COSE public key bytes used to verify later assertions. */
+  publicKey: Uint8Array;
+  /** Authenticator signature counter (clone detection). */
+  signCount: number;
+  /** Account this credential authenticates. */
+  accountId: string;
+  /** Creation time (epoch ms). */
+  createdAt: number;
+}
+
+/** Kind of outstanding WebAuthn ceremony. */
+export type PasskeyChallengeType = 'register' | 'authenticate';
+
+/**
+ * A one-time WebAuthn challenge. Registration stores the pending account id;
+ * authentication looks the account up from the asserted credential.
+ */
+export interface PasskeyChallenge {
+  /** Opaque id returned to the client as `challengeId`. */
+  id: string;
+  /** Which ceremony this challenge belongs to. */
+  type: PasskeyChallengeType;
+  /** WebAuthn challenge (base64url) from the ceremony generator. */
+  challenge: string;
+  /** Pending account id for register; `null` for authenticate. */
+  accountId: string | null;
+  /** Whether finish has already consumed this challenge. */
+  consumed: boolean;
   /** Issue time (epoch ms). */
   createdAt: number;
 }
@@ -118,6 +162,21 @@ export interface AuthStore {
   getVerification(accountId: string): Promise<AddressVerification | undefined>;
   /** Drop any pending verification for the account. */
   deleteVerification(accountId: string): Promise<void>;
+  /** Persist a freshly issued passkey ceremony challenge. */
+  createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void>;
+  /** Look up a passkey challenge by id, or `undefined` if unknown. */
+  getPasskeyChallenge(id: string): Promise<PasskeyChallenge | undefined>;
+  /**
+   * Mark a passkey challenge consumed. Returns false when the row is missing
+   * or already consumed so concurrent finishes cannot mint two sessions.
+   */
+  updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean>;
+  /** Persist a verified passkey credential. */
+  createPasskeyCredential(credential: PasskeyCredential): Promise<void>;
+  /** Look up a passkey credential by id, or `undefined` if unknown. */
+  getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
+  /** Overwrite a stored passkey credential (used to advance `signCount`). */
+  updatePasskeyCredential(credential: PasskeyCredential): Promise<void>;
 }
 
 /**
@@ -132,6 +191,8 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #accountsByLinkingKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
   readonly #verifications = new Map<string, AddressVerification>();
+  readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
+  readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
 
   async createChallenge(challenge: Challenge): Promise<void> {
     // Evict on write so unauthenticated challenge minting cannot grow the maps
@@ -171,15 +232,28 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async createAccount(account: Account): Promise<void> {
-    if (this.#accountsByLinkingKey.has(account.linkingKey)) {
+    if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
       return;
     }
     this.#accounts.set(account.id, account);
-    this.#accountsByLinkingKey.set(account.linkingKey, account.id);
+    if (account.linkingKey !== null) {
+      this.#accountsByLinkingKey.set(account.linkingKey, account.id);
+    }
   }
 
   async updateAccount(account: Account): Promise<void> {
+    const previous = this.#accounts.get(account.id);
+    if (
+      previous !== undefined &&
+      previous.linkingKey !== null &&
+      previous.linkingKey !== account.linkingKey
+    ) {
+      this.#accountsByLinkingKey.delete(previous.linkingKey);
+    }
     this.#accounts.set(account.id, account);
+    if (account.linkingKey !== null) {
+      this.#accountsByLinkingKey.set(account.linkingKey, account.id);
+    }
   }
 
   async getAccount(id: string): Promise<Account | undefined> {
@@ -211,12 +285,51 @@ export class InMemoryAuthStore implements AuthStore {
     this.#verifications.delete(accountId);
   }
 
+  async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
+    this.#evictExpiredPasskeyChallenges(challenge.createdAt);
+    this.#passkeyChallenges.set(challenge.id, challenge);
+  }
+
+  async getPasskeyChallenge(id: string): Promise<PasskeyChallenge | undefined> {
+    return this.#passkeyChallenges.get(id);
+  }
+
+  async updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean> {
+    const current = this.#passkeyChallenges.get(challenge.id);
+    if (current === undefined || current.consumed) {
+      return false;
+    }
+    this.#passkeyChallenges.set(challenge.id, challenge);
+    return true;
+  }
+
+  async createPasskeyCredential(credential: PasskeyCredential): Promise<void> {
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+  }
+
+  async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
+    return this.#passkeyCredentials.get(credentialId);
+  }
+
+  async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+  }
+
   /** Drop challenges (and their poll-token index entries) older than the TTL. */
   #evictExpiredChallenges(now: number): void {
     for (const [k1, challenge] of this.#challenges) {
       if (now - challenge.createdAt > CHALLENGE_TTL_MS) {
         this.#challenges.delete(k1);
         this.#pollTokenIndex.delete(challenge.pollToken);
+      }
+    }
+  }
+
+  /** Drop passkey challenges older than the TTL. */
+  #evictExpiredPasskeyChallenges(now: number): void {
+    for (const [id, challenge] of this.#passkeyChallenges) {
+      if (now - challenge.createdAt > CHALLENGE_TTL_MS) {
+        this.#passkeyChallenges.delete(id);
       }
     }
   }

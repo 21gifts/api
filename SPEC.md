@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats).
+**Status**: living document. Last revised 2026-08-23 (auth persistence, debug, gift stats, passkey login).
 
 ---
 
@@ -12,8 +12,9 @@
 
 Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
 local boots). When `DATABASE_URL` is set, the process migrates the auth
-schema and uses `PostgresAuthStore` — accounts, challenges, sessions, and
-pending address verifications survive a restart. A missing or unreachable
+schema and uses `PostgresAuthStore` — accounts, LNURL and passkey challenges,
+passkey credentials, sessions, and pending address verifications survive a
+restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. Public gift statistics
 (`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats.
@@ -22,8 +23,12 @@ Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
 `UnconfiguredInvoicePayer` makes start verification return **503**. Public
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
-does not fetch or pay invoices. No BOLT11 decoder and no LNDHub /
-lightning.space payer are wired in this service yet.
+does not fetch or pay invoices.
+
+Spend-worker invoice routes (`POST /invoices`, `POST /invoices/proof`) fetch a
+BOLT11 via LNURL-pay and accept a preimage proof. They require
+`SPEND_API_TOKEN`; when it is unset the routes return **503** and the process
+still boots. This service does not pay invoices (no LNDHub client).
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -39,25 +44,31 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                    | Purpose                                    |
-| ------ | -------------------------------------------- | ----------------------- | ------------------------------------------ |
-| GET    | `/healthz`                                   | none                    | Liveness                                   |
-| GET    | `/info`                                      | none                    | Service identity                           |
-| GET    | `/favicon.ico`                               | none                    | Brand mark (favicon)                       |
-| GET    | `/favicon.svg`                               | none                    | Brand mark (SVG favicon)                   |
-| GET    | `/apple-touch-icon.png`                      | none                    | Brand mark (Apple touch icon)              |
-| GET    | `/auth/lnurl`                                | none                    | Issue LNURL-auth challenge                 |
-| GET    | `/auth/lnurl/callback`                       | none (wallet)           | LUD-04 callback                            |
-| GET    | `/auth/session`                              | `X-Poll-Token`          | App polls for the session                  |
-| GET    | `/me`                                        | `Authorization: Bearer` | Account                                    |
-| POST   | `/me/name`                                   | Bearer                  | Set/replace display name                   |
-| POST   | `/me/lightning-address`                      | Bearer                  | Link/replace receiver address (unverified) |
-| DELETE | `/me/lightning-address`                      | Bearer                  | Unlink address                             |
-| POST   | `/me/lightning-address/verification`         | Bearer                  | Start address proof-of-control payment     |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                  | Confirm nonce from wallet history          |
-| GET    | `/lightning-address`                         | none                    | Resolve LUD-16 metadata (cached)           |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer` | Operator account listing (`DEBUG_TOKEN`)   |
-| GET    | `/gifts/stats`                               | none                    | Aggregated outbound gift statistics        |
+| Method | Path                                         | Auth                     | Purpose                                    |
+| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------ |
+| GET    | `/healthz`                                   | none                     | Liveness                                   |
+| GET    | `/info`                                      | none                     | Service identity                           |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                       |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                   |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)              |
+| GET    | `/auth/lnurl`                                | none                     | Issue LNURL-auth challenge                 |
+| GET    | `/auth/lnurl/callback`                       | none (wallet)            | LUD-04 callback                            |
+| GET    | `/auth/session`                              | `X-Poll-Token`           | App polls for the session                  |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options            |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session          |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options             |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session            |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                    |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                   |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace receiver address (unverified) |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                             |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment     |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics        |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)       |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof           |
 
 ### `GET /healthz`
 
@@ -228,6 +239,91 @@ consumed. `account` is the stored account object:
 The app then calls authenticated routes with
 `Authorization: Bearer <token>`.
 
+### `POST /auth/passkey/register/begin`
+
+Starts a discoverable-credential registration. No body. Does not persist an
+account until finish.
+
+When `WEBAUTHN_RP_ID` is unset or no CORS origin matches that RP ID:
+
+**Response** `500`:
+
+```json
+{ "error": "Server auth is not configured" }
+```
+
+Otherwise **Response** `200`:
+
+```json
+{
+  "challengeId": "<64 hex chars>",
+  "options": { "challenge": "<base64url>", "rp": { "id": "21.gifts", "name": "21.gifts" } }
+}
+```
+
+`options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
+`userVerification` required, attestation `none`). `user.id` is the pending
+account UUID encoded as UTF-8. The process still boots without
+`WEBAUTHN_RP_ID` — only these routes fail closed.
+
+### `POST /auth/passkey/register/finish`
+
+Verifies the attestation and issues a session immediately (no poll).
+
+Body:
+
+```json
+{ "challengeId": "<hex>", "credential": {} }
+```
+
+`credential` is the browser `RegistrationResponseJSON`. The request `Origin`
+must be in the RP ID's expected origins (CORS allowlist filtered to that RP
+ID).
+
+| Status | Body                                                                  | When                                              |
+| ------ | --------------------------------------------------------------------- | ------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing or no matching origin               |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                   |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                             |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already succeeded                          |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                       |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                    |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential |
+
+**Response** `200`:
+
+```json
+{
+  "token": "<hex>",
+  "account": {
+    "id": "<uuid>",
+    "linkingKey": null,
+    "role": "basis",
+    "name": null,
+    "lightningAddress": null,
+    "lightningAddressVerified": false,
+    "createdAt": 0
+  }
+}
+```
+
+### `POST /auth/passkey/authenticate/begin`
+
+Starts a discoverable-credential assertion. `allowCredentials` is empty.
+Same 500 as register begin when WebAuthn is unconfigured.
+
+**Response** `200`: `{ "challengeId", "options" }` where `options` is
+`PublicKeyCredentialRequestOptionsJSON`.
+
+### `POST /auth/passkey/authenticate/finish`
+
+Verifies the assertion against a stored credential, updates `signCount`,
+issues a session. Body shape matches register finish. Extra 400:
+`{ "error": "Unknown credential" }` when the assertion `id` is missing or
+not stored. Success body matches register finish (`linkingKey` is whatever
+the account currently has).
+
 ### `GET /me`
 
 Returns the account bound to the bearer session.
@@ -252,15 +348,15 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                           |
-| -------------------------- | -------------- | ------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                 |
-| `linkingKey`               | string         | Wallet LNURL-auth linking key (hex)               |
-| `role`                     | string         | `basis` or `moderator`                            |
-| `name`                     | string \| null | Display name, or `null` until set                 |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                  |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm) |
-| `createdAt`                | number         | Creation time (epoch ms)                          |
+| Field                      | Type           | Meaning                                                             |
+| -------------------------- | -------------- | ------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                   |
+| `linkingKey`               | string \| null | Wallet LNURL-auth linking key (hex), or `null` for passkey accounts |
+| `role`                     | string         | `basis` or `moderator`                                              |
+| `name`                     | string \| null | Display name, or `null` until set                                   |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                    |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                   |
+| `createdAt`                | number         | Creation time (epoch ms)                                            |
 
 ### `POST /me/name`
 
@@ -567,6 +663,84 @@ the process queries the `gift` table (`paid_at`, `amount_sats`,
 { "error": "Gift stats are unavailable" }
 ```
 
+### `POST /invoices`
+
+Spend-worker invoice fetch. The api resolves LUD-16, GETs the LNURL-pay
+callback, decodes the BOLT11, and stores `{ id, pr, paymentHash }` in memory.
+It does not pay.
+
+**Body:**
+
+```json
+{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional" }
+```
+
+`comment` is optional and at most 255 characters. `amountMsat` must be an
+integer in `1000..10000000000`.
+
+When `SPEND_API_TOKEN` is unset or blank:
+
+**Response** `503`:
+
+```json
+{ "error": "Spend invoices are not configured" }
+```
+
+Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
+
+Bad JSON, `amountMsat` outside `1000..10000000000`, or `comment` longer than
+255 → **400**
+`{ "error": "Expected a JSON body with address and amountMsat" }`.
+
+Invalid Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
+
+```json
+{ "error": "Lightning Address did not issue an invoice" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "id": "<32 hex>",
+  "pr": "lnbc…",
+  "paymentHash": "<64 hex>",
+  "amountMsat": 100000
+}
+```
+
+Unpaid invoices expire after 15 minutes (`GIFT_INVOICE_TTL_MS`). A later
+`POST /invoices` sweeps unpaid rows after expiry plus one extra TTL; until
+then a matching preimage still proves payment. Restart clears the store.
+
+### `POST /invoices/proof`
+
+Spend-worker proof. Body `{ "id", "preimage" }`. Proof is the **preimage**;
+`sha256(preimage)` must equal the stored payment hash.
+
+Same 503/401 as `POST /invoices` when unconfigured or unauthorized.
+
+Bad JSON or missing `id`/`preimage` → **400**
+`{ "error": "Expected a JSON body with id and preimage" }`.
+
+Unknown id → **404** `{ "error": "Invoice not found" }` (including after
+sweep/restart). Matching preimage →
+**200** even after the 15-minute unpaid TTL, as long as the row is still in
+memory. Expired unpaid **without** a matching preimage → **409**
+`{ "error": "Invoice expired" }`. Hash mismatch on an unexpired invoice →
+**400** `{ "error": "Proof does not match invoice" }`. Already paid with a
+different preimage → **409** `{ "error": "Invoice already paid" }`. Same
+preimage → **200** idempotent.
+
+Success → **Response** `200`:
+
+```json
+{ "status": "paid", "id": "<id>", "paymentHash": "<64 hex>" }
+```
+
 ---
 
 ## Not implemented (v1, decided in CONCEPT — no HTTP paths)
@@ -576,15 +750,14 @@ are **not** exposed as HTTP routes in this codebase yet. Paths and JSON for
 these land in the PR that implements them; this file is updated then. Do not
 treat the list below as inventing endpoints.
 
-**Donor upgrade (custodial `lndhub://` from lightning.space only).** Any
-account may become a donor by depositing an LNDHub export restricted to
-`lightning.space`. Credentials would be stored encrypted; arbitrary LNDHub
-URLs are rejected. Not wired yet.
+**Donor LNDHub credentials.** Paying uses lightning.space LNDHub in the
+external spend worker, not encrypted storage in this api. No `/me/donor`
+deposit route.
 
-**Recurring daily gifts (fail-closed scheduler).** Donors configure fixed
-USD amounts to recipients; a server-side scheduler resolves LUD-16, converts
-USD → sats (fail-closed on bad rates), pays via stored LNDHub credentials
-with per-day idempotency and caps. Not wired yet.
+**Recurring daily gifts UI.** Donors will configure fixed USD amounts to
+recipients. Invoice fetch + preimage proof for the external payer is
+`POST /invoices` / `POST /invoices/proof`. No `/me/recurring` or in-process
+scheduler.
 
 **Custodial per-account NOSTR identities + server-side signing.** On sign-up
 the api would generate a keypair, store `nsec` encrypted, and sign that
@@ -610,4 +783,4 @@ an operator token route, not a moderator session.
 - Email/password login (or any second login method)
 - Internationalization (English only)
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
-- Arbitrary LNDHub URLs (only `lightning.space` when donor upgrade lands)
+- Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)

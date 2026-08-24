@@ -130,3 +130,42 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const body = (await res.json()) as { giftCount: number };
   expect(body.giftCount).toBe(0);
 });
+
+test('POST /auth/passkey/register/begin issues options', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { challengeId: string; options: { challenge: string } };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+  expect(body.options.challenge.length).toBeGreaterThan(8);
+});
+
+test('POST /auth/passkey/register/finish without body is 400', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/finish');
+  expect(res.status()).toBe(400);
+});
+
+test('POST /auth/passkey/authenticate/begin issues options', async ({ request }) => {
+  const res = await request.post('/auth/passkey/authenticate/begin');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { challengeId: string };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+});
+
+test('POST /auth/passkey/authenticate/finish without body is 400', async ({ request }) => {
+  const res = await request.post('/auth/passkey/authenticate/finish');
+  expect(res.status()).toBe(400);
+});
+
+test('POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('POST /invoices/proof unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
