@@ -44,27 +44,22 @@ test('GET /apple-touch-icon.png is png', async ({ request }) => {
   expect(cacheControl).toMatch(/max-age=86400/);
 });
 
-test('GET /auth/lnurl issues a challenge', async ({ request }) => {
+test('GET /auth/lnurl is gone', async ({ request }) => {
   const res = await request.get('/auth/lnurl');
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as { lnurl: string; k1: string; pollToken: string };
-  expect(body.lnurl.startsWith('lnurl1') || body.lnurl.startsWith('LNURL1')).toBe(true);
-  expect(body.k1.length).toBeGreaterThan(8);
-  expect(body.pollToken.length).toBeGreaterThan(8);
+  expect(res.status()).toBe(404);
 });
 
-test('GET /auth/lnurl/callback without params returns LUD-04 ERROR', async ({ request }) => {
-  const res = await request.get('/auth/lnurl/callback');
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as { status: string };
-  expect(body.status).toBe('ERROR');
-});
-
-test('GET /auth/session without poll token is expired', async ({ request }) => {
+test('GET /auth/session is gone', async ({ request }) => {
   const res = await request.get('/auth/session');
+  expect(res.status()).toBe(404);
+});
+
+test('POST /auth/passkey/register/begin issues a challenge', async ({ request }) => {
+  const res = await request.post('/auth/passkey/register/begin');
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { status: string };
-  expect(body.status).toBe('expired');
+  const body = (await res.json()) as { challengeId: string; options: unknown };
+  expect(body.challengeId.length).toBeGreaterThan(8);
+  expect(body.options).toBeTruthy();
 });
 
 test('GET /me without bearer is 401', async ({ request }) => {

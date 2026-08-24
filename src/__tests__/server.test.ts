@@ -128,12 +128,12 @@ describe('CORS', () => {
   });
 
   it('answers the CORS preflight with the allowed headers', async () => {
-    const res = await createApp().request('/auth/lnurl', {
+    const res = await createApp().request('/auth/passkey/register/begin', {
       method: 'OPTIONS',
-      headers: { origin: 'https://app.21.gifts', 'access-control-request-method': 'GET' },
+      headers: { origin: 'https://app.21.gifts', 'access-control-request-method': 'POST' },
     });
     expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-headers')).toMatch(/x-poll-token/i);
+    expect(res.headers.get('access-control-allow-headers')).toMatch(/authorization/i);
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 

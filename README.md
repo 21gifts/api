@@ -89,7 +89,6 @@ bun run e2e             # Playwright against bun src/index.ts
 
 | Variable               | Required          | Purpose                                                                                                                             |
 | ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLIC_BASE_URL`      | For LNURL-auth    | Pinned callback host (`https://21.gifts` / `https://dev.21.gifts`). Missing → `GET /auth/lnurl` returns 500; process still boots.   |
 | `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
 | `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                        |
 | `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                      |

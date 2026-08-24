@@ -28,16 +28,14 @@ import type { FetchFn } from '@/lib/lnurlp';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
- * implementations; tests inject a store, a fixed clock, or a base URL to drive
- * the auth flow deterministically.
+ * implementations; tests inject a store or a fixed clock to drive the auth
+ * flow deterministically.
  */
 export interface AppDeps {
   /** Shared auth persistence port (default: a fresh in-memory store). */
   authStore?: AuthStore;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
-  /** Pinned public base URL (default: `process.env.PUBLIC_BASE_URL`). */
-  publicBaseUrl?: string;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
   /**
@@ -93,15 +91,14 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly.
  *
- * @param deps - Optional overrides for the auth store, clock, base URL,
- *   invoice payer, LNURL-pay fetch, LN-Address cache, brand reader,
- *   debugToken, gift store, WebAuthn RP, spend token, and gift invoice store.
+ * @param deps - Optional overrides for the auth store, clock, invoice payer,
+ *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
+ *   WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;
-  const publicBaseUrl = deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'];
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
   const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
@@ -119,15 +116,14 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   app.use('*', requestLog());
   // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
-  // CORS covers the apex, transitional app.* aliases, and localhost. The
-  // LNURL-auth callback is proxied at the apex so wallets pin linkingKeys there.
-  // Bearer sessions + the X-Poll-Token are headers (no cookies), credentials off.
+  // CORS covers the apex, transitional app.* aliases, and localhost.
+  // Bearer sessions are headers (no cookies), credentials off.
   app.use(
     '*',
     cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type', 'X-Poll-Token'],
+      allowHeaders: ['Authorization', 'Content-Type'],
       maxAge: 86400,
     }),
   );
@@ -140,7 +136,6 @@ export function createApp(deps: AppDeps = {}): Hono {
     authRoutes({
       store,
       now,
-      publicBaseUrl,
       allowedOrigins,
       webAuthnRpId,
       webAuthnRpName,

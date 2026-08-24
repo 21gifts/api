@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { randomHex } from '@/lib/auth/lnurl';
+import { randomHex } from '@/lib/auth/hex';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { VERIFICATION_AMOUNT_MSAT, VERIFICATION_TTL_MS } from '@/lib/config';
 import type { InvoicePayer } from '@/lib/invoice-payer';

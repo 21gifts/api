@@ -38,127 +38,18 @@ describe('migrateAuthSchema', () => {
 });
 
 describe('PostgresAuthStore', () => {
-  it('evicts expired challenges then inserts on createChallenge', async () => {
-    const sql = new MockSql();
-    const store = new PostgresAuthStore(sql);
-    await store.createChallenge({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'pending',
-      accountId: null,
-      createdAt: 5_000,
-    });
-    expect(sql.executes[0]?.text).toMatch(/DELETE FROM auth_challenge/);
-    expect(sql.executes[0]?.params[0]).toBe(5_000 - CHALLENGE_TTL_MS);
-    expect(sql.executes[1]?.text).toMatch(/INSERT INTO auth_challenge/);
-  });
-
-  it('maps a challenge row including a Date timestamp', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      {
-        k1: 'k1',
-        poll_token: 'pt',
-        status: 'pending',
-        account_id: null,
-        created_at: new Date(1_000),
-      },
-    ];
-    const store = new PostgresAuthStore(sql);
-    const challenge = await store.getChallenge('k1');
-    expect(challenge).toEqual({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'pending',
-      accountId: null,
-      createdAt: 1_000,
-    });
-  });
-
-  it('returns undefined for a missing challenge', async () => {
-    const sql = new MockSql();
-    expect(await new PostgresAuthStore(sql).getChallenge('missing')).toBeUndefined();
-  });
-
-  it('returns undefined for a missing poll token', async () => {
-    expect(
-      await new PostgresAuthStore(new MockSql()).getChallengeByPollToken('missing'),
-    ).toBeUndefined();
-  });
-
-  it('looks up a challenge by poll token', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      {
-        k1: 'k1',
-        poll_token: 'pt',
-        status: 'authenticated',
-        account_id: 'acc',
-        created_at: '1970-01-01T00:00:01.000Z',
-      },
-    ];
-    const challenge = await new PostgresAuthStore(sql).getChallengeByPollToken('pt');
-    expect(challenge?.k1).toBe('k1');
-    expect(challenge?.createdAt).toBe(1_000);
-  });
-
-  it('updates a challenge only from the expected previous status', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [{ k1: 'k1' }];
-    const ok = await new PostgresAuthStore(sql).updateChallenge({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'consumed',
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    expect(ok).toBe(true);
-    expect(sql.queries[0]?.text).toMatch(/UPDATE auth_challenge/);
-    expect(sql.queries[0]?.params[5]).toBe('authenticated');
-  });
-
-  it('returns false when the challenge CAS matches no row', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [];
-    const ok = await new PostgresAuthStore(sql).updateChallenge({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'authenticated',
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    expect(ok).toBe(false);
-    expect(sql.queries[0]?.params[5]).toBe('pending');
-  });
-
-  it('updates a pending challenge without a status CAS', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [{ k1: 'k1' }];
-    const ok = await new PostgresAuthStore(sql).updateChallenge({
-      k1: 'k1',
-      pollToken: 'pt',
-      status: 'pending',
-      accountId: null,
-      createdAt: 1,
-    });
-    expect(ok).toBe(true);
-    expect(sql.queries[0]?.text).not.toMatch(/AND status/);
-  });
-
   it('maps account rows and lists them', async () => {
     const sql = new MockSql();
     sql.nextRows = [ACCOUNT_ROW];
     const store = new PostgresAuthStore(sql);
     expect((await store.getAccount('acc'))?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
-    expect((await store.findAccountByLinkingKey(ACCOUNT_ROW.linking_key))?.id).toBe('acc');
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
-    expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
   });
 
   it('returns undefined for a missing account', async () => {
     expect(await new PostgresAuthStore(new MockSql()).getAccount('x')).toBeUndefined();
-    expect(await new PostgresAuthStore(new MockSql()).findAccountByLinkingKey('x')).toBeUndefined();
   });
 
   it('inserts and updates accounts', async () => {
@@ -244,22 +135,6 @@ describe('PostgresAuthStore', () => {
     sql.nextRows = [{ ...ACCOUNT_ROW, role: 'admin' }];
     await expect(new PostgresAuthStore(sql).getAccount('acc')).rejects.toThrow(
       /Unknown account role/,
-    );
-  });
-
-  it('rejects an unknown challenge status', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      {
-        k1: 'k1',
-        poll_token: 'pt',
-        status: 'nope',
-        account_id: null,
-        created_at: new Date(1),
-      },
-    ];
-    await expect(new PostgresAuthStore(sql).getChallenge('k1')).rejects.toThrow(
-      /Unknown challenge status/,
     );
   });
 
@@ -390,5 +265,21 @@ describe('PostgresAuthStore', () => {
     await expect(new PostgresAuthStore(sql).getPasskeyChallenge('ch')).rejects.toThrow(
       /Unknown passkey challenge type/,
     );
+  });
+
+  it('maps a passkey challenge timestamp from an ISO string', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: '1970-01-01T00:00:01.000Z',
+      },
+    ];
+    const row = await new PostgresAuthStore(sql).getPasskeyChallenge('ch');
+    expect(row?.createdAt).toBe(1_000);
   });
 });

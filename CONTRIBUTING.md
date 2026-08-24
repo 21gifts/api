@@ -34,7 +34,7 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
-│   │   ├── auth.ts           # LNURL-auth + passkey: /auth/lnurl, /auth/session, /auth/passkey/…
+│   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
@@ -61,9 +61,9 @@ api/
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
-│   │       ├── lnurl.ts      # LUD-04 crypto: k1, lnurl encoding, signature verify
+│   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
-│   │       ├── service.ts    # Challenge lifecycle, account upsert, session issuance
+│   │       ├── service.ts    # Session issuance and bearer resolution
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL
@@ -73,7 +73,6 @@ api/
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
-│       │   ├── auth-vectors.ts   # secp256k1 test wallet (coverage-excluded)
 │       │   └── fake-passkey.ts   # PasskeyCeremony test double
 │       ├── integration/
 │       │   └── auth-flow.test.ts
@@ -98,7 +97,7 @@ api/
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   └── auth/
-│       │       ├── lnurl.test.ts
+│       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
 │       │       ├── store.test.ts
@@ -129,9 +128,7 @@ api/
 │   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
-│   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
-│   └── helpers/
-│       └── wallet.ts         # secp256k1 LUD-04 signer for login e2e
+│   └── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
@@ -273,7 +270,6 @@ Currently:
 | ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                        |
 | `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                  |
-| `PUBLIC_BASE_URL`      | _(none — required for auth)_            | Pinned LNURL-auth callback host (e.g. `https://dev.21.gifts`). `GET /auth/lnurl` returns `500` until it is set.                                                                       |
 | `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth state is migrated and stored durably, and `GET /gifts/stats` reads the `gift` table. Unset keeps `InMemoryAuthStore` and empty gift stats. |
 | `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                           |
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
