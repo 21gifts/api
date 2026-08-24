@@ -107,7 +107,8 @@ pays). The api is **not** in the payment path. This works without an account
 
 Public `GET /lightning-address` now resolves and caches LUD-16 metadata
 (callback, min/max sendable, optional commentAllowed). There is still no
-Donate button and the api still does not fetch or pay the gift invoice.
+Donate button; for this guest path the api still does not fetch or pay the
+gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
 
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.
@@ -124,20 +125,16 @@ Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
 ## 4. Recurring gifts — **Sketch**
 
-**Prerequisite**: the donor upgrades by depositing a `lndhub://` export
-restricted to `lightning.space` (custodial v1 compromise). Not wired; **no
-HTTP**.
+**Prerequisite**: paying is out of this process. The external spend
+worker holds lightning.space LNDHub credentials and calls:
 
-Then: configure recurring **daily** gifts as fixed **USD** amounts to a list
-of recipients. A server-side scheduler in the api would:
+1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
+2. LNDHub `payinvoice` (spend, not this api)
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash)
 
-1. Resolve each recipient's LUD-16 address
-2. Convert USD → sats via the configured rate (fail-closed)
-3. Fetch an invoice, decode-verify the amount, pay via the stored LNDHub
-
-Per-day idempotency, uncertain outcomes quarantined, balance preflight, and a
-per-donor daily cap apply (CONCEPT). **No HTTP, no UI today.** Do not invent
-`/me/donor`, `/me/recurring`, or scheduler paths.
+Recurring **daily** gifts as fixed **USD** amounts and the donor UI are still
+a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or scheduler paths.
+HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 ---
 

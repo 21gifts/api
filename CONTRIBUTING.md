@@ -38,10 +38,11 @@ api/
 │   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
-│   │   └── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
+│   │   └── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth + verification TTLs/amounts (no required env for verify)
+│   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
@@ -49,6 +50,11 @@ api/
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
+│   │   ├── bolt11.ts         # Decode BOLT11 payment hash + amount
+│   │   ├── proof.ts          # sha256(preimage) === payment hash
+│   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
+│   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth store + optional QueryGiftStore
@@ -81,6 +87,11 @@ api/
 │       │   ├── ln-address-cache.test.ts
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
+│       │   ├── gift-invoice.test.ts
+│       │   ├── bolt11.test.ts
+│       │   ├── proof.test.ts
+│       │   ├── spend-auth.test.ts
+│       │   ├── invoice-store.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
 │       │   ├── boot-stores.test.ts
@@ -104,7 +115,8 @@ api/
 │           ├── me.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
-│           └── stats.test.ts
+│           ├── stats.test.ts
+│           └── invoices.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
@@ -250,6 +262,7 @@ Currently:
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                       |
 | `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                               |
 | `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                              |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                    |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
