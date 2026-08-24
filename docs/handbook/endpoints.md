@@ -65,8 +65,8 @@
 
 ## Endpoint: GET /gifts/stats
 
-- **Purpose:** Public JSON of outbound gift totals: `totalSats`, `giftCount`, `recipientCount`, date range, `spendOverTime`, `byRecipient`, `byMonth`. No invoices.
-- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws.
+- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
+- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
 - **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy).
 - **Auth:** Public.
 
