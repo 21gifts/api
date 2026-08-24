@@ -5,6 +5,7 @@ import { InMemoryInvoiceStore, newInvoiceId, type GiftInvoice } from '@/lib/invo
 function sample(id: string): GiftInvoice {
   return {
     id,
+    address: 'alice@walletofsatoshi.com',
     pr: 'lnbc1test',
     paymentHash: 'aa'.repeat(32),
     amountMsat: 1000,

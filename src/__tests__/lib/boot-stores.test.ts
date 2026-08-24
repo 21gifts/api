@@ -5,6 +5,7 @@ import { PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
 import { QueryGiftStore } from '@/lib/gift-store';
+import { SqlGiftRecorder } from '@/lib/gift-recorder';
 
 function unusedClient(): SqlClient {
   return {
@@ -37,18 +38,26 @@ describe('openBootStores', () => {
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when unset', async () => {
     const factory = vi.fn(() => unusedClient());
-    const { authStore, giftStore, btcUsdRates } = await openBootStores(undefined, factory);
+    const { authStore, giftStore, giftRecorder, btcUsdRates } = await openBootStores(
+      undefined,
+      factory,
+    );
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
+    expect(giftRecorder).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(factory).not.toHaveBeenCalled();
   });
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when blank', async () => {
     const factory = vi.fn(() => unusedClient());
-    const { authStore, giftStore, btcUsdRates } = await openBootStores('   ', factory);
+    const { authStore, giftStore, giftRecorder, btcUsdRates } = await openBootStores(
+      '   ',
+      factory,
+    );
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
+    expect(giftRecorder).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(factory).not.toHaveBeenCalled();
   });
@@ -86,7 +95,7 @@ describe('openBootStores', () => {
     };
     const factory = vi.fn(() => client);
 
-    const { authStore, giftStore, btcUsdRates } = await openBootStores(url, factory, {
+    const { authStore, giftStore, giftRecorder, btcUsdRates } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
@@ -96,6 +105,7 @@ describe('openBootStores', () => {
     expect(factory).toHaveBeenCalledWith(url.trim());
     expect(authStore).toBeInstanceOf(PostgresAuthStore);
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
+    expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(executeCount).toBeGreaterThan(0);
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
@@ -132,7 +142,7 @@ describe('openBootStores', () => {
       },
       execute: async () => undefined,
     };
-    const { authStore, giftStore, btcUsdRates } = await openBootStores(
+    const { authStore, giftStore, giftRecorder, btcUsdRates } = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
       () => client,
       {
@@ -142,6 +152,7 @@ describe('openBootStores', () => {
     );
     expect(authStore).toBeInstanceOf(PostgresAuthStore);
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
+    expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
   });
@@ -156,11 +167,12 @@ describe('openBootStores', () => {
       },
       execute: async () => undefined,
     };
-    const { btcUsdRates, giftStore } = await openBootStores(
+    const { btcUsdRates, giftStore, giftRecorder } = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
       () => client,
     );
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
+    expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
   });
 });

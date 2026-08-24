@@ -121,9 +121,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore: undefined`, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore`/`giftRecorder` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
-- **Returns / side effects:** `{ authStore, giftStore, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder`; memory path returns `giftRecorder: undefined`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -206,9 +206,30 @@
 ## Function: invoiceRoutes
 
 - **Purpose:** Hono sub-app for spend-worker invoice issue and preimage proof.
-- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch.
-- **Returns / side effects:** Hono app mounted at `/invoices`.
+- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
+- **Returns / side effects:** Hono app mounted at `/invoices`. A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
 - **Used by:** `createApp`.
+
+## Function: NoopGiftRecorder
+
+- **Purpose:** `GiftRecorder` that ignores the row — used when `DATABASE_URL` is unset so proof still returns 200.
+- **Inputs:** `recordOutbound(record)` with a `GiftRecord`.
+- **Returns / side effects:** Resolves immediately. No SQL.
+- **Used by:** `invoiceRoutes` default; memory `openBootStores`.
+
+## Function: SqlGiftRecorder
+
+- **Purpose:** Persist a proven outbound gift into Postgres `gift` for `GET /gifts/stats`.
+- **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `source_wallet`.
+- **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to the route, which logs and still returns 200.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: recipientHandleFromAddress
+
+- **Purpose:** Stats handle from a Lightning Address: local-part before `@`, or the whole string if there is no `@`.
+- **Inputs:** Normalised `local@domain` (or a bare handle).
+- **Returns / side effects:** `recipient_wos_user` string. No I/O.
+- **Used by:** `invoiceRoutes` when recording a proven gift.
 
 ## Function: newInvoiceId
 

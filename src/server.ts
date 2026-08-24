@@ -22,6 +22,7 @@ import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
 import type { InvoiceStore } from '@/lib/invoice-store';
+import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
@@ -83,6 +84,11 @@ export interface AppDeps {
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
+   * Persist proven spend gifts into `gift` (default: no-op). Boot injects
+   * {@link SqlGiftRecorder} when `DATABASE_URL` is set.
+   */
+  giftRecorder?: GiftRecorder;
+  /**
    * Historical BTC-USD rates for gift stats (default: empty
    * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
    */
@@ -118,6 +124,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
+  const giftRecorder = deps.giftRecorder;
 
   const app = new Hono();
 
@@ -156,7 +163,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
-  app.route('/invoices', invoiceRoutes({ spendApiToken, store: invoiceStore, now, fetchImpl }));
+  app.route(
+    '/invoices',
+    invoiceRoutes({
+      spendApiToken,
+      store: invoiceStore,
+      now,
+      fetchImpl,
+      ...(giftRecorder === undefined ? {} : { giftRecorder }),
+    }),
+  );
 
   return app;
 }

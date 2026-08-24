@@ -93,7 +93,7 @@
 
 ## Endpoint: POST /invoices/proof
 
-- **Purpose:** Spend-worker only. Body `{ id, preimage }`. Accepts the payment preimage as proof (`sha256(preimage)` must equal the stored payment hash). Idempotent for the same preimage.
+- **Purpose:** Spend-worker only. Body `{ id, preimage }`. Accepts the payment preimage as proof (`sha256(preimage)` must equal the stored payment hash). Idempotent for the same preimage. A match inserts an outbound `gift` row (BOLT11 `pr` as `lightning_invoice`, amount floor(msat/1000) sats, fee 0, recipient handle from the address, description `21gifts daily`, `source_wallet` `lightning.space`). Insert failure logs `gifts.record_failed` and still returns 200.
 - **Errors:** 503 unconfigured; 401 unauthorized; 400 bad body or hash mismatch on an unexpired invoice; 404 unknown id (including after unpaid sweep/restart); 409 expired without a matching preimage, or already paid with a different preimage. Matching preimage is 200 after TTL while the row remains.
 - **Used by:** the external spend worker after LNDHub `payinvoice` returns a preimage.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.

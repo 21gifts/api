@@ -489,3 +489,30 @@ test('Function: preimageMatchesHash — POST /invoices/proof unconfigured is 503
   });
   expect(res.status()).toBe(503);
 });
+
+test('Function: NoopGiftRecorder — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: SqlGiftRecorder — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
