@@ -8,6 +8,7 @@ class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
+  executeError: unknown | undefined;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
@@ -16,6 +17,9 @@ class MockSql implements SqlClient {
 
   async execute(text: string, params: readonly unknown[] = []): Promise<void> {
     this.executes.push({ text, params });
+    if (this.executeError !== undefined) {
+      throw this.executeError;
+    }
   }
 }
 
@@ -75,6 +79,108 @@ describe('PostgresAuthStore', () => {
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+  });
+
+  it('updateAccount SQL refuses a linking_key owned by another id', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).updateAccount({
+      id: 'pk',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
+  });
+
+  it('updateAccount treats a linking_key unique_violation as a no-op', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    await expect(
+      new PostgresAuthStore(sql).updateAccount({
+        id: 'pk',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: 1,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('updateAccount rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('canceled'), { code: '57014' });
+    await expect(
+      new PostgresAuthStore(sql).updateAccount({
+        id: 'pk',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: 1,
+      }),
+    ).rejects.toMatchObject({ code: '57014' });
+  });
+
+  it('updateAccount rethrows a thrown null', async () => {
+    const sql = new MockSql();
+    sql.executeError = null;
+    await expect(
+      new PostgresAuthStore(sql).updateAccount({
+        id: 'pk',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: 1,
+      }),
+    ).rejects.toBeNull();
+  });
+
+  it('updateAccount rethrows a thrown string', async () => {
+    const sql = new MockSql();
+    sql.executeError = 'boom';
+    await expect(
+      new PostgresAuthStore(sql).updateAccount({
+        id: 'pk',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: 1,
+      }),
+    ).rejects.toBe('boom');
+  });
+
+  it('updateAccount rethrows a plain Error', async () => {
+    const sql = new MockSql();
+    sql.executeError = new Error('disk full');
+    await expect(
+      new PostgresAuthStore(sql).updateAccount({
+        id: 'pk',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: 1,
+      }),
+    ).rejects.toThrow('disk full');
+  });
+
+  it('deletes an account by id', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).deleteAccount('acc');
+    expect(sql.executes[0]?.text).toMatch(/DELETE FROM account WHERE id = \$1/);
+    expect(sql.executes[0]?.params).toEqual(['acc']);
   });
 
   it('evicts expired sessions then inserts', async () => {
@@ -212,14 +318,28 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     const key = new Uint8Array([1, 2, 3]);
     const store = new PostgresAuthStore(sql);
-    await store.createPasskeyCredential({
-      credentialId: 'cred',
-      publicKey: key,
-      signCount: 0,
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    expect(sql.executes[0]?.text).toMatch(/INSERT INTO passkey_credential/);
+    sql.nextRows = [{ credential_id: 'cred' }];
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO passkey_credential/);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    sql.nextRows = [];
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
     sql.nextRows = [
       {
         credential_id: 'cred',
@@ -236,14 +356,32 @@ describe('PostgresAuthStore', () => {
       accountId: 'acc',
       createdAt: 1,
     });
-    await store.updatePasskeyCredential({
-      credentialId: 'cred',
-      publicKey: key,
-      signCount: 5,
-      accountId: 'acc',
-      createdAt: 1,
-    });
-    expect(sql.executes[1]?.text).toMatch(/UPDATE passkey_credential/);
+    sql.nextRows = [{ credential_id: 'cred' }];
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 5,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    const update = sql.queries[sql.queries.length - 1];
+    expect(update?.text).toMatch(/SET sign_count = \$2/);
+    expect(update?.text).toMatch(/\$2 = 0 AND sign_count = 0/);
+    expect(update?.text).toMatch(/\$2 > sign_count/);
+    expect(update?.text).toMatch(/RETURNING credential_id/);
+    expect(update?.params).toEqual(['cred', 5]);
+    sql.nextRows = [];
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 5,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
   });
 
   it('returns undefined for a missing passkey credential', async () => {

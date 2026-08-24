@@ -72,9 +72,12 @@ export function resolveAllowedOrigins(env: Record<string, string | undefined>): 
     .filter((origin) => origin !== '');
 }
 
+/** RP IDs the process will mint credentials under. Anything else is `null`. */
+const WEBAUTHN_RP_IDS = new Set(['21.gifts', 'dev.21.gifts', 'localhost']);
+
 /**
- * Normalise `WEBAUTHN_RP_ID`. A missing or blank value yields `null` — passkey
- * routes fail closed rather than guessing `localhost` or the apex.
+ * Normalise `WEBAUTHN_RP_ID`. A missing, blank, or unknown value yields
+ * `null` — passkey routes fail closed rather than minting under a surprise RP.
  *
  * @param raw - The raw env value, or `undefined` when unset.
  * @returns The trimmed RP ID, or `null`.
@@ -83,7 +86,8 @@ export function normalizeWebAuthnRpId(raw: string | undefined): string | null {
   if (raw === undefined || raw.trim() === '') {
     return null;
   }
-  return raw.trim();
+  const rpId = raw.trim();
+  return WEBAUTHN_RP_IDS.has(rpId) ? rpId : null;
 }
 
 /**

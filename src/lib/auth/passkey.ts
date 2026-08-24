@@ -23,13 +23,14 @@ export interface PasskeyFinishOk {
 
 /** Failed finish with a client-facing error string. */
 export interface PasskeyFinishErr {
+  /** Discriminator for the error branch. */
+  ok: false;
   /** Stable error copy returned as `{ error }`. */
   error: string;
 }
 
 /** Outcome of a passkey finish step. */
-export type PasskeyFinishResult =
-  { ok: true; value: PasskeyFinishOk } | { ok: false; error: string };
+export type PasskeyFinishResult = { ok: true; value: PasskeyFinishOk } | PasskeyFinishErr;
 
 /**
  * Read the WebAuthn credential `id` from an untyped browser payload.
@@ -52,7 +53,7 @@ export function credentialIdFrom(credential: unknown): string | null {
  * Start passkey registration: mint a pending account id and creation options.
  *
  * The account row is not persisted until {@link finishPasskeyRegistration}
- * succeeds, so a cancelled ceremony leaves no orphan.
+ * succeeds; a cancelled ceremony or a duplicate-credential race leaves no orphan.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -88,7 +89,8 @@ export async function startPasskeyRegistration(
 
 /**
  * Complete passkey registration: verify attestation, persist the account and
- * credential, issue a session.
+ * credential, issue a session. A duplicate credential id rolls the new
+ * account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -146,13 +148,17 @@ export async function finishPasskeyRegistration(
     createdAt: now,
   };
   await store.createAccount(account);
-  await store.createPasskeyCredential({
+  const stored = await store.createPasskeyCredential({
     credentialId: verified.credentialId,
     publicKey: verified.publicKey,
     signCount: verified.signCount,
     accountId,
     createdAt: now,
   });
+  if (!stored) {
+    await store.deleteAccount(accountId);
+    return { ok: false, error: 'Invalid passkey' };
+  }
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }
@@ -186,7 +192,7 @@ export async function startPasskeyAuthentication(
 }
 
 /**
- * Complete passkey authentication: verify assertion, bump signCount, issue a session.
+ * Complete passkey authentication: verify assertion, CAS-update signCount, issue a session.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -247,10 +253,13 @@ export async function finishPasskeyAuthentication(
   if (latest === undefined) {
     return { ok: false, error: 'Unknown credential' };
   }
-  await store.updatePasskeyCredential({
+  const accepted = await store.updatePasskeyCredential({
     ...latest,
-    signCount: Math.max(latest.signCount, verified.newSignCount),
+    signCount: verified.newSignCount,
   });
+  if (!accepted) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
 }

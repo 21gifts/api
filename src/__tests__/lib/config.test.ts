@@ -42,10 +42,15 @@ describe('normalizeWebAuthnRpId', () => {
   it('trims a configured RP ID', () => {
     expect(normalizeWebAuthnRpId('  21.gifts  ')).toBe('21.gifts');
   });
+
+  it('rejects an RP ID outside the allowlist', () => {
+    expect(normalizeWebAuthnRpId('app.21.gifts')).toBeNull();
+    expect(normalizeWebAuthnRpId('example.com')).toBeNull();
+  });
 });
 
 describe('expectedOriginsForRpId', () => {
-  it('keeps the apex and its subdomains', () => {
+  it('keeps the RP ID and app.<rpId> only', () => {
     expect(
       expectedOriginsForRpId('21.gifts', [
         'https://21.gifts',

@@ -75,7 +75,7 @@ async function authedAccount(
  */
 async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | null> {
   const current = await deps.store.getAccount(id);
-  /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
+  /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
   if (current === undefined) {
     return null;
   }
@@ -134,7 +134,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Name must be 1–80 characters' }, 400);
       }
       const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -157,7 +157,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
       const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -182,7 +182,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- InMemoryAuthStore has no deleteAccount; the row cannot vanish after auth */
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }

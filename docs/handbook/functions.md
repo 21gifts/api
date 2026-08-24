@@ -2,9 +2,9 @@
 
 ## Function: buildGiftStats
 
-- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, recipients, months) including BTC strings and historical USD from per-gift day rates.
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, months with gap months, recipients) including BTC strings and historical USD from per-gift day rates.
 - **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`) and `ReadonlyMap<string, string>` of UTC day → USD-per-BTC. Empty rows need no rates.
-- **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `fx`, and BTC/USD on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no rate. Gap days are zero sats/BTC/USD without a rate. No I/O.
+- **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `fx`, and BTC/USD on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no rate. Gap days and gap months are zero sats/BTC/USD without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
 
 ## Function: giftsStatsRoutes
@@ -94,13 +94,13 @@
 ## Function: InMemoryAuthStore
 
 - **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials. Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
@@ -269,7 +269,7 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `btcUsdRates`, spendApiToken, invoiceStore).
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `btcUsdRates`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -408,16 +408,16 @@
 
 ## Function: finishPasskeyAuthentication
 
-- **Purpose:** Verifies a discoverable-credential assertion, updates signCount, issues a session.
+- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`.
 - **Used by:** `POST /auth/passkey/authenticate/finish`.
 
 ## Function: finishPasskeyRegistration
 
 - **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. A duplicate credential id rolls the new account back.
 - **Used by:** `POST /auth/passkey/register/finish`.
 
 ## Function: issueSession
@@ -429,7 +429,7 @@
 
 ## Function: normalizeWebAuthnRpId
 
-- **Purpose:** Trims `WEBAUTHN_RP_ID`; missing/blank is `null` (fail closed on passkey routes).
+- **Purpose:** Trims `WEBAUTHN_RP_ID`; missing/blank/unknown is `null` (only `21.gifts` / `dev.21.gifts` / `localhost`; fail closed on passkey routes).
 - **Inputs:** Raw env string or `undefined`.
 - **Returns / side effects:** Trimmed RP ID or `null`.
 - **Used by:** `resolveWebAuthnConfig`.

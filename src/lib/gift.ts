@@ -95,7 +95,7 @@ export interface GiftStats {
   spendOverTime: SpendDay[];
   /** Per-recipient totals, largest spend first. */
   byRecipient: RecipientSpend[];
-  /** Per-month totals, chronological. */
+  /** Per-month totals, UTC months from first through last inclusive (gap months included). */
   byMonth: MonthSpend[];
   /** Quote metadata (always present, including empty stats). */
   fx: GiftStatsFx;
@@ -140,6 +140,28 @@ function utcMonthString(date: Date): string {
 }
 
 /**
+ * Inclusive UTC month list from `fromMonth` through `toMonth`.
+ *
+ * @param fromMonth - Start `YYYY-MM`.
+ * @param toMonth - End `YYYY-MM`.
+ * @returns Every UTC month in the range.
+ */
+function enumerateUtcMonths(fromMonth: string, toMonth: string): string[] {
+  const months: string[] = [];
+  const year = Number(fromMonth.slice(0, 4));
+  let monthIndex = Number(fromMonth.slice(5, 7)) - 1;
+  for (;;) {
+    const key = new Date(Date.UTC(year, monthIndex, 1)).toISOString().slice(0, 7);
+    months.push(key);
+    if (key === toMonth) {
+      break;
+    }
+    monthIndex += 1;
+  }
+  return months;
+}
+
+/**
  * Epoch milliseconds at UTC midnight for a `YYYY-MM-DD` day.
  *
  * @param day - UTC day string.
@@ -172,8 +194,8 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
  *
  * Empty input yields zeros, null dates, empty series, and `fx` — no rates
  * required. Non-empty input looks up each gift's UTC-day rate; a missing
- * rate throws `Error('fx.rate.missing')`. Gap days in `spendOverTime` use
- * zero sats/BTC/USD without needing a rate.
+ * rate throws `Error('fx.rate.missing')`. Gap days in `spendOverTime` and
+ * gap months in `byMonth` use zero sats/BTC/USD without needing a rate.
  *
  * @param rows - Outbound gifts (order does not matter).
  * @param rates - UTC day → USD-per-BTC string for every gift day.
@@ -269,15 +291,19 @@ export function buildGiftStats(
     }))
     .sort((a, b) => b.sats - a.sats || a.recipient.localeCompare(b.recipient));
 
-  const months: MonthSpend[] = [...byMonth.entries()]
-    .map(([month, totals]) => ({
+  const months: MonthSpend[] = enumerateUtcMonths(
+    utcMonthString(first.paidAt),
+    utcMonthString(last.paidAt),
+  ).map((month) => {
+    const totals = byMonth.get(month) ?? { giftCount: 0, sats: 0, usdCents: 0 };
+    return {
       month,
       giftCount: totals.giftCount,
       sats: totals.sats,
       btc: satsToBtcString(totals.sats),
       usd: usdCentsToString(totals.usdCents),
-    }))
-    .sort((a, b) => a.month.localeCompare(b.month));
+    };
+  });
 
   return {
     totalSats,

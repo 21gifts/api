@@ -296,6 +296,256 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.id).toBe('acc');
   });
 
+  it('stores and retrieves a passkey challenge and credential', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1,
+    });
+    expect(
+      await store.updatePasskeyChallenge({
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        accountId: 'acc',
+        consumed: true,
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyChallenge('ch'))?.consumed).toBe(true);
+    expect(await store.getPasskeyChallenge('missing')).toBeUndefined();
+    expect(
+      await store.updatePasskeyChallenge({
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        accountId: 'acc',
+        consumed: true,
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 9,
+        accountId: 'other',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 2,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 1,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(2);
+    expect((await store.getPasskeyCredential('cred'))?.accountId).toBe('acc');
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([9]),
+        signCount: 3,
+        accountId: 'other',
+        createdAt: 99,
+      }),
+    ).toBe(true);
+    expect(await store.getPasskeyCredential('cred')).toEqual({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 3,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(await store.getPasskeyCredential('missing')).toBeUndefined();
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'missing',
+        publicKey: new Uint8Array([1]),
+        signCount: 9,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(await store.getPasskeyCredential('missing')).toBeUndefined();
+  });
+
+  it('accepts a 0/0 signCount update and refuses an equal counter', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyCredential({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(0);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(
+      await store.updatePasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(3);
+  });
+
+  it('lets only the first of two sequential N+1 signCount updates succeed', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyCredential({
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 4,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    const next = {
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 5,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.updatePasskeyCredential(next)).toBe(true);
+    expect(await store.updatePasskeyCredential(next)).toBe(false);
+    expect((await store.getPasskeyCredential('cred'))?.signCount).toBe(5);
+  });
+
+  it('refuses to let updateAccount steal another account linkingKey', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'ln',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    await store.createAccount({
+      id: 'pk',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    await store.updateAccount({
+      id: 'pk',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect((await store.getAccount('ln'))?.linkingKey).toBe(KEY);
+    expect((await store.getAccount('pk'))?.linkingKey).toBeNull();
+  });
+
+  it('deleteAccount drops the row and its linkingKey index', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    await store.deleteAccount('acc');
+    await store.deleteAccount('missing');
+    expect(await store.getAccount('acc')).toBeUndefined();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect((await store.getAccount('other'))?.id).toBe('other');
+  });
+
+  it('evicts an expired passkey challenge on a later create', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createPasskeyChallenge({
+      id: 'old',
+      type: 'authenticate',
+      challenge: 'c',
+      accountId: null,
+      consumed: false,
+      createdAt: T0,
+    });
+    await store.createPasskeyChallenge({
+      id: 'new',
+      type: 'authenticate',
+      challenge: 'c',
+      accountId: null,
+      consumed: false,
+      createdAt: T0 + CHALLENGE_TTL_MS + 1,
+    });
+    expect(await store.getPasskeyChallenge('old')).toBeUndefined();
+    expect((await store.getPasskeyChallenge('new'))?.id).toBe('new');
+  });
+
   it('keeps a still-valid passkey challenge on a later create', async () => {
     const store = new InMemoryAuthStore();
     await store.createPasskeyChallenge({
