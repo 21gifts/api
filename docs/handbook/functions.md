@@ -263,7 +263,7 @@
 
 - **Purpose:** Trims and validates `local@domain` LUD-16 shape. Case is preserved.
 - **Inputs:** `raw` string.
-- **Returns / side effects:** Canonical address or `null`.
+- **Returns / side effects:** Trimmed address or `null`.
 - **Used by:** me lightning-address POST and public resolve.
 
 ## Function: normalizePublicBaseUrl
