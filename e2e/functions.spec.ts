@@ -474,12 +474,13 @@ test('Function: finishPasskeyRegistration — POST finish without Origin is 400'
   expect(((await res.json()) as { error: string }).error).toBe('Invalid origin');
 });
 
-test('Function: expectedOriginsForRpId — POST finish without Origin is 400', async ({
+test('Function: expectedOriginsForRpId — POST finish with a filtered Origin is 400', async ({
   request,
 }) => {
   const begin = await request.post('/auth/passkey/register/begin');
   const { challengeId } = (await begin.json()) as { challengeId: string };
   const res = await request.post('/auth/passkey/register/finish', {
+    headers: { origin: 'http://127.0.0.1:3000' },
     data: { challengeId, credential: { id: 'cred-e2e' } },
   });
   expect(res.status()).toBe(400);

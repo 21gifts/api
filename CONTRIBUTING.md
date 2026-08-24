@@ -221,12 +221,14 @@ a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`, and
-`mapGiftQueryRow`, which need `DATABASE_URL`; `requestGiftInvoice`,
-`decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and `preimageMatchesHash`,
-which need `SPEND_API_TOKEN` and a reachable LNURL-pay), that test still exists
-and asserts the default-boot outcome that proves it is not invoked (verification
-`503`, spend invoices unconfigured `503`, or a healthy process with
-`DATABASE_URL` blank).
+`mapGiftQueryRow`, which need `DATABASE_URL`; `InMemoryInvoiceStore`,
+`requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`, `normalizeHex32`, and
+`preimageMatchesHash`, which need `SPEND_API_TOKEN` and a reachable LNURL-pay),
+that test still exists and asserts the default-boot outcome that proves it is
+not invoked (verification `503`, spend invoices unconfigured `503`, or a
+healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
+`DATABASE_URL` and `SPEND_API_TOKEN` to blank so those outcomes do not depend
+on the host environment.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
