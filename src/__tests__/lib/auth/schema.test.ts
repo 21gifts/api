@@ -11,7 +11,7 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL[2]).toMatch(
       /ALTER TABLE account ALTER COLUMN linking_key DROP NOT NULL/i,
     );
-    expect(AUTH_SCHEMA_SQL[3]).toMatch(/CREATE TABLE IF NOT EXISTS auth_challenge/i);
+    expect(AUTH_SCHEMA_SQL[3]).toMatch(/DROP TABLE IF EXISTS auth_challenge/i);
     expect(AUTH_SCHEMA_SQL[4]).toMatch(/CREATE TABLE IF NOT EXISTS auth_session/i);
     expect(AUTH_SCHEMA_SQL[5]).toMatch(/CREATE TABLE IF NOT EXISTS address_verification/i);
     expect(AUTH_SCHEMA_SQL[6]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_challenge/i);

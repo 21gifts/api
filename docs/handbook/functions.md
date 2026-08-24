@@ -16,8 +16,8 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: LNURL challenges, passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`Challenge`, `PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateChallenge` / `updatePasskeyChallenge` return false when the row is missing or already consumed.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
@@ -32,7 +32,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_challenge`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential` and backfills `account.name` / nullable `linking_key`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -163,8 +163,8 @@
 
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for LNURL-auth and passkey login.
-- **Inputs:** `AuthRouteDeps`: store, now, publicBaseUrl, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
+- **Purpose:** Hono sub-app for passkey register and authenticate.
+- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
 - **Returns / side effects:** Hono app mounted at `/auth`.
 - **Used by:** `createApp`.
 
@@ -182,20 +182,6 @@
 - **Returns / side effects:** Hono app with three GETs; 404 empty body if bytes missing.
 - **Used by:** `createApp` at `/`.
 
-## Function: claimSession
-
-- **Purpose:** Consumes an authenticated challenge and issues a session.
-- **Inputs:** `store`, `now`, `pollToken`.
-- **Returns / side effects:** `SessionResult` pending/authenticated/expired/used.
-- **Used by:** `GET /auth/session`.
-
-## Function: completeCallback
-
-- **Purpose:** Verifies wallet sig+key against k1, upserts account, marks challenge authenticated.
-- **Inputs:** `store`, `now`, `{ k1, sig, key }`.
-- **Returns / side effects:** `{ ok: true, accountId, firstLogin }` or `{ ok: false, reason }`.
-- **Used by:** `GET /auth/lnurl/callback`.
-
 ## Function: confirmVerification
 
 - **Purpose:** Checks the nonce the user read from the wallet payment comment (`21gifts <hex>`), not a nonce returned by startVerification.
@@ -206,16 +192,9 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, publicBaseUrl, `debugToken`, giftStore, spendApiToken, invoiceStore).
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, spendApiToken, invoiceStore).
 - **Returns / side effects:** Hono app. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
-
-## Function: encodeLnurl
-
-- **Purpose:** bech32-encodes an HTTPS URL as `lnurl1…` (LUD-01).
-- **Inputs:** `url` string.
-- **Returns / side effects:** Bech32 LNURL.
-- **Used by:** `startChallenge`.
 
 ## Function: healthRoute
 
@@ -266,13 +245,6 @@
 - **Returns / side effects:** Trimmed address or `null`.
 - **Used by:** me lightning-address POST, public resolve, and POST /invoices.
 
-## Function: normalizePublicBaseUrl
-
-- **Purpose:** Trims trailing slash; rejects empty.
-- **Inputs:** raw env string or undefined.
-- **Returns / side effects:** Base URL or `null`. Auth routes then respond HTTP 500 `Server auth is not configured`.
-- **Used by:** `startChallenge` via auth routes.
-
 ## Function: parseBindAddr
 
 - **Purpose:** Parses `host:port` bind spec.
@@ -282,10 +254,10 @@
 
 ## Function: randomHex
 
-- **Purpose:** CSPRNG hex for k1 / poll tokens / session tokens / nonces.
+- **Purpose:** CSPRNG hex for session tokens, passkey challenge ids, and verification nonces.
 - **Inputs:** `byteLength`.
 - **Returns / side effects:** Lowercase hex.
-- **Used by:** Auth challenge + session + verification.
+- **Used by:** `issueSession`, passkey begin, verification nonce.
 
 ## Function: readPublicBrandFile
 
@@ -336,26 +308,12 @@
 - **Returns / side effects:** `Account` or `null`.
 - **Used by:** `meRoutes`.
 
-## Function: startChallenge
-
-- **Purpose:** Mints k1, poll token, LNURL pointing at `{base}/auth/lnurl/callback`.
-- **Inputs:** `store`, `now`, `baseUrl`.
-- **Returns / side effects:** `StartChallengeResult`.
-- **Used by:** `GET /auth/lnurl`.
-
 ## Function: startVerification
 
 - **Purpose:** Pays a 1-sat LNURL-pay invoice to the linked address and stores a nonce.
 - **Inputs:** `StartVerificationArgs` (store, payer, fetch, accountId, now).
 - **Returns / side effects:** Sent result or a `StartVerificationCode` (no address, payer down, …).
 - **Used by:** `POST /me/lightning-address/verification`.
-
-## Function: verifyAuthSig
-
-- **Purpose:** secp256k1 verify: DER sig of k1 by linkingKey.
-- **Inputs:** `k1`, `sig`, `key` hex.
-- **Returns / side effects:** `true` iff the wallet signed this challenge.
-- **Used by:** `completeCallback`.
 
 ## Function: credentialIdFrom
 
@@ -390,7 +348,7 @@
 - **Purpose:** Mints a bearer session token for an already-authenticated account.
 - **Inputs:** `store`, `now`, `account`.
 - **Returns / side effects:** `{ token, account }`; writes the session row.
-- **Used by:** `claimSession`, passkey finish paths.
+- **Used by:** passkey finish paths.
 
 ## Function: normalizeWebAuthnRpId
 

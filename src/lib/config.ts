@@ -2,19 +2,15 @@
  * Auth, verification, and gift-invoice configuration.
  *
  * Configuration is read from the environment only (no config files, per
- * CONTRIBUTING). `PUBLIC_BASE_URL` is security-relevant: it pins the
- * LNURL-auth callback host, which is the domain the wallet derives its
- * `linkingKey` against. A wrong host would silently split account identities,
- * so a missing or empty value is treated as a hard misconfiguration rather
- * than a guessed default. `WEBAUTHN_RP_ID` pins the passkey relying party
- * the same way (missing → passkey routes 500; the process still boots).
+ * CONTRIBUTING). `WEBAUTHN_RP_ID` pins the passkey relying party (missing →
+ * passkey routes 500; the process still boots).
  * Verification TTL and micro-payment amounts for Lightning Address
  * proof-of-control also live here, as does the in-memory LUD-16 metadata
  * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
  * environment variable).
  */
 
-/** Lifetime of an unclaimed LNURL-auth `k1` challenge, in milliseconds. */
+/** Lifetime of an unclaimed passkey ceremony challenge, in milliseconds. */
 export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 /** Lifetime of an issued session token, in milliseconds. */
@@ -43,23 +39,6 @@ export const GIFT_INVOICE_MAX_MSAT = 10_000_000_000;
 
 /** Lifetime of an unpaid gift invoice awaiting proof, in milliseconds. */
 export const GIFT_INVOICE_TTL_MS = 15 * 60 * 1000;
-
-/**
- * Normalise the configured public base URL used to build LNURL-auth callbacks.
- *
- * Trims surrounding whitespace and strips any trailing slashes so callback
- * URLs concatenate cleanly. A missing or blank value yields `null` — the
- * caller turns that into a fail-closed `500`, never a guessed host.
- *
- * @param raw - The raw `PUBLIC_BASE_URL` value (or `undefined` when unset).
- * @returns The normalised base URL, or `null` when unset or blank.
- */
-export function normalizePublicBaseUrl(raw: string | undefined): string | null {
-  if (raw === undefined || raw.trim() === '') {
-    return null;
-  }
-  return raw.trim().replace(/\/+$/, '');
-}
 
 /**
  * Browser origins allowed to call the api by default — the 21.gifts apex

@@ -59,23 +59,16 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below).
 
-### Login: LNURL-auth only
+### Login: passkey only
 
-- **LNURL-auth (LUD-04) is the only login method in v1.** No email, no
-  password, no passkey. The wallet scans a QR (or opens a `lightning:` deep
-  link), signs the server's `k1` challenge, and the session is bound to the
-  wallet's per-domain `linkingKey` — which is the account identifier.
-- Works with Wallet of Satoshi (Classic since 2023; Self-Custody/Spark since
-  app v3.2.5, 2026-02-04), Phoenix, Breez, Zeus, Alby, and others.
-- **Accepted trade-off (decided 2026-07-05)**: if the user loses the wallet
-  or its LNURL-auth key changes (e.g. the WoS Classic → Spark migration
-  generates a new seed), the account is unrecoverable in v1. Linking multiple
-  wallets to one account as a mitigation is deferred.
-- The auth callback host pins the `linkingKey` domain and is **fixed** to
-  `21.gifts` (PRD) / `dev.21.gifts` (DEV). The api process still listens at
-  `api.21.gifts` / `dev-api.21.gifts`; the app same-origin-proxies
-  `/auth/lnurl/callback` so wallets hit the apex. Changing this host later
-  would invalidate every account identity.
+- **Passkey (WebAuthn) is the only login method.** No email, no password, no
+  LNURL-auth. The browser creates or asserts a discoverable credential; the
+  api issues a bearer session immediately. Account identity is `account.id`.
+- **Accepted trade-off**: if the user loses the passkey and any platform
+  sync, the account is unrecoverable. LNURL-auth was removed (2026-08-24);
+  leftover `account.linking_key` values are historical and cannot log in.
+- WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts`). Missing
+  RP ID → passkey routes 500; the process still boots.
 
 ### Donor upgrade (custodial, v1 only)
 
@@ -117,7 +110,7 @@ donor UI and an in-process scheduler are not HTTP yet.
 
 ### NOSTR in v1
 
-LNURL-auth provides no client-side NOSTR key, so v1 runs NOSTR **fully
+Passkey login without PRF provides no client-side NOSTR key, so v1 runs NOSTR **fully
 custodially** (decided 2026-07-05, resolves Open Question #9): on sign-up the
 api generates a NOSTR keypair for the account, stores the `nsec` encrypted at
 rest, and signs that account's events server-side with the account's own key.
@@ -134,8 +127,8 @@ Open Question #9.
 
 ### Identity & Keys
 
-> **Post-v1 target architecture.** v1 uses LNURL-auth login with no
-> client-side key material — see "v1 Transitional Model" above. Everything in
+> **Post-v1 target architecture.** v1 login is passkey without PRF, so there is
+> no client-side key material — see "v1 Transitional Model" above. Everything in
 > this section describes the non-custodial phase that replaces it.
 
 The full key flow, end-to-end:
@@ -306,7 +299,7 @@ the same endpoints later.
 - **Discovery** — recent campaigns, ordering, eventual categories / search
 - **Anti-abuse signals** — rate-limiting, spam scoring, suspicious-pattern
   detection at the edge
-- **v1 additions** (see "v1 Transitional Model"): LNURL-auth challenge/verify
+- **v1 additions** (see "v1 Transitional Model"): passkey register/authenticate
   and sessions; spend-worker invoice HTTP (`POST /invoices`,
   `POST /invoices/proof`); receiver address verification via micro-payment
   nonce; custodial per-account NOSTR identities (`nsec` encrypted at rest)
@@ -330,7 +323,7 @@ app repo (`21gifts/app`) only carries frontend-specific docs.
 
 > **Post-v1 target architecture** (like "Identity & Keys" above). v1 stores
 > no client-side key material; the v1 session is a server-issued token bound
-> to the LNURL-auth `linkingKey`.
+> to `account.id` after passkey authentication.
 
 IndexedDB, two object stores:
 
@@ -350,8 +343,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — app:
 
-- Sign-in via LNURL-auth (QR + `lightning:` deep link; session bound to the
-  wallet's `linkingKey`)
+- Sign-in via passkey (WebAuthn discoverable credential; session bound to
+  `account.id`)
 - Receiver profile UI: name, photo, story, Lightning Address (+ verified
   badge via micro-payment nonce)
 - Public campaign feed (rendered from api response)
@@ -364,8 +357,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — api:
 
-- LNURL-auth endpoints: `k1` challenge issuance, signature verification,
-  replay protection, session issuance
+- Passkey endpoints: register/authenticate begin and finish, session issuance
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
 - Receiver address verification: micro-payment with one-time nonce in the
@@ -406,8 +398,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 ## Open Questions
 
 1. ~~PRF fallback — what happens if the user's browser doesn't support PRF?~~
-   **Deferred 2026-07-05**: v1 login is LNURL-auth (no PRF involved); this
-   question returns with the non-custodial phase.
+   **Deferred 2026-07-05, restated 2026-08-24**: v1 login is passkey without
+   PRF; this question returns with the non-custodial phase.
 2. **Verification rigor** — pure NOSTR-reputation, or also platform-level checks?
    Where exactly is the line between "open" and "responsible"?
 3. ~~Relay strategy — public relays only, or run a pinned relay for the
@@ -462,7 +454,7 @@ Goal: smallest viable browser bundle. Only what _must_ run client-side.
 
 > The WebAuthn/PRF, BIP-32/39, and client-side signing rows describe the
 > non-custodial phase. v1 ships without client-side key material; the app's
-> v1 crypto surface is limited to what LNURL-auth login and LNURL-pay
+> v1 crypto surface is limited to what passkey login and LNURL-pay
 > require.
 
 **Dependency philosophy**: stay minimal. Target ~12 runtime dependencies. The
@@ -603,8 +595,8 @@ Two environments per service, mapped 1:1 to the branch model:
 | api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
 
 `app.21.gifts` / `dev-app.21.gifts` remain transitional aliases for the app
-container. The LUD-04 callback (wallet identity) is the apex, not the api
-hostname.
+container. Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts`), not the
+api hostname.
 
 Subdomain convention: **dash, not dot** (e.g., `dev-api.21.gifts` rather than
 `dev.api.21.gifts`). This keeps every subdomain at exactly one level deep,
@@ -652,6 +644,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-15 | Core UI journeys sketched in `FLOWS.md` (sign-in, profile, donate, recurring gifts, message). Implemented screens cite `SPEC.md` only; donate / recurring / message remain CONCEPT sketches with no HTTP                                                                                                                                                                                                                                                           |
 | 2026-08-15 | Public `GET /lightning-address` resolves LUD-16 metadata (callback, min/max sendable, optional commentAllowed) with a 5-minute in-memory cache; the process still boots with no extra env. Gift invoices stay browser-side.                                                                                                                                                                                                                                        |
 | 2026-08-23 | Spend-worker invoice HTTP: `POST /invoices` fetches a recipient BOLT11 via LNURL-pay; `POST /invoices/proof` accepts the payment preimage. Paying is the external spend worker via lightning.space LNDHub — this api does not store LNDHub credentials or pay. `SPEND_API_TOKEN` optional (503 until set). **Supersedes** the 2026-07-05 in-api scheduler/LNDHub-pay decision and the 2026-08-15 “gift invoices stay browser-side” note for the spend-worker path. |
+| 2026-08-24 | v1 login is **passkey only**; LNURL-auth (LUD-04) endpoints, QR login, and `/auth/session` poll removed. `linkingKey` remains a nullable historical column. LNURL-pay (donate / invoices / address verification) is unchanged. **Supersedes** the 2026-07-05 LNURL-auth-only login decision.                                                                                                                                                                       |
 
 ---
 
@@ -664,8 +657,8 @@ repository — they're intentionally not part of this project's scope.
    Zustand)~~ — done 2026-07-05: public repo exists
 3. ~~Port the passkey + PRF + key-derivation primitives from the reference
    app~~ — deferred 2026-07-05 to the non-custodial phase (v1 login is
-   LNURL-auth)
-4. ~~Define the v1 api surface (LNURL-auth, donor wallets, recurring-gift
+   passkey without PRF; restated 2026-08-24)
+4. ~~Define the v1 api surface (passkey login, donor wallets, recurring-gift
    scheduler, address verification, custodial NOSTR identities + server-side
    event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo~~ —
    done 2026-08-15: implemented HTTP surface documented in `SPEC.md`;
@@ -673,9 +666,8 @@ repository — they're intentionally not part of this project's scope.
 5. ~~Wire up the four CI/CD workflows on both repos and Docker Hub
    publishing~~ — done 2026-07-05: `ci`, `deploy-dev`, `deploy-prd`, and
    `auto-release-pr` exist on api and app
-6. Validate LNURL-auth end-to-end with real wallets (WoS Classic +
-   Self-Custody ≥ 3.2.5, Phoenix, Alby) — QR and `lightning:` deep link on
-   iOS/Android
+6. ~~Validate LNURL-auth end-to-end with real wallets~~ — cancelled 2026-08-24:
+   LNURL-auth login was removed; login is passkey-only
 7. ~~Sketch core UI flows: sign-in → profile → donate → recurring gifts → message~~ —
    done 2026-08-15: `FLOWS.md` sketches the five journeys and labels
    each Shipped vs Sketch; HTTP stays in `SPEC.md`

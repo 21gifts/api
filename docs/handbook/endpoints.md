@@ -14,27 +14,6 @@
 - **Used by:** iOS home-screen icon crawlers.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
-## Endpoint: GET /auth/lnurl
-
-- **Purpose:** Creates a login challenge. JSON: lnurl, k1, pollToken.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `PUBLIC_BASE_URL` is unset.
-- **Used by:** App `startLnurlAuth`.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
-## Endpoint: GET /auth/lnurl/callback
-
-- **Purpose:** Wallet hits this with `k1`, `sig`, `key` (LUD-04). Success body `{ status: 'OK' }`. Query is never written to http.request logs.
-- **Errors:** HTTP 200 `{ status: 'ERROR', reason }` on missing params or bad signature (LUD-04).
-- **Used by:** Wallet of Satoshi / any LNURL-auth wallet.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
-## Endpoint: GET /auth/session
-
-- **Purpose:** Header `X-Poll-Token`. Returns pending until the callback succeeds, then `{ status: 'authenticated', token, account }`.
-- **Errors:** expired/used after TTL or reuse.
-- **Used by:** App `pollSession`.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
 ## Endpoint: GET /debug/accounts
 
 - **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `createdAt`). Same JSON fields as `GET /me`.

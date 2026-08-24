@@ -3,6 +3,7 @@
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name` and nullable `linking_key` on
  * databases created before passkey accounts existed.
+ * Drops leftover `auth_challenge` from LNURL-auth.
  */
 
 /** Ordered CREATE/ALTER statements for the auth schema. */
@@ -18,13 +19,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   )`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS name text`,
   `ALTER TABLE account ALTER COLUMN linking_key DROP NOT NULL`,
-  `CREATE TABLE IF NOT EXISTS auth_challenge (
-    k1 text PRIMARY KEY,
-    poll_token text NOT NULL UNIQUE,
-    status text NOT NULL,
-    account_id uuid NULL REFERENCES account (id),
-    created_at timestamptz NOT NULL
-  )`,
+  `DROP TABLE IF EXISTS auth_challenge`,
   `CREATE TABLE IF NOT EXISTS auth_session (
     token text PRIMARY KEY,
     account_id uuid NOT NULL REFERENCES account (id),

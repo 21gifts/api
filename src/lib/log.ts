@@ -20,7 +20,7 @@ export function logEvent(event: string, fields?: LogFields): void {
 /**
  * Hono middleware: one `http.request` event after the handler.
  * Skips `/healthz` and `OPTIONS`. Never includes the query string
- * (LNURL-auth callback would leak `sig` and `key`).
+ * (LNURL-pay callbacks would leak invoice query params).
  *
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
  */
