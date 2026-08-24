@@ -128,9 +128,7 @@ api/
 │   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
-│   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
-│   └── helpers/
-│       └── wallet.ts         # secp256k1 LUD-04 signer for login e2e
+│   └── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico
