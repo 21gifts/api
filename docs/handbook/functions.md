@@ -40,6 +40,13 @@
 - **Purpose:** Chooses in-memory vs Postgres AuthStore from `DATABASE_URL`.
 - **Inputs:** URL or blank/undefined; `createClient` factory required when the URL is set (boot supplies Bun SQL; tests inject a mock).
 - **Returns / side effects:** `InMemoryAuthStore` if unset; otherwise migrate then `PostgresAuthStore`. Throws if the URL is set without a factory.
+- **Used by:** `openBootStores`.
+
+## Function: openBootStores
+
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth and `QueryGiftStore`, or in-memory auth and `giftStore: undefined` when unset.
+- **Inputs:** `databaseUrl` (`undefined` / blank / `postgres://…`); optional `createClient` factory (required when the URL is set).
+- **Returns / side effects:** `{ authStore, giftStore }`. Calls `openAuthStore` (auth migrations when durable). Builds the outbound `gift` SELECT when the factory ran. Throws if the URL is set without a factory.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -82,14 +89,14 @@
 - **Purpose:** Maps a SQL `gift` row (`paid_at`, `amount_sats`, `recipient_wos_user`) onto a `GiftRow`.
 - **Inputs:** `GiftQueryRow` (Date or string timestamp; numeric/string/bigint sats).
 - **Returns / side effects:** `{ paidAt, amountSats, recipientWosUser }`. No I/O.
-- **Used by:** Production `QueryGiftStore` query in `src/index.ts`.
+- **Used by:** Production `QueryGiftStore` query in `openBootStores`.
 
 ## Function: QueryGiftStore
 
 - **Purpose:** GiftStore that delegates `listOutbound` to an injected query (Postgres in production).
 - **Inputs:** `() => Promise<GiftRow[]>`.
 - **Returns / side effects:** The query result. Errors propagate to the route (503).
-- **Used by:** `src/index.ts` when `DATABASE_URL` is set.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: UnconfiguredInvoicePayer
 

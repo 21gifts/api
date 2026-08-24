@@ -51,6 +51,7 @@ api/
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth store + optional QueryGiftStore
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   └── auth/
@@ -82,6 +83,7 @@ api/
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
+│       │   ├── boot-stores.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   └── auth/
