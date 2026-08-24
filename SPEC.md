@@ -531,7 +531,8 @@ only) and ensures a BTC-USD daily close for each gift's UTC calendar day
 (from `btc_usd_daily`, fetching Coinbase only for missing days / stale
 UTC-today / after-midnight finalize of an intraday print). Each gift's sats
 are converted at **that day's** close (not spot). Gap days in
-`spendOverTime` are zero sats/BTC/USD and need no rate.
+`spendOverTime` are zero sats/BTC/USD and need no rate. Gap months in
+`byMonth` are zero sats/BTC/USD and need no rate.
 A query failure or a still-missing rate after ensure is **503**.
 
 **Response** `200`:
@@ -556,19 +557,19 @@ A query failure or a still-missing rate after ensure is **503**.
 }
 ```
 
-| Field            | Type                                                                      | Meaning                                                        |
-| ---------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `totalSats`      | number                                                                    | Sum of gift amounts (sats; fees excluded)                      |
-| `totalBtc`       | string                                                                    | `totalSats` as BTC with eight decimals                         |
-| `totalUsd`       | string                                                                    | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`) |
-| `giftCount`      | number                                                                    | Number of outbound gifts                                       |
-| `recipientCount` | number                                                                    | Distinct recipient handles                                     |
-| `firstPaidAt`    | string or null                                                            | ISO-8601 of the earliest gift                                  |
-| `lastPaidAt`     | string or null                                                            | ISO-8601 of the latest gift                                    |
-| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd }[]` | UTC days from first through last; gaps are zero sats/BTC/USD   |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd }[]`                              | Sorted by sats descending, then name                           |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd }[]`                                  | UTC `YYYY-MM`, chronological                                   |
-| `fx`             | `{ quote, dayBasis, source }`                                             | Always present; Coinbase Exchange daily close, UTC day basis   |
+| Field            | Type                                                                      | Meaning                                                         |
+| ---------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `totalSats`      | number                                                                    | Sum of gift amounts (sats; fees excluded)                       |
+| `totalBtc`       | string                                                                    | `totalSats` as BTC with eight decimals                          |
+| `totalUsd`       | string                                                                    | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)  |
+| `giftCount`      | number                                                                    | Number of outbound gifts                                        |
+| `recipientCount` | number                                                                    | Distinct recipient handles                                      |
+| `firstPaidAt`    | string or null                                                            | ISO-8601 of the earliest gift                                   |
+| `lastPaidAt`     | string or null                                                            | ISO-8601 of the latest gift                                     |
+| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd }[]` | UTC days from first through last; gaps are zero sats/BTC/USD    |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd }[]`                              | Sorted by sats descending, then name                            |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd }[]`                                  | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD |
+| `fx`             | `{ quote, dayBasis, source }`                                             | Always present; Coinbase Exchange daily close, UTC day basis    |
 
 **Response** `503`:
 

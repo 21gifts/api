@@ -159,4 +159,25 @@ describe('buildGiftStats', () => {
       { month: '2026-07', giftCount: 1, sats: 5, btc: '0.00000005', usd: '0.01' },
     ]);
   });
+
+  it('fills UTC gap months with zero spend without requiring a rate', () => {
+    const rates = new Map([
+      ['2026-01-27', '100000'],
+      ['2026-05-01', '100000'],
+    ]);
+    const stats = buildGiftStats(
+      [
+        row('2026-01-27T12:00:00.000Z', 1000, 'alice'),
+        row('2026-05-01T00:00:00.000Z', 2000, 'bob'),
+      ],
+      rates,
+    );
+    expect(stats.byMonth).toEqual([
+      { month: '2026-01', giftCount: 1, sats: 1000, btc: '0.00001000', usd: '1.00' },
+      { month: '2026-02', giftCount: 0, sats: 0, btc: '0.00000000', usd: '0.00' },
+      { month: '2026-03', giftCount: 0, sats: 0, btc: '0.00000000', usd: '0.00' },
+      { month: '2026-04', giftCount: 0, sats: 0, btc: '0.00000000', usd: '0.00' },
+      { month: '2026-05', giftCount: 1, sats: 2000, btc: '0.00002000', usd: '2.00' },
+    ]);
+  });
 });
