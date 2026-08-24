@@ -187,8 +187,8 @@ export function buildGiftStats(
   if (rows.length === 0) {
     return {
       totalSats: 0,
-      totalBtc: '0.00000000',
-      totalUsd: '0.00',
+      totalBtc: satsToBtcString(0),
+      totalUsd: usdCentsToString(0),
       giftCount: 0,
       recipientCount: 0,
       firstPaidAt: null,
