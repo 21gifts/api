@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-24 (passkey-only login).
+**Status**: living document. Last revised 2026-08-24 (passkey-only login; gift stats BTC + historical USD via Coinbase daily close).
 
 ---
 
@@ -17,7 +17,13 @@ passkey credentials, sessions, and pending address verifications survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. Public gift statistics
 (`GET /gifts/stats`) read the `gift` table when `DATABASE_URL` is set;
-without it the process still boots and returns empty stats.
+without it the process still boots and returns empty stats. Amounts are
+also expressed as BTC and historical USD using the UTC-calendar-day
+BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`).
+GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
+is older than one hour, and a past day whose `fetched_at` is still on that
+same UTC calendar day (intraday print not yet the settled close). Settled
+stored days are not re-fetched. A missing rate after ensure/fetch is **503**.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -516,35 +522,52 @@ Environment:
 Public aggregated outbound gift statistics. No auth. The body never includes
 invoices, fees, or wallet identifiers.
 
-When `DATABASE_URL` is unset the in-memory store is empty. When it is set,
-the process queries the `gift` table (`paid_at`, `amount_sats`,
-`recipient_wos_user` only). A query failure is **503**.
+When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
+**200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd`
+`"0.00"`, and `fx` present (no Coinbase call). When it is set, the process
+queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
+only) and ensures a BTC-USD daily close for each gift's UTC calendar day
+(from `btc_usd_daily`, fetching Coinbase only for missing days / stale
+UTC-today / after-midnight finalize of an intraday print). Each gift's sats
+are converted at **that day's** close (not spot). Gap days in
+`spendOverTime` are zero sats/BTC/USD and need no rate.
+A query failure or a still-missing rate after ensure is **503**.
 
 **Response** `200`:
 
 ```json
 {
   "totalSats": 0,
+  "totalBtc": "0.00000000",
+  "totalUsd": "0.00",
   "giftCount": 0,
   "recipientCount": 0,
   "firstPaidAt": null,
   "lastPaidAt": null,
   "spendOverTime": [],
   "byRecipient": [],
-  "byMonth": []
+  "byMonth": [],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close"
+  }
 }
 ```
 
-| Field            | Type                               | Meaning                                              |
-| ---------------- | ---------------------------------- | ---------------------------------------------------- |
-| `totalSats`      | number                             | Sum of gift amounts (sats; fees excluded)            |
-| `giftCount`      | number                             | Number of outbound gifts                             |
-| `recipientCount` | number                             | Distinct recipient handles                           |
-| `firstPaidAt`    | string or null                     | ISO-8601 of the earliest gift                        |
-| `lastPaidAt`     | string or null                     | ISO-8601 of the latest gift                          |
-| `spendOverTime`  | `{ day, sats, cumulativeSats }[]`  | UTC days from first through last; gaps are `sats: 0` |
-| `byRecipient`    | `{ recipient, giftCount, sats }[]` | Sorted by sats descending, then name                 |
-| `byMonth`        | `{ month, giftCount, sats }[]`     | UTC `YYYY-MM`, chronological                         |
+| Field            | Type                                                                      | Meaning                                                        |
+| ---------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `totalSats`      | number                                                                    | Sum of gift amounts (sats; fees excluded)                      |
+| `totalBtc`       | string                                                                    | `totalSats` as BTC with eight decimals                         |
+| `totalUsd`       | string                                                                    | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`) |
+| `giftCount`      | number                                                                    | Number of outbound gifts                                       |
+| `recipientCount` | number                                                                    | Distinct recipient handles                                     |
+| `firstPaidAt`    | string or null                                                            | ISO-8601 of the earliest gift                                  |
+| `lastPaidAt`     | string or null                                                            | ISO-8601 of the latest gift                                    |
+| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd }[]` | UTC days from first through last; gaps are zero sats/BTC/USD   |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd }[]`                              | Sorted by sats descending, then name                           |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd }[]`                                  | UTC `YYYY-MM`, chronological                                   |
+| `fx`             | `{ quote, dayBasis, source }`                                             | Always present; Coinbase Exchange daily close, UTC day basis   |
 
 **Response** `503`:
 

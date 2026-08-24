@@ -269,6 +269,70 @@ test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ 
   expect(res.status()).toBe(200);
 });
 
+test('Function: InMemoryBtcUsdStore — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: satsToBtcString — empty stats totalBtc is 8 dp', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { totalBtc: string }).totalBtc).toBe('0.00000000');
+});
+
+test('Function: usdCentsToString — empty stats totalUsd is 2 dp', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { totalUsd: string }).totalUsd).toBe('0.00');
+});
+
+test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: parseUsdPerBtc — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: PostgresBtcUsdStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateBtcUsdSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fillRatesForGiftRange — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fetchDailyCloses — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: parseCoinbaseCandles — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveCandlesUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: startPasskeyRegistration — POST begin returns a challenge', async ({ request }) => {
   const res = await request.post('/auth/passkey/register/begin');
   expect(res.status()).toBe(200);

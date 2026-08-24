@@ -14,6 +14,7 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { invoiceRoutes } from '@/routes/invoices';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -81,6 +82,11 @@ export interface AppDeps {
   spendApiToken?: string;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
+  /**
+   * Historical BTC-USD rates for gift stats (default: empty
+   * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
+   */
+  btcUsdRates?: BtcUsdRateBook;
 }
 
 /**
@@ -93,7 +99,7 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   WebAuthn RP, spend token, and gift invoice store.
+ *   BTC-USD rates, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -106,6 +112,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
+  const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -148,7 +155,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
-  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore }));
+  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/invoices', invoiceRoutes({ spendApiToken, store: invoiceStore, now, fetchImpl }));
 
   return app;

@@ -122,8 +122,20 @@ test('GET /lightning-address without address is 400', async ({ request }) => {
 test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { giftCount: number };
-  expect(body.giftCount).toBe(0);
+  const body = await res.json();
+  expect(body).toEqual({
+    totalSats: 0,
+    totalBtc: '0.00000000',
+    totalUsd: '0.00',
+    giftCount: 0,
+    recipientCount: 0,
+    firstPaidAt: null,
+    lastPaidAt: null,
+    spendOverTime: [],
+    byRecipient: [],
+    byMonth: [],
+    fx: { quote: 'BTC-USD', dayBasis: 'utc', source: 'coinbase-exchange-daily-close' },
+  });
 });
 
 test('POST /auth/passkey/register/begin issues options', async ({ request }) => {

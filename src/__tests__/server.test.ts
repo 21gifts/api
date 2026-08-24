@@ -84,10 +84,26 @@ describe('createApp', () => {
     expect(res.status).toBe(400);
   });
 
-  it('mounts /gifts/stats', async () => {
+  it('mounts /gifts/stats with BTC, USD, and fx on empty stats', async () => {
     const res = await createApp().request('/gifts/stats');
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ giftCount: 0, totalSats: 0 });
+    expect(await res.json()).toEqual({
+      totalSats: 0,
+      totalBtc: '0.00000000',
+      totalUsd: '0.00',
+      giftCount: 0,
+      recipientCount: 0,
+      firstPaidAt: null,
+      lastPaidAt: null,
+      spendOverTime: [],
+      byRecipient: [],
+      byMonth: [],
+      fx: {
+        quote: 'BTC-USD',
+        dayBasis: 'utc',
+        source: 'coinbase-exchange-daily-close',
+      },
+    });
   });
 
   it('returns 404 for unknown routes', async () => {
