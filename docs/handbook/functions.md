@@ -1,5 +1,12 @@
 # Functions
 
+## Function: buildGiftDay
+
+- **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day, with BTC/USD at that day's close.
+- **Inputs:** `day` (`YYYY-MM-DD`), `readonly GiftRow[]` (other days ignored), `ReadonlyMap` of UTC day → USD-per-BTC. Empty matching set needs no rates.
+- **Returns / side effects:** `GiftDay` (`gifts` sorted by `paidAt` then `recipient`). Throws `Error('fx.rate.missing')` when a listed gift has no rate. No I/O.
+- **Used by:** `giftsRoutes`.
+
 ## Function: buildGiftStats
 
 - **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, months with gap months, recipients) including BTC strings and historical USD from per-gift day rates.
@@ -7,12 +14,33 @@
 - **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `fx`, and BTC/USD on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no rate. Gap days and gap months are zero sats/BTC/USD without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
 
+## Function: giftsRoutes
+
+- **Purpose:** Hono sub-app for `GET /gifts?day=YYYY-MM-DD`. Invalid/missing `day` → 400. Empty day → 200 without Coinbase. Gifts present → `ensureDays([day])`; missing rate → 503.
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`).
+- **Returns / side effects:** Hono app mounted at `/gifts`. Logs `gifts.day.fx_incomplete` or `gifts.day.failed` on 503 paths.
+- **Used by:** `createApp`.
+
 ## Function: giftsStatsRoutes
 
 - **Purpose:** Hono sub-app for `GET /gifts/stats`. Empty gift list → empty stats 200 without Coinbase. Otherwise `ensureDays` for unique gift days; missing rate → 503.
 - **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`).
 - **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.fx_incomplete` or `gifts.stats.failed` on 503 paths.
 - **Used by:** `createApp`.
+
+## Function: isUtcDay
+
+- **Purpose:** Validate a UTC calendar day string `YYYY-MM-DD` (rejects `2026-02-31` and non-shape input).
+- **Inputs:** Candidate `day` string.
+- **Returns / side effects:** `true` only for a real UTC date. No I/O.
+- **Used by:** `giftsRoutes`.
+
+## Function: utcDayFromPaidAt
+
+- **Purpose:** UTC calendar day `YYYY-MM-DD` from a `Date` (`toISOString` slice).
+- **Inputs:** `paidAt` instant.
+- **Returns / side effects:** Day string. No I/O.
+- **Used by:** `buildGiftDay`, `giftsRoutes`.
 
 ## Function: satsToBtcString
 
@@ -219,7 +247,7 @@
 
 ## Function: SqlGiftRecorder
 
-- **Purpose:** Persist a proven outbound gift into Postgres `gift` for `GET /gifts/stats`.
+- **Purpose:** Persist a proven outbound gift into Postgres `gift` for `GET /gifts` and `GET /gifts/stats`.
 - **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `source_wallet`.
 - **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to the route, which logs and still returns 200.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -289,7 +317,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, gifts/stats, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; SQL boot injects `SqlGiftRecorder`.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.

@@ -101,6 +101,38 @@ export interface GiftStats {
   fx: GiftStatsFx;
 }
 
+/** One outbound gift in a per-day public list. */
+export interface GiftDayGift {
+  /** ISO-8601 paid instant. */
+  paidAt: string;
+  /** Amount in whole satoshis (fees excluded). */
+  amountSats: number;
+  /** BTC string for `amountSats`. */
+  amountBtc: string;
+  /** USD string at this gift's UTC-day close. */
+  amountUsd: string;
+  /** Wallet of Satoshi username. */
+  recipient: string;
+}
+
+/** Public list of outbound gifts for one UTC calendar day. */
+export interface GiftDay {
+  /** UTC calendar day `YYYY-MM-DD`. */
+  day: string;
+  /** Number of gifts that UTC day. */
+  giftCount: number;
+  /** Sum of `amountSats` that UTC day. */
+  totalSats: number;
+  /** BTC string for `totalSats`. */
+  totalBtc: string;
+  /** USD string for that day's gifts. */
+  totalUsd: string;
+  /** Gifts that UTC day, `paidAt` then `recipient` ascending. */
+  gifts: GiftDayGift[];
+  /** Quote metadata (always present, including an empty day). */
+  fx: GiftStatsFx;
+}
+
 /** SQL shape selected from the `gift` table for stats (no invoice columns). */
 export interface GiftQueryRow {
   /** `paid_at` column. */
@@ -127,6 +159,37 @@ const EMPTY_FX: GiftStatsFx = {
  */
 function utcDayString(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+/**
+ * UTC calendar day `YYYY-MM-DD` from an instant.
+ *
+ * @param paidAt - Instant the gift was paid.
+ * @returns The UTC day string.
+ */
+export function utcDayFromPaidAt(paidAt: Date): string {
+  return utcDayString(paidAt);
+}
+
+/**
+ * Whether `day` is a real UTC calendar date as `YYYY-MM-DD`.
+ *
+ * @param day - Candidate day string.
+ * @returns `true` only for a valid calendar day.
+ */
+export function isUtcDay(day: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return false;
+  }
+  const year = Number(day.slice(0, 4));
+  const month = Number(day.slice(5, 7));
+  const date = Number(day.slice(8, 10));
+  const instant = new Date(Date.UTC(year, month - 1, date));
+  return (
+    instant.getUTCFullYear() === year &&
+    instant.getUTCMonth() === month - 1 &&
+    instant.getUTCDate() === date
+  );
 }
 
 /**
@@ -316,6 +379,74 @@ export function buildGiftStats(
     spendOverTime,
     byRecipient: recipients,
     byMonth: months,
+    fx: EMPTY_FX,
+  };
+}
+
+/**
+ * List outbound gifts that fall on one UTC calendar day.
+ *
+ * Empty (no rows that day) yields zeros and `gifts: []` with no rates
+ * required. Non-empty looks up `day`'s rate; a missing rate throws
+ * `Error('fx.rate.missing')`.
+ *
+ * @param day - UTC `YYYY-MM-DD` (caller already validated).
+ * @param rows - Outbound gifts (any days; other days are ignored).
+ * @param rates - UTC day → USD-per-BTC string.
+ * @returns {@link GiftDay} for `day`.
+ * @throws `Error('fx.rate.missing')` when a listed gift has no rate.
+ */
+export function buildGiftDay(
+  day: string,
+  rows: readonly GiftRow[],
+  rates: ReadonlyMap<string, string>,
+): GiftDay {
+  const matching = rows
+    .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
+    .sort(
+      (a, b) =>
+        a.paidAt.getTime() - b.paidAt.getTime() ||
+        a.recipientWosUser.localeCompare(b.recipientWosUser),
+    );
+  if (matching.length === 0) {
+    return {
+      day,
+      giftCount: 0,
+      totalSats: 0,
+      totalBtc: satsToBtcString(0),
+      totalUsd: usdCentsToString(0),
+      gifts: [],
+      fx: EMPTY_FX,
+    };
+  }
+
+  let totalSats = 0;
+  let totalUsdCents = 0;
+  const gifts: GiftDayGift[] = [];
+  for (const row of matching) {
+    const rate = rates.get(day);
+    if (rate === undefined) {
+      throw new Error('fx.rate.missing');
+    }
+    const usdCents = satsToUsdCents(row.amountSats, rate);
+    totalSats += row.amountSats;
+    totalUsdCents += usdCents;
+    gifts.push({
+      paidAt: row.paidAt.toISOString(),
+      amountSats: row.amountSats,
+      amountBtc: satsToBtcString(row.amountSats),
+      amountUsd: usdCentsToString(usdCents),
+      recipient: row.recipientWosUser,
+    });
+  }
+
+  return {
+    day,
+    giftCount: matching.length,
+    totalSats,
+    totalBtc: satsToBtcString(totalSats),
+    totalUsd: usdCentsToString(totalUsdCents),
+    gifts,
     fx: EMPTY_FX,
   };
 }
