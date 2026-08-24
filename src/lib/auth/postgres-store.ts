@@ -100,28 +100,35 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async updateAccount(account: Account): Promise<void> {
-    await this.#sql.execute(
-      `UPDATE account
-       SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
-           created_at = to_timestamp($7::double precision / 1000.0)
-       WHERE id = $1
-         AND (
-           $2::text IS NULL
-           OR NOT EXISTS (
-             SELECT 1 FROM account other
-             WHERE other.linking_key = $2 AND other.id <> $1
-           )
-         )`,
-      [
-        account.id,
-        account.linkingKey,
-        account.role,
-        account.name,
-        account.lightningAddress,
-        account.lightningAddressVerified,
-        account.createdAt,
-      ],
-    );
+    try {
+      await this.#sql.execute(
+        `UPDATE account
+         SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
+             created_at = to_timestamp($7::double precision / 1000.0)
+         WHERE id = $1
+           AND (
+             $2::text IS NULL
+             OR NOT EXISTS (
+               SELECT 1 FROM account other
+               WHERE other.linking_key = $2 AND other.id <> $1
+             )
+           )`,
+        [
+          account.id,
+          account.linkingKey,
+          account.role,
+          account.name,
+          account.lightningAddress,
+          account.lightningAddressVerified,
+          account.createdAt,
+        ],
+      );
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async getAccount(id: string): Promise<Account | undefined> {
@@ -261,13 +268,19 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapPasskeyCredential(row);
   }
 
-  async updatePasskeyCredential(credential: PasskeyCredential): Promise<void> {
-    await this.#sql.execute(
+  async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const rows = await this.#sql.query<{ credential_id: string }>(
       `UPDATE passkey_credential
-       SET sign_count = GREATEST(sign_count, $2)
-       WHERE credential_id = $1`,
+       SET sign_count = $2
+       WHERE credential_id = $1
+         AND (
+           ($2 = 0 AND sign_count = 0)
+           OR $2 > sign_count
+         )
+       RETURNING credential_id`,
       [credential.credentialId, credential.signCount],
     );
+    return rows[0] !== undefined;
   }
 
   async #evictExpiredSessions(now: number): Promise<void> {
@@ -285,6 +298,15 @@ export class PostgresAuthStore implements AuthStore {
       [cutoff],
     );
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === '23505'
+  );
 }
 
 function epochMs(value: Date | string): number {
