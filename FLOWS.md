@@ -103,12 +103,13 @@ gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.
 
-HTTP cited: `/lightning-address`, `/gifts/stats` (see `SPEC.md`).
+HTTP cited: `/lightning-address`, `/gifts/stats`, `/gifts?day=` (see `SPEC.md`).
 
 Public gift totals are **Shipped** as `GET /gifts/stats` (sats, BTC, and
 historical USD at each gift's UTC-day Coinbase BTC-USD close; UTC
-spend-over-time, per person, per month). No invoices. The app statistics
-page consumes that route.
+spend-over-time, per person, per month). Individual gifts for one UTC day
+are **Shipped** as `GET /gifts?day=YYYY-MM-DD`. No invoices. The app
+statistics page and `/stats/{day}` consume those routes.
 
 Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
@@ -121,7 +122,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats`
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`
 
 Recurring **daily** gifts as fixed **USD** amounts and the donor UI are still
 a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or scheduler paths.

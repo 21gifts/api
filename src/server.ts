@@ -11,6 +11,7 @@ import { meRoutes } from '@/routes/me';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
 import { giftsStatsRoutes } from '@/routes/stats';
+import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
@@ -163,6 +164,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
+  app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route(
     '/invoices',

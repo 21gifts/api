@@ -228,6 +228,27 @@ test('Function: meRoutes unlink — DELETE /me/lightning-address without bearer 
   expect(res.status()).toBe(401);
 });
 
+test('Function: giftsRoutes — GET /gifts without a day is 400', async ({ request }) => {
+  const res = await request.get('/gifts');
+  expect(res.status()).toBe(400);
+});
+
+test('Function: isUtcDay — GET /gifts with an impossible day is 400', async ({ request }) => {
+  const res = await request.get('/gifts?day=2026-02-31');
+  expect(res.status()).toBe(400);
+});
+
+test('Function: utcDayFromPaidAt — GET /gifts for an empty day is 200', async ({ request }) => {
+  const res = await request.get('/gifts?day=2026-06-01');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: buildGiftDay — GET /gifts for an empty day is 200', async ({ request }) => {
+  const res = await request.get('/gifts?day=2026-06-01');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({
   request,
 }) => {
