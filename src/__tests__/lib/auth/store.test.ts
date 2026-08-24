@@ -294,7 +294,6 @@ describe('InMemoryAuthStore', () => {
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.id).toBe('acc');
-    expect((await store.findAccountByLinkingKey(KEY))?.id).toBe('acc');
   });
 
   it('stores and retrieves a passkey challenge and credential', async () => {
@@ -417,7 +416,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddressVerified: false,
       createdAt: 1,
     });
-    expect((await store.findAccountByLinkingKey(KEY))?.id).toBe('ln');
+    expect((await store.getAccount('ln'))?.linkingKey).toBe(KEY);
     expect((await store.getAccount('pk'))?.linkingKey).toBeNull();
   });
 
@@ -435,7 +434,16 @@ describe('InMemoryAuthStore', () => {
     await store.deleteAccount('acc');
     await store.deleteAccount('missing');
     expect(await store.getAccount('acc')).toBeUndefined();
-    expect(await store.findAccountByLinkingKey(KEY)).toBeUndefined();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect((await store.getAccount('other'))?.id).toBe('other');
   });
 
   it('evicts an expired passkey challenge on a later create', async () => {
