@@ -28,7 +28,6 @@ async function completeCallback(
 
 async function login(request: APIRequestContext): Promise<{
   token: string;
-  account: SessionAccount;
   wallet: TestWallet;
   pollToken: string;
 }> {
@@ -46,7 +45,7 @@ async function login(request: APIRequestContext): Promise<{
   };
   expect(sess.status).toBe('authenticated');
   expect(sess.account.linkingKey).toBe(wallet.key);
-  return { token: sess.token, account: sess.account, wallet, pollToken: start.pollToken };
+  return { token: sess.token, wallet, pollToken: start.pollToken };
 }
 
 function bearer(token: string): { authorization: string } {
@@ -221,6 +220,9 @@ test('Function: normalizeDisplayName — POST /me/name trims and rejects empty',
   });
   expect(ok.status()).toBe(200);
   expect(((await ok.json()) as { name: string }).name).toBe('Ada');
+  const me = await request.get('/me', { headers: bearer(token) });
+  expect(me.status()).toBe(200);
+  expect(((await me.json()) as { name: string }).name).toBe('Ada');
 });
 
 test('Function: normalizeLightningAddress — POST rejects garbage and stores a trimmed valid address', async ({

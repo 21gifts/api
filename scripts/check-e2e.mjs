@@ -49,7 +49,7 @@ for (const spec of [...endpoints].sort()) {
   const [method, pathName] = spec.split(' ');
   const verb = method.toLowerCase();
   const escaped = pathName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`\\.${verb}\\((['"\`])${escaped}\\1`);
+  const re = new RegExp(`request\\.${verb}\\((['"\`])${escaped}\\1`);
   if (!re.test(text)) {
     missing.push(`Endpoint ${spec} has no e2e request.${verb}('${pathName}')`);
   }
