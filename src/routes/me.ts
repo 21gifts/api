@@ -75,7 +75,7 @@ async function authedAccount(
  */
 async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | null> {
   const current = await deps.store.getAccount(id);
-  /* v8 ignore next 3 -- the account persists for the in-memory store's lifetime */
+  /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
   if (current === undefined) {
     return null;
   }
