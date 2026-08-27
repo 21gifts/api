@@ -12,6 +12,11 @@ import { resolveCandlesUrl, type FetchFn } from '@/lib/btc-usd-candles';
 import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
+import {
+  migrateGiftDayClaimSchema,
+  SqlDayClaimStore,
+  type DayClaimStore,
+} from '@/lib/gift-day-claim';
 import { logEvent } from '@/lib/log';
 
 /** Auth, gift, and FX persistence produced from `DATABASE_URL`. */
@@ -28,6 +33,8 @@ export interface BootStores {
    * client was opened so `createApp` keeps the no-op recorder.
    */
   giftRecorder: GiftRecorder | undefined;
+  /** One gift per recipient per UTC day, or `undefined` without SQL. */
+  dayClaim: DayClaimStore | undefined;
   /** BTC-USD rate book (memory when no SQL; Postgres otherwise). */
   btcUsdRates: BtcUsdRateBook;
 }
@@ -80,11 +87,13 @@ export async function openBootStores(
       authStore,
       giftStore: undefined,
       giftRecorder: undefined,
+      dayClaim: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
     };
   }
 
   await migrateBtcUsdSchema(sqlClient);
+  await migrateGiftDayClaimSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
@@ -112,5 +121,6 @@ export async function openBootStores(
     return rows.map((row) => mapGiftQueryRow(row));
   });
   const giftRecorder = new SqlGiftRecorder(giftSql);
-  return { authStore, giftStore, giftRecorder, btcUsdRates };
+  const dayClaim = new SqlDayClaimStore(giftSql);
+  return { authStore, giftStore, giftRecorder, dayClaim, btcUsdRates };
 }

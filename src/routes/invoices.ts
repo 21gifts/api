@@ -13,6 +13,7 @@ import {
   recipientHandleFromAddress,
   type GiftRecorder,
 } from '@/lib/gift-recorder';
+import { AllowAllDayClaimStore, type DayClaimStore } from '@/lib/gift-day-claim';
 import { logEvent } from '@/lib/log';
 
 /**
@@ -35,6 +36,11 @@ export interface InvoiceRouteDeps {
    * Insert failures are logged; proof still returns 200.
    */
   giftRecorder?: GiftRecorder;
+  /**
+   * At most one outbound gift per recipient per UTC day. Default allows all
+   * (tests / no database). Production boot injects {@link SqlDayClaimStore}.
+   */
+  dayClaim?: DayClaimStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -78,6 +84,7 @@ function authGate(
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+  const dayClaim = deps.dayClaim ?? new AllowAllDayClaimStore();
 
   async function persistProvenGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
     try {
@@ -120,6 +127,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const address = normalizeLightningAddress(parsed.data.address);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+      const utcDay = new Date(deps.now()).toISOString().slice(0, 10);
+      const claimed = await dayClaim.tryClaim(recipientHandleFromAddress(address), utcDay);
+      if (!claimed) {
+        logEvent('invoice.already_paid_today', { address, utcDay });
+        return c.json({ error: 'Already paid today' }, 409);
       }
       const amountMsat = parsed.data.amountMsat;
       if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { createApp } from '@/server';
+import { InMemoryDayClaimStore } from '@/lib/gift-day-claim';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 
@@ -183,6 +184,40 @@ describe('POST /invoices', () => {
     expect(body.amountMsat).toBe(1000);
     expect(body.id).toMatch(/^[0-9a-f]{32}$/);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+  });
+
+  it('returns 409 when the recipient was already paid that UTC day', async () => {
+    const dayClaim = new InMemoryDayClaimStore(['alice\x002026-08-27']);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      fetchImpl: happyFetch(),
+      dayClaim,
+      now: () => Date.parse('2026-08-27T12:00:00.000Z'),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({ error: 'Already paid today' });
+  });
+
+  it('returns 409 on a second issue for the same recipient the same UTC day', async () => {
+    const app = createApp({
+      spendApiToken: TOKEN,
+      fetchImpl: happyFetch(),
+      dayClaim: new InMemoryDayClaimStore(),
+      now: () => Date.parse('2026-08-27T12:00:00.000Z'),
+    });
+    const first = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(second.status).toBe(409);
   });
 });
 

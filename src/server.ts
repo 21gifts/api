@@ -24,6 +24,7 @@ import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
 import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
+import type { DayClaimStore } from '@/lib/gift-day-claim';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
@@ -90,6 +91,10 @@ export interface AppDeps {
    */
   giftRecorder?: GiftRecorder;
   /**
+   * One outbound gift per recipient per UTC day (default: allow all).
+   */
+  dayClaim?: DayClaimStore;
+  /**
    * Historical BTC-USD rates for gift stats (default: empty
    * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
    */
@@ -127,6 +132,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
+  const dayClaim = deps.dayClaim;
 
   const app = new Hono();
 
@@ -174,6 +180,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
+      ...(dayClaim === undefined ? {} : { dayClaim }),
     }),
   );
 
