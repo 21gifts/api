@@ -97,11 +97,15 @@ describe('openBootStores', () => {
     };
     const factory = vi.fn(() => client);
 
-    const { authStore, giftStore, giftRecorder, dayClaim, btcUsdRates } = await openBootStores(url, factory, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-    });
+    const { authStore, giftStore, giftRecorder, dayClaim, btcUsdRates } = await openBootStores(
+      url,
+      factory,
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      },
+    );
 
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory).toHaveBeenCalledWith(url.trim());

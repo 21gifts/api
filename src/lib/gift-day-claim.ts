@@ -16,6 +16,13 @@ export interface DayClaimStore {
    * @returns `true` if this caller owns the slot, `false` if already paid or claimed.
    */
   tryClaim(handle: string, utcDay: string): Promise<boolean>;
+  /**
+   * Drop a claim that did not become an issued invoice.
+   *
+   * @param handle - `recipient_wos_user`.
+   * @param utcDay - `YYYY-MM-DD`.
+   */
+  releaseClaim(handle: string, utcDay: string): Promise<void>;
 }
 
 /**
@@ -23,10 +30,19 @@ export interface DayClaimStore {
  */
 export class AllowAllDayClaimStore implements DayClaimStore {
   /**
+   * Always grant the slot (no database).
+   *
    * @returns Always `true`.
    */
   tryClaim(_handle: string, _utcDay: string): Promise<boolean> {
     return Promise.resolve(true);
+  }
+
+  /**
+   * No-op — there is nothing to drop.
+   */
+  releaseClaim(_handle: string, _utcDay: string): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -46,6 +62,8 @@ export class InMemoryDayClaimStore implements DayClaimStore {
   }
 
   /**
+   * Claim the slot unless it is already taken.
+   *
    * @returns `false` when the pair was already claimed.
    */
   tryClaim(handle: string, utcDay: string): Promise<boolean> {
@@ -55,6 +73,14 @@ export class InMemoryDayClaimStore implements DayClaimStore {
     }
     this.claimed.add(key);
     return Promise.resolve(true);
+  }
+
+  /**
+   * Forget a claim so a later issue can retry.
+   */
+  releaseClaim(handle: string, utcDay: string): Promise<void> {
+    this.claimed.delete(`${handle}\0${utcDay}`);
+    return Promise.resolve();
   }
 }
 
@@ -85,9 +111,21 @@ export class SqlDayClaimStore implements DayClaimStore {
   constructor(private readonly sql: SqlClient) {}
 
   /**
+   * Insert the claim first, then refuse if a gift already exists that UTC day.
+   *
    * @returns `false` when a gift or claim already exists for that UTC day.
    */
   async tryClaim(handle: string, utcDay: string): Promise<boolean> {
+    const inserted = await this.sql.query<{ utc_day: string }>(
+      `INSERT INTO gift_day_claim (recipient_wos_user, utc_day)
+       VALUES ($1, $2::date)
+       ON CONFLICT (recipient_wos_user, utc_day) DO NOTHING
+       RETURNING utc_day`,
+      [handle, utcDay],
+    );
+    if (inserted.length !== 1) {
+      return false;
+    }
     const existing = await this.sql.query<{ one: number }>(
       `SELECT 1 AS one
          FROM gift
@@ -98,15 +136,20 @@ export class SqlDayClaimStore implements DayClaimStore {
       [handle, utcDay],
     );
     if (existing.length > 0) {
+      await this.releaseClaim(handle, utcDay);
       return false;
     }
-    const inserted = await this.sql.query<{ utc_day: string }>(
-      `INSERT INTO gift_day_claim (recipient_wos_user, utc_day)
-       VALUES ($1, $2::date)
-       ON CONFLICT (recipient_wos_user, utc_day) DO NOTHING
-       RETURNING utc_day`,
+    return true;
+  }
+
+  /**
+   * Delete the claim row so a later issue can retry.
+   */
+  async releaseClaim(handle: string, utcDay: string): Promise<void> {
+    await this.sql.execute(
+      `DELETE FROM gift_day_claim
+        WHERE recipient_wos_user = $1 AND utc_day = $2::date`,
       [handle, utcDay],
     );
-    return inserted.length === 1;
   }
 }

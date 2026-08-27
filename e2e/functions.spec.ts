@@ -537,3 +537,35 @@ test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured
   });
   expect(res.status()).toBe(503);
 });
+
+test('Function: AllowAllDayClaimStore — POST /invoices unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: InMemoryDayClaimStore — POST /invoices unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: migrateGiftDayClaimSchema — GET /healthz is 200 when DATABASE_URL is unset', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: SqlDayClaimStore — GET /healthz is 200 when DATABASE_URL is unset', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});

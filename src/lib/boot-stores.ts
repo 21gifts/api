@@ -53,13 +53,14 @@ export interface BootFxOptions {
  * Open auth, optional gift persistence, and the BTC-USD rate book from
  * `DATABASE_URL`.
  *
- * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
- * `giftRecorder: undefined`, and an empty {@link InMemoryBtcUsdStore}. A set
+ * Blank or unset URL yields in-memory auth, `giftStore`/`giftRecorder`/
+ * `dayClaim` undefined, and an empty {@link InMemoryBtcUsdStore}. A set
  * URL asks `createClient` for one `SqlClient`, migrates auth (via
- * `openAuthStore`) then the FX table, builds a {@link QueryGiftStore} and
- * {@link SqlGiftRecorder}, constructs {@link PostgresBtcUsdStore}, and
+ * `openAuthStore`) then the FX table and `gift_day_claim`, builds a
+ * {@link QueryGiftStore}, {@link SqlGiftRecorder}, and
+ * {@link SqlDayClaimStore}, constructs {@link PostgresBtcUsdStore}, and
  * best-effort fills rates for the outbound gift day range (failures log
- * `gifts.fx.boot_fill.failed` and do not throw).
+ * `gifts.fx.boot_fill.failed` and does not throw).
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.

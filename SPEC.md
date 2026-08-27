@@ -695,6 +695,13 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, or `comment` longer than
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
 
+Recipient already claimed or already recorded as an outbound gift that UTC
+day → **409**:
+
+```json
+{ "error": "Already paid today" }
+```
+
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
 
 ```json

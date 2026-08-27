@@ -47,19 +47,24 @@ describe('migrateGiftDayClaimSchema', () => {
 
 describe('SqlDayClaimStore', () => {
   it('returns false when a gift already exists that UTC day', async () => {
-    const sql: SqlClient = {
-      query: async <T>(): Promise<T[]> => [{ one: 1 }] as T[],
-      execute: async () => undefined,
-    };
+    const execute = vi.fn(async () => undefined);
+    const query = vi.fn(async <T>(text: string): Promise<T[]> => {
+      if (text.includes('INSERT')) {
+        return [{ utc_day: '2026-08-27' }] as T[];
+      }
+      return [{ one: 1 }] as T[];
+    });
+    const sql: SqlClient = { query: query as SqlClient['query'], execute };
     await expect(new SqlDayClaimStore(sql).tryClaim('alice', '2026-08-27')).resolves.toBe(false);
+    expect(execute).toHaveBeenCalled();
   });
 
   it('inserts a claim when no gift exists', async () => {
     const query = vi.fn(async <T>(text: string): Promise<T[]> => {
-      if (text.includes('FROM gift')) {
-        return [] as T[];
+      if (text.includes('INSERT')) {
+        return [{ utc_day: '2026-08-27' }] as T[];
       }
-      return [{ utc_day: '2026-08-27' }] as T[];
+      return [] as T[];
     });
     const sql: SqlClient = {
       query: query as SqlClient['query'],
@@ -71,7 +76,7 @@ describe('SqlDayClaimStore', () => {
 
   it('returns false when the claim PK already exists', async () => {
     const query = vi.fn(async <T>(text: string): Promise<T[]> => {
-      if (text.includes('FROM gift')) {
+      if (text.includes('INSERT')) {
         return [] as T[];
       }
       return [] as T[];
@@ -81,5 +86,21 @@ describe('SqlDayClaimStore', () => {
       execute: async () => undefined,
     };
     await expect(new SqlDayClaimStore(sql).tryClaim('alice', '2026-08-27')).resolves.toBe(false);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('releaseClaim deletes the row', async () => {
+    const execute = vi.fn(async () => undefined);
+    const sql: SqlClient = {
+      query: async () => {
+        throw new Error('unused');
+      },
+      execute,
+    };
+    await new SqlDayClaimStore(sql).releaseClaim('alice', '2026-08-27');
+    expect(execute).toHaveBeenCalledWith(expect.stringMatching(/DELETE FROM gift_day_claim/), [
+      'alice',
+      '2026-08-27',
+    ]);
   });
 });

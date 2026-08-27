@@ -149,9 +149,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore`/`giftRecorder` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `SqlDayClaimStore`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore`/`giftRecorder`/`dayClaim` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder`; memory path returns `giftRecorder: undefined`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, dayClaim, btcUsdRates }`. Migrates `btc_usd_daily` and `gift_day_claim` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder` and `SqlDayClaimStore`; memory path returns `giftRecorder`/`dayClaim` undefined.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -234,7 +234,7 @@
 ## Function: invoiceRoutes
 
 - **Purpose:** Hono sub-app for spend-worker invoice issue and preimage proof.
-- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
+- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`), optional `dayClaim` (default `AllowAllDayClaimStore`).
 - **Returns / side effects:** Hono app mounted at `/invoices`. A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
 - **Used by:** `createApp`.
 
@@ -251,6 +251,34 @@
 - **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `source_wallet`.
 - **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to the route, which logs and still returns 200.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: AllowAllDayClaimStore
+
+- **Purpose:** `DayClaimStore` that always grants a UTC-day slot — used when `DATABASE_URL` is unset.
+- **Inputs:** `tryClaim(handle, utcDay)` and `releaseClaim(handle, utcDay)`.
+- **Returns / side effects:** `tryClaim` always `true`. `releaseClaim` is a no-op. No SQL.
+- **Used by:** `invoiceRoutes` default when `dayClaim` is omitted.
+
+## Function: InMemoryDayClaimStore
+
+- **Purpose:** Process-local one-slot-per-handle-per-UTC-day map for tests.
+- **Inputs:** Optional seed of already-claimed `handle\\0utcDay` keys. `tryClaim` / `releaseClaim`.
+- **Returns / side effects:** First `tryClaim` true, second false. `releaseClaim` deletes the key so a later issue can retry.
+- **Used by:** Invoice route tests.
+
+## Function: migrateGiftDayClaimSchema
+
+- **Purpose:** Create `gift_day_claim` if missing.
+- **Inputs:** Shared boot `SqlClient`.
+- **Returns / side effects:** Executes `GIFT_DAY_CLAIM_SCHEMA_SQL`. Throws if SQL fails.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: SqlDayClaimStore
+
+- **Purpose:** Durable one outbound gift per recipient per UTC day: claim before fetching a BOLT11.
+- **Inputs:** Shared boot `SqlClient`. `tryClaim` inserts the PK then refuses if a `gift` row already exists that UTC day. `releaseClaim` deletes the row.
+- **Returns / side effects:** `tryClaim` false on conflict or existing gift. Failed LNURL issue calls `releaseClaim` so a retry can proceed.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set; `invoiceRoutes`.
 
 ## Function: recipientHandleFromAddress
 
@@ -318,7 +346,7 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; SQL boot injects `SqlGiftRecorder`.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `dayClaim`, `btcUsdRates`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `dayClaim` → `AllowAllDayClaimStore`; SQL boot injects `SqlGiftRecorder` and `SqlDayClaimStore`.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 

@@ -219,6 +219,52 @@ describe('POST /invoices', () => {
     );
     expect(second.status).toBe(409);
   });
+
+  it('does not consume the day claim on a 400 amount', async () => {
+    const app = createApp({
+      spendApiToken: TOKEN,
+      fetchImpl: happyFetch(),
+      dayClaim: new InMemoryDayClaimStore(),
+      now: () => Date.parse('2026-08-27T12:00:00.000Z'),
+    });
+    const bad = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1 }) }),
+    );
+    expect(bad.status).toBe(400);
+    const ok = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(ok.status).toBe(200);
+  });
+
+  it('releases the claim when LNURL-pay fails so a retry can issue', async () => {
+    let calls = 0;
+    const fetchImpl: FetchFn = async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        return jsonResponse({ error: 'nope' }, 502);
+      }
+      return happyFetch()(input, undefined);
+    };
+    const app = createApp({
+      spendApiToken: TOKEN,
+      fetchImpl,
+      dayClaim: new InMemoryDayClaimStore(),
+      now: () => Date.parse('2026-08-27T12:00:00.000Z'),
+    });
+    const first = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(first.status).toBe(502);
+    const second = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(second.status).toBe(200);
+  });
 });
 
 describe('POST /invoices/proof', () => {

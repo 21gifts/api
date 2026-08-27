@@ -94,7 +94,7 @@
 ## Endpoint: POST /invoices
 
 - **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
-- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 502 provider did not issue a matching invoice.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 409 Already paid today (recipient already claimed or paid that UTC day); 502 provider did not issue a matching invoice.
 - **Used by:** the external spend worker before paying via lightning.space.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
