@@ -233,11 +233,12 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
-`resolveCandlesUrl`, `SqlGiftRecorder`, `migrateGiftDayClaimSchema`,
-`SqlDayClaimStore`, and `AllowAllDayClaimStore`, which need `DATABASE_URL`;
+`resolveCandlesUrl`, `SqlGiftRecorder`, `migrateGiftDayClaimSchema`, and
+`SqlDayClaimStore`, which need `DATABASE_URL`;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
-`normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
-`recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
+`normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`,
+`recipientHandleFromAddress`, `AllowAllDayClaimStore`, and
+`InMemoryDayClaimStore`, which need `SPEND_API_TOKEN` and a reachable
 LNURL-pay;
 `satsToUsdCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list),
 that test still exists and asserts the default-boot outcome that proves it is
