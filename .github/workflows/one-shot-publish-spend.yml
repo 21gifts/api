@@ -1,0 +1,72 @@
+# Throwaway: publish TaprootFreakAI/21gifts-spend to Docker Hub as
+# 21gifts/spend:{beta,latest} and dispatch image-published. Delete after it runs.
+name: One-shot publish spend image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - '.github/workflows/one-shot-publish-spend.yml'
+
+concurrency:
+  group: one-shot-publish-spend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and push 21gifts/spend
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout spend source
+        uses: actions/checkout@v4
+        with:
+          repository: TaprootFreakAI/21gifts-spend
+          ref: develop
+
+      - name: Record spend SHA
+        id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: |
+            21gifts/spend:beta
+            21gifts/spend:latest
+          cache-from: type=registry,ref=21gifts/spend:buildcache
+          cache-to: type=registry,ref=21gifts/spend:buildcache,mode=max
+
+      - name: Notify infrastructure to pull
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          SPEND_SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          set -euo pipefail
+          repo="${{ secrets.DISPATCH_REPO }}"
+          if [ -z "${GH_TOKEN}" ] || [ -z "${repo}" ]; then
+            echo "::warning::DISPATCH_TOKEN or DISPATCH_REPO unset — infra probe-published-images.yml will pick up the tag"
+            exit 0
+          fi
+          for tag in beta latest; do
+            gh api "repos/${repo}/dispatches" \
+              -f event_type=image-published \
+              -f "client_payload[image]=21gifts/spend" \
+              -f "client_payload[tag]=${tag}" \
+              -f "client_payload[sha]=${SPEND_SHA}"
+          done
