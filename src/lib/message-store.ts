@@ -80,7 +80,7 @@ export class InMemoryMessageStore implements MessageStore {
       if (byTime !== 0) {
         return byTime;
       }
-      return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
+      return b.id.localeCompare(a.id);
     });
     return Promise.resolve(
       sorted

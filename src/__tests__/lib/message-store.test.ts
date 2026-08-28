@@ -113,6 +113,16 @@ describe('InMemoryMessageStore', () => {
     expect(listed.map((r) => r.id)).toEqual(['z', 'm']);
   });
 
+  it('keeps equal id and createdAt as a sort tie', async () => {
+    const dup: MessageRow = {
+      ...TIE_HIGH,
+      createdAt: new Date(TIE_HIGH.createdAt.getTime()),
+    };
+    const store = new InMemoryMessageStore([TIE_HIGH, dup]);
+    const listed = await store.listLatest(10);
+    expect(listed.map((r) => r.id)).toEqual(['z', 'z']);
+  });
+
   it('caps the list at limit', async () => {
     const store = new InMemoryMessageStore([EARLY, LATE, TIE_HIGH]);
     expect((await store.listLatest(1)).map((r) => r.id)).toEqual(['z']);
