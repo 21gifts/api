@@ -111,6 +111,12 @@ describe('createApp', () => {
     const res = await app.request('/does-not-exist');
     expect(res.status).toBe(404);
   });
+
+  it('returns 401 for unauthenticated GET /messages', async () => {
+    const app = createApp();
+    const res = await app.request('/messages');
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('CORS', () => {

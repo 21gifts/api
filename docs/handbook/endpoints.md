@@ -119,6 +119,20 @@
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /messages
+
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`), capped at 200. Empty list is 200 `{ messages: [] }`. No `accountId` in JSON.
+- **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
+- **Used by:** App public comment thread.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /messages
+
+- **Purpose:** Bearer required. Body `{ text }`. Account must have a non-blank display name. Stores name snapshot, text (1–500 chars after trim; newlines allowed; other C0/DEL rejected), timestamp. 200 is the public message object (not wrapped).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Messages are unavailable (`messages.create.failed`).
+- **Used by:** App forum composer.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /me/lightning-address
 
 - **Purpose:** Body `{ address }`. Stores unverified LUD-16 on the account.

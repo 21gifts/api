@@ -98,6 +98,13 @@
 - **Returns / side effects:** Void; idempotent DDL execute.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migrateMessageSchema
+
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` plus the newest-first index).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
+- **Used by:** `openBootStores` when SQL opens.
+
 ## Function: InMemoryBtcUsdStore
 
 - **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
@@ -111,6 +118,13 @@
 - **Inputs:** Constructor `{ sql, fetchImpl, candlesUrl, source? }`. `ensureDays(days, nowMs)`.
 - **Returns / side effects:** Day → rate map; still-missing days omitted (no throw). Writes `btc_usd_daily`.
 - **Used by:** `openBootStores` when SQL opens.
+
+## Function: PostgresMessageStore
+
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` is newest-first with a limit; `create` inserts the row.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Errors propagate to the route (503).
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
 
@@ -149,9 +163,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, and `PostgresBtcUsdStore`; or in-memory auth, `giftStore`/`giftRecorder` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, and `PostgresMessageStore`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates }`. Migrates `btc_usd_daily` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder`; memory path returns `giftRecorder: undefined`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore }`. Migrates `btc_usd_daily` and `message` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder` and `PostgresMessageStore`; memory path returns `giftRecorder`/`messageStore` undefined.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -181,6 +195,13 @@
 - **Inputs:** Optional `GiftRow[]`. `listOutbound()` copies and sorts by `paidAt`.
 - **Returns / side effects:** Promise of rows. Does not mutate the seed array.
 - **Used by:** `createApp` default `giftStore`.
+
+## Function: InMemoryMessageStore
+
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database.
+- **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
+- **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
+- **Used by:** `createApp` default `messageStore`.
 
 ## Function: InMemoryLnAddressCache
 
@@ -299,7 +320,7 @@
 - **Purpose:** Parses `Authorization: Bearer <token>`.
 - **Inputs:** Header string or undefined.
 - **Returns / side effects:** Token or `null`.
-- **Used by:** `meRoutes`.
+- **Used by:** `meRoutes`, `messagesRoutes`.
 
 ## Function: brandRoutes
 
@@ -317,8 +338,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; SQL boot injects `SqlGiftRecorder`.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, `/messages`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; SQL boot injects `SqlGiftRecorder` and `PostgresMessageStore`.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -357,12 +378,33 @@
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
 
+## Function: messagesRoutes
+
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name.
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`messages.list.failed` / `messages.create.failed`). Public JSON omits `accountId`.
+- **Used by:** `createApp`.
+
 ## Function: normalizeDisplayName
 
 - **Purpose:** Trim and validate an account display name (1–80 characters, no C0/DEL controls).
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed name or `null`.
 - **Used by:** `POST /me/name`.
+
+## Function: normalizeForumText
+
+- **Purpose:** Trim and validate forum message text (1–500 characters; newlines `\n`/`\r` allowed; other C0 controls and DEL rejected).
+- **Inputs:** `raw` string.
+- **Returns / side effects:** Trimmed text or `null`. No I/O.
+- **Used by:** `POST /messages`.
+
+## Function: serializeMessage
+
+- **Purpose:** Project a stored forum row to its public JSON shape.
+- **Inputs:** `MessageRow` (includes `accountId`).
+- **Returns / side effects:** `{ id, name, text, createdAt }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Used by:** `messagesRoutes`.
 
 ## Function: normalizeLightningAddress
 

@@ -13,11 +13,14 @@ import { debugRoutes } from '@/routes/debug';
 import { giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
+import { messagesRoutes } from '@/routes/messages';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
+import { InMemoryMessageStore } from '@/lib/message-store';
+import type { MessageStore } from '@/lib/message-store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -94,6 +97,11 @@ export interface AppDeps {
    * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
    */
   btcUsdRates?: BtcUsdRateBook;
+  /**
+   * Member forum messages (default: empty {@link InMemoryMessageStore}).
+   * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
+   */
+  messageStore?: MessageStore;
 }
 
 /**
@@ -106,8 +114,8 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, WebAuthn RP, spend token, and gift invoice
- *   store.
+ *   gift recorder, BTC-USD rates, message store, WebAuthn RP, spend token,
+ *   and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -121,6 +129,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
+  const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -166,6 +175,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
+  app.route('/messages', messagesRoutes({ store: messageStore, authStore: store, now }));
   app.route(
     '/invoices',
     invoiceRoutes({

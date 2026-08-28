@@ -6,7 +6,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-24.
+**Status**: living document. Last revised 2026-08-28.
 
 ---
 
@@ -130,12 +130,12 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 ---
 
-## 5. Message — **Sketch**
+## 5. Message — **Shipped**
 
-Public comment / encouragement is a v1 surface: a composer POSTs to the api;
-v1 signs server-side with the account's custodial key (`kind:1` reply). **No
-HTTP and no composer UI today.** Do not invent `/events` or `/comments`
-paths.
+Public comment / encouragement is a v1 surface. The composer POSTs `{ text }`
+to `POST /messages`; the public thread is listed via `GET /messages` (newest
+first, name snapshotted at post). Custodial HTTP only for now; kind:1 relay
+fan-out remains unwired. Do not invent `/events` or `/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
 not sketch a DM inbox as if it ships in v1.
