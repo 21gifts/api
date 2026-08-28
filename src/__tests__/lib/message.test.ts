@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MESSAGE_MAX_LENGTH,
+  MESSAGE_PHOTO_MAX_BASE64_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
   detectImageContentType,
@@ -139,6 +140,12 @@ describe('decodeForumPhoto', () => {
     big[1] = 0xd8;
     big[2] = 0xff;
     expect(decodeForumPhoto('image/jpeg', Buffer.from(big).toString('base64'))).toBeNull();
+  });
+
+  it('rejects oversize encoded base64 before decode', () => {
+    expect(
+      decodeForumPhoto('image/jpeg', 'A'.repeat(MESSAGE_PHOTO_MAX_BASE64_LENGTH + 1)),
+    ).toBeNull();
   });
 
   it('rejects bad base64', () => {

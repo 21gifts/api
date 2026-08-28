@@ -107,6 +107,11 @@ test('POST /contact without bearer is 401', async ({ request }) => {
 });
 
 test('GET /messages/:id/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /messages/:id/photo UUID path without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
   expect(res.status()).toBe(401);
 });

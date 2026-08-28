@@ -20,6 +20,9 @@ export type NostrPublishState = 'pending' | 'published' | 'failed';
 /** Maximum decoded photo size in bytes (1 MiB). */
 export const MESSAGE_PHOTO_MAX_BYTES = 1_048_576;
 
+/** Maximum `data` string length accepted by `decodeForumPhoto`. */
+export const MESSAGE_PHOTO_MAX_BASE64_LENGTH = Math.ceil(MESSAGE_PHOTO_MAX_BYTES / 3) * 4 + 4;
+
 /** Allowed forum photo MIME types (derived from magic bytes). */
 export type ForumPhotoContentType = 'image/jpeg' | 'image/png' | 'image/webp';
 
@@ -207,8 +210,9 @@ export function detectImageContentType(bytes: Uint8Array): ForumPhotoContentType
  * @param _contentType - Client-declared type (non-authoritative; ignored).
  * @param data - Standard base64 payload.
  * @returns A {@link ForumPhoto} with copied bytes, or `null` on invalid
- * base64, empty decode, oversize (`> {@link MESSAGE_PHOTO_MAX_BYTES}`), or
- * unrecognized magic.
+ * base64, empty decode, oversize encoded
+ * (`> {@link MESSAGE_PHOTO_MAX_BASE64_LENGTH}`) or decoded
+ * (`> {@link MESSAGE_PHOTO_MAX_BYTES}`), or unrecognized magic.
  */
 export function decodeForumPhoto(_contentType: string, data: string): ForumPhoto | null {
   if (data.length === 0) {
@@ -216,6 +220,9 @@ export function decodeForumPhoto(_contentType: string, data: string): ForumPhoto
   }
   // Reject characters outside the standard base64 alphabet (and padding).
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+    return null;
+  }
+  if (data.length > MESSAGE_PHOTO_MAX_BASE64_LENGTH) {
     return null;
   }
   const decoded = Buffer.from(data, 'base64');
