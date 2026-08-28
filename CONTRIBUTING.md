@@ -43,13 +43,13 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET /messages, POST /messages, POST /messages/:id/invoice
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, POST /messages/:id/invoice
 │   │   └── contact.ts        # POST /contact (private in-app mailbox)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
-│   │   ├── message.ts        # Forum text trim/validate + public JSON projection
+│   │   ├── message.ts        # Forum text/photo validate + public JSON (hasPhoto; no bytes)
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore

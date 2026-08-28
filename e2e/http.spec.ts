@@ -106,6 +106,11 @@ test('POST /contact without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /messages/:id/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },

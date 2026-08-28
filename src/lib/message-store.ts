@@ -2,11 +2,18 @@
  * Persistence for the public member forum.
  *
  * v1 default is in-memory. Production boot injects Postgres when
- * `DATABASE_URL` is set.
+ * `DATABASE_URL` is set. List queries never select the `photo` bytea column —
+ * only `(photo IS NOT NULL) AS has_photo`. Bytes are loaded via {@link MessageStore.getPhoto}.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
-import { unsignedNostrDefaults, type MessageRow, type NostrPublishState } from '@/lib/message';
+import {
+  unsignedNostrDefaults,
+  type ForumPhoto,
+  type ForumPhotoContentType,
+  type MessageRow,
+  type NostrPublishState,
+} from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -26,7 +33,7 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 export interface MessageStore {
   /**
    * Newest messages first (`createdAt` desc, then `id` desc), capped at
-   * `limit`.
+   * `limit`. Rows include `hasPhoto` but never photo bytes.
    *
    * @param limit - Maximum rows to return.
    * @returns Message rows (caller-owned copies).
@@ -34,12 +41,21 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageRow[]>;
 
   /**
-   * Persist a new message row.
+   * Persist a new message row and optional photo.
    *
-   * @param row - Fully formed row (id, account, name snapshot, text, time).
-   * @returns The stored row (a copy is fine).
+   * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
+   * @param photo - Optional decoded photo (copied into storage).
+   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo`.
    */
-  create(row: MessageRow): Promise<MessageRow>;
+  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow>;
+
+  /**
+   * Load photo bytes for a message id.
+   *
+   * @param id - Message id.
+   * @returns A copy of the photo, or `null` when missing / no photo.
+   */
+  getPhoto(id: string): Promise<ForumPhoto | null>;
 
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
@@ -110,9 +126,13 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   account_id uuid NOT NULL REFERENCES account (id),
   name text NOT NULL,
   text text NOT NULL,
+  photo bytea,
+  photo_content_type text,
   created_at timestamptz NOT NULL
 )`,
   `CREATE INDEX IF NOT EXISTS message_created_at_idx ON message (created_at DESC, id DESC)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS photo bytea`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_content_type text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS event_id text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_state text NOT NULL DEFAULT 'pending'`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
@@ -141,16 +161,34 @@ export async function migrateMessageSchema(sql: SqlClient): Promise<void> {
   }
 }
 
+/** Copy a {@link ForumPhoto} so callers cannot mutate store buffers. */
+function copyPhoto(photo: ForumPhoto): ForumPhoto {
+  return { contentType: photo.contentType, bytes: photo.bytes.slice() };
+}
+
+/** Copy a row so callers cannot mutate store internals. */
+function copyRow(row: MessageRow): MessageRow {
+  return {
+    ...row,
+    hasPhoto: row.hasPhoto === true,
+    createdAt: new Date(row.createdAt.getTime()),
+    nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
+  };
+}
+
 /**
  * Process-local {@link MessageStore}. Used in tests and when no database URL
- * is configured — the process still boots.
+ * is configured — the process still boots. Photos live in a private map, not
+ * on listed rows.
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
   readonly #receiptIds = new Set<string>();
+  readonly #photos = new Map<string, ForumPhoto>();
 
   /**
-   * @param seed - Optional seed rows; copied into private storage.
+   * @param seed - Optional seed rows; copied into private storage. Seeded rows
+   * default to `hasPhoto: false` when omitted on the input object.
    */
   constructor(seed: readonly MessageRow[] = []) {
     this.#rows = seed.map((row) => copyRow(row));
@@ -161,6 +199,7 @@ export class InMemoryMessageStore implements MessageStore {
    *
    * @param limit - Maximum rows.
    * @returns A new array of row copies; mutating it does not change the store.
+   * Listed objects never expose photo bytes.
    */
   listLatest(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
@@ -170,19 +209,45 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.id.localeCompare(a.id);
     });
-    return Promise.resolve(sorted.slice(0, limit).map((row) => copyRow(row)));
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        return copy;
+      }),
+    );
   }
 
   /**
-   * Append a copy of `row` and return a copy.
+   * Append a copy of `row` and optional photo; return a copy.
    *
    * @param row - Message to store.
-   * @returns A copy of the stored row.
+   * @param photo - Optional photo (bytes copied).
+   * @returns A copy of the stored row with `hasPhoto` from `photo`.
    */
-  create(row: MessageRow): Promise<MessageRow> {
-    const stored = copyRow({ ...unsignedNostrDefaults(), ...row });
+  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+    const hasPhoto = photo !== undefined;
+    const stored = copyRow({
+      ...unsignedNostrDefaults(),
+      ...row,
+      hasPhoto,
+    });
     this.#rows.push(stored);
+    if (photo !== undefined) {
+      this.#photos.set(stored.id, copyPhoto(photo));
+    }
     return Promise.resolve(copyRow(stored));
+  }
+
+  /**
+   * Return a copy of the photo for `id`, or `null`.
+   *
+   * @param id - Message id.
+   * @returns Photo copy or `null`.
+   */
+  getPhoto(id: string): Promise<ForumPhoto | null> {
+    const photo = this.#photos.get(id);
+    return Promise.resolve(photo === undefined ? null : copyPhoto(photo));
   }
 
   getById(id: string): Promise<MessageRow | undefined> {
@@ -312,22 +377,14 @@ export class InMemoryMessageStore implements MessageStore {
   }
 }
 
-/** Copy a row so callers cannot mutate store internals. */
-function copyRow(row: MessageRow): MessageRow {
-  return {
-    ...row,
-    createdAt: new Date(row.createdAt.getTime()),
-    nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
-  };
-}
-
-/** Row shape selected from `message`. */
+/** Row shape selected from `message` for list (no photo bytes). */
 interface MessageSqlRow {
   id: string;
   account_id: string;
   name: string;
   text: string;
   created_at: Date | string;
+  has_photo: boolean | number | string | null;
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
@@ -345,7 +402,15 @@ function optionalDate(value: Date | string | null | undefined): number | null {
   return value instanceof Date ? value.getTime() : Date.parse(value);
 }
 
-/** Map a SQL row onto {@link MessageRow}. Unexported. */
+/** Row shape for `getPhoto`. */
+interface MessagePhotoSqlRow {
+  photo: Uint8Array | Buffer | number[] | null;
+  photo_content_type: string | null;
+}
+
+const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+/** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
   const state = row.nostr_publish_state;
@@ -355,6 +420,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     name: row.name,
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    hasPhoto: Boolean(row.has_photo),
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed'
@@ -368,6 +434,20 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     nostrAttempts: row.nostr_attempts ?? defaults.nostrAttempts,
   };
 }
+
+/** Coerce Postgres bytea drivers into a fresh {@link Uint8Array}. */
+function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value.slice();
+  }
+  return Uint8Array.from(value);
+}
+
+/** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
+const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
+              (photo IS NOT NULL) AS has_photo,
+              event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`;
 
 /**
  * Durable {@link MessageStore} backed by Postgres.
@@ -384,14 +464,14 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first list from `message`, capped at `limit`.
+   * Selects `(photo IS NOT NULL) AS has_photo` — never the `photo` bytea column.
    *
    * @param limit - Maximum rows (`$1`).
    * @returns Mapped rows.
    */
   async listLatest(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
       [limit],
     );
@@ -399,25 +479,38 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Insert `row` into `message` and return it.
+   * Insert `row` (and optional photo) into `message` and return it.
    *
    * @param row - Fully formed message.
-   * @returns The input row after a successful insert (a copy).
+   * @param photo - Optional decoded photo.
+   * @returns The stored row after a successful insert (a copy).
    */
-  async create(row: MessageRow): Promise<MessageRow> {
-    const stored = copyRow({ ...unsignedNostrDefaults(), ...row });
+  async create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+    const hasPhoto = photo !== undefined;
+    const stored = copyRow({
+      ...unsignedNostrDefaults(),
+      ...row,
+      hasPhoto,
+    });
     await this.#sql.execute(
-      `INSERT INTO message (id, account_id, name, text, created_at, nostr_publish_state, sats)
-       VALUES ($1,$2,$3,$4,$5,'pending',0)`,
-      [stored.id, stored.accountId, stored.name, stored.text, stored.createdAt],
+      `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, created_at, nostr_publish_state, sats)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',0)`,
+      [
+        stored.id,
+        stored.accountId,
+        stored.name,
+        stored.text,
+        photo === undefined ? null : photo.bytes,
+        photo === undefined ? null : photo.contentType,
+        stored.createdAt,
+      ],
     );
     return stored;
   }
 
   async getById(id: string): Promise<MessageRow | undefined> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message WHERE id = $1`,
       [id],
     );
@@ -448,8 +541,7 @@ export class PostgresMessageStore implements MessageStore {
          LIMIT $3
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-                 nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`,
+       RETURNING ${MESSAGE_SELECT_COLUMNS}`,
       [until, new Date(nowMs), limit],
     );
     return rows.map((row) => mapMessageRow(row));
@@ -467,8 +559,7 @@ export class PostgresMessageStore implements MessageStore {
          LIMIT $3
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-                 nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`,
+       RETURNING ${MESSAGE_SELECT_COLUMNS}`,
       [until, new Date(nowMs), limit],
     );
     return rows.map((row) => mapMessageRow(row));
@@ -560,5 +651,29 @@ export class PostgresMessageStore implements MessageStore {
       [receiptEventId, messageId, sats],
     );
     return inserted[0] !== undefined;
+  }
+
+  /**
+   * Load photo bytes for a message id.
+   *
+   * @param id - Message id (`$1`).
+   * @returns Photo copy, or `null` when missing / null photo / bad type.
+   */
+  async getPhoto(id: string): Promise<ForumPhoto | null> {
+    const rows = await this.#sql.query<MessagePhotoSqlRow>(
+      `SELECT photo, photo_content_type FROM message WHERE id = $1`,
+      [id],
+    );
+    const row = rows[0];
+    if (row === undefined || row.photo === null || row.photo_content_type === null) {
+      return null;
+    }
+    if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+      return null;
+    }
+    return {
+      contentType: row.photo_content_type as ForumPhotoContentType,
+      bytes: toUint8Array(row.photo),
+    };
   }
 }
