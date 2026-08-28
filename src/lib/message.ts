@@ -1,0 +1,81 @@
+/**
+ * Forum message domain: validation and public JSON projection.
+ *
+ * Text is free-form encouragement (not unique). Empty, over-long, or
+ * disallowed control-character input is rejected so a bad value cannot be
+ * stored and re-served on every list response. Newlines (`\n`, `\r`) are
+ * allowed; other C0 controls and DEL are not.
+ */
+
+/** Maximum stored length after trim. */
+export const MESSAGE_MAX_LENGTH = 500;
+
+/** Cap for `listLatest` / GET `/messages`. */
+export const MESSAGE_LIST_LIMIT = 200;
+
+/** Persisted forum row (store-internal; includes `accountId`). */
+export interface MessageRow {
+  /** Opaque unique message id. */
+  id: string;
+  /** Author account id. */
+  accountId: string;
+  /** Display name snapshotted at post time. */
+  name: string;
+  /** Message body (already normalised). */
+  text: string;
+  /** Creation instant. */
+  createdAt: Date;
+}
+
+/** Public JSON shape of a forum message (no `accountId`). */
+export interface PublicMessage {
+  /** Opaque unique message id. */
+  id: string;
+  /** Author display name at post time. */
+  name: string;
+  /** Message body. */
+  text: string;
+  /** ISO-8601 creation timestamp. */
+  createdAt: string;
+}
+
+/**
+ * Trim and validate forum message text.
+ *
+ * @param raw - User input.
+ * @returns The trimmed text, or `null` when it is empty, longer than
+ * {@link MESSAGE_MAX_LENGTH}, or contains a C0 control other than LF/CR
+ * (`charCode < 32` except 10 and 13) or DEL (`=== 127`). Internal spaces
+ * and newlines are kept.
+ */
+export function normalizeForumText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length < 1 || trimmed.length > MESSAGE_MAX_LENGTH) {
+    return null;
+  }
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const code = trimmed.charCodeAt(i);
+    if (code === 10 || code === 13) {
+      continue;
+    }
+    if (code < 32 || code === 127) {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Project a store row to its public JSON shape.
+ *
+ * @param row - Persisted message.
+ * @returns Public fields only (`accountId` omitted); `createdAt` as ISO-8601.
+ */
+export function serializeMessage(row: MessageRow): PublicMessage {
+  return {
+    id: row.id,
+    name: row.name,
+    text: row.text,
+    createdAt: row.createdAt.toISOString(),
+  };
+}

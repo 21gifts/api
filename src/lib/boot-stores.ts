@@ -13,8 +13,13 @@ import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import {
+  migrateMessageSchema,
+  PostgresMessageStore,
+  type MessageStore,
+} from '@/lib/message-store';
 
-/** Auth, gift, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -30,6 +35,11 @@ export interface BootStores {
   giftRecorder: GiftRecorder | undefined;
   /** BTC-USD rate book (memory when no SQL; Postgres otherwise). */
   btcUsdRates: BtcUsdRateBook;
+  /**
+   * Postgres-backed forum store, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  messageStore: MessageStore | undefined;
 }
 
 /** Optional FX wiring so tests never hit the network. */
@@ -43,14 +53,15 @@ export interface BootFxOptions {
 }
 
 /**
- * Open auth, optional gift persistence, and the BTC-USD rate book from
- * `DATABASE_URL`.
+ * Open auth, optional gift and forum persistence, and the BTC-USD rate book
+ * from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
- * `giftRecorder: undefined`, and an empty {@link InMemoryBtcUsdStore}. A set
- * URL asks `createClient` for one `SqlClient`, migrates auth (via
- * `openAuthStore`) then the FX table, builds a {@link QueryGiftStore} and
- * {@link SqlGiftRecorder}, constructs {@link PostgresBtcUsdStore}, and
+ * `giftRecorder: undefined`, `messageStore: undefined`, and an empty
+ * {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
+ * `SqlClient`, migrates auth (via `openAuthStore`) then the FX and `message`
+ * tables, builds a {@link QueryGiftStore}, {@link SqlGiftRecorder}, and
+ * {@link PostgresMessageStore}, constructs {@link PostgresBtcUsdStore}, and
  * best-effort fills rates for the outbound gift day range (failures log
  * `gifts.fx.boot_fill.failed` and do not throw).
  *
@@ -81,10 +92,12 @@ export async function openBootStores(
       giftStore: undefined,
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
+      messageStore: undefined,
     };
   }
 
   await migrateBtcUsdSchema(sqlClient);
+  await migrateMessageSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
@@ -112,5 +125,6 @@ export async function openBootStores(
     return rows.map((row) => mapGiftQueryRow(row));
   });
   const giftRecorder = new SqlGiftRecorder(giftSql);
-  return { authStore, giftStore, giftRecorder, btcUsdRates };
+  const messageStore = new PostgresMessageStore(sqlClient);
+  return { authStore, giftStore, giftRecorder, btcUsdRates, messageStore };
 }
