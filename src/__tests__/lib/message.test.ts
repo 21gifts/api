@@ -144,8 +144,12 @@ describe('decodeForumPhoto', () => {
 
   it('rejects oversize encoded base64 before decode', () => {
     expect(
-      decodeForumPhoto('image/jpeg', 'A'.repeat(MESSAGE_PHOTO_MAX_BASE64_LENGTH + 1)),
+      decodeForumPhoto('image/jpeg', 'A'.repeat(MESSAGE_PHOTO_MAX_BASE64_LENGTH + 4)),
     ).toBeNull();
+  });
+
+  it('rejects base64 that is not a complete quartet', () => {
+    expect(decodeForumPhoto('image/jpeg', '/9j/A')).toBeNull();
   });
 
   it('rejects bad base64', () => {

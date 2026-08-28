@@ -218,8 +218,8 @@ export function decodeForumPhoto(_contentType: string, data: string): ForumPhoto
   if (data.length === 0) {
     return null;
   }
-  // Reject characters outside the standard base64 alphabet (and padding).
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+  // Standard base64 only: alphabet, quartet length, and padding in the last group.
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) {
     return null;
   }
   if (data.length > MESSAGE_PHOTO_MAX_BASE64_LENGTH) {
