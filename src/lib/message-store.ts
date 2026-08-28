@@ -83,7 +83,9 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
     });
     return Promise.resolve(
-      sorted.slice(0, limit).map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) })),
+      sorted
+        .slice(0, limit)
+        .map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) })),
     );
   }
 

@@ -185,13 +185,7 @@ describe('PostgresMessageStore', () => {
       /INSERT INTO message \(id, account_id, name, text, created_at\) VALUES \(\$1,\$2,\$3,\$4,\$5\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
-    expect(sql.executes[0]?.params).toEqual([
-      'm1',
-      'acc',
-      'Ada',
-      'hello',
-      row.createdAt,
-    ]);
+    expect(sql.executes[0]?.params).toEqual(['m1', 'acc', 'Ada', 'hello', row.createdAt]);
     expect(created).toEqual(row);
     expect(created).not.toBe(row);
   });

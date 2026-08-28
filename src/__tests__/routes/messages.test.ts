@@ -30,10 +30,7 @@ function mount(
   authStore: InMemoryAuthStore,
   store: MessageStore = new InMemoryMessageStore(),
 ): Hono {
-  return new Hono().route(
-    '/messages',
-    messagesRoutes({ store, authStore, now }),
-  );
+  return new Hono().route('/messages', messagesRoutes({ store, authStore, now }));
 }
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
@@ -200,7 +197,7 @@ describe('POST /messages', () => {
 
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
-    const body = (await list.json()) as { messages: typeof created[] };
+    const body = (await list.json()) as { messages: (typeof created)[] };
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]).toEqual(created);
   });

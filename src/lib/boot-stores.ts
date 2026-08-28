@@ -13,11 +13,7 @@ import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
-import {
-  migrateMessageSchema,
-  PostgresMessageStore,
-  type MessageStore,
-} from '@/lib/message-store';
+import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 
 /** Auth, gift, forum, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {

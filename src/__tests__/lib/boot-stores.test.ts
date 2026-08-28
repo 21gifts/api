@@ -39,8 +39,10 @@ describe('openBootStores', () => {
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when unset', async () => {
     const factory = vi.fn(() => unusedClient());
-    const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore } =
-      await openBootStores(undefined, factory);
+    const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore } = await openBootStores(
+      undefined,
+      factory,
+    );
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
     expect(giftRecorder).toBeUndefined();
@@ -51,8 +53,10 @@ describe('openBootStores', () => {
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when blank', async () => {
     const factory = vi.fn(() => unusedClient());
-    const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore } =
-      await openBootStores('   ', factory);
+    const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore } = await openBootStores(
+      '   ',
+      factory,
+    );
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
     expect(giftRecorder).toBeUndefined();
