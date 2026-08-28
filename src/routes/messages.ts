@@ -70,6 +70,9 @@ async function isPayable(deps: MessagesRouteDeps, row: MessageRow): Promise<bool
   return author !== undefined && author.lightningAddress !== null;
 }
 
+/** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
+const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Body schema for posting a forum message (text and/or photo). */
 const postBody = z
   .object({
@@ -175,6 +178,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Photo not found' }, 404);
+      }
       try {
         const photo = await deps.store.getPhoto(id);
         if (photo === null) {

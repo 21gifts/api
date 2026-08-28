@@ -143,7 +143,7 @@
 ## Endpoint: GET /messages/:id/photo
 
 - **Purpose:** Bearer required. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: private`). List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
 - **Used by:** App forum photo display.
 - **Auth:** `Authorization: Bearer` session.
 

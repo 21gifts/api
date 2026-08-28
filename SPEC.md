@@ -1042,7 +1042,8 @@ limiter still counts. LNURL/zap failure →
 ### `GET /messages/:id/photo`
 
 Fetch the optional photo bytes for one forum message. Bearer session
-required. Missing message and message-without-photo are the same **404**.
+required. Missing message, message-without-photo, and a non-UUID `id` are
+the same **404** (Postgres would otherwise throw on `uuid` and become 503).
 
 Missing/invalid/expired bearer → **Response** `401`:
 

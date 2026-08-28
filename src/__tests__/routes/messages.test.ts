@@ -933,6 +933,20 @@ describe('GET /messages/:id/photo', () => {
     expect(await res.json()).toEqual({ error: 'Photo not found' });
   });
 
+  it('returns 404 for a non-UUID id without calling the store', async () => {
+    const getPhoto = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const res = await mount(await seededStore(), throwingStore({ getPhoto })).request(
+      '/messages/not-a-uuid/photo',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+    expect(getPhoto).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(false);
+  });
+
   it('returns 503 and logs when getPhoto throws', async () => {
     const res = await mount(
       await seededStore(),
