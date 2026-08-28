@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-24 (passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-28 (public forum `GET/POST /messages`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -70,6 +70,8 @@ Public base URLs used in examples:
 | DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                             |
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment     |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
+| GET    | `/messages`                                  | Bearer                   | List public forum thread                   |
+| POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum        |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)   |
@@ -747,6 +749,102 @@ Success → **Response** `200`:
 
 ```json
 { "status": "paid", "id": "<id>", "paymentHash": "<64 hex>" }
+```
+
+### `GET /messages`
+
+Public member forum thread. Bearer session required. Returns newest messages
+first (`createdAt` descending, then `id`), capped at **200**. Each message
+exposes the author **name snapshotted at post time**, `text`, and ISO-8601
+`createdAt`. `accountId` is never included in the JSON.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "messages": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "text": "Thank you!",
+      "createdAt": "2026-08-28T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
+unset the default in-memory store starts empty; when set, rows come from
+Postgres `message`.
+
+### `POST /messages`
+
+Post to the public member forum. Bearer session required. Body:
+
+```json
+{ "text": "…" }
+```
+
+The account must already have a non-blank display name. The api stores a
+**name snapshot** (trimmed account name at post time), the normalised text,
+and a timestamp. Text is trimmed; length must be **1–500** characters.
+Newlines (`\n`, `\r`) are allowed; other C0 controls and DEL are rejected.
+The **200** body is the public message object itself (not wrapped in
+`{ messages }`). No `accountId` in the JSON. Kind:1 relay fan-out is not
+wired — this route is custodial HTTP only.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Body is not JSON with a `text` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"text\" string" }
+```
+
+Account has no display name (null or blank after trim) → **Response** `400`:
+
+```json
+{ "error": "Set a name before posting" }
+```
+
+Text empty, longer than 500 after trim, or contains a disallowed control →
+**Response** `400`:
+
+```json
+{ "error": "Text must be 1–500 characters" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "id": "<uuid>",
+  "name": "Ada",
+  "text": "Thank you!",
+  "createdAt": "2026-08-28T12:00:00.000Z"
+}
 ```
 
 ---

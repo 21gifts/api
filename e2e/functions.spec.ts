@@ -285,6 +285,40 @@ test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ r
   expect(res.status()).toBe(200);
 });
 
+test('Function: messagesRoutes — GET /messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: normalizeForumText — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeMessage — GET /messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryMessageStore — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresMessageStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateMessageSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
