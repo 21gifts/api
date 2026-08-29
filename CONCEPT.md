@@ -93,15 +93,15 @@ Any account can additionally become a donor and spend money:
 ### Receiver address verification
 
 A receiver's Lightning Address is entered free-form on sign-up (a wrong
-address is self-punishing — gifts simply go elsewhere). The **verified
-badge** requires proof of control via micro-payment: the api pays 1 sat (or
-the provider's `minSendable` if higher, capped at 10 sat) with a one-time
-nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi allows 255
-characters); the user reads the nonce from the wallet's transaction history
-and enters it in the app (`POST /me/lightning-address/verification` +
-`…/confirm`). No LNDHub payer is wired yet — start returns 503 until one is
-injected; the process still boots. No LUD-21 dependency — WoS does not
-implement LNURL-verify.
+address is self-punishing — gifts simply go elsewhere). Proof of control
+sets `lightningAddressVerified` (not the forum role **Verified**) via
+micro-payment: the api pays 1 sat (or the provider's `minSendable` if
+higher, capped at 10 sat) with a one-time nonce in the LNURL-pay comment
+(LUD-12; Wallet of Satoshi allows 255 characters); the user reads the nonce
+from the wallet's transaction history and enters it in the app
+(`POST /me/lightning-address/verification` + `…/confirm`). No LNDHub payer
+is wired yet — start returns 503 until one is injected; the process still
+boots. No LUD-21 dependency — WoS does not implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
@@ -369,8 +369,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Sign-in via passkey (WebAuthn discoverable credential; session bound to
   `account.id`)
-- Receiver profile UI: name, photo, story, Lightning Address (+ verified
-  badge via micro-payment nonce)
+- Receiver profile UI: name, photo, story, Lightning Address (+
+  `lightningAddressVerified` via micro-payment nonce; not the forum role
+  Verified)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Recurring gifts: configure daily USD amounts per recipient (paid by the
