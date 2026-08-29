@@ -331,6 +331,7 @@ describe('passkey authentication', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: T0,
     });
     const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);

@@ -13,6 +13,7 @@ async function seedAccount(store: InMemoryAuthStore): Promise<void> {
     name: null,
     lightningAddress: null,
     lightningAddressVerified: false,
+    forumLawsDismissed: false,
     createdAt: T0,
   });
 }

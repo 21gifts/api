@@ -17,6 +17,7 @@ describe('signEventForAccount', () => {
       name: 'Ada',
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     await ensureAccountNostrKey(store, 'acc', KEK);

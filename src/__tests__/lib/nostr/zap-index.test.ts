@@ -40,6 +40,7 @@ async function seedStore(args: {
       lightningAddress:
         args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
       lightningAddressVerified: true,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
   }
@@ -259,6 +260,7 @@ describe('indexOpenZapReceipts', () => {
       name: 'Ada',
       lightningAddress: 'zap-chunk@example.com',
       lightningAddressVerified: true,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     const firstId = `${'01'.repeat(31)}00`;

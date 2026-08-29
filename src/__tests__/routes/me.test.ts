@@ -60,6 +60,7 @@ async function seededStore(
     name: null,
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
+    forumLawsDismissed: false,
     createdAt: 1_000_000,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
@@ -143,6 +144,76 @@ describe('GET /me', () => {
     expect(body.name).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
+  });
+});
+
+describe('POST /me/forum-laws-dismissed', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/forum-laws-dismissed', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('sets forumLawsDismissed on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/forum-laws-dismissed', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { forumLawsDismissed: boolean };
+    expect(body.forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.forum_laws.dismissed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const before = warn.mock.calls.length;
+    const res = await app.request('/me/forum-laws-dismissed', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { forumLawsDismissed: boolean }).forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+    const dismissLogs = parsedEvents(warn)
+      .slice(before)
+      .filter((e) => e['event'] === 'account.forum_laws.dismissed');
+    expect(dismissLogs).toHaveLength(0);
+  });
+
+  it('includes forumLawsDismissed true on GET /me after dismiss', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { forumLawsDismissed: boolean }).forumLawsDismissed).toBe(true);
+  });
+
+  it('does not clear forumLawsDismissed when setting a name', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; forumLawsDismissed: boolean };
+    expect(body.name).toBe('Ada');
+    expect(body.forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
   });
 });
 
@@ -771,6 +842,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       name: null,
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1_000_000,
     });
     const res = await mount(store).request('/me/lightning-address/verification/confirm', {

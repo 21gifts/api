@@ -43,6 +43,7 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     name: null,
     lightningAddress: null,
     lightningAddressVerified: false,
+    forumLawsDismissed: false,
     createdAt: 1_000_000,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });

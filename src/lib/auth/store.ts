@@ -35,6 +35,8 @@ export interface Account {
    * verification. Set only by successful confirm; linking/unlinking resets it.
    */
   lightningAddressVerified: boolean;
+  /** True after the user dismissed the welcome-forum living-room laws hint. */
+  forumLawsDismissed: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
 }

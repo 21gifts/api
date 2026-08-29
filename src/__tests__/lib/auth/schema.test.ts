@@ -17,5 +17,6 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL[6]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_challenge/i);
     expect(AUTH_SCHEMA_SQL[7]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_credential/i);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/nostr_pubkey/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/forum_laws_dismissed/);
   });
 });

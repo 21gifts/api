@@ -401,7 +401,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, Lightning Address link with live LNURL resolve + zap metadata check, verification).
+- **Purpose:** Authenticated account routes (name, forum-laws dismiss, Lightning Address link with live LNURL resolve + zap metadata check, verification).
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
@@ -606,7 +606,7 @@
 
 - **Purpose:** Project an account to the public JSON shape (no Nostr fields).
 - **Inputs:** `Account`.
-- **Returns / side effects:** Seven public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). No I/O. No Nostr key material.
+- **Returns / side effects:** Eight public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`). No I/O. No Nostr key material.
 - **Used by:** passkey finish, `GET /me`, `GET /debug/accounts`.
 
 ## Function: parseNostrKek

@@ -53,6 +53,7 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     name: null,
     lightningAddress: null,
     lightningAddressVerified: false,
+    forumLawsDismissed: false,
     createdAt: 1_000_000,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
@@ -723,6 +724,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Bob',
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1_000_001,
     });
     await authStore.createSession({ token: 'payer-tok', accountId: 'payer', createdAt: now() });

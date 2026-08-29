@@ -11,9 +11,10 @@ import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
- * `/me` — the authenticated account and its editable profile (display name
- * and the receiver's Lightning Address), including proof-of-control
- * verification. Shares the {@link AuthStore} instance with `/auth`.
+ * `/me` — the authenticated account and its editable profile (display name,
+ * welcome-forum laws dismiss, and the receiver's Lightning Address), including
+ * proof-of-control verification. Shares the {@link AuthStore} instance with
+ * `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -85,8 +86,8 @@ const confirmBody = z.object({ nonce: z.string() });
  * Build the `/me` route group.
  *
  * @param deps - Shared store, clock, payer, and fetch.
- * @returns A Hono app exposing account, display-name, link/unlink, and
- * verification routes.
+ * @returns A Hono app exposing account, display-name, forum-laws dismiss,
+ * link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
@@ -118,6 +119,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, name };
       await deps.store.updateAccount(updated);
       logEvent('account.name.set', { accountId: current.id });
+      return c.json(serializeAccount(updated), 200);
+    })
+    .post('/forum-laws-dismissed', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.forumLawsDismissed === true) {
+        return c.json(serializeAccount(current), 200);
+      }
+      const updated: Account = { ...current, forumLawsDismissed: true };
+      await deps.store.updateAccount(updated);
+      logEvent('account.forum_laws.dismissed', { accountId: current.id });
       return c.json(serializeAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {

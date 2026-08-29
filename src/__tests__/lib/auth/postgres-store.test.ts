@@ -30,6 +30,7 @@ const ACCOUNT_ROW = {
   name: null as string | null,
   lightning_address: null as string | null,
   lightning_address_verified: false,
+  forum_laws_dismissed: false,
   created_at: new Date(1_000),
 };
 
@@ -81,10 +82,13 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     sql.nextRows = [ACCOUNT_ROW];
     const store = new PostgresAuthStore(sql);
-    expect((await store.getAccount('acc'))?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    const mapped = await store.getAccount('acc');
+    expect(mapped?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    expect(mapped?.forumLawsDismissed).toBe(false);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
   });
 
   it('returns undefined for a missing account', async () => {
@@ -101,6 +105,7 @@ describe('PostgresAuthStore', () => {
       name: 'Ada',
       lightningAddress: 'a@b.com',
       lightningAddressVerified: true,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     await store.updateAccount({
@@ -110,10 +115,13 @@ describe('PostgresAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
+    expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
   });
 
@@ -126,6 +134,7 @@ describe('PostgresAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
@@ -142,6 +151,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         createdAt: 1,
       }),
     ).resolves.toBeUndefined();
@@ -158,6 +168,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         createdAt: 1,
       }),
     ).rejects.toMatchObject({ code: '57014' });
@@ -174,6 +185,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         createdAt: 1,
       }),
     ).rejects.toBeNull();
@@ -190,6 +202,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         createdAt: 1,
       }),
     ).rejects.toBe('boom');
@@ -206,6 +219,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         createdAt: 1,
       }),
     ).rejects.toThrow('disk full');

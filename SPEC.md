@@ -68,6 +68,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session          |
 | GET    | `/me`                                        | `Authorization: Bearer`  | Account                                  |
 | POST   | `/me/name`                                   | Bearer                   | Set/replace display name                 |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws   |
 | POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve    |
 | DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                           |
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment   |
@@ -253,6 +254,7 @@ Missing or invalid bearer → **Response** `401`:
   "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
+  "forumLawsDismissed": false,
   "createdAt": 0
 }
 ```
@@ -265,6 +267,7 @@ Missing or invalid bearer → **Response** `401`:
 | `name`                     | string \| null | Display name, or `null` until set                                       |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                        |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                       |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed      |
 | `createdAt`                | number         | Creation time (epoch ms)                                                |
 
 ### `POST /me/name`
@@ -292,6 +295,16 @@ control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 
 Success → **Response** `200` with the updated account (same shape as
 `GET /me`). The stored value is trimmed. Names are not unique.
+
+### `POST /me/forum-laws-dismissed`
+
+Mark the welcome-forum living-room laws hint as dismissed. No body.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`), with `forumLawsDismissed: true`. Already-dismissed accounts return
+the same shape without a second write (idempotent). There is no un-dismiss.
 
 ### `POST /me/lightning-address`
 
@@ -525,6 +538,7 @@ Success → **Response** `200`:
       "name": null,
       "lightningAddress": null,
       "lightningAddressVerified": false,
+      "forumLawsDismissed": false,
       "createdAt": 0
     }
   ]
