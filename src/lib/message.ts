@@ -13,6 +13,9 @@ export const MESSAGE_MAX_LENGTH = 500;
 /** Cap for `listLatest` / GET `/messages`. */
 export const MESSAGE_LIST_LIMIT = 200;
 
+/** Worker publish state for a forum row. */
+export type NostrPublishState = 'pending' | 'published' | 'failed';
+
 /** Persisted forum row (store-internal; includes `accountId`). */
 export interface MessageRow {
   /** Opaque unique message id. */
@@ -25,9 +28,25 @@ export interface MessageRow {
   text: string;
   /** Creation instant. */
   createdAt: Date;
+  /** Signed kind:1 id, or `null` until the worker signs. */
+  eventId: string | null;
+  /** Fan-out state. */
+  nostrPublishState: NostrPublishState;
+  /** Validated zap total in whole sats. */
+  sats: number;
+  /** Stored signed event JSON, or `null` until signed. */
+  nostrEvent: Record<string, unknown> | null;
+  /** Lease expiry (epoch ms), or `null`. */
+  claimedUntil: number | null;
+  /** First sign-or-publish attempt (epoch ms), or `null`. */
+  nostrFirstAttemptAt: number | null;
+  /** Publish epoch (`space` vs `space+public`). */
+  nostrPublishEpoch: string | null;
+  /** Sign/publish attempts in the current epoch. */
+  nostrAttempts: number;
 }
 
-/** Public JSON shape of a forum message (no `accountId`). */
+/** Public JSON shape of a forum message (no `accountId`, no event id). */
 export interface PublicMessage {
   /** Opaque unique message id. */
   id: string;
@@ -37,6 +56,10 @@ export interface PublicMessage {
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
+  /** Validated zap total in whole sats (always present). */
+  sats: number;
+  /** Whether `POST /messages/:id/invoice` can run. */
+  payable: boolean;
 }
 
 /**
@@ -69,13 +92,44 @@ export function normalizeForumText(raw: string): string | null {
  * Project a store row to its public JSON shape.
  *
  * @param row - Persisted message.
- * @returns Public fields only (`accountId` omitted); `createdAt` as ISO-8601.
+ * @param payable - Whether the note can accept a NIP-57 zap payment.
+ * @returns Public fields (`sats`, `payable`; no `accountId`); `createdAt` ISO-8601.
  */
-export function serializeMessage(row: MessageRow): PublicMessage {
+export function serializeMessage(row: MessageRow, payable: boolean): PublicMessage {
   return {
     id: row.id,
     name: row.name,
     text: row.text,
     createdAt: row.createdAt.toISOString(),
+    sats: row.sats,
+    payable,
+  };
+}
+
+/**
+ * Default Nostr columns for a freshly posted row (unsigned, pending).
+ *
+ * @returns The unsigned/pending defaults.
+ */
+export function unsignedNostrDefaults(): Pick<
+  MessageRow,
+  | 'eventId'
+  | 'nostrPublishState'
+  | 'sats'
+  | 'nostrEvent'
+  | 'claimedUntil'
+  | 'nostrFirstAttemptAt'
+  | 'nostrPublishEpoch'
+  | 'nostrAttempts'
+> {
+  return {
+    eventId: null,
+    nostrPublishState: 'pending',
+    sats: 0,
+    nostrEvent: null,
+    claimedUntil: null,
+    nostrFirstAttemptAt: null,
+    nostrPublishEpoch: null,
+    nostrAttempts: 0,
   };
 }

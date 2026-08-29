@@ -31,10 +31,12 @@ describe('openBootStores', () => {
 
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    process.env['NOSTR_NSEC_KEK'] = 'ab'.repeat(32);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    delete process.env['NOSTR_NSEC_KEK'];
   });
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when unset', async () => {

@@ -102,6 +102,8 @@ export interface AppDeps {
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
   messageStore?: MessageStore;
+  /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
+  nostrKek?: Uint8Array;
 }
 
 /**
@@ -114,8 +116,8 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, WebAuthn RP, spend token,
- *   and gift invoice store.
+ *   gift recorder, BTC-USD rates, message store, nostrKek, WebAuthn RP, spend
+ *   token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -130,6 +132,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
+  const nostrKek = deps.nostrKek;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -165,6 +168,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       webAuthnRpId,
       webAuthnRpName,
       passkeyCeremony,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
   app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
@@ -175,7 +179,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
-  app.route('/messages', messagesRoutes({ store: messageStore, authStore: store, now }));
+  app.route(
+    '/messages',
+    messagesRoutes({
+      store: messageStore,
+      authStore: store,
+      now,
+      fetchImpl,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
+    }),
+  );
   app.route(
     '/invoices',
     invoiceRoutes({

@@ -121,9 +121,9 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` is newest-first with a limit; `create` inserts the row.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `claimUnsigned`/`claimUnpublished` lease rows; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Errors propagate to the route (503).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
@@ -135,14 +135,14 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
 - **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials. Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, and custodial Nostr key columns (`nostr_pubkey`, ciphertext, kek id, custody). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
@@ -151,7 +151,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -163,9 +163,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, and `PostgresMessageStore`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore` undefined, and empty `InMemoryBtcUsdStore` when unset.
-- **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`).
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore }`. Migrates `btc_usd_daily` and `message` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory. SQL path returns `SqlGiftRecorder` and `PostgresMessageStore`; memory path returns `giftRecorder`/`messageStore` undefined.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek }`. Migrates `btc_usd_daily` and `message` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder` and `PostgresMessageStore`; memory path returns `giftRecorder`/`messageStore`/`nostrKek` undefined.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -198,7 +198,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, claim/sign/publish, `addSats`; `updateSignedEvent` returns false on duplicate `eventId`.
 - **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -310,8 +310,8 @@
 
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for passkey register and authenticate.
-- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
+- **Purpose:** Hono sub-app for passkey register and authenticate. Passes optional `nostrKek` / `nostrKeygen` into finish so new logins get a custodial nsec.
+- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony, optional `nostrKek` and `nostrKeygen`.
 - **Returns / side effects:** Hono app mounted at `/auth`.
 - **Used by:** `createApp`.
 
@@ -339,7 +339,7 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, `/messages`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; SQL boot injects `SqlGiftRecorder` and `PostgresMessageStore`.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, and parsed KEK.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -380,9 +380,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name.
-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`messages.list.failed` / `messages.create.failed`). Public JSON omits `accountId`.
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (post/invoice rate limiters).
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits; 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -401,9 +401,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape.
-- **Inputs:** `MessageRow` (includes `accountId`).
-- **Returns / side effects:** `{ id, name, text, createdAt }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals and payability.
+- **Inputs:** `MessageRow` (includes `accountId`) and `payable` boolean.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: normalizeLightningAddress
@@ -466,8 +466,8 @@
 
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
 - **Inputs:** address + fetchImpl.
-- **Returns / side effects:** Callback URL + min/max sendable or error.
-- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`.
+- **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or error.
+- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
 
 ## Function: resolveSession
 
@@ -499,15 +499,15 @@
 
 ## Function: finishPasskeyAuthentication
 
-- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds.
-- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds. Optional `nostr` best-effort backfills a missing nsec.
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
 - **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`.
 - **Used by:** `POST /auth/passkey/authenticate/finish`.
 
 ## Function: finishPasskeyRegistration
 
-- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session.
-- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session. Optional `nostr` mints a custodial nsec (rollback on keygen failure).
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
 - **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. A duplicate credential id rolls the new account back.
 - **Used by:** `POST /auth/passkey/register/finish`.
 
@@ -552,3 +552,248 @@
 - **Inputs:** store, ceremony, config, now.
 - **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
 - **Used by:** `POST /auth/passkey/register/begin`.
+
+## Function: serializeAccount
+
+- **Purpose:** Project an account to the public JSON shape (no Nostr fields).
+- **Inputs:** `Account`.
+- **Returns / side effects:** Seven public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). No I/O. No Nostr key material.
+- **Used by:** passkey finish, `GET /me`, `GET /debug/accounts`.
+
+## Function: parseNostrKek
+
+- **Purpose:** Parse `NOSTR_NSEC_KEK` as 32-byte AES key (64 lowercase hex).
+- **Inputs:** Env string or `undefined`.
+- **Returns / side effects:** `Uint8Array` or throw.
+- **Used by:** `openBootStores`.
+
+## Function: hexToBytes
+
+- **Purpose:** Decode lowercase hex.
+- **Inputs:** Even-length hex string.
+- **Returns / side effects:** Bytes or throw.
+- **Used by:** Tests and KEK helpers.
+
+## Function: bytesToHex
+
+- **Purpose:** Encode bytes as lowercase hex.
+- **Inputs:** `Uint8Array`.
+- **Returns / side effects:** Hex string.
+- **Used by:** Tests.
+
+## Function: publicKeyHexFromSecret
+
+- **Purpose:** Derive NIP-01 hex pubkey.
+- **Inputs:** 32-byte secret.
+- **Returns / side effects:** 64-char hex.
+- **Used by:** `ensureAccountNostrKey`.
+
+## Function: encryptNostrSecret
+
+- **Purpose:** AES-256-GCM envelope for a 32-byte nsec.
+- **Inputs:** secret, kek, accountId, optional kekId.
+- **Returns / side effects:** Envelope bytes.
+- **Used by:** `ensureAccountNostrKey`.
+
+## Function: decryptNostrSecret
+
+- **Purpose:** Decrypt a v1 envelope (`kek_id=1` only).
+- **Inputs:** envelope, kek, accountId.
+- **Returns / side effects:** 32-byte secret.
+- **Used by:** `signEventForAccount`.
+
+## Function: zeroizeSecret
+
+- **Purpose:** Overwrite a secret buffer with zeros.
+- **Inputs:** `Uint8Array`.
+- **Returns / side effects:** In-place fill.
+- **Used by:** `ensureAccountNostrKey`, `signEventForAccount`.
+
+## Function: ensureAccountNostrKey
+
+- **Purpose:** Generate and store a custodial keypair if missing (CAS).
+- **Inputs:** AuthStore, accountId, kek, optional keygen.
+- **Returns / side effects:** Hex pubkey. Logs `nostr.keygen`.
+- **Used by:** Worker, authenticate-finish.
+
+## Function: generateNostrKeyRecord
+
+- **Purpose:** Build a `NostrKeyRecord` for register-finish.
+- **Inputs:** accountId, kek, optional keygen.
+- **Returns / side effects:** Record for `setNostrKeyIfAbsent`.
+- **Used by:** `finishPasskeyRegistration`.
+
+## Function: kind1Tags
+
+- **Purpose:** Copy frozen kind:1 tags.
+- **Inputs:** none.
+- **Returns / side effects:** `[["t","21gifts"],["r","https://21.gifts"]]`.
+- **Used by:** `buildKind1Event`.
+
+## Function: buildKind1Event
+
+- **Purpose:** Unsigned top-level kind:1 for a forum line.
+- **Inputs:** content, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Worker sign path.
+
+## Function: buildKind0Content
+
+- **Purpose:** Kind:0 JSON without extra whitespace.
+- **Inputs:** name, lightningAddress or null.
+- **Returns / side effects:** JSON string; `lud16` only when address set.
+- **Used by:** `buildKind0Event`.
+
+## Function: buildKind0Event
+
+- **Purpose:** Unsigned replaceable kind:0.
+- **Inputs:** name, lightningAddress, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Profile publish (later worker).
+
+## Function: buildKind10002Event
+
+- **Purpose:** Unsigned NIP-65 relay list.
+- **Inputs:** relay URLs, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Profile publish.
+
+## Function: signEventForAccount
+
+- **Purpose:** Decrypt nsec, `finalizeEvent`, zeroize.
+- **Inputs:** store, accountId, kek, unsigned template.
+- **Returns / side effects:** Signed event. Never logs the secret.
+- **Used by:** Worker, `POST /messages/:id/invoice`.
+
+## Function: isNostrPublishEnabled
+
+- **Purpose:** `NOSTR_PUBLISH === "1"`.
+- **Inputs:** env slice.
+- **Returns / side effects:** boolean.
+- **Used by:** `resolveWriteSet`.
+
+## Function: isNostrPublishPublicEnabled
+
+- **Purpose:** `NOSTR_PUBLISH_PUBLIC === "1"`.
+- **Inputs:** env slice.
+- **Returns / side effects:** boolean.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveRelaySpace
+
+- **Purpose:** Durability relay URL.
+- **Inputs:** env slice.
+- **Returns / side effects:** Trimmed `NOSTR_RELAY_SPACE`, else `NOSTR_RELAY_URL`, else PRD default.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveRelayPublic
+
+- **Purpose:** Public write relay list.
+- **Inputs:** env slice.
+- **Returns / side effects:** Split `NOSTR_RELAY_PUBLIC` or default three.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveWriteSet
+
+- **Purpose:** Combine flags + URLs for one worker tick.
+- **Inputs:** env slice.
+- **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
+- **Used by:** Worker, invoice zap relays.
+
+## Function: utcDayKey
+
+- **Purpose:** UTC `YYYY-MM-DD` from epoch ms.
+- **Inputs:** nowMs.
+- **Returns / side effects:** Day key.
+- **Used by:** `PostRateLimiter`.
+
+## Function: PostRateLimiter
+
+- **Purpose:** In-process post caps (1/10s, 6/h, 20/UTC-day).
+- **Inputs:** `allow(accountId, nowMs)`.
+- **Returns / side effects:** boolean; idle eviction 48h.
+- **Used by:** `POST /messages`.
+
+## Function: InvoiceRateLimiter
+
+- **Purpose:** In-process invoice caps (1/10s, 20/h).
+- **Inputs:** `allow(accountId, nowMs)`.
+- **Returns / side effects:** boolean.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: RecordingPublisher
+
+- **Purpose:** Test fake that records EVENT publishes.
+- **Inputs:** event, urls, timeout.
+- **Returns / side effects:** ACK list; `ok` flag.
+- **Used by:** Worker tests.
+
+## Function: WebsocketNostrPublisher
+
+- **Purpose:** Production `NostrPublisher` that opens one WebSocket per relay URL, sends `["EVENT", event]`, and waits for a matching `["OK", id, true|false]` (or timeout/error) before closing.
+- **Inputs:** Optional `WebSocketFactory` (default `new WebSocket(url)`); `publish(event, urls, timeoutMs)`.
+- **Returns / side effects:** One `RelayAck` per URL in input order; never leaves sockets open after settle. Injectable factory keeps unit tests off the network.
+- **Used by:** Process entry `src/index.ts` when KEK + durable message store present.
+
+## Function: spaceAcked
+
+- **Purpose:** Whether the space relay ACK'd OK.
+- **Inputs:** acks, spaceUrl.
+- **Returns / side effects:** boolean.
+- **Used by:** Worker.
+
+## Function: publicAcked
+
+- **Purpose:** Whether a non-space relay ACK'd OK.
+- **Inputs:** acks, spaceUrl.
+- **Returns / side effects:** boolean.
+- **Used by:** Worker.
+
+## Function: runNostrWorkerTick
+
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK.
+- **Inputs:** worker deps.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
+- **Used by:** `startNostrWorker`.
+
+## Function: startNostrWorker
+
+- **Purpose:** Interval handle around `runNostrWorkerTick`.
+- **Inputs:** deps, intervalMs.
+- **Returns / side effects:** `{ stop }`.
+- **Used by:** Process entry `src/index.ts` when KEK + message store present.
+
+## Function: buildZapRequest
+
+- **Purpose:** Unsigned kind:9734 for a forum event.
+- **Inputs:** recipient pubkey, event id, amountMsat, relays.
+- **Returns / side effects:** EventTemplate.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: indexZapReceipt
+
+- **Purpose:** Validate provider pubkey and add sats once per receipt id.
+- **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
+- **Returns / side effects:** boolean; logs indexed/rejected.
+- **Used by:** Unit tests (no in-process zap-receipt subscriber in this process yet).
+
+## Function: resetZapReceiptIndex
+
+- **Purpose:** Clear the in-process receipt set.
+- **Inputs:** none.
+- **Returns / side effects:** Empties the set.
+- **Used by:** Tests.
+
+## Function: requestZapInvoice
+
+- **Purpose:** LNURL-pay callback with `nostr=` (not `comment=`).
+- **Inputs:** address, amountMsat, zapRequestJson, fetchImpl.
+- **Returns / side effects:** `{ pr, amountSats }` or `noZap`/`unreachable`.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: unsignedNostrDefaults
+
+- **Purpose:** Unsigned/pending defaults for a new forum row.
+- **Inputs:** none.
+- **Returns / side effects:** Column defaults including `sats: 0`.
+- **Used by:** `POST /messages`, stores.

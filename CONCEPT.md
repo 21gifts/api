@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-23.
+**Status**: draft, in active iteration. Last revised 2026-08-29.
 
 ---
 
@@ -230,13 +230,13 @@ below applies to v1 for the surfaces v1 ships — profile metadata, campaign
 post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
 scope. The client-side-signing flow beneath it is target state.)
 
-| UI surface                            | NOSTR primitive                                           |
-| ------------------------------------- | --------------------------------------------------------- |
-| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                |
-| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata       |
-| Public comment / encouragement        | `kind:1` reply, with `e` and `p` tags                     |
-| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy) |
-| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)             |
+| UI surface                            | NOSTR primitive                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------ |
+| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                     |
+| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                            |
+| Public comment / encouragement        | top-level `kind:1` (frozen `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`) |
+| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                      |
+| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                  |
 
 **Flow** — the app does not talk to NOSTR relays directly. It talks to the
 backend API, which acts as the user's edge to the network:
@@ -650,6 +650,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-24 | Matching `POST /invoices/proof` inserts an outbound `gift` row when `DATABASE_URL` is set so `GET /gifts/stats` includes spend-worker payments. Insert failure logs `gifts.record_failed` and still returns 200. Memory boots keep a no-op recorder.                                                                                                                                                                                                               |
 | 2026-08-24 | Public `GET /gifts?day=YYYY-MM-DD` lists each outbound gift on that UTC day (time, recipient, sats/BTC/USD at that day's close). No invoices. Empty day is 200.                                                                                                                                                                                                                                                                                                    |
 | 2026-08-28 | v1 public comments ship as custodial HTTP `GET/POST /messages` (name snapshot, text, timestamp); kind:1 relay fan-out remains unwired.                                                                                                                                                                                                                                                                                                                             |
+| 2026-08-29 | Member-forum posts are **top-level kind:1** notes (not replies). GET/POST `/messages` include `sats` and `payable`. `POST /messages/:id/invoice` is a NIP-57 zap. Guest Send-a-gift is removed from the app. Worker fans out when `NOSTR_PUBLISH=1`.                                                                                                                                                                                                               |
 
 ---
 

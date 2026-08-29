@@ -41,7 +41,7 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
-│   │   └── messages.ts       # GET /messages, POST /messages
+│   │   └── messages.ts       # GET /messages, POST /messages, POST /messages/:id/invoice
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
@@ -62,13 +62,15 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, BTC-USD rates
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, BTC-USD rates, KEK
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
+│   │   ├── nostr/            # Custodial nsec, kind:1 worker, NIP-57 zap, write-set relays
 │   │   └── auth/
+│   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
@@ -110,7 +112,9 @@ api/
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
 │       │   ├── message-store.test.ts
+│       │   ├── nostr/            # kek, keys, publish, worker, relays, zap, event, sign, rate-limit
 │       │   └── auth/
+│       │       ├── account-json.test.ts
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
@@ -248,8 +252,10 @@ LNURL-pay;
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, or a
 healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
-`DATABASE_URL` and `SPEND_API_TOKEN` to blank so those outcomes do not depend
-on the host environment.
+`DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
+`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`, and
+`NOSTR_RELAY_PUBLIC` to blank
+so those outcomes do not depend on the host environment.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
@@ -301,6 +307,12 @@ Currently:
 | `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                                                                                                                                                                                                                          |
 | `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                                                                                                                                                                                                                                |
 | `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts` and `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                                                                                                                                                                                                                 |
+| `NOSTR_NSEC_KEK`       | _(required with `DATABASE_URL`)_        | 32-byte hex AES-GCM KEK for custodial nsec. With `DATABASE_URL`, missing or malformed KEK **throws at boot**. Memory boots omit it.                                                                                                                                                                                                                                                                                                                                               |
+| `NOSTR_PUBLISH`        | _(unset → sign only)_                   | Set to `1` to fan out signed kind:1 events over WebSockets. Other values do not publish.                                                                                                                                                                                                                                                                                                                                                                                          |
+| `NOSTR_PUBLISH_PUBLIC` | _(unset → space-only published)_        | Set to `1` (with `NOSTR_PUBLISH=1`) to also write Damus / Primal / nos.lol. Unset: space ACK is terminal `published`.                                                                                                                                                                                                                                                                                                                                                             |
+| `NOSTR_RELAY_URL`      | `wss://relay.nostr.space`               | Compose durability relay (nostr.space). Used when `NOSTR_RELAY_SPACE` is unset.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `NOSTR_RELAY_SPACE`    | _(falls back to `NOSTR_RELAY_URL`)_     | Optional override of the durability relay WebSocket URL.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `NOSTR_RELAY_PUBLIC`   | Damus, Primal, nos.lol                  | Optional comma-separated public write relays.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
@@ -308,12 +320,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                                       |
-| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
+| Workflow               | Trigger               | Action                                                                       |
+| ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
 

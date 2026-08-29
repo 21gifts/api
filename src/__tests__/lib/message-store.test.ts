@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
-import type { MessageRow } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import {
   InMemoryMessageStore,
   MESSAGE_SCHEMA_SQL,
@@ -37,6 +37,7 @@ const EARLY: MessageRow = {
   name: 'Ada',
   text: 'first',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  ...unsignedNostrDefaults(),
 };
 
 const LATE: MessageRow = {
@@ -45,6 +46,7 @@ const LATE: MessageRow = {
   name: 'Ada',
   text: 'second',
   createdAt: new Date('2026-08-02T00:00:00.000Z'),
+  ...unsignedNostrDefaults(),
 };
 
 const TIE_HIGH: MessageRow = {
@@ -53,6 +55,7 @@ const TIE_HIGH: MessageRow = {
   name: 'Ada',
   text: 'tie-high',
   createdAt: new Date('2026-08-03T00:00:00.000Z'),
+  ...unsignedNostrDefaults(),
 };
 
 const TIE_LOW: MessageRow = {
@@ -61,14 +64,15 @@ const TIE_LOW: MessageRow = {
   name: 'Ada',
   text: 'tie-low',
   createdAt: new Date('2026-08-03T00:00:00.000Z'),
+  ...unsignedNostrDefaults(),
 };
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message and its created_at index', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(2);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[1]).toMatch(/CREATE INDEX IF NOT EXISTS message_created_at_idx/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/event_id/);
   });
 });
 
@@ -135,6 +139,38 @@ describe('InMemoryMessageStore', () => {
     expect(created).not.toBe(EARLY);
     expect((await store.listLatest(10))[0]?.id).toBe('a');
   });
+
+  it('updates signed events, publish state, and sats', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    expect(await store.updateSignedEvent('a', 'ee'.repeat(32), { id: 'ee'.repeat(32) })).toBe(true);
+    await store.create(LATE);
+    expect(await store.updateSignedEvent('b', 'ee'.repeat(32), { id: 'ee'.repeat(32) })).toBe(
+      false,
+    );
+    expect(await store.updateSignedEvent('missing', 'ff'.repeat(32), {})).toBe(false);
+    await store.updatePublishState('a', 'published', 'public');
+    await store.addSats('a', 21);
+    const row = await store.getById('a');
+    expect(row?.eventId).toBe('ee'.repeat(32));
+    expect(row?.nostrPublishState).toBe('published');
+    expect(row?.sats).toBe(21);
+    const unpublished = await store.claimUnpublished(10, 1_000, 60_000);
+    expect(unpublished).toEqual([]);
+  });
+
+  it('getById and claimUnsigned lease a row', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    expect((await store.getById('a'))?.text).toBe('first');
+    const claimed = await store.claimUnsigned(10, 1_000, 60_000);
+    expect(claimed.map((row) => row.id)).toEqual(['a']);
+    const again = await store.claimUnsigned(10, 1_000, 60_000);
+    expect(again).toEqual([]);
+    await store.create(LATE);
+    const one = await store.claimUnsigned(1, 2_000_000, 60_000);
+    expect(one).toHaveLength(1);
+  });
 });
 
 describe('PostgresMessageStore', () => {
@@ -159,25 +195,12 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const listed = await store.listLatest(50);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT id, account_id, name, text, created_at FROM message ORDER BY created_at DESC, id DESC LIMIT \$1/,
+      /FROM message ORDER BY created_at DESC, id DESC LIMIT \$1/,
     );
     expect(sql.queries[0]?.params).toEqual([50]);
-    expect(listed).toEqual([
-      {
-        id: 'm1',
-        accountId: 'acc',
-        name: 'Ada',
-        text: 'hi',
-        createdAt: new Date('2026-08-28T12:00:00.000Z'),
-      },
-      {
-        id: 'm2',
-        accountId: 'acc',
-        name: 'Bob',
-        text: 'yo',
-        createdAt: new Date('2026-08-27T12:00:00.000Z'),
-      },
-    ]);
+    expect(listed[0]?.id).toBe('m1');
+    expect(listed[0]?.sats).toBe(0);
+    expect(listed[1]?.id).toBe('m2');
   });
 
   it('create binds columns and does not use ON CONFLICT', async () => {
@@ -189,10 +212,11 @@ describe('PostgresMessageStore', () => {
       name: 'Ada',
       text: 'hello',
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      ...unsignedNostrDefaults(),
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(id, account_id, name, text, created_at\) VALUES \(\$1,\$2,\$3,\$4,\$5\)/,
+      /INSERT INTO message \(id, account_id, name, text, created_at, nostr_publish_state, sats\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual(['m1', 'acc', 'Ada', 'hello', row.createdAt]);
@@ -206,6 +230,48 @@ describe('PostgresMessageStore', () => {
     await expect(new PostgresMessageStore(sql).listLatest(10)).rejects.toThrow('list boom');
   });
 
+  it('getById maps a row and claim SQL runs', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect((await store.getById('m1'))?.id).toBe('m1');
+    sql.nextRows = [];
+    expect(await store.getById('missing')).toBeUndefined();
+    sql.nextRows = [
+      {
+        id: 'm2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: '2026-08-28T00:00:00.000Z',
+        claimed_until: new Date('2026-08-28T00:01:00.000Z'),
+        nostr_first_attempt_at: '2026-08-28T00:00:30.000Z',
+        nostr_publish_state: 'weird',
+      },
+    ];
+    const mapped = await store.getById('m2');
+    expect(mapped?.nostrPublishState).toBe('pending');
+    expect(mapped?.claimedUntil).toBe(Date.parse('2026-08-28T00:01:00.000Z'));
+    sql.nextRows = [];
+    expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
+    expect(await store.claimUnpublished(5, 1_000, 60_000)).toEqual([]);
+    expect(await store.updateSignedEvent('m1', 'ee'.repeat(32), { id: 'x' })).toBe(false);
+    await store.updatePublishState('m1', 'published', 'public');
+    await store.addSats('m1', 7);
+    expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+  });
+
   it('propagates create execute errors', async () => {
     const sql = new MockSql();
     sql.executeError = new Error('create boom');
@@ -216,6 +282,7 @@ describe('PostgresMessageStore', () => {
         name: 'Ada',
         text: 'hi',
         createdAt: new Date(0),
+        ...unsignedNostrDefaults(),
       }),
     ).rejects.toThrow('create boom');
   });

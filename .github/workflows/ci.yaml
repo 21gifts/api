@@ -14,7 +14,6 @@ permissions:
 jobs:
   check:
     name: Typecheck, Lint, Handbook, E2E-check, Test (100% coverage), Build, E2E
-    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

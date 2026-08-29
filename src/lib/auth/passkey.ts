@@ -4,6 +4,8 @@ import type { Account, AuthStore, PasskeyChallenge } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
+import { logEvent } from '@/lib/log';
+import { ensureAccountNostrKey, generateNostrKeyRecord, type NostrKeygen } from '@/lib/nostr/keys';
 
 /** Browser-facing payload from a passkey begin step. */
 export interface PasskeyBeginResult {
@@ -89,8 +91,9 @@ export async function startPasskeyRegistration(
 
 /**
  * Complete passkey registration: verify attestation, persist the account and
- * credential, issue a session. A duplicate credential id rolls the new
- * account back via `deleteAccount`.
+ * credential, issue a session. When `nostr` is set, generates a custodial
+ * nsec for the new account (rolls the account back if keygen fails). A
+ * duplicate credential id rolls the new account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -99,6 +102,7 @@ export async function startPasskeyRegistration(
  * @param origin - Request `Origin` header (must match `expectedOrigins`).
  * @param challengeId - Id returned by {@link startPasskeyRegistration}.
  * @param credential - Browser attestation JSON.
+ * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
  * @returns Session + account, or a 400 error string.
  */
 export async function finishPasskeyRegistration(
@@ -109,6 +113,7 @@ export async function finishPasskeyRegistration(
   origin: string | undefined,
   challengeId: string,
   credential: unknown,
+  nostr?: { kek: Uint8Array; keygen?: NostrKeygen },
 ): Promise<PasskeyFinishResult> {
   const originErr = requireOrigin(origin, config.expectedOrigins);
   if (originErr !== null) {
@@ -148,6 +153,21 @@ export async function finishPasskeyRegistration(
     createdAt: now,
   };
   await store.createAccount(account);
+  if (nostr !== undefined) {
+    try {
+      const record = await generateNostrKeyRecord(accountId, nostr.kek, nostr.keygen);
+      const written = await store.setNostrKeyIfAbsent(accountId, record);
+      /* v8 ignore next 4 -- CAS loser after a unique register is unreachable */
+      if (written === 'exists') {
+        await store.deleteAccount(accountId);
+        return { ok: false, error: 'Invalid passkey' };
+      }
+      /* v8 ignore next 4 -- keygen/encrypt failures */
+    } catch {
+      await store.deleteAccount(accountId);
+      return { ok: false, error: 'Invalid passkey' };
+    }
+  }
   const stored = await store.createPasskeyCredential({
     credentialId: verified.credentialId,
     publicKey: verified.publicKey,
@@ -193,6 +213,7 @@ export async function startPasskeyAuthentication(
 
 /**
  * Complete passkey authentication: verify assertion, CAS-update signCount, issue a session.
+ * When `nostr` is set, best-effort backfills a missing custodial nsec.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -201,6 +222,7 @@ export async function startPasskeyAuthentication(
  * @param origin - Request `Origin` header.
  * @param challengeId - Id returned by {@link startPasskeyAuthentication}.
  * @param credential - Browser assertion JSON.
+ * @param nostr - Optional KEK (and test-only keygen) to backfill a missing nsec.
  * @returns Session + account, or a 400 error string.
  */
 export async function finishPasskeyAuthentication(
@@ -211,6 +233,7 @@ export async function finishPasskeyAuthentication(
   origin: string | undefined,
   challengeId: string,
   credential: unknown,
+  nostr?: { kek: Uint8Array; keygen?: NostrKeygen },
 ): Promise<PasskeyFinishResult> {
   const originErr = requireOrigin(origin, config.expectedOrigins);
   if (originErr !== null) {
@@ -259,6 +282,14 @@ export async function finishPasskeyAuthentication(
   });
   if (!accepted) {
     return { ok: false, error: 'Invalid passkey' };
+  }
+  if (nostr !== undefined) {
+    try {
+      await ensureAccountNostrKey(store, account.id, nostr.kek, nostr.keygen);
+      /* v8 ignore next 3 -- lazy keygen failure must not block login */
+    } catch {
+      logEvent('nostr.keygen.backfill.failed', { accountId: account.id });
+    }
   }
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };

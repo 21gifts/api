@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-28 (public forum `GET/POST /messages`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (public forum `GET/POST /messages` with `sats`/`payable`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -15,7 +15,9 @@ local boots). When `DATABASE_URL` is set, the process migrates the auth
 schema and uses `PostgresAuthStore` — accounts, passkey challenges,
 passkey credentials, sessions, and pending address verifications survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
-database URL that is set is fail-loud at boot. Public gift statistics
+database URL that is set is fail-loud at boot. On the SQL path,
+`NOSTR_NSEC_KEK` (64 lowercase hex) is also required; missing or malformed
+KEK throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and historical USD using the UTC-calendar-day
@@ -72,6 +74,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
 | GET    | `/messages`                                  | Bearer                   | List public forum thread                   |
 | POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum        |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                        |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)   |
@@ -755,8 +758,10 @@ Success → **Response** `200`:
 
 Public member forum thread. Bearer session required. Returns newest messages
 first (`createdAt` descending, then `id`), capped at **200**. Each message
-exposes the author **name snapshotted at post time**, `text`, and ISO-8601
-`createdAt`. `accountId` is never included in the JSON.
+exposes the author **name snapshotted at post time**, `text`, ISO-8601
+`createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+and `payable` (true when the note is signed and the author has a Lightning
+Address). `accountId` and Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -779,7 +784,9 @@ Success → **Response** `200`:
       "id": "<uuid>",
       "name": "Ada",
       "text": "Thank you!",
-      "createdAt": "2026-08-28T12:00:00.000Z"
+      "createdAt": "2026-08-28T12:00:00.000Z",
+      "sats": 0,
+      "payable": false
     }
   ]
 }
@@ -802,8 +809,11 @@ The account must already have a non-blank display name. The api stores a
 and a timestamp. Text is trimmed; length must be **1–500** characters.
 Newlines (`\n`, `\r`) are allowed; other C0 controls and DEL are rejected.
 The **200** body is the public message object itself (not wrapped in
-`{ messages }`). No `accountId` in the JSON. Kind:1 relay fan-out is not
-wired — this route is custodial HTTP only.
+`{ messages }`). No `accountId` in the JSON. `sats` is 0 and `payable` is
+false until the worker signs the note. Over-limit posters get **429**
+`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
+20/UTC-day). The worker signs a top-level kind:1 and fans out when
+`NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -843,9 +853,32 @@ Success → **Response** `200`:
   "id": "<uuid>",
   "name": "Ada",
   "text": "Thank you!",
-  "createdAt": "2026-08-28T12:00:00.000Z"
+  "createdAt": "2026-08-28T12:00:00.000Z",
+  "sats": 0,
+  "payable": false
 }
 ```
+
+### `POST /messages/:id/invoice`
+
+Signed-in pay-on-note. Bearer session required. Body `{ "sats": <int ≥ 1> }`.
+The api signs a NIP-57 zap request with the **payer** key and returns a BOLT11
+invoice for the **author** Lightning Address. It does **not** increment
+`sats` (that happens when a validated kind:9735 receipt is indexed).
+
+Success → **Response** `200`:
+
+```json
+{ "pr": "lnbc…", "amountSats": 21 }
+```
+
+Missing Bearer → **401** `{ "error": "Unauthorized" }`.
+Malformed body → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
+Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
+Unknown id → **404** `{ "error": "Not found" }`. Unsigned note or author without a Lightning Address →
+**400** `{ "error": "This message cannot be paid yet" }`. LNURL/zap failure →
+**400** `{ "error": "Could not start the Bitcoin payment" }`. Missing KEK or unsigned payer →
+**503** `{ "error": "Messages are unavailable" }`.
 
 ---
 
@@ -865,12 +898,9 @@ recipients. Invoice fetch + preimage proof for the external payer is
 `POST /invoices` / `POST /invoices/proof`. No `/me/recurring` or in-process
 scheduler.
 
-**Custodial per-account NOSTR identities + server-side signing.** On sign-up
-the api would generate a keypair, store `nsec` encrypted, and sign that
-account's events server-side. Not wired yet.
-
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
-NOSTR events (profiles, campaigns, replies). Not wired yet.
+NOSTR events (profiles, campaigns, replies). Not wired yet. Custodial nsec
+and server-side kind:1 / zap signing ship in this version (KEK + worker).
 
 **Readiness probe.** `/healthz` remains liveness-only. A readiness check of
 downstream dependencies is still planned. The LUD-16 metadata cache on

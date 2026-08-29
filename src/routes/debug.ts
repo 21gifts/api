@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import { serializeAccount } from '@/lib/auth/account-json';
+import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 
@@ -14,35 +15,6 @@ export interface DebugRouteDeps {
   store: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-}
-
-/** Public JSON shape of an account (same fields as `/me`). */
-interface AccountResponse {
-  id: string;
-  linkingKey: string | null;
-  role: string;
-  name: string | null;
-  lightningAddress: string | null;
-  lightningAddressVerified: boolean;
-  createdAt: number;
-}
-
-/**
- * Project an account to its public JSON shape.
- *
- * @param account - Stored account.
- * @returns JSON fields matching `/me`.
- */
-function serializeAccount(account: Account): AccountResponse {
-  return {
-    id: account.id,
-    linkingKey: account.linkingKey,
-    role: account.role,
-    name: account.name,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
-    createdAt: account.createdAt,
-  };
 }
 
 /**

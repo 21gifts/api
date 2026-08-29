@@ -121,16 +121,23 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`), capped at 200. Empty list is 200 `{ messages: [] }`. No `accountId` in JSON.
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`, `sats`, and `payable`), capped at 200. Empty list is 200 `{ messages: [] }`. No `accountId` in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. Body `{ text }`. Account must have a non-blank display name. Stores name snapshot, text (1–500 chars after trim; newlines allowed; other C0/DEL rejected), timestamp. 200 is the public message object (not wrapped).
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Messages are unavailable (`messages.create.failed`).
+- **Purpose:** Bearer required. Body `{ text }`. Account must have a non-blank display name. Stores name snapshot, text (1–500 chars after trim; newlines allowed; other C0/DEL rejected), timestamp. 200 is the public message object with `sats` and `payable` (not wrapped).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /messages/:id/invoice
+
+- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay.
+- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`); 503 Messages are unavailable (missing KEK, keygen/sign failure).
+- **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/lightning-address

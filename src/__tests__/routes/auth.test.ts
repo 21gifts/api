@@ -31,6 +31,36 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 describe('auth routes', () => {
+  it('wires an injected nostrKeygen with a KEK', async () => {
+    const { generateSecretKey } = await import('nostr-tools/pure');
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route(
+      '/auth',
+      authRoutes({
+        store,
+        now,
+        allowedOrigins: [ORIGIN],
+        webAuthnRpId: 'localhost',
+        webAuthnRpName: undefined,
+        passkeyCeremony: new FakePasskeyCeremony(),
+        nostrKek: new Uint8Array(32).fill(8),
+        nostrKeygen: { generateSecretKey },
+      }),
+    );
+    const begin = await app.request('/auth/passkey/register/begin', {
+      method: 'POST',
+      headers: { origin: ORIGIN },
+    });
+    expect(begin.status).toBe(200);
+    const body = (await begin.json()) as { challengeId: string };
+    const finish = await app.request('/auth/passkey/register/finish', {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ challengeId: body.challengeId, credential: { test: 'ok' } }),
+    });
+    expect(finish.status).toBe(200);
+  });
+
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {

@@ -19,6 +19,12 @@ describe('createApp', () => {
     warn.mockRestore();
   });
 
+  it('accepts an injected Nostr KEK', async () => {
+    const app = createApp({ nostrKek: new Uint8Array(32).fill(4) });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
   it('mounts /favicon.ico', async () => {
     const app = createApp();
     const res = await app.request('/favicon.ico');

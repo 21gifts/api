@@ -6,7 +6,7 @@
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
-import type { MessageRow } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow, type NostrPublishState } from '@/lib/message';
 
 /**
  * Persistence port for forum messages.
@@ -28,6 +28,36 @@ export interface MessageStore {
    * @returns The stored row (a copy is fine).
    */
   create(row: MessageRow): Promise<MessageRow>;
+
+  /** One row by id, or `undefined`. */
+  getById(id: string): Promise<MessageRow | undefined>;
+
+  /**
+   * Claim unsigned pending rows (`eventId` null) for signing.
+   *
+   * @param limit - Max rows.
+   * @param nowMs - Clock.
+   * @param leaseMs - Lease duration.
+   */
+  claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]>;
+
+  /**
+   * Claim signed-but-unpublished pending rows for fan-out.
+   */
+  claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]>;
+
+  /** Persist a signed event id + JSON. Returns false on event-id collision. */
+  updateSignedEvent(
+    id: string,
+    eventId: string,
+    nostrEvent: Record<string, unknown>,
+  ): Promise<boolean>;
+
+  /** Mark space ACK (park) or published after public quorum. */
+  updatePublishState(id: string, state: NostrPublishState, epoch: string | null): Promise<void>;
+
+  /** Add validated zap sats (idempotent receipt id is the caller's job). */
+  addSats(id: string, extraSats: number): Promise<void>;
 }
 
 /** Idempotent DDL for the forum table (matches `docs/schema/message.sql`). */
@@ -40,6 +70,20 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   created_at timestamptz NOT NULL
 )`,
   `CREATE INDEX IF NOT EXISTS message_created_at_idx ON message (created_at DESC, id DESC)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS event_id text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_state text NOT NULL DEFAULT 'pending'`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_event jsonb`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS claimed_until timestamptz`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_first_attempt_at timestamptz`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_epoch text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_attempts integer NOT NULL DEFAULT 0`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_event_id_uidx ON message (event_id) WHERE event_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
+  event_id text PRIMARY KEY,
+  message_id uuid NOT NULL REFERENCES message (id),
+  sats bigint NOT NULL
+)`,
 ];
 
 /**
@@ -65,7 +109,7 @@ export class InMemoryMessageStore implements MessageStore {
    * @param seed - Optional seed rows; copied into private storage.
    */
   constructor(seed: readonly MessageRow[] = []) {
-    this.#rows = seed.map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) }));
+    this.#rows = seed.map((row) => copyRow(row));
   }
 
   /**
@@ -82,11 +126,7 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.id.localeCompare(a.id);
     });
-    return Promise.resolve(
-      sorted
-        .slice(0, limit)
-        .map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) })),
-    );
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyRow(row)));
   }
 
   /**
@@ -96,16 +136,96 @@ export class InMemoryMessageStore implements MessageStore {
    * @returns A copy of the stored row.
    */
   create(row: MessageRow): Promise<MessageRow> {
-    const stored: MessageRow = {
-      ...row,
-      createdAt: new Date(row.createdAt.getTime()),
-    };
+    const stored = copyRow({ ...unsignedNostrDefaults(), ...row });
     this.#rows.push(stored);
-    return Promise.resolve({
-      ...stored,
-      createdAt: new Date(stored.createdAt.getTime()),
-    });
+    return Promise.resolve(copyRow(stored));
   }
+
+  getById(id: string): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    return Promise.resolve(row === undefined ? undefined : copyRow(row));
+  }
+
+  claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
+    return Promise.resolve(this.#claim((row) => row.eventId === null, limit, nowMs, leaseMs));
+  }
+
+  claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
+    return Promise.resolve(
+      this.#claim(
+        (row) => row.eventId !== null && row.nostrPublishState === 'pending',
+        limit,
+        nowMs,
+        leaseMs,
+      ),
+    );
+  }
+
+  updateSignedEvent(
+    id: string,
+    eventId: string,
+    nostrEvent: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (this.#rows.some((row) => row.eventId === eventId && row.id !== id)) {
+      return Promise.resolve(false);
+    }
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(false);
+    }
+    row.eventId = eventId;
+    row.nostrEvent = { ...nostrEvent };
+    return Promise.resolve(true);
+  }
+
+  updatePublishState(id: string, state: NostrPublishState, epoch: string | null): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined) {
+      row.nostrPublishState = state;
+      row.nostrPublishEpoch = epoch;
+    }
+    return Promise.resolve();
+  }
+
+  addSats(id: string, extraSats: number): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined) {
+      row.sats += extraSats;
+    }
+    return Promise.resolve();
+  }
+
+  #claim(
+    predicate: (row: MessageRow) => boolean,
+    limit: number,
+    nowMs: number,
+    leaseMs: number,
+  ): MessageRow[] {
+    const claimed: MessageRow[] = [];
+    for (const row of this.#rows) {
+      if (claimed.length >= limit) {
+        break;
+      }
+      if (!predicate(row)) {
+        continue;
+      }
+      if (row.claimedUntil !== null && row.claimedUntil > nowMs) {
+        continue;
+      }
+      row.claimedUntil = nowMs + leaseMs;
+      claimed.push(copyRow(row));
+    }
+    return claimed;
+  }
+}
+
+/** Copy a row so callers cannot mutate store internals. */
+function copyRow(row: MessageRow): MessageRow {
+  return {
+    ...row,
+    createdAt: new Date(row.createdAt.getTime()),
+    nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
+  };
 }
 
 /** Row shape selected from `message`. */
@@ -115,16 +235,44 @@ interface MessageSqlRow {
   name: string;
   text: string;
   created_at: Date | string;
+  event_id?: string | null;
+  nostr_publish_state?: string | null;
+  sats?: string | number | null;
+  nostr_event?: Record<string, unknown> | null;
+  claimed_until?: Date | string | null;
+  nostr_first_attempt_at?: Date | string | null;
+  nostr_publish_epoch?: string | null;
+  nostr_attempts?: number | null;
+}
+
+function optionalDate(value: Date | string | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value instanceof Date ? value.getTime() : Date.parse(value);
 }
 
 /** Map a SQL row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
+  const defaults = unsignedNostrDefaults();
+  const state = row.nostr_publish_state;
   return {
     id: row.id,
     accountId: row.account_id,
     name: row.name,
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    eventId: row.event_id ?? defaults.eventId,
+    nostrPublishState:
+      state === 'pending' || state === 'published' || state === 'failed'
+        ? state
+        : defaults.nostrPublishState,
+    sats: Number(row.sats ?? defaults.sats),
+    nostrEvent: row.nostr_event ?? defaults.nostrEvent,
+    claimedUntil: optionalDate(row.claimed_until),
+    nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
+    nostrPublishEpoch: row.nostr_publish_epoch ?? defaults.nostrPublishEpoch,
+    nostrAttempts: row.nostr_attempts ?? defaults.nostrAttempts,
   };
 }
 
@@ -149,7 +297,9 @@ export class PostgresMessageStore implements MessageStore {
    */
   async listLatest(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT id, account_id, name, text, created_at FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
+      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+       FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
       [limit],
     );
     return rows.map((row) => mapMessageRow(row));
@@ -162,13 +312,93 @@ export class PostgresMessageStore implements MessageStore {
    * @returns The input row after a successful insert (a copy).
    */
   async create(row: MessageRow): Promise<MessageRow> {
+    const stored = copyRow({ ...unsignedNostrDefaults(), ...row });
     await this.#sql.execute(
-      `INSERT INTO message (id, account_id, name, text, created_at) VALUES ($1,$2,$3,$4,$5)`,
-      [row.id, row.accountId, row.name, row.text, row.createdAt],
+      `INSERT INTO message (id, account_id, name, text, created_at, nostr_publish_state, sats)
+       VALUES ($1,$2,$3,$4,$5,'pending',0)`,
+      [stored.id, stored.accountId, stored.name, stored.text, stored.createdAt],
     );
-    return {
-      ...row,
-      createdAt: new Date(row.createdAt.getTime()),
-    };
+    return stored;
+  }
+
+  async getById(id: string): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+       FROM message WHERE id = $1`,
+      [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
+    const until = new Date(nowMs + leaseMs);
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET claimed_until = $1
+       WHERE id IN (
+         SELECT id FROM message
+         WHERE event_id IS NULL AND nostr_publish_state = 'pending'
+           AND (claimed_until IS NULL OR claimed_until < $2)
+         ORDER BY created_at ASC, id ASC
+         LIMIT $3
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+                 nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`,
+      [until, new Date(nowMs), limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
+    const until = new Date(nowMs + leaseMs);
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET claimed_until = $1
+       WHERE id IN (
+         SELECT id FROM message
+         WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+           AND (claimed_until IS NULL OR claimed_until < $2)
+         ORDER BY created_at ASC, id ASC
+         LIMIT $3
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+                 nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`,
+      [until, new Date(nowMs), limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async updateSignedEvent(
+    id: string,
+    eventId: string,
+    nostrEvent: Record<string, unknown>,
+  ): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ id: string }>(
+        `UPDATE message SET event_id = $2, nostr_event = $3::jsonb WHERE id = $1 RETURNING id`,
+        [id, eventId, JSON.stringify(nostrEvent)],
+      );
+      return rows[0] !== undefined;
+      /* v8 ignore next 3 -- unique_violation on event_id */
+    } catch {
+      return false;
+    }
+  }
+
+  async updatePublishState(
+    id: string,
+    state: NostrPublishState,
+    epoch: string | null,
+  ): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message SET nostr_publish_state = $2, nostr_publish_epoch = $3 WHERE id = $1`,
+      [id, state, epoch],
+    );
+  }
+
+  async addSats(id: string, extraSats: number): Promise<void> {
+    await this.#sql.execute(`UPDATE message SET sats = sats + $2 WHERE id = $1`, [id, extraSats]);
   }
 }

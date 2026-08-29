@@ -6,6 +6,7 @@ import type {
   AccountRole,
   AddressVerification,
   AuthStore,
+  NostrKeyRecord,
   PasskeyChallenge,
   PasskeyChallengeType,
   PasskeyCredential,
@@ -281,6 +282,51 @@ export class PostgresAuthStore implements AuthStore {
       [credential.credentialId, credential.signCount],
     );
     return rows[0] !== undefined;
+  }
+
+  async getNostrPublicKey(accountId: string): Promise<string | undefined> {
+    const rows = await this.#sql.query<{ nostr_pubkey: string | null }>(
+      'SELECT nostr_pubkey FROM account WHERE id = $1',
+      [accountId],
+    );
+    const pubkey = rows[0]?.nostr_pubkey;
+    return pubkey === null || pubkey === undefined ? undefined : pubkey;
+  }
+
+  async getNostrSecret(accountId: string): Promise<Uint8Array | undefined> {
+    const rows = await this.#sql.query<{ nostr_nsec_ciphertext: Uint8Array | null }>(
+      'SELECT nostr_nsec_ciphertext FROM account WHERE id = $1',
+      [accountId],
+    );
+    const blob = rows[0]?.nostr_nsec_ciphertext;
+    return blob === null || blob === undefined ? undefined : new Uint8Array(blob);
+  }
+
+  async setNostrKeyIfAbsent(
+    accountId: string,
+    record: NostrKeyRecord,
+  ): Promise<'inserted' | 'exists'> {
+    const rows = await this.#sql.query<{ nostr_pubkey: string }>(
+      `UPDATE account
+       SET nostr_pubkey = $2,
+           nostr_nsec_ciphertext = $3,
+           nostr_kek_id = $4,
+           nostr_key_custody = $5,
+           nostr_key_created_at = now()
+       WHERE id = $1 AND nostr_pubkey IS NULL
+       RETURNING nostr_pubkey`,
+      [accountId, record.pubkey, record.ciphertext, record.kekId, record.custody],
+    );
+    return rows[0] === undefined ? 'exists' : 'inserted';
+  }
+
+  async listAccountIdsWithoutNostrKey(limit: number): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id FROM account WHERE nostr_pubkey IS NULL
+       ORDER BY created_at ASC, id ASC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => row.id);
   }
 
   async #evictExpiredSessions(now: number): Promise<void> {
