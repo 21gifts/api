@@ -102,6 +102,7 @@ describe('indexZapReceipt', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     const ok = await indexZapReceipt({

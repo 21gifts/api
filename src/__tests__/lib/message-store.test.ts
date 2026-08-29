@@ -382,6 +382,7 @@ describe('PostgresMessageStore', () => {
       text: 'hello with photo',
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
       hasPhoto: true,
+      ...unsignedNostrDefaults(),
     };
     await new PostgresMessageStore(sql).create(row, JPEG);
     expect(sql.executes[0]?.params[3]).toBe('hello with photo');

@@ -60,6 +60,7 @@ async function seed(): Promise<{
     name: 'Ada',
     text: 'hello',
     createdAt: new Date('2026-08-28T00:00:00.000Z'),
+    hasPhoto: false,
     ...unsignedNostrDefaults(),
   });
   return { auth, messages };
@@ -358,6 +359,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       text: 'hello',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     await runNostrWorkerTick(

@@ -174,6 +174,7 @@ describe('GET /messages', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -724,6 +725,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -820,6 +822,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -876,6 +879,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     const app = new Hono().route(
@@ -907,6 +911,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
