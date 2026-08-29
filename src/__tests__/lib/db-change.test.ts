@@ -36,6 +36,15 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/nonce/);
     expect(joined).toMatch(/view_key/);
     expect(joined).toMatch(/\$redact_view_key\$/);
+    const redactBlock = joined.slice(joined.indexOf('$redact_view_key$'));
+    const dropAt = redactBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
+    const liveMatchAt = redactBlock.indexOf("a.view_key = d.after ->> 'view_key'");
+    const recreateAt = redactBlock.lastIndexOf(
+      'CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change',
+    );
+    expect(dropAt).toBeGreaterThan(-1);
+    expect(liveMatchAt).toBeGreaterThan(dropAt);
+    expect(recreateAt).toBeGreaterThan(liveMatchAt);
     expect(joined).toMatch(/trg_db_change/);
     expect(joined).toMatch(/append-only/);
     expect(joined).toMatch(/BEFORE TRUNCATE/);
