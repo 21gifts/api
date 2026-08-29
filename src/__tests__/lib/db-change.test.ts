@@ -45,19 +45,13 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
 });
 
 describe('migrateDbChangeSchema', () => {
-  it('enables pgcrypto then applies the rest in one transaction', async () => {
+  it('runs every DB_CHANGE_SCHEMA_SQL statement', async () => {
     const sql = new MockSql();
     await migrateDbChangeSchema(sql);
-    expect(sql.executes).toHaveLength(2);
-    expect(sql.executes[0]?.text).toBe(DB_CHANGE_SCHEMA_SQL[0]);
-    const batch = sql.executes[1]?.text ?? '';
-    expect(batch.startsWith('BEGIN;')).toBe(true);
-    expect(batch.endsWith('COMMIT;')).toBe(true);
-    expect(batch).toContain('CREATE TABLE IF NOT EXISTS db_change');
-    expect(batch).toContain('trg_db_change');
+    expect(sql.executes.map((e) => e.text)).toEqual([...DB_CHANGE_SCHEMA_SQL]);
   });
 
-  it('propagates a failed batch', async () => {
+  it('propagates a failed statement', async () => {
     const sql = new MockSql();
     sql.failAt = 2;
     await expect(migrateDbChangeSchema(sql)).rejects.toThrow(/ddl failed/);

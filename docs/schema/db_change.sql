@@ -73,13 +73,14 @@ BEGIN
 END;
 $dbch$;
 
-DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
-
-CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
-
-DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
-
-CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
+DO $guard$
+BEGIN
+  DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
+  CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
+  DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
+  CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
+END;
+$guard$;
 
 DO $attach$
 DECLARE r record;

@@ -123,7 +123,7 @@
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; `CREATE EXTENSION` first, then remaining DDL in one `BEGIN`/`COMMIT` batch matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop).
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop). Guard DROP/CREATE is one `DO` block.
 - **Used by:** `openBootStores` when SQL opens, immediately after `migrateContactSchema`.
 
 ## Function: DB_CHANGE_SCHEMA_SQL

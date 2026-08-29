@@ -68,10 +68,14 @@ BEGIN
   RAISE EXCEPTION 'db_change is append-only';
 END;
 $dbch$;`,
-  `DROP TRIGGER IF EXISTS db_change_immutable ON db_change;`,
-  `CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();`,
-  `DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;`,
-  `CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();`,
+  `DO $guard$
+BEGIN
+  DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
+  CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
+  DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
+  CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
+END;
+$guard$;`,
   `DO $attach$
 DECLARE r record;
 BEGIN
@@ -85,16 +89,13 @@ $attach$;`,
 ];
 
 /**
- * Apply {@link DB_CHANGE_SCHEMA_SQL}. `CREATE EXTENSION` runs first, then the
- * remaining statements in one `BEGIN`/`COMMIT` batch so trigger drop/create
- * is not visible to concurrent writers.
+ * Apply {@link DB_CHANGE_SCHEMA_SQL} in order. Idempotent.
  *
  * @param sql - Parameter-bound SQL client.
- * @returns Resolves when every statement has committed.
+ * @returns Resolves when every statement has executed.
  */
 export async function migrateDbChangeSchema(sql: SqlClient): Promise<void> {
-  for (const statement of DB_CHANGE_SCHEMA_SQL.slice(0, 1)) {
+  for (const statement of DB_CHANGE_SCHEMA_SQL) {
     await sql.execute(statement);
   }
-  await sql.execute(`BEGIN;\n${DB_CHANGE_SCHEMA_SQL.slice(1).join('\n')}\nCOMMIT;`);
 }
