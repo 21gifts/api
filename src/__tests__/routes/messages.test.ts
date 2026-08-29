@@ -488,6 +488,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -581,6 +582,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'unsigned',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     await messageStore.create({
@@ -589,6 +591,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'payable',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -689,6 +692,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
