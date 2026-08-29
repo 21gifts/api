@@ -16,7 +16,7 @@ import {
 import type { MessageStore } from '@/lib/message-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { resolveWriteSet } from '@/lib/nostr/relays';
+import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { bearerToken } from '@/routes/me';
@@ -176,8 +176,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         c.header('Retry-After', '10');
         return c.json({ error: 'Too many payments' }, 429);
       }
-      const writeSet = resolveWriteSet(process.env);
-      const relays = [writeSet.spaceUrl, ...writeSet.publicUrls];
+      const relays = resolveZapRelays(process.env);
       const unsigned = buildZapRequest({
         recipientPubkey,
         eventId: row.eventId,

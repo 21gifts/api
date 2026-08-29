@@ -8,6 +8,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier } from '@/lib/nostr/query';
+import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -571,6 +572,33 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     expect((await messages.getById('m-zap'))?.sats).toBe(21);
+  });
+
+  it('queries zap relays including public defaults when publish-public is off', async () => {
+    const eventId = 'ab'.repeat(32);
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', eventId, {
+      id: eventId,
+      kind: 1,
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    const querier = new RecordingQuerier();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      }),
+    );
+    expect(querier.calls[0]?.urls).toEqual(['wss://space', ...DEFAULT_RELAY_PUBLIC]);
   });
 });
 

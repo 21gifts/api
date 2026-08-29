@@ -6,7 +6,7 @@ import { buildKind1Event } from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
-import { resolveWriteSet, type ResolvedWriteSet } from '@/lib/nostr/relays';
+import { resolveWriteSet, resolveZapRelays, type ResolvedWriteSet } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 
@@ -52,8 +52,9 @@ export interface NostrWorkerDeps {
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Each tick also queries
- * the write-set for kind:9735 receipts and indexes validated ones onto `sats`,
- * even when publish is off.
+ * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
+ * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
+ * when publish is off.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
@@ -65,7 +66,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   if (writeSet.publishEnabled) {
     await publishBatch(deps, writeSet, nowMs);
   }
-  const urls = [writeSet.spaceUrl, ...writeSet.publicUrls];
+  const urls = resolveZapRelays(deps.env);
   await indexOpenZapReceipts({
     store: deps.messages,
     auth: deps.auth,

@@ -643,43 +643,62 @@ describe('POST /messages/:id/invoice', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
-      const url = String(input);
-      if (url.includes('/.well-known/lnurlp/')) {
-        return new Response(
-          JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
-            minSendable: 1000,
-            maxSendable: 10_000_000_000,
-            allowsNostr: true,
-            nostrPubkey: 'aa'.repeat(32),
-          }),
-          { headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
-        headers: { 'content-type': 'application/json' },
+    const prevPublishPublic = process.env['NOSTR_PUBLISH_PUBLIC'];
+    delete process.env['NOSTR_PUBLISH_PUBLIC'];
+    let callbackUrl: string | undefined;
+    try {
+      const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/.well-known/lnurlp/')) {
+          return new Response(
+            JSON.stringify({
+              callback: 'https://walletofsatoshi.com/lnurlp/callback',
+              minSendable: 1000,
+              maxSendable: 10_000_000_000,
+              allowsNostr: true,
+              nostrPubkey: 'aa'.repeat(32),
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          );
+        }
+        callbackUrl = url;
+        return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
       });
-    };
-    const app = new Hono().route(
-      '/messages',
-      messagesRoutes({
-        store: messageStore,
-        authStore,
-        now,
-        nostrKek: kek,
-        fetchImpl,
-        postLimiter: new PostRateLimiter(),
-        invoiceLimiter: new InvoiceRateLimiter(),
-      }),
-    );
-    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ sats: 21 }),
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(callbackUrl).toBeDefined();
+      const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
+      expect(nostrParam).toBeTruthy();
+      const zapRequest = JSON.parse(nostrParam ?? '') as { tags: string[][] };
+      const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
+      expect(relaysTag).toBeDefined();
+      expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
+    } finally {
+      if (prevPublishPublic === undefined) {
+        delete process.env['NOSTR_PUBLISH_PUBLIC'];
+      } else {
+        process.env['NOSTR_PUBLISH_PUBLIC'] = prevPublishPublic;
+      }
+    }
   });
 
   it('ensures a Nostr key for a payer who has none yet', async () => {
