@@ -63,6 +63,160 @@ async function seed(): Promise<{
 }
 
 describe('runNostrWorkerTick', () => {
+  it('re-signs pending kind:1 events that lack t=bitcoin', async () => {
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello',
+      tags: [
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+      created_at: 1,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    const row = await messages.getById('m1');
+    expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(row?.eventId).not.toBe('ab'.repeat(32));
+    expect(row?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('re-signs pending rows with a null stored event', async () => {
+    const { auth, messages } = await seed();
+    await messages.create({
+      id: 'm-null',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'later',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+      nostrEvent: null,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('m-null'))?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('re-signs a legacy note even when newer bitcoin-tagged notes are pending', async () => {
+    const { auth, messages } = await seed();
+    const modern = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    for (let i = 0; i < 20; i += 1) {
+      const id = `n${String(i).padStart(2, '0')}`;
+      await messages.create({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: `n${i}`,
+        createdAt: new Date(Date.parse('2026-08-27T00:00:00.000Z') + i * 1000),
+        ...unsignedNostrDefaults(),
+      });
+      await messages.updateSignedEvent(id, `${i.toString(16).padStart(2, '0')}`.repeat(32), {
+        kind: 1,
+        content: `n${i}`,
+        tags: modern,
+        created_at: 1,
+      });
+    }
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello',
+      tags: [['t', '21gifts']],
+      created_at: 1,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('leaves pending kind:1 events that already have t=bitcoin', async () => {
+    const { auth, messages } = await seed();
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    const eventId = 'cd'.repeat(32);
+    await messages.updateSignedEvent('m1', eventId, {
+      kind: 1,
+      content: 'hello',
+      tags,
+      created_at: 1,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('m1'))?.eventId).toBe(eventId);
+  });
+
+  it('re-signs pending rows whose stored event has no tag array', async () => {
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', 'ef'.repeat(32), { kind: 1, content: 'hello' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
   it('signs without publishing when NOSTR_PUBLISH is off', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -366,7 +520,15 @@ describe('runNostrWorkerTick', () => {
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
       ...unsignedNostrDefaults(),
       eventId,
-      nostrEvent: { id: eventId, kind: 1 },
+      nostrEvent: {
+        id: eventId,
+        kind: 1,
+        tags: [
+          ['t', 'bitcoin'],
+          ['t', '21gifts'],
+          ['r', 'https://21.gifts'],
+        ],
+      },
     });
     const querier = new RecordingQuerier();
     querier.events = [

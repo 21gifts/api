@@ -9,6 +9,17 @@ import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type MessageRow, type NostrPublishState } from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
+function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return true;
+  }
+  const tags = event['tags'];
+  if (!Array.isArray(tags)) {
+    return true;
+  }
+  return !tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
+}
+
 /**
  * Persistence port for forum messages.
  */
@@ -49,6 +60,23 @@ export interface MessageStore {
    * Claim signed-but-unpublished pending rows for fan-out.
    */
   claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]>;
+
+  /**
+   * Pending signed rows whose stored kind:1 lacks `t=bitcoin` (no lease).
+   * Oldest `createdAt` then `id` first. Includes `nostrEvent === null`.
+   *
+   * @param limit - Max rows.
+   */
+  listPendingSigned(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Drop the stored kind:1 so the worker can re-sign (still pending).
+   * No-op unless `eventId` still matches `expectedEventId`.
+   *
+   * @param id - Message id.
+   * @param expectedEventId - Event id observed when the row was listed.
+   */
+  clearSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
@@ -180,6 +208,37 @@ export class InMemoryMessageStore implements MessageStore {
         leaseMs,
       ),
     );
+  }
+
+  listPendingSigned(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.nostrPublishState === 'pending' &&
+          pendingKind1LacksBitcoinTag(row.nostrEvent),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (
+      row !== undefined &&
+      row.nostrPublishState === 'pending' &&
+      row.eventId === expectedEventId
+    ) {
+      row.eventId = null;
+      row.nostrEvent = null;
+      row.claimedUntil = null;
+    }
+    return Promise.resolve();
   }
 
   updateSignedEvent(
@@ -413,6 +472,41 @@ export class PostgresMessageStore implements MessageStore {
       [until, new Date(nowMs), limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listPendingSigned(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+       FROM message
+       WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+         AND (
+           nostr_event IS NULL
+           OR NOT EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(COALESCE(nostr_event->'tags', 'null'::jsonb)) = 'array'
+                 THEN nostr_event->'tags'
+                 ELSE '[]'::jsonb
+               END
+             ) AS tag
+             WHERE tag->>0 = 't' AND tag->>1 = 'bitcoin'
+           )
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
+       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2`,
+      [id, expectedEventId],
+    );
   }
 
   async updateSignedEvent(

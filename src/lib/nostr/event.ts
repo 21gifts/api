@@ -6,11 +6,15 @@
  */
 
 /** Frozen kind:1 tags, in this order. */
-export const KIND1_TAGS: readonly [readonly ['t', '21gifts'], readonly ['r', 'https://21.gifts']] =
-  [
-    ['t', '21gifts'],
-    ['r', 'https://21.gifts'],
-  ] as const;
+export const KIND1_TAGS: readonly [
+  readonly ['t', 'bitcoin'],
+  readonly ['t', '21gifts'],
+  readonly ['r', 'https://21.gifts'],
+] = [
+  ['t', 'bitcoin'],
+  ['t', '21gifts'],
+  ['r', 'https://21.gifts'],
+] as const;
 
 /** Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}). */
 export function kind1Tags(): string[][] {

@@ -50,8 +50,9 @@ export interface NostrWorkerDeps {
  * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
- * until a public ACK makes `published`/`public`. Each tick also queries the
- * write-set for kind:9735 receipts and indexes validated ones onto `sats`,
+ * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
+ * `t=bitcoin` is dropped and re-signed before fan-out. Each tick also queries
+ * the write-set for kind:9735 receipts and indexes validated ones onto `sats`,
  * even when publish is off.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
@@ -59,6 +60,7 @@ export interface NostrWorkerDeps {
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
   const nowMs = deps.now();
+  await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
     await publishBatch(deps, writeSet, nowMs);
@@ -74,6 +76,29 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
   });
+}
+
+/**
+ * Drop stored kind:1 JSON that predates `t=bitcoin` so `signBatch` rebuilds it.
+ */
+async function resignLegacyKind1Tags(deps: NostrWorkerDeps): Promise<void> {
+  const rows = await deps.messages.listPendingSigned(WORKER_BATCH);
+  for (const row of rows) {
+    if (!kind1HasBitcoinTag(row.nostrEvent)) {
+      await deps.messages.clearSignedEvent(row.id, row.eventId);
+    }
+  }
+}
+
+function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return false;
+  }
+  const tags = event['tags'];
+  if (!Array.isArray(tags)) {
+    return false;
+  }
+  return tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
 }
 
 async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
@@ -127,6 +152,12 @@ async function publishBatch(
     if (row.nostrEvent === null) {
       continue;
     }
+    /* v8 ignore start -- overlapping tick may still hold a pre-resign snapshot */
+    if (!kind1HasBitcoinTag(row.nostrEvent)) {
+      await deps.messages.clearSignedEvent(row.id, row.eventId);
+      continue;
+    }
+    /* v8 ignore stop */
     try {
       const acks = await deps.publisher.publish(row.nostrEvent, urls, RELAY_TIMEOUT_MS);
       const space = spaceAcked(acks, writeSet.spaceUrl);

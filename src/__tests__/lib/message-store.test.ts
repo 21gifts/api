@@ -188,6 +188,52 @@ describe('InMemoryMessageStore', () => {
     expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(false);
     expect((await store.getById('a'))?.sats).toBe(21);
   });
+
+  it('listPendingSigned and clearSignedEvent round-trip in memory', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.updateSignedEvent('a', 'ab'.repeat(32), { id: 'x' });
+    expect((await store.listPendingSigned(10)).map((row) => row.id)).toEqual(['a']);
+    await store.clearSignedEvent('a', 'ab'.repeat(32));
+    expect(await store.listPendingSigned(10)).toEqual([]);
+    expect((await store.getById('a'))?.eventId).toBeNull();
+    await store.clearSignedEvent('missing', 'ff'.repeat(32));
+    await store.updateSignedEvent('a', 'cd'.repeat(32), {
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+      ],
+    });
+    await store.clearSignedEvent('a', 'ab'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
+    await store.updatePublishState('a', 'published', 'space');
+    await store.clearSignedEvent('a', 'cd'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
+  });
+
+  it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(LATE);
+    await store.create(EARLY);
+    await store.create(TIE_HIGH);
+    await store.create(TIE_LOW);
+    await store.updateSignedEvent('b', '11'.repeat(32), {
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+      ],
+    });
+    await store.updateSignedEvent('a', '22'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    await store.updateSignedEvent('z', '33'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    await store.updateSignedEvent('m', '44'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    expect((await store.listPendingSigned(10)).map((row) => row.id)).toEqual(['a', 'm', 'z']);
+  });
 });
 
 describe('PostgresMessageStore', () => {
@@ -367,5 +413,30 @@ describe('PostgresMessageStore', () => {
     ];
     const mapped = await new PostgresMessageStore(sql).getById('m1');
     expect(mapped?.nostrEvent?.['id']).toBe('abc123');
+  });
+
+  it('listPendingSigned and clearSignedEvent hit Postgres', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect((await store.listPendingSigned(7))[0]?.id).toBe('m1');
+    expect(sql.queries.at(-1)?.text).toMatch(/event_id IS NOT NULL/);
+    expect(sql.queries.at(-1)?.text).toMatch(/tag->>1 = 'bitcoin'/);
+    expect(sql.queries.at(-1)?.text).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
+    await store.clearSignedEvent('m1', 'ab'.repeat(32));
+    expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
+    expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
+    expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
   });
 });
