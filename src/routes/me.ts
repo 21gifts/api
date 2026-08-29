@@ -87,7 +87,7 @@ const confirmBody = z.object({ nonce: z.string() });
  *
  * @param deps - Shared store, clock, payer, and fetch.
  * @returns A Hono app exposing account, display-name, forum-laws dismiss,
- * link/unlink, and verification routes.
+ * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()

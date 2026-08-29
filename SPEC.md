@@ -216,7 +216,8 @@ ID).
     "lightningAddressVerified": false,
     "forumLawsDismissed": false,
     "viewKey": "<64-hex>",
-    "createdAt": 0
+    "createdAt": 0,
+    "rulesAgreedAt": null
   }
 }
 ```
@@ -590,13 +591,14 @@ Success → **Response** `200`:
       "lightningAddress": null,
       "lightningAddressVerified": false,
       "forumLawsDismissed": false,
-      "createdAt": 0
+      "createdAt": 0,
+      "rulesAgreedAt": null
     }
   ]
 }
 ```
 
-The listing uses the eight-field dump and never includes `viewKey`.
+The listing uses the nine-field dump and never includes `viewKey`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
