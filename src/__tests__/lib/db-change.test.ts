@@ -32,6 +32,8 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/nonce/);
     expect(joined).toMatch(/trg_db_change/);
     expect(joined).toMatch(/append-only/);
+    expect(joined).toMatch(/BEFORE TRUNCATE/);
+    expect(joined).toMatch(/outj ->> k/);
     expect(joined).toMatch(/IS NOT DISTINCT FROM/);
     expect(joined).toMatch(/tablename <> 'db_change'/);
     expect(joined).toMatch(/EXECUTE PROCEDURE/);

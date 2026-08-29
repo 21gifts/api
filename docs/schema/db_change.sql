@@ -2,7 +2,7 @@
 -- public table (except db_change) write redacted before/after JSON. Secret
 -- columns token, challenge, nostr_nsec_ciphertext, and nonce are stored as
 -- SHA-256 hex; other columns including name stay plaintext. The log itself
--- rejects UPDATE and DELETE.
+-- rejects UPDATE, DELETE, and TRUNCATE.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -35,7 +35,7 @@ BEGIN
       outj := jsonb_set(
         outj,
         ARRAY[k],
-        to_jsonb(encode(digest(convert_to((outj -> k)::text, 'UTF8'), 'sha256'), 'hex'))
+        to_jsonb(encode(digest(convert_to(outj ->> k, 'UTF8'), 'sha256'), 'hex'))
       );
     END IF;
   END LOOP;
@@ -76,6 +76,10 @@ $dbch$;
 DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
 
 CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
+
+DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
+
+CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
 
 DO $attach$
 DECLARE r record;

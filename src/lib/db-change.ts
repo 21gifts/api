@@ -33,7 +33,7 @@ BEGIN
       outj := jsonb_set(
         outj,
         ARRAY[k],
-        to_jsonb(encode(digest(convert_to((outj -> k)::text, 'UTF8'), 'sha256'), 'hex'))
+        to_jsonb(encode(digest(convert_to(outj ->> k, 'UTF8'), 'sha256'), 'hex'))
       );
     END IF;
   END LOOP;
@@ -70,6 +70,8 @@ END;
 $dbch$;`,
   `DROP TRIGGER IF EXISTS db_change_immutable ON db_change;`,
   `CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();`,
+  `DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;`,
+  `CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();`,
   `DO $attach$
 DECLARE r record;
 BEGIN
