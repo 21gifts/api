@@ -265,17 +265,17 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                                                 |
-| -------------------------- | -------------- | ----------------------------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                                       |
-| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts |
-| `role`                     | string         | `basis` or `moderator`                                                  |
-| `name`                     | string \| null | Display name, or `null` until set                                       |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                        |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                       |
-| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed      |
+| Field                      | Type           | Meaning                                                                                       |
+| -------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                                             |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                       |
+| `role`                     | string         | `basis` or `moderator`                                                                        |
+| `name`                     | string \| null | Display name, or `null` until set                                                             |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                              |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                             |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                            |
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
-| `createdAt`                | number         | Creation time (epoch ms)                                                |
+| `createdAt`                | number         | Creation time (epoch ms)                                                                      |
 
 ### `GET /view/:viewKey`
 

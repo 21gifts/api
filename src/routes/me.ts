@@ -132,12 +132,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (current.forumLawsDismissed === true) {
-        return c.json(serializeAccount(current), 200);
+        return c.json(serializeOwnerAccount(current), 200);
       }
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

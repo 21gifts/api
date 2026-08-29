@@ -93,7 +93,7 @@ describe('PostgresAuthStore', () => {
     expect(account?.viewKey).toBe(VIEW_KEY);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
-    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
   });
 
@@ -174,6 +174,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
       }),
@@ -191,6 +192,7 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
       }),

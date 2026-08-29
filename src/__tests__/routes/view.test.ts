@@ -43,6 +43,7 @@ describe('GET /view/:viewKey', () => {
       name: 'Ada',
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
+      forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
     });

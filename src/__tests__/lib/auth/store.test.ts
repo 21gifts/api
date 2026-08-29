@@ -80,6 +80,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(false);
@@ -91,6 +92,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: true,
+      viewKey: 'd'.repeat(64),
       createdAt: 2,
     });
     expect((await store.getAccount('acc-true'))?.forumLawsDismissed).toBe(true);
@@ -102,6 +104,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: true,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(true);
@@ -585,6 +588,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
     });
@@ -602,6 +606,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
     });
@@ -612,6 +617,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey,
       createdAt: 2,
     });
@@ -631,6 +637,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: oldKey,
       createdAt: 1,
     });
@@ -641,6 +648,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: newKey,
       createdAt: 1,
     });
@@ -657,6 +665,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: '1'.repeat(64),
       createdAt: 1,
     });
@@ -667,6 +676,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: '2'.repeat(64),
       createdAt: 2,
     });
@@ -677,6 +687,7 @@ describe('InMemoryAuthStore', () => {
       name: 'stolen',
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: '1'.repeat(64),
       createdAt: 2,
     });
@@ -695,6 +706,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
     });
@@ -707,6 +719,7 @@ describe('InMemoryAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey,
       createdAt: 2,
     });
