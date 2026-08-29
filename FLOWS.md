@@ -74,7 +74,8 @@ or unlink a LUD-16 Lightning Address:
   rejected and not stored.
 - `DELETE /me/lightning-address` — unlink
 
-The **verified** badge is proof-of-control:
+Proof-of-control of the linked Lightning Address is the flag
+`lightningAddressVerified` (not the forum role **Verified**):
 
 1. `POST /me/lightning-address/verification` (no body). The api pays 1 sat, or
    the provider's `minSendable` when higher, capped at 10 sat, with a LUD-12
