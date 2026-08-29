@@ -373,16 +373,16 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, Lightning Address, verification).
+- **Purpose:** Authenticated account routes (name, Lightning Address link with live LNURL resolve + zap metadata check, verification).
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (post/invoice rate limiters).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits; 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -467,7 +467,7 @@
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
 - **Inputs:** address + fetchImpl.
 - **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or error.
-- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
+- **Used by:** `lightningAddressRoutes`, `POST /me/lightning-address` (`meRoutes`), `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
 
 ## Function: resolveSession
 

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (`POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -55,32 +55,32 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                    |
-| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------ |
-| GET    | `/healthz`                                   | none                     | Liveness                                   |
-| GET    | `/info`                                      | none                     | Service identity                           |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                       |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                   |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)              |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options            |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session          |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options             |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session            |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                    |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                   |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace receiver address (unverified) |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                             |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment     |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                   |
-| POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum        |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                        |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)   |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics        |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)       |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof           |
+| Method | Path                                         | Auth                     | Purpose                                  |
+| ------ | -------------------------------------------- | ------------------------ | ---------------------------------------- |
+| GET    | `/healthz`                                   | none                     | Liveness                                 |
+| GET    | `/info`                                      | none                     | Service identity                         |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                     |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                 |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)            |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options          |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session        |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options           |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session          |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                  |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                 |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve    |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                           |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment   |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history        |
+| GET    | `/messages`                                  | Bearer                   | List public forum thread                 |
+| POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum      |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                      |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)         |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`) |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`) |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics      |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)     |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof         |
 
 ### `GET /healthz`
 
@@ -293,7 +293,10 @@ Success → **Response** `200` with the updated account (same shape as
 
 ### `POST /me/lightning-address`
 
-Link or replace the receiver Lightning Address. Body:
+Link or replace the receiver Lightning Address. After the LUD-16 shape check,
+the api live-resolves the well-known LNURL-pay metadata and requires zap
+support (`allowsNostr === true` and a non-empty `nostrPubkey`). Placeholder or
+unreachable addresses are rejected and not stored. Body:
 
 ```json
 { "address": "name@domain.tld" }
@@ -312,6 +315,13 @@ Address fails LUD-16 shape check, or trimmed length `> 255` → **Response**
 
 ```json
 { "error": "Not a valid Lightning Address (expected name@domain)" }
+```
+
+Well-known resolve fails, or metadata lacks zap support → **Response** `400`
+(account unchanged; logs `account.lightning_address.resolve_failed`):
+
+```json
+{ "error": "Lightning Address could not be resolved" }
 ```
 
 Success → **Response** `200` with the updated account (same shape as
@@ -882,10 +892,14 @@ Success → **Response** `200`:
 
 Missing Bearer → **401** `{ "error": "Unauthorized" }`.
 Malformed body → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
-Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
-Unknown id → **404** `{ "error": "Not found" }`. Unsigned note or author without a Lightning Address →
-**400** `{ "error": "This message cannot be paid yet" }`. LNURL/zap failure →
-**400** `{ "error": "Could not start the Bitcoin payment" }`. Missing KEK or unsigned payer →
+Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a Lightning Address, or missing recipient pubkey →
+**400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
+**503** `{ "error": "Messages are unavailable" }` (before the limiter).
+Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
+checked only after auth, amount, payable, and KEK checks succeed, so early
+400/404/401/503 do not consume quota. LNURL/zap or sign failure after the
+limiter still counts. LNURL/zap failure →
+**400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
 
 ---

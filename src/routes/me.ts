@@ -7,7 +7,7 @@ import { serializeAccount } from '@/lib/auth/account-json';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
-import type { FetchFn } from '@/lib/lnurl-pay';
+import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
@@ -132,6 +132,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const address = normalizeLightningAddress(parsed.data.address);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+      const zapPubkey =
+        resolved.ok && resolved.metadata.allowsNostr === true
+          ? resolved.metadata.nostrPubkey
+          : undefined;
+      if (zapPubkey === undefined || zapPubkey.trim() === '') {
+        logEvent('account.lightning_address.resolve_failed', {
+          accountId: account.id,
+          address,
+        });
+        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

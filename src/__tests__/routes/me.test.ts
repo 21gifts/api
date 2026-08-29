@@ -4,7 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
-import type { FetchFn } from '@/lib/lnurl-pay';
+import type { FetchFn } from '@/lib/lnurlp';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -73,7 +73,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Fake LNURL-pay that always yields a 1-sat invoice. */
+/** Fake LNURL-pay that always yields zap-capable metadata and a 1-sat invoice. */
 function happyFetch(): FetchFn {
   return async (input) => {
     if (String(input).includes('/.well-known/lnurlp/')) {
@@ -82,6 +82,8 @@ function happyFetch(): FetchFn {
         minSendable: 1000,
         maxSendable: 100_000_000_000,
         commentAllowed: 255,
+        allowsNostr: true,
+        nostrPubkey: 'aa'.repeat(32),
       });
     }
     return jsonResponse({ pr: PR });
@@ -264,7 +266,7 @@ describe('POST /me/lightning-address', () => {
 
   it('links a valid Lightning Address', async () => {
     const store = await seededStore();
-    const res = await mount(store).request('/me/lightning-address', {
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: ADDRESS }),
@@ -295,7 +297,7 @@ describe('POST /me/lightning-address', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1_000_000,
     });
-    const res = await mount(store).request('/me/lightning-address', {
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'bob@getalby.com' }),
@@ -313,13 +315,95 @@ describe('POST /me/lightning-address', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects an invalid Lightning Address', async () => {
-    const res = await mount(await seededStore()).request('/me/lightning-address', {
+  it('rejects an invalid Lightning Address without calling fetch', async () => {
+    const fetchCalls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      fetchCalls.push(String(input));
+      return jsonResponse({});
+    };
+    const res = await mount(await seededStore(), { fetchImpl }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'not-an-address' }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it('rejects an unreachable well-known without saving', async () => {
+    const store = await seededStore({ lightningAddress: 'keep@example.com' });
+    const fetchImpl: FetchFn = async () => jsonResponse({}, 502);
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBe('keep@example.com');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.lightning_address.resolve_failed' &&
+          e['accountId'] === 'acc' &&
+          e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects metadata without allowsNostr without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects allowsNostr without nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
   });
 });
 
@@ -601,7 +685,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1_000_000,
     });
-    await mount(store).request('/me/lightning-address', {
+    await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: ADDRESS }),
