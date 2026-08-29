@@ -648,6 +648,43 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccountByViewKey(newKey))?.id).toBe('acc');
   });
 
+  it('refuses updateAccount when viewKey is owned by another id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      viewKey: '1'.repeat(64),
+      createdAt: 1,
+    });
+    await store.createAccount({
+      id: 'acc-2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      viewKey: '2'.repeat(64),
+      createdAt: 2,
+    });
+    await store.updateAccount({
+      id: 'acc-2',
+      linkingKey: null,
+      role: 'basis',
+      name: 'stolen',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      viewKey: '1'.repeat(64),
+      createdAt: 2,
+    });
+    expect((await store.getAccount('acc-2'))?.viewKey).toBe('2'.repeat(64));
+    expect((await store.getAccount('acc-2'))?.name).toBeNull();
+    expect((await store.getAccountByViewKey('1'.repeat(64)))?.id).toBe('acc-1');
+  });
+
   it('deleteAccount drops the viewKey index so the key can be reused', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = '9'.repeat(64);

@@ -234,6 +234,10 @@ export class InMemoryAuthStore implements AuthStore {
         return;
       }
     }
+    const viewKeyOwnerId = this.#accountsByViewKey.get(account.viewKey);
+    if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
+      return;
+    }
     const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
