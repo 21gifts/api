@@ -372,6 +372,30 @@ describe('runNostrWorkerTick', () => {
     expect(profile?.urls).toEqual(['wss://relay.nostr.space', 'wss://relay.damus.io']);
   });
 
+  it('stamps kind:0 created_at at sign time not tick start', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    let t = 1_700_000_000_000;
+    const originalPub = auth.getNostrPublicKey.bind(auth);
+    auth.getNostrPublicKey = async (accountId: string) => {
+      t = 1_700_000_005_000;
+      return originalPub(accountId);
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => t,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    expect(profile?.event['created_at']).toBe(1_700_000_005);
+  });
+
   it('skips kind:0 when the account has no name', async () => {
     const { auth, messages } = await seed();
     const acc = await auth.getAccount('acc');

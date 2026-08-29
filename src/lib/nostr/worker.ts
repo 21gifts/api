@@ -67,7 +67,8 @@ function profileCacheFor(auth: AuthStore): Map<string, string> {
  * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
  * fans out a replaceable kind:0 profile (`name` / `display_name` from the
  * account row) to the space relay, and to the public list when
- * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Each tick also queries
+ * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Kind:0
+ * `created_at` is the wall clock at sign time. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off.
@@ -80,7 +81,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
-    await publishProfiles(deps, writeSet, nowMs);
+    await publishProfiles(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
@@ -156,11 +157,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   }
 }
 
-async function publishProfiles(
-  deps: NostrWorkerDeps,
-  writeSet: ResolvedWriteSet,
-  nowMs: number,
-): Promise<void> {
+async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
   const cache = profileCacheFor(deps.auth);
   const urls = writeSet.publicEnabled
     ? [writeSet.spaceUrl, ...writeSet.publicUrls]
@@ -188,7 +185,7 @@ async function publishProfiles(
       const unsigned = buildKind0Event(
         account.name,
         account.lightningAddress,
-        Math.floor(nowMs / 1000),
+        Math.floor(deps.now() / 1000),
       );
       const signed = await signEventForAccount(deps.auth, account.id, deps.kek, unsigned);
       if (cache.get(account.id) !== content) {
