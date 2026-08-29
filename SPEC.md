@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (`POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -75,8 +75,10 @@ Public base URLs used in examples:
 | GET    | `/messages`                                  | Bearer                   | List public forum thread                 |
 | POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum      |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                      |
+| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`   |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)         |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`) |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`) |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`) |
 | GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics      |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)     |
@@ -539,6 +541,58 @@ Environment:
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
 
+### `GET /debug/contacts`
+
+Operator listing of private in-app contact messages. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. Contacts are never listed on a member-facing route.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Contact is unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "contacts": [
+    {
+      "id": "<uuid>",
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "text": "Hello",
+      "createdAt": "2026-08-29T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+Contacts are newest-first (`createdAt` descending, then `id`), capped at
+**200**. An empty mailbox returns `"contacts": []`. When `DATABASE_URL` is
+unset the default in-memory store starts empty; when set, rows come from
+Postgres `contact`.
+
+Environment:
+
+| Variable       | Meaning                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, contacts are stored in Postgres; when unset, in-memory only. |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.      |
+
 ### `GET /gifts`
 
 Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.
@@ -901,6 +955,65 @@ checked only after auth, amount, payable, and KEK checks succeed, so early
 limiter still counts. LNURL/zap failure →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
+
+### `POST /contact`
+
+Private in-app contact mailbox. Bearer session required. Body:
+
+```json
+{ "text": "…" }
+```
+
+The account must already have a non-blank display name. The api stores a
+**name snapshot** (trimmed account name at post time), the normalised text,
+and a timestamp. Text rules match the public forum (`normalizeForumText`):
+trimmed length **1–500**; newlines (`\n`, `\r`) allowed; other C0 controls
+and DEL rejected. The **200** body is the public contact object itself (not
+wrapped). No `accountId` in the member-facing JSON. Contacts are **never**
+listed publicly — operators read them via `GET /debug/contacts`. No email,
+no DMs, no Nostr fan-out.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Body is not JSON with a `text` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"text\" string" }
+```
+
+Account has no display name (null or blank after trim) → **Response** `400`:
+
+```json
+{ "error": "Set a name before posting" }
+```
+
+Text empty, longer than 500 after trim, or contains a disallowed control →
+**Response** `400`:
+
+```json
+{ "error": "Text must be 1–500 characters" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Contact is unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "id": "<uuid>",
+  "name": "Ada",
+  "text": "Hello",
+  "createdAt": "2026-08-29T12:00:00.000Z"
+}
+```
 
 ---
 

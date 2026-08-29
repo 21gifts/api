@@ -123,6 +123,22 @@ describe('createApp', () => {
     const res = await app.request('/messages');
     expect(res.status).toBe(401);
   });
+
+  it('returns 401 for unauthenticated POST /contact', async () => {
+    const app = createApp();
+    const res = await app.request('/contact', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 on /debug/contacts when debugToken is blank', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/contacts');
+    expect(res.status).toBe(503);
+  });
 });
 
 describe('CORS', () => {

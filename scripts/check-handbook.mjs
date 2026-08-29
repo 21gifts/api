@@ -134,6 +134,7 @@ function extractEndpoints() {
     'stats.ts': '/gifts/stats',
     'brand.ts': '',
     'debug.ts': '/debug/accounts',
+    'debug-contacts.ts': '/debug/contacts',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {

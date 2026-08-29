@@ -1,12 +1,13 @@
 # 21.gifts — Core UI Flows
 
-> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7.
+> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
+> plus the shipped in-app contact mailbox (journey 6).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-28.
+**Status**: living document. Last revised 2026-08-29.
 
 ---
 
@@ -146,7 +147,17 @@ not sketch a DM inbox as if it ships in v1.
 
 ---
 
-## Out of these five journeys
+## 6. Contact — **Shipped**
+
+Private mailbox so members can write to 21.gifts without a published email.
+Signed-in members POST `{ text }` to `POST /contact` (same text rules and
+name-snapshot requirement as forum messages). Operators read the mailbox via
+`GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
+DMs, no Nostr fan-out. Do not invent `/events`.
+
+---
+
+## Out of these six journeys
 
 Explicitly not journeys in this file:
 
