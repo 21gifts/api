@@ -26,7 +26,7 @@ function dummyFetch(): FetchFn {
 /** Build worker deps with querier + fetch defaults so existing cases stay short. */
 function deps(
   partial: Omit<NostrWorkerDeps, 'querier' | 'fetchImpl'> &
-    Partial<Pick<NostrWorkerDeps, 'querier' | 'fetchImpl'>>,
+    Partial<Pick<NostrWorkerDeps, 'querier' | 'fetchImpl' | 'verifyReceipt'>>,
 ): NostrWorkerDeps {
   return {
     querier: partial.querier ?? new RecordingQuerier(),
@@ -403,6 +403,7 @@ describe('runNostrWorkerTick', () => {
         publisher: new RecordingPublisher(),
         querier,
         fetchImpl,
+        verifyReceipt: () => true,
         now: () => 1_700_000_000_000,
         env: {},
       }),

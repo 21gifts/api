@@ -14,6 +14,10 @@ export interface NostrEventFrame {
   kind: number;
   /** Tag list. */
   tags: string[][];
+  /** Unix created_at (needed to verify the signature). */
+  created_at?: number;
+  /** Schnorr signature hex. */
+  sig?: string;
   /** Optional content. */
   content?: string;
 }
@@ -226,6 +230,12 @@ export class WebsocketNostrQuerier implements NostrQuerier {
         };
         if (typeof obj['content'] === 'string') {
           frame.content = obj['content'];
+        }
+        if (typeof obj['created_at'] === 'number') {
+          frame.created_at = obj['created_at'];
+        }
+        if (typeof obj['sig'] === 'string' && obj['sig'] !== '') {
+          frame.sig = obj['sig'];
         }
         collected.push(frame);
       });

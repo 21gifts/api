@@ -751,7 +751,7 @@
 
 ## Function: WebsocketNostrQuerier
 
-- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads, stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id.
+- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present), stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id.
 - **Inputs:** Optional `WebSocketFactory`; `query(filter, urls, timeoutMs)`.
 - **Returns / side effects:** `NostrEventFrame[]`; never throws; no live subscription past the call.
 - **Used by:** `src/index.ts` worker wiring.
@@ -793,15 +793,15 @@
 
 ## Function: indexZapReceipt
 
-- **Purpose:** Validate provider pubkey and add sats once per receipt id.
+- **Purpose:** Validate provider pubkey (case-insensitive hex) and add sats once per receipt id. Callers verify the Nostr signature first.
 - **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
 - **Returns / side effects:** boolean; logs indexed/rejected.
 - **Used by:** `indexOpenZapReceipts` (worker tick).
 
 ## Function: indexOpenZapReceipts
 
-- **Purpose:** Each worker tick, query write-set relays for kind:9735 on recent notes (chunks of 20 event ids), validate provider pubkey via LNURL (module TTL cache), bolt11 amount, e-tag, and index via `indexZapReceipt`.
-- **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl.
+- **Purpose:** Each worker tick, query write-set relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. One throwing receipt does not skip the rest of the tick.
+- **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `verifyReceipt` (default: nostr-tools `verifyEvent`).
 - **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; never logs full bolt11.
 - **Used by:** `runNostrWorkerTick`.
 

@@ -6,7 +6,8 @@ import { MESSAGE_LIST_LIMIT } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
-import type { NostrQuerier } from '@/lib/nostr/query';
+import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
+import { verifyEvent } from 'nostr-tools/pure';
 
 /** Minimal zap receipt fields we validate. */
 export interface ZapReceipt {
@@ -31,11 +32,37 @@ const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 const QUERY_CHUNK = 20;
 
 /**
+ * Verify a queried 9735 frame is a signed Nostr event.
+ *
+ * @param event - Frame from a relay.
+ * @returns Whether nostr-tools accepts the signature.
+ */
+function defaultVerifyReceipt(event: NostrEventFrame): boolean {
+  if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
+    return false;
+  }
+  try {
+    return verifyEvent({
+      id: event.id,
+      pubkey: event.pubkey,
+      created_at: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content ?? '',
+      sig: event.sig,
+    });
+    /* v8 ignore next 3 -- nostr-tools verifyEvent returns boolean, does not throw */
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Validate a kind:9735 receipt against the author's LNURL `nostrPubkey`
  * and add sats to the message once via durable receipt storage.
  *
- * Full Appendix F (bolt11 description hash) is applied when `bolt11AmountSats`
- * is provided by the caller; the provider pubkey check is mandatory.
+ * The provider pubkey check is case-insensitive hex. Callers must already
+ * have verified the Nostr signature (`verifyEvent`).
  *
  * @param store - Forum store.
  * @param messageId - Forum row id.
@@ -51,7 +78,7 @@ export async function indexZapReceipt(args: {
   providerPubkey: string;
   amountSats: number;
 }): Promise<boolean> {
-  if (args.receipt.pubkey !== args.providerPubkey) {
+  if (args.receipt.pubkey.toLowerCase() !== args.providerPubkey.toLowerCase()) {
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
     return false;
   }
@@ -82,6 +109,8 @@ export async function indexOpenZapReceipts(args: {
   timeoutMs: number;
   now: () => number;
   fetchImpl: FetchFn;
+  /** Signature check; production uses nostr-tools `verifyEvent`. */
+  verifyReceipt?: (event: NostrEventFrame) => boolean;
 }): Promise<void> {
   if (args.urls.length === 0) {
     return;
@@ -110,8 +139,13 @@ export async function indexOpenZapReceipts(args: {
       args.urls,
       args.timeoutMs,
     );
+    const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
     for (const event of events) {
-      await ingestOneReceipt(event, args);
+      try {
+        await ingestOneReceipt(event, { ...args, verifyReceipt });
+      } catch {
+        logEvent('nostr.zap.rejected', { reason: 'error' });
+      }
     }
   }
 }
@@ -123,17 +157,13 @@ export async function indexOpenZapReceipts(args: {
  * @param args - Ingest collaborators.
  */
 async function ingestOneReceipt(
-  event: {
-    id: string;
-    pubkey: string;
-    kind: number;
-    tags: string[][];
-  },
+  event: NostrEventFrame,
   args: {
     store: MessageStore;
     auth: AuthStore;
     now: () => number;
     fetchImpl: FetchFn;
+    verifyReceipt: (event: NostrEventFrame) => boolean;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -143,6 +173,10 @@ async function ingestOneReceipt(
     return;
   }
   if (typeof event.pubkey !== 'string' || event.pubkey === '') {
+    return;
+  }
+  if (!args.verifyReceipt(event)) {
+    logEvent('nostr.zap.rejected', { reason: 'sig' });
     return;
   }
 
@@ -228,7 +262,7 @@ async function resolveProviderPubkey(args: {
     typeof resolved.metadata.nostrPubkey === 'string' &&
     resolved.metadata.nostrPubkey !== ''
   ) {
-    nostrPubkey = resolved.metadata.nostrPubkey;
+    nostrPubkey = resolved.metadata.nostrPubkey.toLowerCase();
   }
   providerPubkeyCache.set(args.address, {
     nostrPubkey,

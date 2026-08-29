@@ -7,6 +7,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { indexOpenZapReceipts, indexZapReceipt } from '@/lib/nostr/zap-index';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -74,6 +75,16 @@ function failFetch(): FetchFn {
   return async () => new Response('{}', { status: 500 });
 }
 
+/** Ingest helper: skip real schnorr checks in unit tests. */
+async function ingest(
+  args: Parameters<typeof indexOpenZapReceipts>[0],
+): ReturnType<typeof indexOpenZapReceipts> {
+  return indexOpenZapReceipts({
+    verifyReceipt: () => true,
+    ...args,
+  });
+}
+
 describe('indexZapReceipt', () => {
   it('adds sats when the provider pubkey matches', async () => {
     const store = new InMemoryMessageStore();
@@ -136,6 +147,27 @@ describe('indexZapReceipt', () => {
     expect(ok).toBe(false);
   });
 
+  it('matches provider pubkeys case-insensitively', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+    });
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-case', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY.toUpperCase(),
+      amountSats: 21,
+    });
+    expect(ok).toBe(true);
+    expect((await store.getById(row.id))?.sats).toBe(21);
+  });
+
   it('rejects a non-positive amount', async () => {
     const store = new InMemoryMessageStore();
     const ok = await indexZapReceipt({
@@ -172,7 +204,7 @@ describe('indexOpenZapReceipts', () => {
       accountId: 'acc-urls-empty',
       lightningAddress: 'zap-urls-empty@example.com',
     });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -204,7 +236,7 @@ describe('indexOpenZapReceipts', () => {
       lightningAddress: 'zap-empty-eid@example.com',
       messageId: 'm-empty-eid',
     });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -252,7 +284,7 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -331,7 +363,7 @@ describe('indexOpenZapReceipts', () => {
       } as unknown as NostrEventFrame,
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -371,7 +403,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -405,7 +437,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -445,7 +477,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue(null);
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -479,7 +511,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -513,7 +545,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 500 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -566,7 +598,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -602,7 +634,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -654,7 +686,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -687,7 +719,7 @@ describe('indexOpenZapReceipts', () => {
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -719,7 +751,7 @@ describe('indexOpenZapReceipts', () => {
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -764,7 +796,7 @@ describe('indexOpenZapReceipts', () => {
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -798,7 +830,7 @@ describe('indexOpenZapReceipts', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -852,7 +884,7 @@ describe('indexOpenZapReceipts', () => {
           ],
         },
       ];
-      await indexOpenZapReceipts({
+      await ingest({
         store,
         auth,
         querier,
@@ -875,7 +907,7 @@ describe('indexOpenZapReceipts', () => {
         ],
       },
     ];
-    await indexOpenZapReceipts({
+    await ingest({
       store,
       auth,
       querier,
@@ -886,5 +918,180 @@ describe('indexOpenZapReceipts', () => {
     });
     expect(fetchCount).toBe(2);
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(3);
+  });
+
+  it('does not increment sats when the signature check fails', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({ store, auth, accountId: 'acc-sig' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-sig',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-sig'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      verifyReceipt: () => false,
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+  });
+
+  it('indexes a later receipt when an earlier verify throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({ store, auth, accountId: 'acc-err' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-err-1',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-1'],
+        ],
+      },
+      {
+        id: 'r-err-2',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-2'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    let calls = 0;
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      verifyReceipt: () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('verify boom');
+        }
+        return true;
+      },
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+  });
+
+  it('rejects unsigned frames when using the default verifier', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({ store, auth, accountId: 'acc-unsigned' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-unsigned',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-unsigned'],
+        ],
+      },
+      {
+        id: 'dd'.repeat(32),
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-unsigned'],
+        ],
+        created_at: 1,
+        sig: '',
+      },
+      {
+        id: 'cc'.repeat(32),
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-bad-sig'],
+        ],
+        created_at: 1,
+        sig: '11'.repeat(64),
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await indexOpenZapReceipts({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+  });
+
+  it('indexes a schnorr-signed 9735 with the default verifier', async () => {
+    const secret = generateSecretKey();
+    const pubkey = getPublicKey(secret);
+    const signed = finalizeEvent(
+      {
+        kind: 9735,
+        content: '',
+        created_at: 1_700_000_000,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-signed'],
+        ],
+      },
+      secret,
+    );
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-signed',
+      lightningAddress: 'signed@example.com',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await indexOpenZapReceipts({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(pubkey),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
   });
 });

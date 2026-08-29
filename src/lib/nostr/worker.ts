@@ -5,7 +5,7 @@ import { logEvent } from '@/lib/log';
 import { buildKind1Event } from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
-import type { NostrQuerier } from '@/lib/nostr/query';
+import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import { resolveWriteSet, type ResolvedWriteSet } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
@@ -36,6 +36,8 @@ export interface NostrWorkerDeps {
   querier: NostrQuerier;
   /** Fetch used for LNURL provider pubkey resolve. */
   fetchImpl: FetchFn;
+  /** Optional 9735 signature check (tests inject; production uses nostr-tools). */
+  verifyReceipt?: (event: NostrEventFrame) => boolean;
   /** Clock. */
   now: () => number;
   /** Env slice for write-set flags. */
@@ -70,6 +72,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     timeoutMs: RELAY_TIMEOUT_MS,
     now: deps.now,
     fetchImpl: deps.fetchImpl,
+    ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
   });
 }
 

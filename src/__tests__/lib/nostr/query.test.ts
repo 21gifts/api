@@ -95,6 +95,8 @@ describe('WebsocketNostrQuerier', () => {
             kind: 9735,
             tags: [['e', 'note1']],
             content: 'hello',
+            created_at: 1_700_000_000,
+            sig: 'ab'.repeat(32),
           },
         ]),
       });
@@ -108,6 +110,8 @@ describe('WebsocketNostrQuerier', () => {
         kind: 9735,
         tags: [['e', 'note1']],
         content: 'hello',
+        created_at: 1_700_000_000,
+        sig: 'ab'.repeat(32),
       },
     ]);
     expect(socket.sent.some((frame) => frame.startsWith('["CLOSE"'))).toBe(true);
