@@ -121,7 +121,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `claimUnsigned`/`claimUnpublished` lease rows; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (`INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` then `addSats`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -198,7 +198,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, claim/sign/publish, `addSats`; `updateSignedEvent` returns false on duplicate `eventId`.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`.
 - **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -728,12 +728,33 @@
 - **Returns / side effects:** ACK list; `ok` flag.
 - **Used by:** Worker tests.
 
+## Function: RecordingQuerier
+
+- **Purpose:** Test fake `NostrQuerier` that records REQ calls and returns configured events.
+- **Inputs:** `query(filter, urls, timeoutMs)`; tests set `events`.
+- **Returns / side effects:** Copied event list; fills `calls`.
+- **Used by:** Worker unit tests.
+
+## Function: normalizeSignedEvent
+
+- **Purpose:** Coerce stored/wire signed events (object, JSON string, double-encoded jsonb string) into a plain object so EVENT frames never send a string payload.
+- **Inputs:** Unknown value.
+- **Returns / side effects:** Shallow-copied object or `null` (arrays, primitives, invalid JSON).
+- **Used by:** `WebsocketNostrPublisher.publishOne`; `mapMessageRow`.
+
 ## Function: WebsocketNostrPublisher
 
-- **Purpose:** Production `NostrPublisher` that opens one WebSocket per relay URL, sends `["EVENT", event]`, and waits for a matching `["OK", id, true|false]` (or timeout/error) before closing.
+- **Purpose:** Production `NostrPublisher` that opens one WebSocket per relay URL, runs `normalizeSignedEvent` so the EVENT second element is an object, sends `["EVENT", event]`, and waits for a matching `["OK", id, true|false]` (or timeout/error) before closing.
 - **Inputs:** Optional `WebSocketFactory` (default `new WebSocket(url)`); `publish(event, urls, timeoutMs)`.
 - **Returns / side effects:** One `RelayAck` per URL in input order; never leaves sockets open after settle. Injectable factory keeps unit tests off the network.
 - **Used by:** Process entry `src/index.ts` when KEK + durable message store present.
+
+## Function: WebsocketNostrQuerier
+
+- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads, stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id.
+- **Inputs:** Optional `WebSocketFactory`; `query(filter, urls, timeoutMs)`.
+- **Returns / side effects:** `NostrEventFrame[]`; never throws; no live subscription past the call.
+- **Used by:** `src/index.ts` worker wiring.
 
 ## Function: spaceAcked
 
@@ -751,7 +772,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Ingests kind:9735 zap receipts each tick even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
 - **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
@@ -775,14 +796,14 @@
 - **Purpose:** Validate provider pubkey and add sats once per receipt id.
 - **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
 - **Returns / side effects:** boolean; logs indexed/rejected.
-- **Used by:** Unit tests (no in-process zap-receipt subscriber in this process yet).
+- **Used by:** `indexOpenZapReceipts` (worker tick).
 
-## Function: resetZapReceiptIndex
+## Function: indexOpenZapReceipts
 
-- **Purpose:** Clear the in-process receipt set.
-- **Inputs:** none.
-- **Returns / side effects:** Empties the set.
-- **Used by:** Tests.
+- **Purpose:** Each worker tick, query write-set relays for kind:9735 on recent notes (chunks of 20 event ids), validate provider pubkey via LNURL (module TTL cache), bolt11 amount, e-tag, and index via `indexZapReceipt`.
+- **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl.
+- **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; never logs full bolt11.
+- **Used by:** `runNostrWorkerTick`.
 
 ## Function: requestZapInvoice
 

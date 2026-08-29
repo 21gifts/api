@@ -2,6 +2,51 @@
  * Injectable Nostr EVENT publisher. Production uses WebSockets; tests fake OK.
  */
 
+/**
+ * Whether `value` is a plain object (not null, not an array).
+ *
+ * @param value - Candidate.
+ * @returns `true` for plain objects.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Coerce a stored or wire-shaped signed event into a plain object.
+ *
+ * Bun may return `jsonb` as a JSON string (sometimes double-encoded). A
+ * string second element in `["EVENT", …]` is rejected by relays.
+ *
+ * @param value - Object, JSON string, double-encoded JSON string, or other.
+ * @returns Shallow-copied plain object, or `null` when not usable.
+ */
+export function normalizeSignedEvent(value: unknown): Record<string, unknown> | null {
+  if (isPlainObject(value)) {
+    return { ...value };
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (isPlainObject(parsed)) {
+    return { ...parsed };
+  }
+  return null;
+}
+
 /** One relay's response to an EVENT. */
 export interface RelayAck {
   /** Relay WebSocket URL. */
@@ -111,6 +156,10 @@ export class WebsocketNostrPublisher implements NostrPublisher {
     url: string,
     timeoutMs: number,
   ): Promise<RelayAck> {
+    const normalized = normalizeSignedEvent(event);
+    if (normalized === null) {
+      return Promise.resolve({ url, ok: false });
+    }
     return new Promise((resolve) => {
       let settled = false;
       let socket: WebSocketLike | undefined;
@@ -140,7 +189,7 @@ export class WebsocketNostrPublisher implements NostrPublisher {
 
       socket.addEventListener('open', () => {
         try {
-          socket!.send(JSON.stringify(['EVENT', event]));
+          socket!.send(JSON.stringify(['EVENT', normalized]));
         } catch {
           settle(false);
         }
@@ -159,7 +208,7 @@ export class WebsocketNostrPublisher implements NostrPublisher {
         if (!Array.isArray(parsed) || parsed[0] !== 'OK') {
           return;
         }
-        if (parsed[1] !== event['id']) {
+        if (parsed[1] !== normalized['id']) {
           return;
         }
         settle(parsed[2] === true);

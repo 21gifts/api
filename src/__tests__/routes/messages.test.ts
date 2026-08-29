@@ -165,11 +165,13 @@ describe('GET /messages', () => {
       listLatest: boom,
       create: boom,
       getById: boom,
+      getByEventId: boom,
       claimUnsigned: boom,
       claimUnpublished: boom,
       updateSignedEvent: boom,
       updatePublishState: boom,
       addSats: boom,
+      recordZapReceipt: boom,
     };
     const res = await mount(await seededStore(), throwing).request('/messages', {
       headers: AUTH,
@@ -355,11 +357,13 @@ describe('POST /messages', () => {
       listLatest: async () => [],
       create: boom,
       getById: boom,
+      getByEventId: boom,
       claimUnsigned: boom,
       claimUnpublished: boom,
       updateSignedEvent: boom,
       updatePublishState: boom,
       addSats: boom,
+      recordZapReceipt: boom,
     };
     const res = await mount(await namedStore('Ada'), throwing).request('/messages', {
       method: 'POST',

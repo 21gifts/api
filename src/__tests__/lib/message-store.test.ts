@@ -171,6 +171,23 @@ describe('InMemoryMessageStore', () => {
     const one = await store.claimUnsigned(1, 2_000_000, 60_000);
     expect(one).toHaveLength(1);
   });
+
+  it('getByEventId returns the row for a stored eventId and undefined when missing', async () => {
+    const store = new InMemoryMessageStore();
+    const eventId = 'ee'.repeat(32);
+    await store.create({ ...EARLY, eventId });
+    expect((await store.getByEventId(eventId))?.id).toBe('a');
+    expect(await store.getByEventId('ff'.repeat(32))).toBeUndefined();
+  });
+
+  it('recordZapReceipt adds sats once per receiptEventId', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(true);
+    expect((await store.getById('a'))?.sats).toBe(21);
+    expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(false);
+    expect((await store.getById('a'))?.sats).toBe(21);
+  });
 });
 
 describe('PostgresMessageStore', () => {
@@ -285,5 +302,69 @@ describe('PostgresMessageStore', () => {
         ...unsignedNostrDefaults(),
       }),
     ).rejects.toThrow('create boom');
+  });
+
+  it('getByEventId SQL matches event_id and the same SELECT column list as getById', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        event_id: 'ee'.repeat(32),
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect((await store.getByEventId('ee'.repeat(32)))?.id).toBe('m1');
+    expect(sql.queries[0]?.text).toMatch(/event_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts/,
+    );
+    sql.nextRows = [];
+    expect(await store.getByEventId('missing')).toBeUndefined();
+  });
+
+  it('recordZapReceipt success inserts then adds sats', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ event_id: 'r1' }];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
+    expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+  });
+
+  it('recordZapReceipt conflict returns false without sats update', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(false);
+    expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(false);
+  });
+
+  it('getById maps nostr_event JSON string', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        event_id: 'abc123',
+        nostr_publish_state: 'pending',
+        sats: 0,
+        nostr_event: JSON.stringify({ id: 'abc123', kind: 1 }),
+      },
+    ];
+    const mapped = await new PostgresMessageStore(sql).getById('m1');
+    expect(mapped?.nostrEvent?.['id']).toBe('abc123');
   });
 });

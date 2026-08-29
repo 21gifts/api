@@ -1,11 +1,37 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  normalizeSignedEvent,
   publicAcked,
   RecordingPublisher,
   spaceAcked,
   WebsocketNostrPublisher,
   type WebSocketLike,
 } from '@/lib/nostr/publish';
+
+describe('normalizeSignedEvent', () => {
+  it('returns a shallow copy of a plain object', () => {
+    const input = { id: 'abc', kind: 1 };
+    const out = normalizeSignedEvent(input);
+    expect(out).toEqual(input);
+    expect(out).not.toBe(input);
+  });
+
+  it('parses a JSON string and a double-encoded JSON string', () => {
+    const obj = { id: 'abc123', kind: 1 };
+    expect(normalizeSignedEvent(JSON.stringify(obj))).toEqual(obj);
+    expect(normalizeSignedEvent(JSON.stringify(JSON.stringify(obj)))).toEqual(obj);
+  });
+
+  it('returns null for invalid JSON, arrays, and primitives', () => {
+    expect(normalizeSignedEvent('{not-json')).toBeNull();
+    expect(normalizeSignedEvent([1, 2])).toBeNull();
+    expect(normalizeSignedEvent(JSON.stringify([1, 2]))).toBeNull();
+    expect(normalizeSignedEvent(42)).toBeNull();
+    expect(normalizeSignedEvent(true)).toBeNull();
+    expect(normalizeSignedEvent(null)).toBeNull();
+    expect(normalizeSignedEvent(JSON.stringify('still-a-string'))).toBeNull();
+  });
+});
 
 describe('RecordingPublisher', () => {
   it('records calls and ACKs each URL', async () => {
@@ -96,6 +122,42 @@ describe('WebsocketNostrPublisher', () => {
     });
     await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
     expect(socket.closed).toBe(true);
+  });
+
+  it('sends a JSON-string event as an object in the EVENT frame', async () => {
+    const socket = new FakeSocket();
+    const pub = new WebsocketNostrPublisher(() => socket);
+    const asString = JSON.stringify(event) as unknown as Record<string, unknown>;
+    const pending = pub.publish(asString, ['wss://a'], 100);
+    queueMicrotask(() => {
+      socket.emit('open');
+      const frame = JSON.parse(socket.sent[0]!) as unknown[];
+      expect(frame[0]).toBe('EVENT');
+      expect(frame[1]).toEqual(event);
+      expect(typeof frame[1]).toBe('object');
+      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
+    });
+    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
+  });
+
+  it('returns ok:false without send when the event cannot be normalised', async () => {
+    const socket = new FakeSocket();
+    const pub = new WebsocketNostrPublisher(() => socket);
+    const bad = '{not-json' as unknown as Record<string, unknown>;
+    await expect(pub.publish(bad, ['wss://a'], 100)).resolves.toEqual([
+      { url: 'wss://a', ok: false },
+    ]);
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it('returns ok:false without send when the event is an array', async () => {
+    const socket = new FakeSocket();
+    const pub = new WebsocketNostrPublisher(() => socket);
+    const bad = [1, 2] as unknown as Record<string, unknown>;
+    await expect(pub.publish(bad, ['wss://a'], 100)).resolves.toEqual([
+      { url: 'wss://a', ok: false },
+    ]);
+    expect(socket.sent).toHaveLength(0);
   });
 
   it('ACKs ok:false when the relay rejects', async () => {

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (public forum `GET/POST /messages` with `sats`/`payable`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -795,6 +795,14 @@ Success → **Response** `200`:
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`.
+
+The nostr worker, each tick, queries the write-set relays for kind:9735
+receipts whose `e` tag matches a recent note `event_id`. A receipt is
+indexed when the signer pubkey matches the author's LNURL-pay
+`nostrPubkey`, the bolt11 amount is at least 1 sat, and the receipt id
+is new. Indexed receipts increment that row's `sats` (GET /messages then
+returns the new total). Kind:1 EVENT frames published to relays are JSON
+objects, not JSON strings.
 
 ### `POST /messages`
 
