@@ -627,7 +627,7 @@
 
 - **Purpose:** Copy frozen kind:1 tags.
 - **Inputs:** none.
-- **Returns / side effects:** `[["t","21gifts"],["r","https://21.gifts"]]`.
+- **Returns / side effects:** `[["t","bitcoin"],["t","21gifts"],["r","https://21.gifts"]]`.
 - **Used by:** `buildKind1Event`.
 
 ## Function: buildKind1Event

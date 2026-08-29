@@ -13,6 +13,7 @@ describe('kind1', () => {
     expect(event.kind).toBe(1);
     expect(event.content).toBe('hello');
     expect(event.tags).toEqual([
+      ['t', 'bitcoin'],
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
     ]);
