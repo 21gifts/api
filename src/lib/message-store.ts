@@ -453,16 +453,18 @@ export class PostgresMessageStore implements MessageStore {
     sats: number,
   ): Promise<boolean> {
     const inserted = await this.#sql.query<{ event_id: string }>(
-      `INSERT INTO nostr_zap_receipt (event_id, message_id, sats)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (event_id) DO NOTHING
-       RETURNING event_id`,
+      `WITH inserted AS (
+         INSERT INTO nostr_zap_receipt (event_id, message_id, sats)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (event_id) DO NOTHING
+         RETURNING event_id, message_id, sats
+       )
+       UPDATE message SET sats = sats + inserted.sats
+       FROM inserted
+       WHERE message.id = inserted.message_id
+       RETURNING inserted.event_id`,
       [receiptEventId, messageId, sats],
     );
-    if (inserted[0] === undefined) {
-      return false;
-    }
-    await this.addSats(messageId, sats);
-    return true;
+    return inserted[0] !== undefined;
   }
 }

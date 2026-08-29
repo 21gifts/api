@@ -338,7 +338,8 @@ describe('PostgresMessageStore', () => {
     expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
-    expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE message SET sats = sats \+/);
+    expect(sql.executes).toEqual([]);
   });
 
   it('recordZapReceipt conflict returns false without sats update', async () => {
@@ -346,7 +347,7 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [];
     const store = new PostgresMessageStore(sql);
     expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(false);
-    expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(false);
+    expect(sql.executes).toEqual([]);
   });
 
   it('getById maps nostr_event JSON string', async () => {
