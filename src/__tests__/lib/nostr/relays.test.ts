@@ -20,6 +20,15 @@ describe('relays', () => {
   it('defaults space and public lists', () => {
     expect(resolveRelaySpace({})).toBe(DEFAULT_RELAY_SPACE_PRD);
     expect(resolveRelaySpace({ NOSTR_RELAY_SPACE: '  wss://x  ' })).toBe('wss://x');
+    expect(resolveRelaySpace({ NOSTR_RELAY_URL: '  wss://dev-relay.nostr.space  ' })).toBe(
+      'wss://dev-relay.nostr.space',
+    );
+    expect(
+      resolveRelaySpace({
+        NOSTR_RELAY_SPACE: 'wss://override',
+        NOSTR_RELAY_URL: 'wss://dev-relay.nostr.space',
+      }),
+    ).toBe('wss://override');
     expect(resolveRelayPublic({})).toEqual([...DEFAULT_RELAY_PUBLIC]);
     expect(resolveRelayPublic({ NOSTR_RELAY_PUBLIC: 'wss://a, wss://b' })).toEqual([
       'wss://a',

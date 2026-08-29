@@ -683,7 +683,7 @@
 
 - **Purpose:** Durability relay URL.
 - **Inputs:** env slice.
-- **Returns / side effects:** Trimmed `NOSTR_RELAY_SPACE` or PRD default.
+- **Returns / side effects:** Trimmed `NOSTR_RELAY_SPACE`, else `NOSTR_RELAY_URL`, else PRD default.
 - **Used by:** `resolveWriteSet`.
 
 ## Function: resolveRelayPublic

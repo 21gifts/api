@@ -54,15 +54,20 @@ export function isNostrPublishPublicEnabled(env: Record<string, string | undefin
 /**
  * Resolve the durability (space) relay URL.
  *
+ * Prefers `NOSTR_RELAY_SPACE`, then the existing compose name
+ * `NOSTR_RELAY_URL`, then the PRD nostr.space default.
+ *
  * @param env - Environment slice.
- * @returns Trimmed `NOSTR_RELAY_SPACE`, or the PRD default when unset/blank.
+ * @returns Trimmed relay WebSocket URL.
  */
 export function resolveRelaySpace(env: Record<string, string | undefined>): string {
-  const raw = env['NOSTR_RELAY_SPACE'];
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_RELAY_SPACE_PRD;
+  for (const key of ['NOSTR_RELAY_SPACE', 'NOSTR_RELAY_URL'] as const) {
+    const raw = env[key];
+    if (raw !== undefined && raw.trim() !== '') {
+      return raw.trim();
+    }
   }
-  return raw.trim();
+  return DEFAULT_RELAY_SPACE_PRD;
 }
 
 /**

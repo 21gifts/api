@@ -25,6 +25,7 @@ export default defineConfig({
       NOSTR_NSEC_KEK: '',
       NOSTR_PUBLISH: '',
       NOSTR_PUBLISH_PUBLIC: '',
+      NOSTR_RELAY_URL: '',
       NOSTR_RELAY_SPACE: '',
       NOSTR_RELAY_PUBLIC: '',
       SPEND_API_TOKEN: '',
