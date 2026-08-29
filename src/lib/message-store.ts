@@ -71,10 +71,12 @@ export interface MessageStore {
 
   /**
    * Drop the stored kind:1 so the worker can re-sign (still pending).
+   * No-op unless `eventId` still matches `expectedEventId`.
    *
    * @param id - Message id.
+   * @param expectedEventId - Event id observed when the row was listed.
    */
-  clearSignedEvent(id: string): Promise<void>;
+  clearSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
@@ -225,9 +227,13 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(rows);
   }
 
-  clearSignedEvent(id: string): Promise<void> {
+  clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row !== undefined && row.nostrPublishState === 'pending') {
+    if (
+      row !== undefined &&
+      row.nostrPublishState === 'pending' &&
+      row.eventId === expectedEventId
+    ) {
       row.eventId = null;
       row.nostrEvent = null;
       row.claimedUntil = null;
@@ -495,11 +501,11 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => mapMessageRow(row));
   }
 
-  async clearSignedEvent(id: string): Promise<void> {
+  async clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
-       WHERE id = $1 AND nostr_publish_state = 'pending'`,
-      [id],
+       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2`,
+      [id, expectedEventId],
     );
   }
 

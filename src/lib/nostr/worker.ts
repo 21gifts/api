@@ -85,7 +85,7 @@ async function resignLegacyKind1Tags(deps: NostrWorkerDeps): Promise<void> {
   const rows = await deps.messages.listPendingSigned(WORKER_BATCH);
   for (const row of rows) {
     if (!kind1HasBitcoinTag(row.nostrEvent)) {
-      await deps.messages.clearSignedEvent(row.id);
+      await deps.messages.clearSignedEvent(row.id, row.eventId);
     }
   }
 }
@@ -154,7 +154,7 @@ async function publishBatch(
     }
     /* v8 ignore start -- overlapping tick may still hold a pre-resign snapshot */
     if (!kind1HasBitcoinTag(row.nostrEvent)) {
-      await deps.messages.clearSignedEvent(row.id);
+      await deps.messages.clearSignedEvent(row.id, row.eventId);
       continue;
     }
     /* v8 ignore stop */

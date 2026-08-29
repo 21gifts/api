@@ -374,18 +374,20 @@ describe('PostgresMessageStore', () => {
     await store.create(EARLY);
     await store.updateSignedEvent('a', 'ab'.repeat(32), { id: 'x' });
     expect((await store.listPendingSigned(10)).map((row) => row.id)).toEqual(['a']);
-    await store.clearSignedEvent('a');
+    await store.clearSignedEvent('a', 'ab'.repeat(32));
     expect(await store.listPendingSigned(10)).toEqual([]);
     expect((await store.getById('a'))?.eventId).toBeNull();
-    await store.clearSignedEvent('missing');
+    await store.clearSignedEvent('missing', 'ff'.repeat(32));
     await store.updateSignedEvent('a', 'cd'.repeat(32), {
       tags: [
         ['t', 'bitcoin'],
         ['t', '21gifts'],
       ],
     });
+    await store.clearSignedEvent('a', 'ab'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
     await store.updatePublishState('a', 'published', 'space');
-    await store.clearSignedEvent('a');
+    await store.clearSignedEvent('a', 'cd'.repeat(32));
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
   });
 
@@ -432,8 +434,9 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries.at(-1)?.text).toMatch(/event_id IS NOT NULL/);
     expect(sql.queries.at(-1)?.text).toMatch(/tag->>1 = 'bitcoin'/);
     expect(sql.queries.at(-1)?.text).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
-    await store.clearSignedEvent('m1');
+    await store.clearSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
+    expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
   });
 });
