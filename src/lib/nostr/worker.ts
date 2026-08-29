@@ -190,26 +190,28 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       continue;
     }
     const previous = cache.get(live.id);
-    cache.set(live.id, { content, createdAt: previous?.createdAt ?? 0 });
+    const reservation: Kind0Reservation = {
+      content,
+      createdAt: previous?.createdAt ?? 0,
+    };
+    cache.set(live.id, reservation);
     try {
       const pubkey = await deps.auth.getNostrPublicKey(live.id);
       if (pubkey === undefined) {
-        if (reservedContent(cache, live.id) === content) {
+        if (cache.get(live.id) === reservation) {
           cache.delete(live.id);
         }
         continue;
       }
       attempted += 1;
-      const wall = Math.floor(deps.now() / 1000);
-      const held = cache.get(live.id);
-      if (held?.content !== content) {
+      if (cache.get(live.id) !== reservation) {
         continue;
       }
-      const createdAt = Math.max(wall, held.createdAt + 1);
-      cache.set(live.id, { content, createdAt });
-      const unsigned = buildKind0Event(live.name, live.lightningAddress, createdAt);
+      const wall = Math.floor(deps.now() / 1000);
+      reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
+      const unsigned = buildKind0Event(live.name, live.lightningAddress, reservation.createdAt);
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
-      if (reservedContent(cache, live.id) !== content) {
+      if (cache.get(live.id) !== reservation) {
         continue;
       }
       const acks = await deps.publisher.publish(
@@ -220,7 +222,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
       const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
       if (!spaceOk || !publicOk) {
-        if (reservedContent(cache, live.id) === content) {
+        if (cache.get(live.id) === reservation) {
           cache.delete(live.id);
         }
         logEvent('nostr.profile.nack', { accountId: live.id });
@@ -228,7 +230,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
       logEvent('nostr.profile.ok', { accountId: live.id });
     } catch {
-      if (reservedContent(cache, live.id) === content) {
+      if (cache.get(live.id) === reservation) {
         cache.delete(live.id);
       }
       logEvent('nostr.profile.nack', { accountId: live.id });

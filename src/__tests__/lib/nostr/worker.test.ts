@@ -779,6 +779,84 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
   });
 
+  it('does not drop a later Ada reservation when an earlier Ada nack lands', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    let releaseNack: () => void = () => {};
+    const nackHeld = new Promise<void>((resolve) => {
+      releaseNack = resolve;
+    });
+    let enteredFirst: () => void = () => {};
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (
+        event['kind'] === 0 &&
+        publisher.calls.filter((call) => call.event['kind'] === 0).length === 1
+      ) {
+        enteredFirst();
+        await nackHeld;
+        return urls.map((url) => ({ url, ok: false }));
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await firstEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const afterAnton = await auth.getAccount('acc');
+    await auth.updateAccount({ ...afterAnton!, name: 'Ada' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    releaseNack();
+    await first;
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(3);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_180_000,
+        env,
+      }),
+    );
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(3);
+    expect(JSON.parse(String(profiles.at(-1)?.event['content'])).name).toBe('Ada');
+  });
+
   it('keeps a newer kind:0 reservation when an in-flight publish throws', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -983,7 +1061,7 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
   });
 
-  it('logs profile nack when kind:0 sign or publish throws', async () => {
+  it('retries kind:0 when publish throws', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
     publisher.publish = async (event, urls) => {
