@@ -2,7 +2,7 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
-import { buildKind1Event } from '@/lib/nostr/event';
+import { buildKind0Event, buildKind0Content, buildKind1Event } from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -10,7 +10,7 @@ import { resolveWriteSet, resolveZapRelays, type ResolvedWriteSet } from '@/lib/
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 
-/** Max rows per claim. */
+/** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
 
 /** Lease before WebSocket I/O. */
@@ -44,6 +44,42 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
 }
 
+type Kind0Reservation = {
+  content: string;
+  createdAt: number;
+};
+
+/** Reserved or last-acked kind:0 content per account, keyed by auth store. */
+const profileCaches = new WeakMap<AuthStore, Map<string, Kind0Reservation>>();
+const profileWatermarks = new WeakMap<AuthStore, Map<string, number>>();
+
+function profileCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
+  const existing = profileCaches.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, Kind0Reservation>();
+  profileCaches.set(auth, created);
+  return created;
+}
+
+function profileWatermarkFor(auth: AuthStore): Map<string, number> {
+  const existing = profileWatermarks.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, number>();
+  profileWatermarks.set(auth, created);
+  return created;
+}
+
+function reservedContent(
+  cache: Map<string, Kind0Reservation>,
+  accountId: string,
+): string | undefined {
+  return cache.get(accountId)?.content;
+}
+
 /**
  * Sign unsigned rows, optionally fan out to relays, then ingest zap receipts.
  *
@@ -51,7 +87,12 @@ export interface NostrWorkerDeps {
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
- * `t=bitcoin` is dropped and re-signed before fan-out. Each tick also queries
+ * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
+ * fans out a replaceable kind:0 profile (`name` / `display_name` from the
+ * account row) to the space relay, and to the public list when
+ * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Kind:0
+ * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
+ * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off.
@@ -64,6 +105,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
+    await publishProfiles(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
@@ -135,6 +177,76 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       /* v8 ignore next 3 -- sign/decrypt failures */
     } catch {
       logEvent('nostr.sign.failed', { messageId: row.id });
+    }
+  }
+}
+
+async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
+  const cache = profileCacheFor(deps.auth);
+  const watermarks = profileWatermarkFor(deps.auth);
+  const urls = writeSet.publicEnabled
+    ? [writeSet.spaceUrl, ...writeSet.publicUrls]
+    : [writeSet.spaceUrl];
+  const accounts = await deps.auth.listAccounts();
+  let attempted = 0;
+  for (const account of accounts) {
+    if (attempted >= WORKER_BATCH) {
+      break;
+    }
+    const live = await deps.auth.getAccount(account.id);
+    if (live === undefined || live.name === null) {
+      continue;
+    }
+    const content = buildKind0Content(live.name, live.lightningAddress);
+    if (reservedContent(cache, live.id) === content) {
+      continue;
+    }
+    const previous = cache.get(live.id);
+    const reservation: Kind0Reservation = {
+      content,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(live.id) ?? 0),
+    };
+    cache.set(live.id, reservation);
+    try {
+      const pubkey = await deps.auth.getNostrPublicKey(live.id);
+      if (pubkey === undefined) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        continue;
+      }
+      attempted += 1;
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const wall = Math.floor(deps.now() / 1000);
+      reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
+      watermarks.set(live.id, reservation.createdAt);
+      const unsigned = buildKind0Event(live.name, live.lightningAddress, reservation.createdAt);
+      const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
+      const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
+      if (!spaceOk || !publicOk) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        logEvent('nostr.profile.nack', { accountId: live.id });
+        continue;
+      }
+      logEvent('nostr.profile.ok', { accountId: live.id });
+    } catch {
+      if (cache.get(live.id) === reservation) {
+        cache.delete(live.id);
+      }
+      logEvent('nostr.profile.nack', { accountId: live.id });
     }
   }
 }
