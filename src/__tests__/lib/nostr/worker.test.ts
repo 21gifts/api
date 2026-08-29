@@ -284,6 +284,255 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.length).toBe(afterFirst);
   });
 
+  it('publishes kind:0 with the database name before kind:1', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const kinds = publisher.calls.map((call) => call.event['kind']);
+    expect(kinds[0]).toBe(0);
+    expect(JSON.parse(String(publisher.calls[0]?.event['content']))).toEqual({
+      name: 'Ada',
+      display_name: 'Ada',
+      website: 'https://21.gifts',
+    });
+    expect(kinds).toContain(1);
+  });
+
+  it('includes lud16 on kind:0 when the account has a Lightning Address', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    await auth.updateAccount({ ...acc!, lightningAddress: 'ada@walletofsatoshi.com' });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    expect(JSON.parse(String(profile?.event['content'])).lud16).toBe('ada@walletofsatoshi.com');
+  });
+
+  it('skips kind:0 when the account has no name', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: null });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.every((call) => call.event['kind'] !== 0)).toBe(true);
+  });
+
+  it('skips kind:0 when the account has no Nostr key', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'nameless-key',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages: new InMemoryMessageStore(),
+        auth,
+        kek: new Uint8Array(16),
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(0);
+  });
+
+  it('republishes kind:0 when the database name changes', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const afterFirst = publisher.calls.filter((call) => call.event['kind'] === 0).length;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles.length).toBe(afterFirst + 1);
+    expect(JSON.parse(String(profiles.at(-1)?.event['content'])).name).toBe('Anton');
+  });
+
+  it('caps kind:0 publishes at WORKER_BATCH per tick', async () => {
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    for (let i = 0; i < 21; i += 1) {
+      const id = `acc-${String(i).padStart(2, '0')}`;
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: `User${i}`,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: i + 1,
+      });
+      await ensureAccountNostrKey(auth, id, KEK);
+    }
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(20);
+  });
+
+  it('logs profile nack when space rejects the kind:0', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.ok = false;
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.some((call) => call.event['kind'] === 0)).toBe(true);
+  });
+
+  it('logs profile nack when kind:0 sign or publish throws', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.publish = async () => {
+      throw new Error('ws down');
+    };
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
+  });
+
   it('marks published when public ACK is present', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();

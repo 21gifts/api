@@ -761,7 +761,7 @@
 - **Purpose:** Unsigned replaceable kind:0.
 - **Inputs:** name, lightningAddress, unix created_at.
 - **Returns / side effects:** Unsigned fields.
-- **Used by:** Profile publish (later worker).
+- **Used by:** Worker `publishProfiles`.
 
 ## Function: buildKind10002Event
 
@@ -891,7 +891,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
 - **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.

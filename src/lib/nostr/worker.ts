@@ -2,7 +2,7 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
-import { buildKind1Event } from '@/lib/nostr/event';
+import { buildKind0Event, buildKind0Content, buildKind1Event } from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -44,6 +44,19 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
 }
 
+/** Last published kind:0 content per account, keyed by auth store. */
+const profileCaches = new WeakMap<AuthStore, Map<string, string>>();
+
+function profileCacheFor(auth: AuthStore): Map<string, string> {
+  const existing = profileCaches.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, string>();
+  profileCaches.set(auth, created);
+  return created;
+}
+
 /**
  * Sign unsigned rows, optionally fan out to relays, then ingest zap receipts.
  *
@@ -51,7 +64,9 @@ export interface NostrWorkerDeps {
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
- * `t=bitcoin` is dropped and re-signed before fan-out. Each tick also queries
+ * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
+ * fans out a replaceable kind:0 profile (`name` / `display_name` from the
+ * account row) so Damus/Primal show the forum name. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off.
@@ -64,6 +79,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
+    await publishProfiles(deps, writeSet, nowMs);
     await publishBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
@@ -135,6 +151,57 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       /* v8 ignore next 3 -- sign/decrypt failures */
     } catch {
       logEvent('nostr.sign.failed', { messageId: row.id });
+    }
+  }
+}
+
+async function publishProfiles(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+  nowMs: number,
+): Promise<void> {
+  const cache = profileCacheFor(deps.auth);
+  const urls = writeSet.publicEnabled
+    ? [writeSet.spaceUrl, ...writeSet.publicUrls]
+    : [writeSet.spaceUrl];
+  const accounts = await deps.auth.listAccounts();
+  let published = 0;
+  for (const account of accounts) {
+    if (published >= WORKER_BATCH) {
+      break;
+    }
+    if (account.name === null) {
+      continue;
+    }
+    const pubkey = await deps.auth.getNostrPublicKey(account.id);
+    if (pubkey === undefined) {
+      continue;
+    }
+    const content = buildKind0Content(account.name, account.lightningAddress);
+    if (cache.get(account.id) === content) {
+      continue;
+    }
+    try {
+      const unsigned = buildKind0Event(
+        account.name,
+        account.lightningAddress,
+        Math.floor(nowMs / 1000),
+      );
+      const signed = await signEventForAccount(deps.auth, account.id, deps.kek, unsigned);
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      if (!spaceAcked(acks, writeSet.spaceUrl)) {
+        logEvent('nostr.profile.nack', { accountId: account.id });
+        continue;
+      }
+      cache.set(account.id, content);
+      published += 1;
+      logEvent('nostr.profile.ok', { accountId: account.id });
+    } catch {
+      logEvent('nostr.profile.nack', { accountId: account.id });
     }
   }
 }
