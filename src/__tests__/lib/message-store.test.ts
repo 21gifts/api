@@ -368,4 +368,35 @@ describe('PostgresMessageStore', () => {
     const mapped = await new PostgresMessageStore(sql).getById('m1');
     expect(mapped?.nostrEvent?.['id']).toBe('abc123');
   });
+
+  it('listPendingSigned and clearSignedEvent round-trip in memory', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.updateSignedEvent('a', 'ab'.repeat(32), { id: 'x' });
+    expect((await store.listPendingSigned(10)).map((row) => row.id)).toEqual(['a']);
+    await store.clearSignedEvent('a');
+    expect(await store.listPendingSigned(10)).toEqual([]);
+    expect((await store.getById('a'))?.eventId).toBeNull();
+  });
+
+  it('listPendingSigned and clearSignedEvent hit Postgres', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect((await store.listPendingSigned(7))[0]?.id).toBe('m1');
+    expect(sql.queries.at(-1)?.text).toMatch(/event_id IS NOT NULL/);
+    await store.clearSignedEvent('m1');
+    expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
+  });
 });

@@ -59,6 +59,7 @@ export interface NostrWorkerDeps {
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
   const nowMs = deps.now();
+  await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
     await publishBatch(deps, writeSet, nowMs);
@@ -74,6 +75,29 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
   });
+}
+
+/**
+ * Drop stored kind:1 JSON that predates `t=bitcoin` so `signBatch` rebuilds it.
+ */
+async function resignLegacyKind1Tags(deps: NostrWorkerDeps): Promise<void> {
+  const rows = await deps.messages.listPendingSigned(WORKER_BATCH);
+  for (const row of rows) {
+    if (!kind1HasBitcoinTag(row.nostrEvent)) {
+      await deps.messages.clearSignedEvent(row.id);
+    }
+  }
+}
+
+function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return false;
+  }
+  const tags = event['tags'];
+  if (!Array.isArray(tags)) {
+    return false;
+  }
+  return tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
 }
 
 async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {

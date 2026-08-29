@@ -121,7 +121,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` / `clearSignedEvent` for tag migrations; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -198,7 +198,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `listPendingSigned` / `clearSignedEvent`, `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`.
 - **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -772,7 +772,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Ingests kind:9735 zap receipts each tick even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. Ingests kind:9735 zap receipts each tick even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
 - **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.

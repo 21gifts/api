@@ -50,6 +50,20 @@ export interface MessageStore {
    */
   claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]>;
 
+  /**
+   * Pending rows that already have an `eventId` (no lease).
+   *
+   * @param limit - Max rows.
+   */
+  listPendingSigned(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Drop the stored kind:1 so the worker can re-sign (still pending).
+   *
+   * @param id - Message id.
+   */
+  clearSignedEvent(id: string): Promise<void>;
+
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
     id: string,
@@ -180,6 +194,24 @@ export class InMemoryMessageStore implements MessageStore {
         leaseMs,
       ),
     );
+  }
+
+  listPendingSigned(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter((row) => row.eventId !== null && row.nostrPublishState === 'pending')
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  clearSignedEvent(id: string): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined && row.nostrPublishState === 'pending') {
+      row.eventId = null;
+      row.nostrEvent = null;
+      row.claimedUntil = null;
+    }
+    return Promise.resolve();
   }
 
   updateSignedEvent(
@@ -413,6 +445,27 @@ export class PostgresMessageStore implements MessageStore {
       [until, new Date(nowMs), limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listPendingSigned(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+       FROM message
+       WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async clearSignedEvent(id: string): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
+       WHERE id = $1 AND nostr_publish_state = 'pending'`,
+      [id],
+    );
   }
 
   async updateSignedEvent(
