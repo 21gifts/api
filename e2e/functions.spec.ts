@@ -259,6 +259,21 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   expect(body.totalSats).toBe(0);
 });
 
+test('Function: giftsForRecipient — GET /gifts/stats?recipient= is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats?recipient=alice');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    giftCount: number;
+    totalSats: number;
+    spendOverTime: unknown[];
+  };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalSats).toBe(0);
+  expect(body.spendOverTime).toEqual([]);
+});
+
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
   request,
 }) => {

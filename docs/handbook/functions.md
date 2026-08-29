@@ -14,6 +14,13 @@
 - **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `fx`, and BTC/USD on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no rate. Gap days and gap months are zero sats/BTC/USD without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
 
+## Function: giftsForRecipient
+
+- **Purpose:** Filter outbound gift rows to one Wallet of Satoshi handle (case-insensitive). Used by `GET /gifts/stats?recipient=` so stats reflect that handle's gifts only.
+- **Inputs:** `readonly GiftRow[]` and `recipient` string. Trims `recipient`; when `indexOf('@') > 0` compares the local-part before `@`, otherwise the whole trimmed string. Empty after trim (or empty local-part) matches nothing — never "all gifts".
+- **Returns / side effects:** Matching `GiftRow[]` in input order, or `[]`. No I/O.
+- **Used by:** `giftsStatsRoutes`.
+
 ## Function: giftsRoutes
 
 - **Purpose:** Hono sub-app for `GET /gifts?day=YYYY-MM-DD`. Invalid/missing `day` → 400. Empty day → 200 without Coinbase. Gifts present → `ensureDays([day])`; missing rate → 503.
@@ -23,8 +30,8 @@
 
 ## Function: giftsStatsRoutes
 
-- **Purpose:** Hono sub-app for `GET /gifts/stats`. Empty gift list → empty stats 200 without Coinbase. Otherwise `ensureDays` for unique gift days; missing rate → 503.
-- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`).
+- **Purpose:** Hono sub-app for `GET /gifts/stats`. Optional `?recipient=` filters via `giftsForRecipient` before aggregation. Empty selection (no gifts, or unknown handle) → empty stats 200 without Coinbase. Otherwise `ensureDays` for unique selected gift days; missing rate → 503.
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; now?: () => number }` (defaults: empty `InMemoryBtcUsdStore`, `Date.now`). Query `recipient` is optional (missing/blank = unfiltered).
 - **Returns / side effects:** Hono app mounted at `/gifts/stats`. Logs `gifts.stats.fx_incomplete` or `gifts.stats.failed` on 503 paths.
 - **Used by:** `createApp`.
 
