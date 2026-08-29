@@ -116,8 +116,8 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, WebAuthn RP, spend token,
- *   and gift invoice store.
+ *   gift recorder, BTC-USD rates, message store, nostrKek, WebAuthn RP, spend
+ *   token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {

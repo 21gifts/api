@@ -1,7 +1,7 @@
 import type { Account } from '@/lib/auth/store';
 
 /**
- * Public JSON shape of an account (six fields only). Never includes Nostr
+ * Public JSON shape of an account (seven fields). Never includes Nostr
  * pubkey, ciphertext, or other key material.
  */
 export interface AccountResponse {
@@ -28,7 +28,7 @@ export interface AccountResponse {
  * bodies never grow Nostr fields.
  *
  * @param account - Stored account.
- * @returns The six public fields only.
+ * @returns The seven public fields only.
  */
 export function serializeAccount(account: Account): AccountResponse {
   return {

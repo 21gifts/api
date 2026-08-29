@@ -60,15 +60,17 @@ export interface BootFxOptions {
  * {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
  * `SqlClient`, migrates auth (via `openAuthStore`) then the FX and `message`
  * tables, builds a {@link QueryGiftStore}, {@link SqlGiftRecorder}, and
- * {@link PostgresMessageStore}, constructs {@link PostgresBtcUsdStore}, and
- * best-effort fills rates for the outbound gift day range (failures log
- * `gifts.fx.boot_fill.failed` and do not throw).
+ * {@link PostgresMessageStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
+ * constructs {@link PostgresBtcUsdStore}, and best-effort fills rates for
+ * the outbound gift day range (failures log `gifts.fx.boot_fill.failed` and
+ * do not throw). Memory boots leave `nostrKek` undefined.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional fetch / URL / clock overrides for tests.
  * @returns Stores to inject into `createApp`.
- * @throws If `databaseUrl` is set and `createClient` is omitted.
+ * @throws If `databaseUrl` is set and `createClient` is omitted, or if the
+ *   SQL path has a missing or malformed `NOSTR_NSEC_KEK`.
  */
 export async function openBootStores(
   databaseUrl: string | undefined,

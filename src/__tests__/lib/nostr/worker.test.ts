@@ -75,7 +75,18 @@ describe('runNostrWorkerTick', () => {
     });
     expect(publisher.calls.length).toBeGreaterThan(0);
     expect(publisher.calls[0]?.urls).toEqual(['wss://relay.nostr.space']);
-    expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+    expect((await messages.getById('m1'))?.nostrPublishEpoch).toBe('space');
+    const afterFirst = publisher.calls.length;
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher,
+      now: () => 1_700_000_120_000,
+      env,
+    });
+    expect(publisher.calls.length).toBe(afterFirst);
   });
 
   it('marks published when public ACK is present', async () => {
@@ -104,6 +115,79 @@ describe('runNostrWorkerTick', () => {
       env,
     });
     expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+  });
+
+  it('parks when public relays are on but only space ACKs', async () => {
+    const { auth, messages } = await seed();
+    const space = 'wss://relay.nostr.space';
+    const publisher: RecordingPublisher = new RecordingPublisher();
+    publisher.publish = async (event, urls, _timeoutMs) => {
+      publisher.calls.push({ event, urls });
+      return Promise.resolve(urls.map((url) => ({ url, ok: url === space })));
+    };
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher,
+      now: () => 1_700_000_000_000,
+      env,
+    });
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher,
+      now: () => 1_700_000_060_000,
+      env,
+    });
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
+    expect((await messages.getById('m1'))?.nostrPublishEpoch).toBe('space');
+  });
+
+  it('bumps created_at when two notes collide on event id', async () => {
+    const { auth, messages } = await seed();
+    await messages.create({
+      id: 'm2',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+    });
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    const first = await messages.getById('m1');
+    const second = await messages.getById('m2');
+    expect(first?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(second?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(second?.eventId).not.toBe(first?.eventId);
+  });
+
+  it('stops signing after two event-id collisions', async () => {
+    const { auth, messages } = await seed();
+    messages.updateSignedEvent = async (): Promise<boolean> => false;
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    expect((await messages.getById('m1'))?.eventId).toBeNull();
   });
 
   it('logs nack when space rejects', async () => {

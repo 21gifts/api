@@ -39,8 +39,9 @@ export interface NostrWorkerDeps {
  * Sign unsigned rows, then optionally fan out to relays.
  *
  * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
- * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK parks; published requires space
- * plus ≥1 public ACK.
+ * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
+ * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
+ * until a public ACK makes `published`/`public`.
  *
  * @param deps - Stores, kek, publisher, clock, env.
  */
@@ -66,14 +67,23 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   for (const row of rows) {
     try {
       await ensureAccountNostrKey(deps.auth, row.accountId, deps.kek);
-      const createdAt = Math.floor(row.createdAt.getTime() / 1000);
-      const unsigned = buildKind1Event(row.text, createdAt);
-      const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
-      await deps.messages.updateSignedEvent(
-        row.id,
-        signed.id,
-        signed as unknown as Record<string, unknown>,
-      );
+      let createdAt = Math.floor(row.createdAt.getTime() / 1000);
+      let stored = false;
+      for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
+        const unsigned = buildKind1Event(row.text, createdAt);
+        const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
+        stored = await deps.messages.updateSignedEvent(
+          row.id,
+          signed.id,
+          signed as unknown as Record<string, unknown>,
+        );
+        if (!stored) {
+          createdAt += 1;
+        }
+      }
+      if (!stored) {
+        logEvent('nostr.sign.failed', { messageId: row.id, reason: 'event_id' });
+      }
       /* v8 ignore next 3 -- sign/decrypt failures */
     } catch {
       logEvent('nostr.sign.failed', { messageId: row.id });
@@ -102,7 +112,10 @@ async function publishBatch(
         logEvent('nostr.publish.nack', { messageId: row.id, relay: 'space' });
         continue;
       }
-      if (writeSet.publicEnabled && publicAcked(acks, writeSet.spaceUrl)) {
+      if (!writeSet.publicEnabled) {
+        await deps.messages.updatePublishState(row.id, 'published', 'space');
+        logEvent('nostr.publish.ok', { messageId: row.id, epoch: 'space' });
+      } else if (publicAcked(acks, writeSet.spaceUrl)) {
         await deps.messages.updatePublishState(row.id, 'published', 'public');
         logEvent('nostr.publish.ok', { messageId: row.id });
       } else {
