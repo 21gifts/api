@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-28 (public forum `GET/POST /messages`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (public forum `GET/POST /messages` with `sats`/`payable`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -15,7 +15,9 @@ local boots). When `DATABASE_URL` is set, the process migrates the auth
 schema and uses `PostgresAuthStore` — accounts, passkey challenges,
 passkey credentials, sessions, and pending address verifications survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
-database URL that is set is fail-loud at boot. Public gift statistics
+database URL that is set is fail-loud at boot. On the SQL path,
+`NOSTR_NSEC_KEK` (64 lowercase hex) is also required; missing or malformed
+KEK throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and historical USD using the UTC-calendar-day
