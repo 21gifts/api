@@ -496,6 +496,8 @@ describe('runNostrWorkerTick', () => {
       name: 'Bob',
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'e'.repeat(64),
       createdAt: 1,
     });
     const publisher = new RecordingPublisher();
@@ -566,6 +568,8 @@ describe('runNostrWorkerTick', () => {
         name: `User${i}`,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: `${i.toString(16).padStart(2, '0')}`.repeat(32),
         createdAt: i + 1,
       });
       await ensureAccountNostrKey(auth, id, KEK);
@@ -596,6 +600,8 @@ describe('runNostrWorkerTick', () => {
         name: `User${i}`,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: `${i.toString(16).padStart(2, '0')}`.repeat(32),
         createdAt: i + 1,
       });
       await ensureAccountNostrKey(auth, id, KEK);
