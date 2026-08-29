@@ -271,6 +271,19 @@ describe('InMemoryMessageStore', () => {
     expect(again?.bytes[0]).toBe(0xff);
   });
 
+  it('create with text and photo keeps both', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create({ ...EARLY, hasPhoto: true }, JPEG);
+    expect(created.text).toBe('first');
+    expect(created.hasPhoto).toBe(true);
+    expect((await store.listLatest(10))[0]).toMatchObject({
+      id: 'a',
+      text: 'first',
+      hasPhoto: true,
+    });
+    expect(await store.getPhoto('a')).toEqual(JPEG);
+  });
+
   it('getPhoto returns null for an unknown id', async () => {
     expect(await new InMemoryMessageStore().getPhoto('missing')).toBeNull();
   });
@@ -356,6 +369,22 @@ describe('PostgresMessageStore', () => {
       ...unsignedNostrDefaults(),
     };
     await store.create(row, JPEG);
+    expect(sql.executes[0]?.params[4]).toEqual(JPEG.bytes);
+    expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
+  });
+
+  it('create binds text together with photo bytes', async () => {
+    const sql = new MockSql();
+    const row: MessageRow = {
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello with photo',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+    };
+    await new PostgresMessageStore(sql).create(row, JPEG);
+    expect(sql.executes[0]?.params[3]).toBe('hello with photo');
     expect(sql.executes[0]?.params[4]).toEqual(JPEG.bytes);
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
   });

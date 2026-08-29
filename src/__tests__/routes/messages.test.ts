@@ -394,6 +394,42 @@ describe('POST /messages', () => {
     expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 
+  it('posts text together with a photo and serves both', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: '  hello with photo  ',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as {
+      id: string;
+      text: string;
+      hasPhoto: boolean;
+    };
+    expect(created.text).toBe('hello with photo');
+    expect(created.hasPhoto).toBe(true);
+
+    const list = await app.request('/messages', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as {
+      messages: Array<{ id: string; text: string; hasPhoto: boolean }>;
+    };
+    expect(body.messages[0]).toMatchObject({
+      id: created.id,
+      text: 'hello with photo',
+      hasPhoto: true,
+    });
+
+    const photo = await app.request(`/messages/${created.id}/photo`, { headers: AUTH });
+    expect(photo.status).toBe(200);
+    expect(photo.headers.get('content-type')).toBe('image/jpeg');
+    expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
   it('rejects a bad photo payload', async () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
