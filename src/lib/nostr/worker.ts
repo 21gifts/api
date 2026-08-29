@@ -66,7 +66,8 @@ function profileCacheFor(auth: AuthStore): Map<string, string> {
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
  * fans out a replaceable kind:0 profile (`name` / `display_name` from the
- * account row) so Damus/Primal show the forum name. Each tick also queries
+ * account row) to the space relay, and to the public list when
+ * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off.

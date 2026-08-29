@@ -349,6 +349,29 @@ describe('runNostrWorkerTick', () => {
     expect(JSON.parse(String(profile?.event['content'])).lud16).toBe('ada@walletofsatoshi.com');
   });
 
+  it('publishes kind:0 to public relays when NOSTR_PUBLISH_PUBLIC=1', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    expect(profile?.urls).toEqual(['wss://relay.nostr.space', 'wss://relay.damus.io']);
+  });
+
   it('skips kind:0 when the account has no name', async () => {
     const { auth, messages } = await seed();
     const acc = await auth.getAccount('acc');
