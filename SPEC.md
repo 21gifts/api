@@ -211,6 +211,7 @@ ID).
     "name": null,
     "lightningAddress": null,
     "lightningAddressVerified": false,
+    "forumLawsDismissed": false,
     "createdAt": 0
   }
 }
