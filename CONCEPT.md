@@ -51,13 +51,19 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 
 ### Roles
 
-| Role      | Capabilities                                                                     |
-| --------- | -------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (every account can receive by default) |
-| Moderator | Basis, plus extended permissions for content moderation                          |
+One exclusive `account.role` per account. New passkey accounts are **Basis**.
+Assignment is operator-side (`PATCH /debug/accounts/:id`, `DEBUG_TOKEN`).
+
+| Role      | Capabilities                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                       |
+| Verified  | Basis, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. |
+| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                      |
+| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                             |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
-its own (see below).
+its own (see below). The forum shows a tag only for Verified, Moderator, and
+Founder.
 
 ### Login: passkey only
 
@@ -282,9 +288,11 @@ reputation (who follows / vouches for whom).
 - No KYC, no government ID
 
 (v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 NOSTR
-identities are custodial, server-held. The v1 verified badge is proof of
-Lightning-Address control via micro-payment nonce, see "Receiver address
-verification".)
+identities are custodial, server-held. Proof of Lightning-Address control is
+the account flag `lightningAddressVerified` via micro-payment nonce, see
+"Receiver address verification". That flag is not the forum role **Verified**,
+which means a moderator physically met the person (`account.role`, assigned
+with `PATCH /debug/accounts/:id`).)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
