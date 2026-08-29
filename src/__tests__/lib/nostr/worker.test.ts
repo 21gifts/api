@@ -119,6 +119,51 @@ describe('runNostrWorkerTick', () => {
     ]);
   });
 
+  it('re-signs a legacy note even when newer bitcoin-tagged notes are pending', async () => {
+    const { auth, messages } = await seed();
+    const modern = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    for (let i = 0; i < 20; i += 1) {
+      const id = `n${String(i).padStart(2, '0')}`;
+      await messages.create({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: `n${i}`,
+        createdAt: new Date(Date.parse('2026-08-27T00:00:00.000Z') + i * 1000),
+        ...unsignedNostrDefaults(),
+      });
+      await messages.updateSignedEvent(id, `${i.toString(16).padStart(2, '0')}`.repeat(32), {
+        kind: 1,
+        content: `n${i}`,
+        tags: modern,
+        created_at: 1,
+      });
+    }
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello',
+      tags: [['t', '21gifts']],
+      created_at: 1,
+    });
+    await runNostrWorkerTick({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
   it('leaves pending kind:1 events that already have t=bitcoin', async () => {
     const { auth, messages } = await seed();
     const tags = [

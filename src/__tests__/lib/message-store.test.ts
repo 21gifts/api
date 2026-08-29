@@ -377,6 +377,40 @@ describe('PostgresMessageStore', () => {
     await store.clearSignedEvent('a');
     expect(await store.listPendingSigned(10)).toEqual([]);
     expect((await store.getById('a'))?.eventId).toBeNull();
+    await store.clearSignedEvent('missing');
+    await store.updateSignedEvent('a', 'cd'.repeat(32), {
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+      ],
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.clearSignedEvent('a');
+    expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
+  });
+
+  it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(LATE);
+    await store.create(EARLY);
+    await store.create(TIE_HIGH);
+    await store.create(TIE_LOW);
+    await store.updateSignedEvent('b', '11'.repeat(32), {
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+      ],
+    });
+    await store.updateSignedEvent('a', '22'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    await store.updateSignedEvent('z', '33'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    await store.updateSignedEvent('m', '44'.repeat(32), {
+      tags: [['t', '21gifts']],
+    });
+    expect((await store.listPendingSigned(10)).map((row) => row.id)).toEqual(['a', 'm', 'z']);
   });
 
   it('listPendingSigned and clearSignedEvent hit Postgres', async () => {

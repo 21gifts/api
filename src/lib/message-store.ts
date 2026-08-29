@@ -9,6 +9,17 @@ import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type MessageRow, type NostrPublishState } from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
+function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return true;
+  }
+  const tags = event['tags'];
+  if (!Array.isArray(tags)) {
+    return true;
+  }
+  return !tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
+}
+
 /**
  * Persistence port for forum messages.
  */
@@ -198,7 +209,16 @@ export class InMemoryMessageStore implements MessageStore {
 
   listPendingSigned(limit: number): Promise<MessageRow[]> {
     const rows = this.#rows
-      .filter((row) => row.eventId !== null && row.nostrPublishState === 'pending')
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.nostrPublishState === 'pending' &&
+          pendingKind1LacksBitcoinTag(row.nostrEvent),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
       .slice(0, limit)
       .map((row) => copyRow(row));
     return Promise.resolve(rows);
@@ -453,6 +473,20 @@ export class PostgresMessageStore implements MessageStore {
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
        FROM message
        WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+         AND (
+           nostr_event IS NULL
+           OR NOT EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(COALESCE(nostr_event->'tags', 'null'::jsonb)) = 'array'
+                 THEN nostr_event->'tags'
+                 ELSE '[]'::jsonb
+               END
+             ) AS tag
+             WHERE tag->>0 = 't' AND tag->>1 = 'bitcoin'
+           )
+         )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,
       [limit],

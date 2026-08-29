@@ -50,8 +50,9 @@ export interface NostrWorkerDeps {
  * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
- * until a public ACK makes `published`/`public`. Each tick also queries the
- * write-set for kind:9735 receipts and indexes validated ones onto `sats`,
+ * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
+ * `t=bitcoin` is dropped and re-signed before fan-out. Each tick also queries
+ * the write-set for kind:9735 receipts and indexes validated ones onto `sats`,
  * even when publish is off.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
@@ -151,6 +152,12 @@ async function publishBatch(
     if (row.nostrEvent === null) {
       continue;
     }
+    /* v8 ignore start -- overlapping tick may still hold a pre-resign snapshot */
+    if (!kind1HasBitcoinTag(row.nostrEvent)) {
+      await deps.messages.clearSignedEvent(row.id);
+      continue;
+    }
+    /* v8 ignore stop */
     try {
       const acks = await deps.publisher.publish(row.nostrEvent, urls, RELAY_TIMEOUT_MS);
       const space = spaceAcked(acks, writeSet.spaceUrl);
