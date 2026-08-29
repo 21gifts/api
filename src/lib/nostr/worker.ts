@@ -168,30 +168,31 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     if (attempted >= WORKER_BATCH) {
       break;
     }
-    if (account.name === null) {
+    const live = await deps.auth.getAccount(account.id);
+    if (live === undefined || live.name === null) {
       continue;
     }
-    const content = buildKind0Content(account.name, account.lightningAddress);
-    if (cache.get(account.id) === content) {
+    const content = buildKind0Content(live.name, live.lightningAddress);
+    if (cache.get(live.id) === content) {
       continue;
     }
     attempted += 1;
-    cache.set(account.id, content);
+    cache.set(live.id, content);
     try {
-      const pubkey = await deps.auth.getNostrPublicKey(account.id);
+      const pubkey = await deps.auth.getNostrPublicKey(live.id);
       if (pubkey === undefined) {
-        if (cache.get(account.id) === content) {
-          cache.delete(account.id);
+        if (cache.get(live.id) === content) {
+          cache.delete(live.id);
         }
         continue;
       }
       const unsigned = buildKind0Event(
-        account.name,
-        account.lightningAddress,
+        live.name,
+        live.lightningAddress,
         Math.floor(deps.now() / 1000),
       );
-      const signed = await signEventForAccount(deps.auth, account.id, deps.kek, unsigned);
-      if (cache.get(account.id) !== content) {
+      const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
+      if (cache.get(live.id) !== content) {
         continue;
       }
       const acks = await deps.publisher.publish(
@@ -202,18 +203,18 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
       const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
       if (!spaceOk || !publicOk) {
-        if (cache.get(account.id) === content) {
-          cache.delete(account.id);
+        if (cache.get(live.id) === content) {
+          cache.delete(live.id);
         }
-        logEvent('nostr.profile.nack', { accountId: account.id });
+        logEvent('nostr.profile.nack', { accountId: live.id });
         continue;
       }
-      logEvent('nostr.profile.ok', { accountId: account.id });
+      logEvent('nostr.profile.ok', { accountId: live.id });
     } catch {
-      if (cache.get(account.id) === content) {
-        cache.delete(account.id);
+      if (cache.get(live.id) === content) {
+        cache.delete(live.id);
       }
-      logEvent('nostr.profile.nack', { accountId: account.id });
+      logEvent('nostr.profile.nack', { accountId: live.id });
     }
   }
 }

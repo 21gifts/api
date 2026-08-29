@@ -349,6 +349,31 @@ describe('runNostrWorkerTick', () => {
     expect(JSON.parse(String(profile?.event['content'])).lud16).toBe('ada@walletofsatoshi.com');
   });
 
+  it('publishes a name that changed after listAccounts', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    const originalList = auth.listAccounts.bind(auth);
+    auth.listAccounts = async () => {
+      const rows = await originalList();
+      const acc = await auth.getAccount('acc');
+      await auth.updateAccount({ ...acc!, name: 'Anton' });
+      return rows;
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    expect(JSON.parse(String(profile?.event['content'])).name).toBe('Anton');
+  });
+
   it('publishes kind:0 to public relays when NOSTR_PUBLISH_PUBLIC=1', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
