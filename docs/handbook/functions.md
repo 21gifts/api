@@ -119,6 +119,20 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/contact.sql`.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migrateDbChangeSchema
+
+- **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop).
+- **Used by:** `openBootStores` when SQL opens, immediately after `migrateContactSchema`.
+
+## Function: DB_CHANGE_SCHEMA_SQL
+
+- **Purpose:** Ordered idempotent DDL statements that create the append-only `db_change` log, secret-redacting helpers, immutability guard, and per-table `trg_db_change` triggers on every public table except `db_change`.
+- **Inputs:** None (readonly string array constant).
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, and `nonce` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext.
+- **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
+
 ## Function: InMemoryBtcUsdStore
 
 - **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
@@ -184,9 +198,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, and `contact` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, and `PostgresContactStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`nostrKek` undefined.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, and `PostgresContactStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`nostrKek` undefined and skips migrates including `migrateDbChangeSchema`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken

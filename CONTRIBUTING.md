@@ -70,6 +70,7 @@ api/
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
+│   │   ├── db-change.ts      # append-only `db_change` change log migrate
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
 │   │   ├── nostr/            # Custodial nsec, kind:1 worker, NIP-57 zap, write-set relays
@@ -112,6 +113,7 @@ api/
 │       │   ├── money.test.ts
 │       │   ├── btc-usd-candles.test.ts
 │       │   ├── btc-usd-store.test.ts
+│       │   ├── db-change.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
@@ -152,7 +154,8 @@ api/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── message.sql           # public forum message table for GET/POST /messages
-│   └── contact.sql           # private contact mailbox table for POST /contact
+│   ├── contact.sql           # private contact mailbox table for POST /contact
+│   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
@@ -251,7 +254,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresMessageStore`, `migrateMessageSchema`,
-`PostgresContactStore`, `migrateContactSchema`,
+`PostgresContactStore`, `migrateContactSchema`, `migrateDbChangeSchema`,
+`DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,

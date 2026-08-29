@@ -10,6 +10,7 @@ import {
   type BtcUsdRateBook,
 } from '@/lib/btc-usd-store';
 import { resolveCandlesUrl, type FetchFn } from '@/lib/btc-usd-candles';
+import { migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
@@ -66,12 +67,13 @@ export interface BootFxOptions {
  * `contactStore: undefined`, `nostrKek: undefined`, and an empty
  * {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
  * `SqlClient`, migrates auth (via `openAuthStore`) then the FX, `message`,
- * and `contact` tables, builds a {@link QueryGiftStore},
+ * `contact`, and `db_change` schemas, builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore}, and
  * {@link PostgresContactStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
  * constructs {@link PostgresBtcUsdStore}, and best-effort fills rates for
  * the outbound gift day range (failures log `gifts.fx.boot_fill.failed` and
- * do not throw). Memory boots leave `nostrKek` undefined.
+ * do not throw). Memory boots leave `nostrKek` undefined and do not run
+ * the `db_change` migrate.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -112,6 +114,7 @@ export async function openBootStores(
   await migrateBtcUsdSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
+  await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);

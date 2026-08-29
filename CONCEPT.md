@@ -330,6 +330,11 @@ The api lives in its own repository (`21gifts/api`) and is the **canonical
 home for project-level documentation**, including this concept document. The
 app repo (`21gifts/app`) only carries frontend-specific docs.
 
+**Durability**: Durable Postgres writes are also appended to `db_change` with
+`at` / `op` / `before` / `after`. Secret columns `token`, `challenge`,
+`nostr_nsec_ciphertext`, and `nonce` are stored as SHA-256 hex in that JSON;
+other columns including `name` stay plaintext.
+
 ### Storage (client-side)
 
 > **Post-v1 target architecture** (like "Identity & Keys" above). v1 stores
