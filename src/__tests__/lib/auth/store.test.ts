@@ -86,6 +86,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'c'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(false);
     await store.createAccount({
@@ -98,6 +99,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: true,
       viewKey: 'd'.repeat(64),
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc-true'))?.forumLawsDismissed).toBe(true);
     await store.updateAccount({
@@ -110,6 +112,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: true,
       viewKey: 'c'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(true);
   });
@@ -611,6 +614,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccountByViewKey(viewKey))?.id).toBe('acc');
     expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
@@ -629,6 +633,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'acc-2',
@@ -640,6 +645,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey,
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc-1'))?.id).toBe('acc-1');
     expect(await store.getAccount('acc-2')).toBeUndefined();
@@ -660,6 +666,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: oldKey,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc',
@@ -671,6 +678,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: newKey,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect(await store.getAccountByViewKey(oldKey)).toBeUndefined();
     expect((await store.getAccountByViewKey(newKey))?.id).toBe('acc');
@@ -688,6 +696,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '1'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'acc-2',
@@ -699,6 +708,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '2'.repeat(64),
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc-2',
@@ -710,6 +720,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '1'.repeat(64),
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc-2'))?.viewKey).toBe('2'.repeat(64));
     expect((await store.getAccount('acc-2'))?.name).toBeNull();
@@ -729,6 +740,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.deleteAccount('acc');
     expect(await store.getAccountByViewKey(viewKey)).toBeUndefined();
@@ -742,6 +754,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey,
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccountByViewKey(viewKey))?.id).toBe('other');
   });

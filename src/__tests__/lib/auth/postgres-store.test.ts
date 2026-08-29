@@ -204,6 +204,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).resolves.toBeUndefined();
   });
@@ -222,6 +223,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toMatchObject({ code: '57014' });
   });

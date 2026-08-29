@@ -931,6 +931,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
+      rulesAgreedAt: null,
     });
     const res = await mount(store).request('/me/lightning-address/verification/confirm', {
       method: 'POST',
