@@ -62,7 +62,8 @@ export interface MessageStore {
   claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]>;
 
   /**
-   * Pending rows that already have an `eventId` (no lease).
+   * Pending signed rows whose stored kind:1 lacks `t=bitcoin` (no lease).
+   * Oldest `createdAt` then `id` first. Includes `nostrEvent === null`.
    *
    * @param limit - Max rows.
    */

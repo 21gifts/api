@@ -430,7 +430,10 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     expect((await store.listPendingSigned(7))[0]?.id).toBe('m1');
     expect(sql.queries.at(-1)?.text).toMatch(/event_id IS NOT NULL/);
+    expect(sql.queries.at(-1)?.text).toMatch(/tag->>1 = 'bitcoin'/);
+    expect(sql.queries.at(-1)?.text).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
     await store.clearSignedEvent('m1');
     expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
+    expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
   });
 });
