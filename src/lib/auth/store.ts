@@ -116,8 +116,9 @@ export interface AuthStore {
   createAccount(account: Account): Promise<void>;
   /**
    * Overwrite a stored account. A `viewKey` or non-null `linkingKey` owned
-   * by another id is refused (in-memory no-op; Postgres `UPDATE` matches no
-   * row or a `view_key` / `linking_key` unique_violation is swallowed).
+   * by another id is refused (in-memory no-op; Postgres `linkingKey` via
+   * `UPDATE` matching no row, `viewKey` via swallowed `view_key`
+   * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */

@@ -7,6 +7,7 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS account/i);
     expect(AUTH_SCHEMA_SQL[0]).toMatch(/\bname text\b/i);
     expect(AUTH_SCHEMA_SQL[0]).not.toMatch(/linking_key text NOT NULL/i);
+    expect(AUTH_SCHEMA_SQL[0]).not.toMatch(/view_key/i);
     expect(AUTH_SCHEMA_SQL[1]).toMatch(/ALTER TABLE account ADD COLUMN IF NOT EXISTS name text/i);
     expect(AUTH_SCHEMA_SQL[2]).toMatch(
       /ALTER TABLE account ALTER COLUMN linking_key DROP NOT NULL/i,

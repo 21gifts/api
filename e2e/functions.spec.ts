@@ -644,9 +644,18 @@ test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured
   expect(res.status()).toBe(503);
 });
 
-test('Function: serializeAccount — GET /me without bearer is 401', async ({ request }) => {
-  const res = await request.get('/me');
-  expect(res.status()).toBe(401);
+test('Function: serializeAccount — GET /debug/accounts listing omits viewKey', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
+  expect(Array.isArray(body.accounts)).toBe(true);
+  for (const account of body.accounts) {
+    expect(account).not.toHaveProperty('viewKey');
+  }
 });
 
 test('Function: serializeOwnerAccount — GET /me without bearer is 401', async ({ request }) => {

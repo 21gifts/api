@@ -262,8 +262,12 @@ describe('auth routes', () => {
         }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { token: string; account: { id: string } };
+      const body = (await res.json()) as {
+        token: string;
+        account: { id: string; viewKey: string };
+      };
       expect(body.account.id).toBe(accountId);
+      expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.login.ok' && e['accountId'] === accountId,
