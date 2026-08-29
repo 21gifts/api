@@ -283,13 +283,18 @@ describe('POST /me/rules-agreement', () => {
     });
     expect(named.status).toBe(200);
     expect(((await named.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(agreedAt);
-    const linked = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
+    const linked = await mount(store, { fetchImpl: happyFetch() }).request(
+      '/me/lightning-address',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ address: ADDRESS }),
+      },
+    );
     expect(linked.status).toBe(200);
-    expect(((await linked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(agreedAt);
+    expect(((await linked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
+      agreedAt,
+    );
     const unlinked = await mount(store).request('/me/lightning-address', {
       method: 'DELETE',
       headers: AUTH,
