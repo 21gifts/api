@@ -135,15 +135,15 @@
 
 ## Endpoint: POST /messages/:id/invoice
 
-- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay.
-- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`); 503 Messages are unavailable (missing KEK, keygen/sign failure).
+- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
+- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/lightning-address
 
-- **Purpose:** Body `{ address }`. Stores unverified LUD-16 on the account.
-- **Errors:** 401/400.
+- **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged).
 - **Used by:** App `setLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 

@@ -143,14 +143,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (!invoiceLimiter.allow(account.id, deps.now())) {
-        c.header('Retry-After', '10');
-        return c.json({ error: 'Too many payments' }, 429);
-      }
-      const kek = deps.nostrKek;
-      if (kek === undefined) {
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
@@ -175,6 +167,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       /* v8 ignore next 3 -- payable notes have keys after the worker */
       if (recipientPubkey === undefined) {
         return c.json({ error: 'This message cannot be paid yet' }, 400);
+      }
+      const kek = deps.nostrKek;
+      if (kek === undefined) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      if (!invoiceLimiter.allow(account.id, deps.now())) {
+        c.header('Retry-After', '10');
+        return c.json({ error: 'Too many payments' }, 429);
       }
       const writeSet = resolveWriteSet(process.env);
       const relays = [writeSet.spaceUrl, ...writeSet.publicUrls];

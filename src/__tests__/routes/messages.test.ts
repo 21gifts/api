@@ -382,6 +382,74 @@ describe('POST /messages', () => {
 
 describe('POST /messages/:id/invoice', () => {
   it('returns 429 on a burst of invoice requests', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '55555555-5555-4555-8555-555555555555',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const limiter = new InvoiceRateLimiter();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: limiter,
+      }),
+    );
+    const hit = async (): Promise<number> =>
+      (
+        await app.request('/messages/55555555-5555-4555-8555-555555555555/invoice', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        })
+      ).status;
+    expect(await hit()).toBe(200);
+    expect(await hit()).toBe(429);
+  });
+
+  it('does not consume the invoice limiter on a missing id', async () => {
     const limiter = new InvoiceRateLimiter();
     const app = new Hono().route(
       '/messages',
@@ -396,14 +464,91 @@ describe('POST /messages/:id/invoice', () => {
     );
     const hit = async (): Promise<number> =>
       (
-        await app.request('/messages/m1/invoice', {
+        await app.request('/messages/00000000-0000-4000-8000-000000000001/invoice', {
           method: 'POST',
           headers: { ...AUTH, 'content-type': 'application/json' },
           body: JSON.stringify({ sats: 21 }),
         })
       ).status;
-    await hit();
-    expect(await hit()).toBe(429);
+    expect(await hit()).toBe(404);
+    expect(await hit()).toBe(404);
+  });
+
+  it('does not consume the invoice limiter on an unpayable note', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '66666666-6666-4666-8666-666666666666',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'unsigned',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '77777777-7777-4777-8777-777777777777',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'payable',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const limiter = new InvoiceRateLimiter();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: limiter,
+      }),
+    );
+    const hit = async (id: string): Promise<number> =>
+      (
+        await app.request(`/messages/${id}/invoice`, {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        })
+      ).status;
+    expect(await hit('66666666-6666-4666-8666-666666666666')).toBe(400);
+    expect(await hit('66666666-6666-4666-8666-666666666666')).toBe(400);
+    expect(await hit('77777777-7777-4777-8777-777777777777')).toBe(200);
   });
 
   it('returns 400 for a non-integer sats body', async () => {
@@ -436,11 +581,40 @@ describe('POST /messages/:id/invoice', () => {
   });
 
   it('returns 503 without a KEK', async () => {
-    const res = await mount(await namedStore('Ada')).request('/messages/m1/invoice', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ sats: 21 }),
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
     });
+    await authStore.setNostrKeyIfAbsent('acc', {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array(16),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '88888888-8888-4888-8888-888888888888',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/88888888-8888-4888-8888-888888888888/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
     expect(res.status).toBe(503);
   });
 

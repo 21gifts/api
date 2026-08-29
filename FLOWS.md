@@ -63,8 +63,10 @@ HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 Every account can receive. From the signed-in view the user can link, replace,
 or unlink a LUD-16 Lightning Address:
 
-- `POST /me/lightning-address` — link or replace (always leaves the address
-  **unverified**)
+- `POST /me/lightning-address` — link or replace after a live well-known
+  resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
+  leaves the address **unverified**. Unreachable or non-zap addresses are
+  rejected and not stored.
 - `DELETE /me/lightning-address` — unlink
 
 The **verified** badge is proof-of-control:
