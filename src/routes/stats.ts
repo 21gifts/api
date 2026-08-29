@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { buildGiftStats } from '@/lib/gift';
+import { buildGiftStats, giftsForRecipient } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { logEvent } from '@/lib/log';
@@ -21,6 +21,8 @@ export interface GiftsStatsRouteDeps {
  * Build the `/gifts/stats` route group.
  *
  * Mounted at `/gifts/stats` so the public path is `GET /gifts/stats`.
+ * Optional `?recipient=` filters outbound gifts to one Wallet of Satoshi
+ * handle before aggregation (see {@link giftsForRecipient}).
  *
  * @param deps - Gift store, optional rate book and clock.
  * @returns A Hono app with `GET /`.
@@ -31,12 +33,14 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
 
   return new Hono().get('/', async (c) => {
     try {
+      const raw = (c.req.query('recipient') ?? '').trim();
       const rows = await deps.store.listOutbound();
-      if (rows.length === 0) {
+      const selected = raw === '' ? rows : giftsForRecipient(rows, raw);
+      if (selected.length === 0) {
         return c.json(buildGiftStats([], new Map()), 200);
       }
 
-      const giftDays = [...new Set(rows.map((row) => row.paidAt.toISOString().slice(0, 10)))];
+      const giftDays = [...new Set(selected.map((row) => row.paidAt.toISOString().slice(0, 10)))];
       const rateMap = await rates.ensureDays(giftDays, now());
       for (const day of giftDays) {
         if (!rateMap.has(day)) {
@@ -44,7 +48,7 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
           return c.json({ error: 'Gift stats are unavailable' }, 503);
         }
       }
-      return c.json(buildGiftStats(rows, rateMap), 200);
+      return c.json(buildGiftStats(selected, rateMap), 200);
     } catch {
       logEvent('gifts.stats.failed');
       return c.json({ error: 'Gift stats are unavailable' }, 503);
