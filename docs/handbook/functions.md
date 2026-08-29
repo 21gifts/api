@@ -751,7 +751,7 @@
 
 ## Function: WebsocketNostrQuerier
 
-- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present), stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id.
+- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present), stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id; first URL in the list wins.
 - **Inputs:** Optional `WebSocketFactory`; `query(filter, urls, timeoutMs)`.
 - **Returns / side effects:** `NostrEventFrame[]`; never throws; no live subscription past the call.
 - **Used by:** `src/index.ts` worker wiring.

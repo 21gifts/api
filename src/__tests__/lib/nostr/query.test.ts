@@ -295,6 +295,7 @@ describe('WebsocketNostrQuerier', () => {
     const events = await pending;
     expect(events).toHaveLength(2);
     expect(events.map((e) => e.id).sort()).toEqual(['other', 'same']);
+    expect(events.find((e) => e.id === 'same')?.pubkey).toBe('pk');
   });
 
   it('uses the default WebSocket factory when constructed with no args', async () => {

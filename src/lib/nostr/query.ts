@@ -93,7 +93,8 @@ export class WebsocketNostrQuerier implements NostrQuerier {
    * Open each relay, send REQ, collect EVENT frames, CLOSE on EOSE/timeout.
    *
    * Factory throw, socket error, or timeout for one URL contributes no events
-   * (never throws). Empty `urls` → `[]`. Results are deduped by event id.
+   * (never throws). Empty `urls` → `[]`. Results are deduped by event id;
+   * the first URL in `urls` that returns a given id wins.
    *
    * @param filter - NIP-01 filter.
    * @param urls - Relay WebSocket URLs.
@@ -112,7 +113,9 @@ export class WebsocketNostrQuerier implements NostrQuerier {
     const byId = new Map<string, NostrEventFrame>();
     for (const batch of batches) {
       for (const event of batch) {
-        byId.set(event.id, event);
+        if (!byId.has(event.id)) {
+          byId.set(event.id, event);
+        }
       }
     }
     return [...byId.values()];
