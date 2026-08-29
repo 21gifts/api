@@ -79,7 +79,7 @@
 
 ## Endpoint: GET /gifts/stats
 
-- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive; local-part before `@` when present). Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and `fx` (no Coinbase call). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
+- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and `fx` (no Coinbase call). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
 - **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any selected gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
 - **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy); optional per-recipient view via `?recipient=`.
 - **Auth:** Public.

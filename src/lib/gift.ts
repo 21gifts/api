@@ -256,8 +256,8 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
  * Gifts whose Wallet of Satoshi handle matches `recipient` case-insensitively.
  *
  * Trims `recipient`. When `indexOf('@') > 0`, compares the local-part before `@`;
- * otherwise the whole trimmed string. Empty (after trim, or local-part empty)
- * matches nothing (returns `[]`), never "all gifts".
+ * otherwise the whole trimmed string. Empty after trim matches nothing
+ * (returns `[]`), never "all gifts".
  *
  * @param rows - Outbound gifts to filter.
  * @param recipient - Handle or Lightning Address to match.
