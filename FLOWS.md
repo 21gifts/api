@@ -1,12 +1,13 @@
 # 21.gifts — Core UI Flows
 
-> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7.
+> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
+> plus the shipped in-app contact mailbox (journey 6).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-28.
+**Status**: living document. Last revised 2026-08-29.
 
 ---
 
