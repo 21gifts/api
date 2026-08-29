@@ -475,6 +475,37 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(20);
   });
 
+  it('caps kind:0 attempts at WORKER_BATCH when space nacks', async () => {
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    for (let i = 0; i < 21; i += 1) {
+      const id = `acc-${String(i).padStart(2, '0')}`;
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: `User${i}`,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        createdAt: i + 1,
+      });
+      await ensureAccountNostrKey(auth, id, KEK);
+    }
+    const publisher = new RecordingPublisher();
+    publisher.ok = false;
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(20);
+  });
+
   it('publishes kind:0 only once when two ticks overlap', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -639,6 +670,56 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
   });
 
+  it('skips publishing a stale kind:0 after a newer reservation', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const originalGet = auth.getNostrSecret.bind(auth);
+    let releaseSign: () => void = () => {};
+    const signHeld = new Promise<void>((resolve) => {
+      releaseSign = resolve;
+    });
+    let enteredSign: () => void = () => {};
+    const signEntered = new Promise<void>((resolve) => {
+      enteredSign = resolve;
+    });
+    auth.getNostrSecret = async (accountId: string) => {
+      enteredSign();
+      await signHeld;
+      return originalGet(accountId);
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await signEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    auth.getNostrSecret = originalGet;
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    releaseSign();
+    await first;
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(1);
+    expect(JSON.parse(String(profiles[0]?.event['content'])).name).toBe('Anton');
+  });
+
   it('logs profile nack when space rejects the kind:0', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -683,7 +764,8 @@ describe('runNostrWorkerTick', () => {
   it('logs profile nack when kind:0 sign or publish throws', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
-    publisher.publish = async () => {
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
       throw new Error('ws down');
     };
     const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
@@ -707,6 +789,7 @@ describe('runNostrWorkerTick', () => {
         env,
       }),
     );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
     expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
   });
 

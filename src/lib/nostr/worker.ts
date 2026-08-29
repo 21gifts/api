@@ -165,9 +165,9 @@ async function publishProfiles(
     ? [writeSet.spaceUrl, ...writeSet.publicUrls]
     : [writeSet.spaceUrl];
   const accounts = await deps.auth.listAccounts();
-  let published = 0;
+  let attempted = 0;
   for (const account of accounts) {
-    if (published >= WORKER_BATCH) {
+    if (attempted >= WORKER_BATCH) {
       break;
     }
     if (account.name === null) {
@@ -181,6 +181,7 @@ async function publishProfiles(
     if (cache.get(account.id) === content) {
       continue;
     }
+    attempted += 1;
     cache.set(account.id, content);
     try {
       const unsigned = buildKind0Event(
@@ -189,6 +190,9 @@ async function publishProfiles(
         Math.floor(nowMs / 1000),
       );
       const signed = await signEventForAccount(deps.auth, account.id, deps.kek, unsigned);
+      if (cache.get(account.id) !== content) {
+        continue;
+      }
       const acks = await deps.publisher.publish(
         signed as unknown as Record<string, unknown>,
         urls,
@@ -201,7 +205,6 @@ async function publishProfiles(
         logEvent('nostr.profile.nack', { accountId: account.id });
         continue;
       }
-      published += 1;
       logEvent('nostr.profile.ok', { accountId: account.id });
     } catch {
       if (cache.get(account.id) === content) {
