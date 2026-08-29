@@ -16,10 +16,11 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     };
     await store.createAccount(first);
-    await store.createAccount({ ...first, id: 'acc-2', createdAt: 2 });
+    await store.createAccount({ ...first, id: 'acc-2', createdAt: 2, viewKey: 'b'.repeat(64) });
     expect((await store.getAccount('acc-1'))?.id).toBe('acc-1');
     expect(await store.getAccount('acc-2')).toBeUndefined();
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['acc-1']);
@@ -35,6 +36,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.linkingKey).toBe(KEY);
@@ -51,6 +53,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.updateAccount({
@@ -61,6 +64,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: 'a@b.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
@@ -76,6 +80,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(false);
@@ -87,6 +92,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: true,
+      viewKey: 'd'.repeat(64),
       createdAt: 2,
     });
     expect((await store.getAccount('acc-true'))?.forumLawsDismissed).toBe(true);
@@ -98,6 +104,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: true,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(true);
@@ -117,6 +124,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 2,
     });
     await store.createAccount({
@@ -127,6 +135,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     const listed = await store.listAccounts();
@@ -139,6 +148,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['a', 'c', 'b']);
@@ -152,6 +162,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
     };
     const early = { ...base, id: 'a', createdAt: 1 };
     const late = { ...base, id: 'a', createdAt: 2 };
@@ -248,6 +259,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: '1'.repeat(64),
       createdAt: 1,
     });
     await store.createAccount({
@@ -258,6 +270,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: '2'.repeat(64),
       createdAt: 1,
     });
     await store.createAccount({
@@ -268,6 +281,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: '3'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('p1'))?.id).toBe('p1');
@@ -285,6 +299,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.updateAccount({
@@ -295,6 +310,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: 'a@b.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
@@ -310,6 +326,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.updateAccount({
@@ -320,6 +337,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.linkingKey).toBeNull();
@@ -335,6 +353,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.updateAccount({
@@ -345,6 +364,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('acc'))?.id).toBe('acc');
@@ -529,6 +549,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.createAccount({
@@ -539,6 +560,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 1,
     });
     await store.updateAccount({
@@ -549,10 +571,159 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('ln'))?.linkingKey).toBe(KEY);
     expect((await store.getAccount('pk'))?.linkingKey).toBeNull();
+  });
+
+  it('finds an account by viewKey and misses unknown keys', async () => {
+    const store = new InMemoryAuthStore();
+    const viewKey = 'f'.repeat(64);
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey,
+      createdAt: 1,
+    });
+    expect((await store.getAccountByViewKey(viewKey))?.id).toBe('acc');
+    expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
+  });
+
+  it('ignores a second createAccount with the same viewKey', async () => {
+    const store = new InMemoryAuthStore();
+    const viewKey = 'e'.repeat(64);
+    await store.createAccount({
+      id: 'acc-1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey,
+      createdAt: 1,
+    });
+    await store.createAccount({
+      id: 'acc-2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey,
+      createdAt: 2,
+    });
+    expect((await store.getAccount('acc-1'))?.id).toBe('acc-1');
+    expect(await store.getAccount('acc-2')).toBeUndefined();
+    expect((await store.getAccountByViewKey(viewKey))?.id).toBe('acc-1');
+  });
+
+  it('reindexes viewKey when updateAccount changes it', async () => {
+    const store = new InMemoryAuthStore();
+    const oldKey = 'd'.repeat(64);
+    const newKey = 'c'.repeat(64);
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: oldKey,
+      createdAt: 1,
+    });
+    await store.updateAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: newKey,
+      createdAt: 1,
+    });
+    expect(await store.getAccountByViewKey(oldKey)).toBeUndefined();
+    expect((await store.getAccountByViewKey(newKey))?.id).toBe('acc');
+  });
+
+  it('refuses updateAccount when viewKey is owned by another id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: '1'.repeat(64),
+      createdAt: 1,
+    });
+    await store.createAccount({
+      id: 'acc-2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: '2'.repeat(64),
+      createdAt: 2,
+    });
+    await store.updateAccount({
+      id: 'acc-2',
+      linkingKey: null,
+      role: 'basis',
+      name: 'stolen',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: '1'.repeat(64),
+      createdAt: 2,
+    });
+    expect((await store.getAccount('acc-2'))?.viewKey).toBe('2'.repeat(64));
+    expect((await store.getAccount('acc-2'))?.name).toBeNull();
+    expect((await store.getAccountByViewKey('1'.repeat(64)))?.id).toBe('acc-1');
+  });
+
+  it('deleteAccount drops the viewKey index so the key can be reused', async () => {
+    const store = new InMemoryAuthStore();
+    const viewKey = '9'.repeat(64);
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey,
+      createdAt: 1,
+    });
+    await store.deleteAccount('acc');
+    expect(await store.getAccountByViewKey(viewKey)).toBeUndefined();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey,
+      createdAt: 2,
+    });
+    expect((await store.getAccountByViewKey(viewKey))?.id).toBe('other');
   });
 
   it('deleteAccount drops the row and its linkingKey index', async () => {
@@ -565,6 +736,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     await store.deleteAccount('acc');
@@ -578,6 +750,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect((await store.getAccount('other'))?.id).toBe('other');
@@ -707,6 +880,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     expect(await store.listAccountIdsWithoutNostrKey(10)).toEqual(['acc']);

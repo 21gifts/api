@@ -138,10 +138,11 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         token: string;
-        account: { id: string; linkingKey: string | null };
+        account: { id: string; linkingKey: string | null; viewKey: string };
       };
       expect(body.token).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.linkingKey).toBeNull();
+      expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.register.ok' && e['accountId'] === body.account.id,
@@ -261,8 +262,12 @@ describe('auth routes', () => {
         }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { token: string; account: { id: string } };
+      const body = (await res.json()) as {
+        token: string;
+        account: { id: string; viewKey: string };
+      };
       expect(body.account.id).toBe(accountId);
+      expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.login.ok' && e['accountId'] === accountId,

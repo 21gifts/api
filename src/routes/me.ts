@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeDisplayName } from '@/lib/name';
-import { serializeAccount } from '@/lib/auth/account-json';
+import { serializeOwnerAccount } from '@/lib/auth/account-json';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
@@ -96,7 +96,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      return c.json(serializeAccount(account), 200);
+      return c.json(serializeOwnerAccount(account), 200);
     })
     .post('/name', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -119,7 +119,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, name };
       await deps.store.updateAccount(updated);
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -132,12 +132,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (current.forumLawsDismissed === true) {
-        return c.json(serializeAccount(current), 200);
+        return c.json(serializeOwnerAccount(current), 200);
       }
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -182,7 +182,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         accountId: account.id,
         address,
       });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .delete('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -202,7 +202,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       await deps.store.deleteVerification(account.id);
       logEvent('account.lightning_address.unlinked', { accountId: account.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address/verification', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -264,6 +264,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         }
       }
       logEvent('account.verification.confirmed', { accountId: account.id });
-      return c.json(serializeAccount(result.account), 200);
+      return c.json(serializeOwnerAccount(result.account), 200);
     });
 }

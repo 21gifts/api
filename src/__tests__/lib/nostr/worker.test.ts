@@ -49,6 +49,7 @@ async function seed(): Promise<{
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    viewKey: 'a'.repeat(64),
     createdAt: 1,
   });
   await ensureAccountNostrKey(auth, 'acc', KEK);
@@ -460,6 +461,7 @@ describe('runNostrWorkerTick', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 1,
     });
     await runNostrWorkerTick(
@@ -485,6 +487,7 @@ describe('runNostrWorkerTick', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
       createdAt: 1,
     });
     await runNostrWorkerTick(
@@ -513,6 +516,7 @@ describe('runNostrWorkerTick', () => {
       lightningAddress: 'worker-zap-ok@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
       createdAt: 1,
     });
     await ensureAccountNostrKey(auth, 'acc-zap', KEK);

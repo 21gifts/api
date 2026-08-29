@@ -8,6 +8,7 @@ import { authRoutes } from '@/routes/auth';
 import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
+import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
 import { giftsStatsRoutes } from '@/routes/stats';
@@ -122,7 +123,8 @@ export interface AppDeps {
  * Kept separate from the runtime entry point so tests can drive the handlers
  * via Hono's `app.request()` helper without binding to a TCP port. Every
  * wire-up change — middleware, routes, error handlers — flows through this
- * single factory so the test surface matches production exactly.
+ * single factory so the test surface matches production exactly. Mounts
+ * public `GET /view/:viewKey` alongside `/me` and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
@@ -183,6 +185,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),

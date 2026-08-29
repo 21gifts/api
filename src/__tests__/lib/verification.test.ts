@@ -21,6 +21,7 @@ function account(overrides: Partial<Account> = {}): Account {
     lightningAddress: ADDRESS,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    viewKey: 'a'.repeat(64),
     createdAt: T0,
     ...overrides,
   };

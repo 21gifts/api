@@ -23,6 +23,8 @@ class MockSql implements SqlClient {
   }
 }
 
+const VIEW_KEY = 'a'.repeat(64);
+
 const ACCOUNT_ROW = {
   id: 'acc',
   linking_key: `02${'a'.repeat(64)}`,
@@ -31,6 +33,7 @@ const ACCOUNT_ROW = {
   lightning_address: null as string | null,
   lightning_address_verified: false,
   forum_laws_dismissed: false,
+  view_key: VIEW_KEY,
   created_at: new Date(1_000),
 };
 
@@ -85,9 +88,12 @@ describe('PostgresAuthStore', () => {
     const mapped = await store.getAccount('acc');
     expect(mapped?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(mapped?.forumLawsDismissed).toBe(false);
+    const account = await store.getAccount('acc');
+    expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    expect(account?.viewKey).toBe(VIEW_KEY);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
-    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
   });
 
@@ -98,16 +104,18 @@ describe('PostgresAuthStore', () => {
   it('inserts and updates accounts', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
-    await store.createAccount({
+    const account = {
       id: 'acc',
       linkingKey: ACCOUNT_ROW.linking_key,
-      role: 'moderator',
+      role: 'moderator' as const,
       name: 'Ada',
       lightningAddress: 'a@b.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
-    });
+    };
+    await store.createAccount(account);
     await store.updateAccount({
       id: 'acc',
       linkingKey: ACCOUNT_ROW.linking_key,
@@ -116,13 +124,79 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
     expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.executes[0]?.text).toMatch(/view_key/);
+    expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+  });
+
+  it('looks up an account by view_key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByViewKey(VIEW_KEY);
+    expect(sql.queries[0]?.text).toMatch(/WHERE view_key = \$1/);
+    expect(sql.queries[0]?.params).toEqual([VIEW_KEY]);
+    expect(found?.viewKey).toBe(VIEW_KEY);
+    expect(found?.id).toBe('acc');
+  });
+
+  it('returns undefined for a missing view_key', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByViewKey(VIEW_KEY),
+    ).toBeUndefined();
+  });
+
+  it('skips rows with a null view_key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null }];
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccount('acc')).toBeUndefined();
+    expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
+    expect(await store.listAccounts()).toEqual([]);
+  });
+
+  it('createAccount treats a unique_violation as a no-op', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    await expect(
+      new PostgresAuthStore(sql).createAccount({
+        id: 'acc',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
+        createdAt: 1,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('createAccount rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('canceled'), { code: '57014' });
+    await expect(
+      new PostgresAuthStore(sql).createAccount({
+        id: 'acc',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
+        createdAt: 1,
+      }),
+    ).rejects.toMatchObject({ code: '57014' });
   });
 
   it('updateAccount SQL refuses a linking_key owned by another id', async () => {
@@ -135,6 +209,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
     });
     expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
@@ -152,6 +227,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
       }),
     ).resolves.toBeUndefined();
@@ -169,6 +245,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
       }),
     ).rejects.toMatchObject({ code: '57014' });
@@ -186,6 +263,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
       }),
     ).rejects.toBeNull();
@@ -203,6 +281,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
       }),
     ).rejects.toBe('boom');
@@ -220,6 +299,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
       }),
     ).rejects.toThrow('disk full');

@@ -20,6 +20,12 @@ const NOTE_EVENT_ID = 'ee'.repeat(32);
 const PROVIDER_PUBKEY = 'aa'.repeat(32);
 const URLS = ['wss://relay.example'] as const;
 
+/** Distinct 64-hex view key derived from an account id (multi-account tests). */
+function viewKeyFor(accountId: string): string {
+  const hex = [...accountId].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+  return (hex + '0'.repeat(64)).slice(0, 64);
+}
+
 /** Seed one signed forum row and optional author account. */
 async function seedStore(args: {
   store: InMemoryMessageStore;
@@ -41,6 +47,7 @@ async function seedStore(args: {
         args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      viewKey: viewKeyFor(args.accountId),
       createdAt: 1,
     });
   }
@@ -261,6 +268,7 @@ describe('indexOpenZapReceipts', () => {
       lightningAddress: 'zap-chunk@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 1,
     });
     const firstId = `${'01'.repeat(31)}00`;

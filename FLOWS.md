@@ -89,6 +89,12 @@ Receiver name is stored on the account (`POST /me/name`). Photo and story
 will become custodial `kind:0` metadata signed server-side. **No HTTP for
 photo/story yet**. Do not invent `POST /me/profile`.
 
+### View-key link — **Shipped**
+
+The owner can copy a view-key link from `viewKey` on `GET /me`. The URL is
+`GET /view/:viewKey`. Opening that URL shows a read-only public profile card.
+It cannot write and cannot mint a session. Do not invent extra paths.
+
 ---
 
 ## 3. Donate — **Sketch** (button / browser pay) + **Shipped** (resolve)

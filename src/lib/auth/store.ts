@@ -37,6 +37,11 @@ export interface Account {
   lightningAddressVerified: boolean;
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
+  /**
+   * Durable capability secret for the public profile URL (`GET /view/:viewKey`).
+   * 64 lowercase hex characters. Never a session; never accepted as Bearer.
+   */
+  viewKey: string;
   /** Creation time (epoch ms). */
   createdAt: number;
 }
@@ -110,13 +115,19 @@ export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
   /**
-   * Overwrite a stored account. A non-null `linkingKey` owned by another id
-   * is refused (in-memory no-op; Postgres `UPDATE` matches no row or a
-   * `linking_key` unique_violation is swallowed).
+   * Overwrite a stored account. A `viewKey` or non-null `linkingKey` owned
+   * by another id is refused (in-memory no-op; Postgres `linkingKey` via
+   * `UPDATE` matching no row, `viewKey` via swallowed `view_key`
+   * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
+  /**
+   * Look up an account by its durable view key, or `undefined` if unknown.
+   * Used by the public capability URL; never mints a session.
+   */
+  getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
   /**
    * Drop an account row. Used to roll back `finishPasskeyRegistration` when
    * the credential insert loses a duplicate-id race.
@@ -196,6 +207,7 @@ export interface NostrKeyRecord {
 export class InMemoryAuthStore implements AuthStore {
   readonly #accounts = new Map<string, Account>();
   readonly #accountsByLinkingKey = new Map<string, string>();
+  readonly #accountsByViewKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
   readonly #verifications = new Map<string, AddressVerification>();
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
@@ -203,10 +215,14 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #nostrKeys = new Map<string, NostrKeyRecord>();
 
   async createAccount(account: Account): Promise<void> {
+    if (this.#accountsByViewKey.has(account.viewKey)) {
+      return;
+    }
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
       return;
     }
     this.#accounts.set(account.id, account);
+    this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
@@ -219,6 +235,10 @@ export class InMemoryAuthStore implements AuthStore {
         return;
       }
     }
+    const viewKeyOwnerId = this.#accountsByViewKey.get(account.viewKey);
+    if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
+      return;
+    }
     const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
@@ -227,7 +247,11 @@ export class InMemoryAuthStore implements AuthStore {
     ) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
+    if (previous !== undefined && previous.viewKey !== account.viewKey) {
+      this.#accountsByViewKey.delete(previous.viewKey);
+    }
     this.#accounts.set(account.id, account);
+    this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
@@ -240,6 +264,7 @@ export class InMemoryAuthStore implements AuthStore {
     }
     this.#accounts.delete(id);
     this.#nostrKeys.delete(id);
+    this.#accountsByViewKey.delete(previous.viewKey);
     if (previous.linkingKey !== null) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
@@ -247,6 +272,11 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     return this.#accounts.get(id);
+  }
+
+  async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
+    const id = this.#accountsByViewKey.get(viewKey);
+    return id === undefined ? undefined : this.#accounts.get(id);
   }
 
   async listAccounts(): Promise<Account[]> {

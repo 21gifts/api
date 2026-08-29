@@ -170,15 +170,15 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. Maintains an O(1) `viewKey` index; `getAccountByViewKey` looks it up. `createAccount` is a no-op when `viewKey` is already stored (or a non-null `linkingKey` already exists). `updateAccount` reindexes `viewKey` when it changes and refuses a `viewKey` owned by another id (same as `linkingKey`). `deleteAccount` drops the row and its linking-key and viewKey indexes. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists or when `viewKey` is already stored. `updateAccount` refuses a `linkingKey` owned by another account and keeps the viewKey index consistent. `deleteAccount` drops the row and its linking-key and viewKey indexes. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
-- **Used by:** `createApp` default store; all auth/me/debug routes.
+- **Used by:** `createApp` default store; all auth/me/debug/view routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, and custodial Nostr key columns (`nostr_pubkey`, ciphertext, kek id, custody). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
-- **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, custodial Nostr key columns, and the `view_key` column. `getAccountByViewKey` is `WHERE view_key = $1`. `mapAccount` skips null `view_key` (`getAccount` / `getAccountByViewKey` return undefined; `listAccounts` omits those rows). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `createAccount` INSERT unique_violation `23505` is a no-op. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
+- **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore` including `getAccountByViewKey`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
 
@@ -186,7 +186,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -387,7 +387,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/debug/contacts`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and parsed KEK.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
@@ -425,6 +425,13 @@
 - **Purpose:** Authenticated account routes (name, forum-laws dismiss, Lightning Address link with live LNURL resolve + zap metadata check, verification).
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
+- **Used by:** `createApp`.
+
+## Function: viewRoutes
+
+- **Purpose:** Hono sub-app for public `GET /:viewKey`. Param not 64 lowercase hex or unknown key → 404 `{ error: 'Not found' }`. Hit → `serializeViewProfile`. No auth; not a session.
+- **Inputs:** `{ store: AuthStore }`.
+- **Returns / side effects:** Hono app mounted at `/view` so the public path is `GET /view/:viewKey`.
 - **Used by:** `createApp`.
 
 ## Function: messagesRoutes
@@ -506,10 +513,17 @@
 
 ## Function: requestLog
 
-- **Purpose:** Hono middleware: `http.request` JSON after the handler. Skips `/healthz` and OPTIONS. Never logs the query string.
+- **Purpose:** Hono middleware: `http.request` JSON after the handler. Skips `/healthz` and OPTIONS. Never logs the query string. Path is passed through `requestLogPath` so `/view/<segment>` is redacted.
 - **Inputs:** None.
 - **Returns / side effects:** `MiddlewareHandler`.
 - **Used by:** `createApp`.
+
+## Function: requestLogPath
+
+- **Purpose:** Redact the first `/view/<segment>` to `/view/:viewKey` so request logs never print the durable capability secret. Trailing slashes and extra segments keep the suffix. `/view` alone and unrelated routes are unchanged.
+- **Inputs:** Path string without the query string.
+- **Returns / side effects:** Redacted or original string. No I/O.
+- **Used by:** `requestLog`.
 
 ## Function: requestPayInvoice
 
@@ -625,10 +639,24 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the public JSON shape (no Nostr fields).
+- **Purpose:** Project an account to the eight-field dump without `viewKey` (no Nostr fields).
 - **Inputs:** `Account`.
 - **Returns / side effects:** Eight public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`). No I/O. No Nostr key material.
-- **Used by:** passkey finish, `GET /me`, `GET /debug/accounts`.
+- **Used by:** `GET /debug/accounts` only (not `/me`).
+
+## Function: serializeOwnerAccount
+
+- **Purpose:** Owner JSON for authenticated account responses: the eight public fields plus `viewKey`, so the owner can copy the capability URL. Used by `GET /me`, `/me` writes, and passkey finish — never by the debug listing.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `OwnerAccountResponse`. No I/O.
+- **Used by:** `meRoutes`, `authRoutes`.
+
+## Function: serializeViewProfile
+
+- **Purpose:** Public profile card for the capability URL. Four fields only (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). Omits `id`, `linkingKey`, `role`, and `viewKey`.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `ViewProfileResponse`. No I/O.
+- **Used by:** `viewRoutes`.
 
 ## Function: parseNostrKek
 

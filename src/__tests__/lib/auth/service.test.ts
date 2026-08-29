@@ -14,6 +14,7 @@ async function seedAccount(store: InMemoryAuthStore): Promise<void> {
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    viewKey: 'a'.repeat(64),
     createdAt: T0,
   });
 }

@@ -36,6 +36,7 @@ api/
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
 │   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; link/unlink + address verification
+│   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
@@ -145,7 +146,8 @@ api/
 │           ├── invoices.test.ts
 │           ├── messages.test.ts
 │           ├── contact.test.ts
-│           └── debug-contacts.test.ts
+│           ├── debug-contacts.test.ts
+│           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md

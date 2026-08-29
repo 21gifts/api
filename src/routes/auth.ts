@@ -7,7 +7,7 @@ import {
   startPasskeyAuthentication,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
-import { serializeAccount } from '@/lib/auth/account-json';
+import { serializeOwnerAccount } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
@@ -88,7 +88,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       }
       logEvent('auth.passkey.register.ok', { accountId: result.value.account.id });
       return c.json(
-        { token: result.value.token, account: serializeAccount(result.value.account) },
+        { token: result.value.token, account: serializeOwnerAccount(result.value.account) },
         200,
       );
     })
@@ -129,7 +129,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       }
       logEvent('auth.passkey.login.ok', { accountId: result.value.account.id });
       return c.json(
-        { token: result.value.token, account: serializeAccount(result.value.account) },
+        { token: result.value.token, account: serializeOwnerAccount(result.value.account) },
         200,
       );
     });
