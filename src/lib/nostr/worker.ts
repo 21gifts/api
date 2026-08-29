@@ -10,7 +10,7 @@ import { resolveWriteSet, resolveZapRelays, type ResolvedWriteSet } from '@/lib/
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 
-/** Max rows per claim. */
+/** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
 
 /** Lease before WebSocket I/O. */
@@ -51,6 +51,7 @@ type Kind0Reservation = {
 
 /** Reserved or last-acked kind:0 content per account, keyed by auth store. */
 const profileCaches = new WeakMap<AuthStore, Map<string, Kind0Reservation>>();
+const profileWatermarks = new WeakMap<AuthStore, Map<string, number>>();
 
 function profileCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
   const existing = profileCaches.get(auth);
@@ -59,6 +60,16 @@ function profileCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
   }
   const created = new Map<string, Kind0Reservation>();
   profileCaches.set(auth, created);
+  return created;
+}
+
+function profileWatermarkFor(auth: AuthStore): Map<string, number> {
+  const existing = profileWatermarks.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, number>();
+  profileWatermarks.set(auth, created);
   return created;
 }
 
@@ -172,6 +183,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 
 async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
   const cache = profileCacheFor(deps.auth);
+  const watermarks = profileWatermarkFor(deps.auth);
   const urls = writeSet.publicEnabled
     ? [writeSet.spaceUrl, ...writeSet.publicUrls]
     : [writeSet.spaceUrl];
@@ -192,7 +204,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     const previous = cache.get(live.id);
     const reservation: Kind0Reservation = {
       content,
-      createdAt: previous?.createdAt ?? 0,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(live.id) ?? 0),
     };
     cache.set(live.id, reservation);
     try {
@@ -209,6 +221,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
       const wall = Math.floor(deps.now() / 1000);
       reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
+      watermarks.set(live.id, reservation.createdAt);
       const unsigned = buildKind0Event(live.name, live.lightningAddress, reservation.createdAt);
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {

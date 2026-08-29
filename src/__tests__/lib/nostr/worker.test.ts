@@ -434,6 +434,51 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
   });
 
+  it('keeps kind:0 created_at after a public nack in the same second', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const space = 'wss://relay.nostr.space';
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return urls.map((url) => ({ url, ok: url === space }));
+    };
+    const t = 1_700_000_000_000;
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => t,
+        env,
+      }),
+    );
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => t,
+        env,
+      }),
+    );
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0]?.event['created_at']).toBe(1_700_000_000);
+    expect(profiles[1]?.event['created_at']).toBe(1_700_000_001);
+    expect(JSON.parse(String(profiles[1]?.event['content'])).name).toBe('Anton');
+  });
+
   it('stamps kind:0 created_at at sign time not tick start', async () => {
     const { auth } = await seed();
     const messages = new InMemoryMessageStore();
@@ -1020,7 +1065,7 @@ describe('runNostrWorkerTick', () => {
     expect(JSON.parse(String(profiles[0]?.event['content'])).name).toBe('Anton');
   });
 
-  it('logs profile nack when space rejects the kind:0', async () => {
+  it('retries kind:0 when space rejects', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
     publisher.ok = false;
