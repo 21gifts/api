@@ -57,6 +57,7 @@ async function seedStore(args: {
     name: 'Ada',
     text: 'hi',
     createdAt: new Date('2026-08-28T00:00:00.000Z'),
+    hasPhoto: false,
     ...unsignedNostrDefaults(),
     eventId: args.eventId === undefined ? NOTE_EVENT_ID : args.eventId,
   });
@@ -281,6 +282,7 @@ describe('indexOpenZapReceipts', () => {
         name: 'Ada',
         text: `n${i}`,
         createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, i)),
+        hasPhoto: false,
         ...unsignedNostrDefaults(),
         eventId,
       });
@@ -292,6 +294,7 @@ describe('indexOpenZapReceipts', () => {
       name: 'Ada',
       text: 'dup',
       createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, 22)),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
