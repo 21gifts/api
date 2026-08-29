@@ -500,7 +500,20 @@ describe('runNostrWorkerTick', () => {
         env,
       }),
     );
-    expect(publisher.calls.some((call) => call.event['kind'] === 0)).toBe(true);
+    const afterTwo = publisher.calls.filter((call) => call.event['kind'] === 0).length;
+    expect(afterTwo).toBe(2);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0).length).toBe(3);
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
   });
 
   it('logs profile nack when kind:0 sign or publish throws', async () => {

@@ -754,7 +754,7 @@
 - **Purpose:** Kind:0 JSON without extra whitespace.
 - **Inputs:** name, lightningAddress or null.
 - **Returns / side effects:** JSON string; `lud16` only when address set.
-- **Used by:** `buildKind0Event`.
+- **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
 
@@ -893,7 +893,7 @@
 
 - **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
-- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
 
 ## Function: startNostrWorker
