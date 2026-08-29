@@ -35,16 +35,18 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/nostr_nsec_ciphertext/);
     expect(joined).toMatch(/nonce/);
     expect(joined).toMatch(/view_key/);
-    expect(joined).toMatch(/\$redact_view_key\$/);
-    const redactBlock = joined.slice(joined.indexOf('$redact_view_key$'));
-    const dropAt = redactBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
-    const liveMatchAt = redactBlock.indexOf("a.view_key = d.after ->> 'view_key'");
-    const recreateAt = redactBlock.lastIndexOf(
+    const guardBlock = joined.slice(joined.indexOf('$guard$'));
+    const dropAt = guardBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
+    const afterMatchAt = guardBlock.indexOf("a.view_key = d.after ->> 'view_key'");
+    const beforeMatchAt = guardBlock.indexOf("a.view_key = d.before ->> 'view_key'");
+    const recreateAt = guardBlock.indexOf(
       'CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change',
     );
     expect(dropAt).toBeGreaterThan(-1);
-    expect(liveMatchAt).toBeGreaterThan(dropAt);
-    expect(recreateAt).toBeGreaterThan(liveMatchAt);
+    expect(afterMatchAt).toBeGreaterThan(dropAt);
+    expect(beforeMatchAt).toBeGreaterThan(afterMatchAt);
+    expect(recreateAt).toBeGreaterThan(beforeMatchAt);
+    expect(joined.split('DROP TRIGGER IF EXISTS db_change_immutable').length - 1).toBe(1);
     expect(joined).toMatch(/trg_db_change/);
     expect(joined).toMatch(/append-only/);
     expect(joined).toMatch(/BEFORE TRUNCATE/);

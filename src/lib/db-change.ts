@@ -71,24 +71,6 @@ $dbch$;`,
   `DO $guard$
 BEGIN
   DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
-  CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
-  DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
-  CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
-END;
-$guard$;`,
-  `DO $attach$
-DECLARE r record;
-BEGIN
-  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'db_change'
-  LOOP
-    EXECUTE format('DROP TRIGGER IF EXISTS trg_db_change ON %I', r.tablename);
-    EXECUTE format('CREATE TRIGGER trg_db_change AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE PROCEDURE log_db_change()', r.tablename);
-  END LOOP;
-END;
-$attach$;`,
-  `DO $redact_view_key$
-BEGIN
-  DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
   UPDATE db_change AS d
   SET after = jsonb_set(
     d.after,
@@ -116,8 +98,20 @@ BEGIN
       WHERE a.view_key IS NOT NULL AND a.view_key = d.before ->> 'view_key'
     );
   CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
+  DROP TRIGGER IF EXISTS db_change_no_truncate ON db_change;
+  CREATE TRIGGER db_change_no_truncate BEFORE TRUNCATE ON db_change FOR EACH STATEMENT EXECUTE PROCEDURE db_change_immutable();
 END;
-$redact_view_key$;`,
+$guard$;`,
+  `DO $attach$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'db_change'
+  LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_db_change ON %I', r.tablename);
+    EXECUTE format('CREATE TRIGGER trg_db_change AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE PROCEDURE log_db_change()', r.tablename);
+  END LOOP;
+END;
+$attach$;`,
 ];
 
 /**

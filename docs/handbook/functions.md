@@ -123,14 +123,14 @@
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent SQL matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop, one-time `view_key` rewrite while the immutability trigger is dropped). Guard DROP/CREATE is one `DO` block.
+- **Returns / side effects:** Void; idempotent SQL matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop). The immutability-guard `DO` drops the append-only trigger once, hashes live plaintext `view_key` in `db_change`, then recreates the trigger.
 - **Used by:** `openBootStores` when SQL opens, immediately after `migrateContactSchema`.
 
 ## Function: DB_CHANGE_SCHEMA_SQL
 
-- **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard, per-table `trg_db_change` triggers on every public table except `db_change`, and a boot rewrite that hashes live plaintext `view_key` already in the log.
+- **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard (including a one-time live `view_key` rewrite in that same `DO`), and per-table `trg_db_change` triggers on every public table except `db_change`.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, and `view_key` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. A boot-time rewrite hashes live plaintext `view_key` values already in `db_change`.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, and `view_key` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. The guard `DO` hashes live plaintext `view_key` already in `db_change` while the append-only trigger is down.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore
