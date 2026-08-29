@@ -372,6 +372,43 @@ describe('runNostrWorkerTick', () => {
     expect(profile?.urls).toEqual(['wss://relay.nostr.space', 'wss://relay.damus.io']);
   });
 
+  it('retries kind:0 when public relays nack and space acks', async () => {
+    const { auth, messages } = await seed();
+    const space = 'wss://relay.nostr.space';
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return urls.map((url) => ({ url, ok: url === space }));
+    };
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
+  });
+
   it('stamps kind:0 created_at at sign time not tick start', async () => {
     const { auth } = await seed();
     const messages = new InMemoryMessageStore();

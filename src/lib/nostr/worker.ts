@@ -171,10 +171,6 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     if (account.name === null) {
       continue;
     }
-    const pubkey = await deps.auth.getNostrPublicKey(account.id);
-    if (pubkey === undefined) {
-      continue;
-    }
     const content = buildKind0Content(account.name, account.lightningAddress);
     if (cache.get(account.id) === content) {
       continue;
@@ -182,6 +178,13 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     attempted += 1;
     cache.set(account.id, content);
     try {
+      const pubkey = await deps.auth.getNostrPublicKey(account.id);
+      if (pubkey === undefined) {
+        if (cache.get(account.id) === content) {
+          cache.delete(account.id);
+        }
+        continue;
+      }
       const unsigned = buildKind0Event(
         account.name,
         account.lightningAddress,
@@ -196,7 +199,9 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         urls,
         RELAY_TIMEOUT_MS,
       );
-      if (!spaceAcked(acks, writeSet.spaceUrl)) {
+      const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
+      const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
+      if (!spaceOk || !publicOk) {
         if (cache.get(account.id) === content) {
           cache.delete(account.id);
         }
