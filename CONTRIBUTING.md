@@ -74,7 +74,7 @@ api/
 │   │   ├── db-change.ts      # append-only `db_change` change log migrate
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
-│   │   ├── nostr/            # Custodial nsec, kind:1 worker, NIP-57 zap, write-set relays
+│   │   ├── nostr/            # Custodial nsec, kind:0 profile + kind:1 note worker, NIP-57 zap, write-set relays
 │   │   └── auth/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── hex.ts        # CSPRNG hex tokens

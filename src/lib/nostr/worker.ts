@@ -176,7 +176,6 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     if (cache.get(live.id) === content) {
       continue;
     }
-    attempted += 1;
     cache.set(live.id, content);
     try {
       const pubkey = await deps.auth.getNostrPublicKey(live.id);
@@ -186,6 +185,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         }
         continue;
       }
+      attempted += 1;
       const unsigned = buildKind0Event(
         live.name,
         live.lightningAddress,
