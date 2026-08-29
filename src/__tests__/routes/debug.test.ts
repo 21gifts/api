@@ -173,6 +173,8 @@ describe('debugRoutes', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
       createdAt: 1,
     });
     const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
