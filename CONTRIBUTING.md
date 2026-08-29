@@ -294,8 +294,10 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   by application store methods. New public tables are covered on the next SQL boot
   (`migrateDbChangeSchema` after `migrateContactSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
-- `db_change` is append-only. UPDATE, DELETE, and TRUNCATE on it **must** fail
-  (exception `db_change is append-only`).
+- `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
+  **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
+  may drop that trigger once per boot to hash live plaintext `view_key` values
+  already in the log, then recreates it.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
   `nonce`, and `view_key` are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation

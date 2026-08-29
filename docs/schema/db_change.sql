@@ -2,7 +2,8 @@
 -- public table (except db_change) write redacted before/after JSON. Secret
 -- columns token, challenge, nostr_nsec_ciphertext, nonce, and view_key are stored as
 -- SHA-256 hex; other columns including name stay plaintext. The log itself
--- rejects UPDATE, DELETE, and TRUNCATE.
+-- rejects UPDATE, DELETE, and TRUNCATE at runtime. migrateDbChangeSchema may
+-- drop that trigger once to hash live plaintext view_key already in the log.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
