@@ -74,14 +74,16 @@ describe('runNostrWorkerTick', () => {
       ],
       created_at: 1,
     });
-    await runNostrWorkerTick({
-      messages,
-      auth,
-      kek: KEK,
-      publisher: new RecordingPublisher(),
-      now: () => 1_700_000_000_000,
-      env: {},
-    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
     const row = await messages.getById('m1');
     expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
     expect(row?.eventId).not.toBe('ab'.repeat(32));
@@ -104,14 +106,16 @@ describe('runNostrWorkerTick', () => {
       eventId: 'aa'.repeat(32),
       nostrEvent: null,
     });
-    await runNostrWorkerTick({
-      messages,
-      auth,
-      kek: KEK,
-      publisher: new RecordingPublisher(),
-      now: () => 1_700_000_000_000,
-      env: {},
-    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
     expect((await messages.getById('m-null'))?.nostrEvent?.['tags']).toEqual([
       ['t', 'bitcoin'],
       ['t', '21gifts'],
@@ -149,14 +153,16 @@ describe('runNostrWorkerTick', () => {
       tags: [['t', '21gifts']],
       created_at: 1,
     });
-    await runNostrWorkerTick({
-      messages,
-      auth,
-      kek: KEK,
-      publisher: new RecordingPublisher(),
-      now: () => 1_700_000_000_000,
-      env: {},
-    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
     expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
       ['t', 'bitcoin'],
       ['t', '21gifts'],
@@ -178,28 +184,32 @@ describe('runNostrWorkerTick', () => {
       tags,
       created_at: 1,
     });
-    await runNostrWorkerTick({
-      messages,
-      auth,
-      kek: KEK,
-      publisher: new RecordingPublisher(),
-      now: () => 1_700_000_000_000,
-      env: {},
-    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
     expect((await messages.getById('m1'))?.eventId).toBe(eventId);
   });
 
   it('re-signs pending rows whose stored event has no tag array', async () => {
     const { auth, messages } = await seed();
     await messages.updateSignedEvent('m1', 'ef'.repeat(32), { kind: 1, content: 'hello' });
-    await runNostrWorkerTick({
-      messages,
-      auth,
-      kek: KEK,
-      publisher: new RecordingPublisher(),
-      now: () => 1_700_000_000_000,
-      env: {},
-    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
     expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
       ['t', 'bitcoin'],
       ['t', '21gifts'],
@@ -510,7 +520,15 @@ describe('runNostrWorkerTick', () => {
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
       ...unsignedNostrDefaults(),
       eventId,
-      nostrEvent: { id: eventId, kind: 1 },
+      nostrEvent: {
+        id: eventId,
+        kind: 1,
+        tags: [
+          ['t', 'bitcoin'],
+          ['t', '21gifts'],
+          ['r', 'https://21.gifts'],
+        ],
+      },
     });
     const querier = new RecordingQuerier();
     querier.events = [
