@@ -7,6 +7,7 @@ import {
   resolveRelayPublic,
   resolveRelaySpace,
   resolveWriteSet,
+  resolveZapRelays,
 } from '@/lib/nostr/relays';
 
 describe('relays', () => {
@@ -46,5 +47,41 @@ describe('relays', () => {
   it('includes public urls when both flags are on', () => {
     const set = resolveWriteSet({ NOSTR_PUBLISH: '1', NOSTR_PUBLISH_PUBLIC: '1' });
     expect(set.publicUrls).toEqual([...DEFAULT_RELAY_PUBLIC]);
+  });
+
+  it('defaults zap relays to space plus public list', () => {
+    expect(resolveZapRelays({})).toEqual([DEFAULT_RELAY_SPACE_PRD, ...DEFAULT_RELAY_PUBLIC]);
+  });
+
+  it('includes public defaults for zap relays when publish-public is off', () => {
+    expect(resolveZapRelays({ NOSTR_RELAY_SPACE: 'wss://space' })).toEqual([
+      'wss://space',
+      ...DEFAULT_RELAY_PUBLIC,
+    ]);
+  });
+
+  it('keeps the same zap relay list whether publish-public is on or off', () => {
+    const base = { NOSTR_RELAY_SPACE: 'wss://space' };
+    expect(resolveZapRelays(base)).toEqual(
+      resolveZapRelays({ ...base, NOSTR_PUBLISH_PUBLIC: '1' }),
+    );
+  });
+
+  it('honours NOSTR_RELAY_PUBLIC overrides for zap relays', () => {
+    expect(
+      resolveZapRelays({
+        NOSTR_RELAY_SPACE: 'wss://space',
+        NOSTR_RELAY_PUBLIC: 'wss://a, wss://b',
+      }),
+    ).toEqual(['wss://space', 'wss://a', 'wss://b']);
+  });
+
+  it('dedupes space when it also appears in the public list', () => {
+    expect(
+      resolveZapRelays({
+        NOSTR_RELAY_SPACE: 'wss://space',
+        NOSTR_RELAY_PUBLIC: 'wss://space, wss://a',
+      }),
+    ).toEqual(['wss://space', 'wss://a']);
   });
 });

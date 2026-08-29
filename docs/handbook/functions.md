@@ -733,21 +733,28 @@
 - **Purpose:** Durability relay URL.
 - **Inputs:** env slice.
 - **Returns / side effects:** Trimmed `NOSTR_RELAY_SPACE`, else `NOSTR_RELAY_URL`, else PRD default.
-- **Used by:** `resolveWriteSet`.
+- **Used by:** `resolveWriteSet`, `resolveZapRelays`.
 
 ## Function: resolveRelayPublic
 
 - **Purpose:** Public write relay list.
 - **Inputs:** env slice.
 - **Returns / side effects:** Split `NOSTR_RELAY_PUBLIC` or default three.
-- **Used by:** `resolveWriteSet`.
+- **Used by:** `resolveWriteSet`, `resolveZapRelays`.
 
 ## Function: resolveWriteSet
 
 - **Purpose:** Combine flags + URLs for one worker tick.
 - **Inputs:** env slice.
 - **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
-- **Used by:** Worker, invoice zap relays.
+- **Used by:** Worker publish (`runNostrWorkerTick` / `publishBatch`).
+
+## Function: resolveZapRelays
+
+- **Purpose:** Relays for zap receipt ingest and kind:9734 invoice `relays` tags (space plus public list, independent of `NOSTR_PUBLISH_PUBLIC`).
+- **Inputs:** env slice.
+- **Returns / side effects:** Space URL first, then unique `resolveRelayPublic` entries.
+- **Used by:** `runNostrWorkerTick` ingest; `POST /messages/:id/invoice`.
 
 ## Function: utcDayKey
 
@@ -821,7 +828,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. Ingests kind:9735 zap receipts each tick even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
 - **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
@@ -849,7 +856,7 @@
 
 ## Function: indexOpenZapReceipts
 
-- **Purpose:** Each worker tick, query write-set relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. One throwing receipt does not skip the rest of the tick.
+- **Purpose:** Each worker tick, query zap relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. One throwing receipt does not skip the rest of the tick.
 - **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `verifyReceipt` (default: nostr-tools `verifyEvent`).
 - **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; never logs full bolt11.
 - **Used by:** `runNostrWorkerTick`.

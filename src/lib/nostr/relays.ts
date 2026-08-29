@@ -100,3 +100,25 @@ export function resolveWriteSet(env: Record<string, string | undefined>): Resolv
   const publicUrls = publicEnabled ? resolveRelayPublic(env) : [];
   return { spaceUrl, publicUrls, publishEnabled, publicEnabled };
 }
+
+/**
+ * Resolve relays for zap ingest and kind:9734 invoice `relays` tags.
+ *
+ * Always space plus the public list, independent of `NOSTR_PUBLISH` /
+ * `NOSTR_PUBLISH_PUBLIC`.
+ *
+ * @param env - Environment slice.
+ * @returns Space first, then unique public URLs.
+ */
+export function resolveZapRelays(env: Record<string, string | undefined>): string[] {
+  const spaceUrl = resolveRelaySpace(env);
+  const seen = new Set<string>([spaceUrl]);
+  const urls = [spaceUrl];
+  for (const url of resolveRelayPublic(env)) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}

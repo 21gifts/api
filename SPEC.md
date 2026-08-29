@@ -863,7 +863,8 @@ An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`.
 
-The nostr worker, each tick, queries the write-set relays for kind:9735
+The nostr worker, each tick, queries zap relays (space plus the public
+list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
 receipts whose `e` tag matches a recent note `event_id`. A receipt is
 indexed when the signer pubkey matches the author's LNURL-pay
 `nostrPubkey`, the bolt11 amount is at least 1 sat, and the receipt id

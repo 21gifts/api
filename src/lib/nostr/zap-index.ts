@@ -95,8 +95,8 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query write-set relays for kind:9735 receipts on recent forum notes and
- * index validated ones.
+ * Query zap relays for kind:9735 receipts on recent forum notes and index
+ * validated ones.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch.
  * @returns Resolves when the tick's ingest pass finishes.
