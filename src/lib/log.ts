@@ -20,18 +20,16 @@ export function logEvent(event: string, fields?: LogFields): void {
 /**
  * Redact capability-URL path segments before request logging.
  *
- * A raw `/view/<secret>` would print the durable view key. Any single
- * segment after `/view/` becomes `/view/:viewKey`. Paths without a
- * segment, with extra segments, or unrelated routes are unchanged.
+ * A raw `/view/<secret>` would print the durable view key. The first
+ * segment after `/view/` is replaced with `:viewKey`, including when a
+ * trailing slash or extra segments follow. `/view` alone and unrelated
+ * paths are unchanged.
  *
  * @param path - Request path without the query string.
  * @returns Redacted path for `http.request` logs.
  */
 export function requestLogPath(path: string): string {
-  if (/^\/view\/[^/]+$/.test(path)) {
-    return '/view/:viewKey';
-  }
-  return path;
+  return path.replace(/^\/view\/[^/]+/, '/view/:viewKey');
 }
 
 /**

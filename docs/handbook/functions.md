@@ -506,7 +506,7 @@
 
 ## Function: requestLogPath
 
-- **Purpose:** Redact `/view/<segment>` to `/view/:viewKey` so request logs never print the durable capability secret. Paths without a segment, with extra segments, or unrelated routes are unchanged.
+- **Purpose:** Redact the first `/view/<segment>` to `/view/:viewKey` so request logs never print the durable capability secret. Trailing slashes and extra segments keep the suffix. `/view` alone and unrelated routes are unchanged.
 - **Inputs:** Path string without the query string.
 - **Returns / side effects:** Redacted or original string. No I/O.
 - **Used by:** `requestLog`.

@@ -60,8 +60,12 @@ describe('requestLogPath', () => {
     expect(requestLogPath('/view')).toBe('/view');
   });
 
-  it('leaves /view with extra segments unchanged', () => {
-    expect(requestLogPath('/view/a/b')).toBe('/view/a/b');
+  it('redacts a trailing slash after the view-key segment', () => {
+    expect(requestLogPath('/view/' + 'a'.repeat(64) + '/')).toBe('/view/:viewKey/');
+  });
+
+  it('redacts extra segments after the view-key segment', () => {
+    expect(requestLogPath('/view/a/b')).toBe('/view/:viewKey/b');
   });
 
   it('leaves unrelated paths unchanged', () => {
