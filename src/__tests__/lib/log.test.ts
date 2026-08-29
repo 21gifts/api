@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { logEvent, requestLog } from '@/lib/log';
+import { logEvent, requestLog, requestLogPath } from '@/lib/log';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -43,6 +43,32 @@ describe('logEvent', () => {
   });
 });
 
+describe('requestLogPath', () => {
+  it('leaves /info unchanged', () => {
+    expect(requestLogPath('/info')).toBe('/info');
+  });
+
+  it('redacts a 64-hex view key segment', () => {
+    expect(requestLogPath('/view/' + 'a'.repeat(64))).toBe('/view/:viewKey');
+  });
+
+  it('redacts a non-key single segment after /view/', () => {
+    expect(requestLogPath('/view/not-a-key')).toBe('/view/:viewKey');
+  });
+
+  it('leaves /view without a segment unchanged', () => {
+    expect(requestLogPath('/view')).toBe('/view');
+  });
+
+  it('leaves /view with extra segments unchanged', () => {
+    expect(requestLogPath('/view/a/b')).toBe('/view/a/b');
+  });
+
+  it('leaves unrelated paths unchanged', () => {
+    expect(requestLogPath('/preview/x')).toBe('/preview/x');
+  });
+});
+
 describe('requestLog', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
@@ -60,6 +86,7 @@ describe('requestLog', () => {
     app.get('/healthz', (c) => c.text('ok'));
     app.get('/info', (c) => c.text('info'));
     app.options('/info', (c) => c.body(null, 204));
+    app.get('/view/:viewKey', (c) => c.json({ error: 'Not found' }, 404));
     return app;
   }
 
@@ -82,6 +109,19 @@ describe('requestLog', () => {
     expect(line?.['path']).toBe('/info');
     expect(typeof line?.['status']).toBe('number');
     expect(Number.isInteger(line?.['ms'])).toBe(true);
+  });
+
+  it('emits http.request for GET /view/<64-hex> with redacted path', async () => {
+    const key = 'a'.repeat(64);
+    await appWithRequestLog().request('/view/' + key);
+    const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
+    expect(httpEvents).toHaveLength(1);
+    expect(httpEvents[0]?.['path']).toBe('/view/:viewKey');
+    const raw = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
+    expect(raw).toBeDefined();
+    expect(raw).not.toContain(key);
   });
 
   it('omits the query string from path and the JSON line', async () => {

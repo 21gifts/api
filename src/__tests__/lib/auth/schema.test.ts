@@ -18,5 +18,14 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL[7]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_credential/i);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/nostr_pubkey/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/forum_laws_dismissed/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS view_key text/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /UPDATE account SET view_key = replace\(gen_random_uuid\(\)::text \|\| gen_random_uuid\(\)::text, '-', ''\) WHERE view_key IS NULL/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS account_view_key_uidx ON account \(view_key\) WHERE view_key IS NOT NULL/i,
+    );
   });
 });

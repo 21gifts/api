@@ -22,6 +22,7 @@ interface AccountRow {
   lightning_address: string | null;
   lightning_address_verified: boolean;
   forum_laws_dismissed: boolean;
+  view_key: string | null;
   created_at: Date | string;
 }
 
@@ -85,21 +86,29 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async createAccount(account: Account): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0))
-       ON CONFLICT (linking_key) DO NOTHING`,
-      [
-        account.id,
-        account.linkingKey,
-        account.role,
-        account.name,
-        account.lightningAddress,
-        account.lightningAddressVerified,
-        account.forumLawsDismissed,
-        account.createdAt,
-      ],
-    );
+    try {
+      await this.#sql.execute(
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9)
+         ON CONFLICT (linking_key) DO NOTHING`,
+        [
+          account.id,
+          account.linkingKey,
+          account.role,
+          account.name,
+          account.lightningAddress,
+          account.lightningAddressVerified,
+          account.forumLawsDismissed,
+          account.createdAt,
+          account.viewKey,
+        ],
+      );
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async updateAccount(account: Account): Promise<void> {
@@ -108,7 +117,7 @@ export class PostgresAuthStore implements AuthStore {
         `UPDATE account
          SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
              forum_laws_dismissed = $7,
-             created_at = to_timestamp($8::double precision / 1000.0)
+             created_at = to_timestamp($8::double precision / 1000.0), view_key = $9
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -126,6 +135,7 @@ export class PostgresAuthStore implements AuthStore {
           account.lightningAddressVerified,
           account.forumLawsDismissed,
           account.createdAt,
+          account.viewKey,
         ],
       );
     } catch (error: unknown) {
@@ -138,9 +148,19 @@ export class PostgresAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
        FROM account WHERE id = $1`,
       [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
+       FROM account WHERE view_key = $1`,
+      [viewKey],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
@@ -152,10 +172,17 @@ export class PostgresAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
        FROM account ORDER BY created_at ASC, id ASC`,
     );
-    return rows.map(mapAccount);
+    const accounts: Account[] = [];
+    for (const row of rows) {
+      const mapped = mapAccount(row);
+      if (mapped !== undefined) {
+        accounts.push(mapped);
+      }
+    }
+    return accounts;
   }
 
   async createSession(session: Session): Promise<void> {
@@ -370,7 +397,14 @@ function parseRole(raw: string): AccountRole {
   throw new Error(`Unknown account role "${raw}"`);
 }
 
-function mapAccount(row: AccountRow): Account {
+/**
+ * Map a DB row to {@link Account}. Rows with a null `view_key` are skipped
+ * (pre-backfill or incomplete migration) rather than inventing a key on read.
+ */
+function mapAccount(row: AccountRow): Account | undefined {
+  if (row.view_key === null) {
+    return undefined;
+  }
   return {
     id: row.id,
     linkingKey: row.linking_key,
@@ -379,6 +413,7 @@ function mapAccount(row: AccountRow): Account {
     lightningAddress: row.lightning_address,
     lightningAddressVerified: row.lightning_address_verified,
     forumLawsDismissed: row.forum_laws_dismissed,
+    viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
   };
 }

@@ -151,6 +151,7 @@ export async function finishPasskeyRegistration(
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    viewKey: randomHex(32),
     createdAt: now,
   };
   await store.createAccount(account);

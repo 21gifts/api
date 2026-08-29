@@ -56,6 +56,11 @@ test('Function: requestLog — GET /info succeeds through middleware', async ({ 
   expect(res.status()).toBe(200);
 });
 
+test('Function: requestLogPath — GET /view/<64-hex> is 404 (process up)', async ({ request }) => {
+  const res = await request.get('/view/' + 'a'.repeat(64));
+  expect(res.status()).toBe(404);
+});
+
 test('Function: logEvent — GET /info succeeds through middleware', async ({ request }) => {
   const res = await request.get('/info');
   expect(res.status()).toBe(200);
@@ -101,6 +106,11 @@ test('Function: bearerToken — GET /me without bearer is 401', async ({ request
 test('Function: meRoutes — GET /me without bearer is 401', async ({ request }) => {
   const me = await request.get('/me');
   expect(me.status()).toBe(401);
+});
+
+test('Function: viewRoutes — GET /view/:viewKey is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: normalizeDisplayName — POST /me/name without bearer is 401', async ({
@@ -637,6 +647,18 @@ test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured
 test('Function: serializeAccount — GET /me without bearer is 401', async ({ request }) => {
   const res = await request.get('/me');
   expect(res.status()).toBe(401);
+});
+
+test('Function: serializeOwnerAccount — GET /me without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeViewProfile — GET /view/:viewKey is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: parseNostrKek — default boot has no DATABASE_URL', async ({ request }) => {

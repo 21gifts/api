@@ -52,6 +52,7 @@ describe('passkey registration', () => {
       return;
     }
     expect(finish.value.account.linkingKey).toBeNull();
+    expect(finish.value.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
     expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(finish.value.account.id);
   });
 
@@ -332,6 +333,7 @@ describe('passkey authentication', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: T0,
     });
     const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);

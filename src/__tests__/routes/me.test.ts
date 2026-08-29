@@ -27,6 +27,7 @@ afterEach(() => {
 const now = (): number => 1_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const LINKING_KEY = `02${'a'.repeat(64)}`;
+const VIEW_KEY = 'a'.repeat(64);
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc10n1testinvoice';
 
@@ -61,6 +62,7 @@ async function seededStore(
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
     forumLawsDismissed: false,
+    viewKey: VIEW_KEY,
     createdAt: 1_000_000,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
@@ -138,12 +140,14 @@ describe('GET /me', () => {
       name: string | null;
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
+      viewKey: string;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
     expect(body.name).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
+    expect(body.viewKey).toBe(VIEW_KEY);
   });
 });
 
@@ -285,8 +289,9 @@ describe('POST /me/name', () => {
       body: JSON.stringify({ name: '  Ada  ' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string | null };
+    const body = (await res.json()) as { name: string | null; viewKey: string };
     expect(body.name).toBe('Ada');
+    expect(body.viewKey).toBe(VIEW_KEY);
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
@@ -843,6 +848,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1_000_000,
     });
     const res = await mount(store).request('/me/lightning-address/verification/confirm', {

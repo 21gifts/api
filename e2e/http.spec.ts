@@ -67,6 +67,21 @@ test('GET /me without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /view/not-a-key is 404', async ({ request }) => {
+  const res = await request.get('/view/not-a-key');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/<64-hex> is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/' + 'a'.repeat(64));
+  expect(res.status()).toBe(404);
+});
+
 test('GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);

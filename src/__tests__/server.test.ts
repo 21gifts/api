@@ -84,6 +84,31 @@ describe('createApp', () => {
     expect(raw).not.toContain('?');
   });
 
+  it('returns 404 for GET /view/not-a-key', async () => {
+    const res = await createApp().request('/view/not-a-key');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for GET /view/<64-hex> when unknown', async () => {
+    const res = await createApp().request('/view/' + 'a'.repeat(64));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('emits http.request for GET /view/<64-hex> with redacted path', async () => {
+    const key = 'a'.repeat(64);
+    await createApp().request('/view/' + key);
+    const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
+    expect(httpEvents).toHaveLength(1);
+    expect(httpEvents[0]?.['path']).toBe('/view/:viewKey');
+    const raw = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
+    expect(raw).toBeDefined();
+    expect(raw).not.toContain(key);
+  });
+
   it('mounts /lightning-address', async () => {
     const app = createApp();
     const res = await app.request('/lightning-address');

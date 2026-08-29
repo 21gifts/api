@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { serializeAccount } from '@/lib/auth/account-json';
+import {
+  serializeAccount,
+  serializeOwnerAccount,
+  serializeViewProfile,
+} from '@/lib/auth/account-json';
 import type { Account } from '@/lib/auth/store';
 
 const account: Account = {
@@ -10,11 +14,12 @@ const account: Account = {
   lightningAddress: 'ada@walletofsatoshi.com',
   lightningAddressVerified: false,
   forumLawsDismissed: false,
+  viewKey: 'a'.repeat(64),
   createdAt: 1,
 };
 
 describe('serializeAccount', () => {
-  it('emits only public fields', () => {
+  it('emits only the eight public fields without viewKey', () => {
     const json = serializeAccount(account);
     expect(json).toEqual({
       id: 'acc',
@@ -26,6 +31,43 @@ describe('serializeAccount', () => {
       forumLawsDismissed: false,
       createdAt: 1,
     });
+    expect(json).not.toHaveProperty('viewKey');
+    expect(Object.keys(json)).toHaveLength(8);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
+  });
+});
+
+describe('serializeOwnerAccount', () => {
+  it('includes viewKey alongside the eight public fields', () => {
+    const json = serializeOwnerAccount(account);
+    expect(json).toEqual({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      viewKey: 'a'.repeat(64),
+    });
+    expect(json.viewKey).toBe(account.viewKey);
+  });
+});
+
+describe('serializeViewProfile', () => {
+  it('emits exactly four public profile fields', () => {
+    const json = serializeViewProfile(account);
+    expect(json).toEqual({
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(json).not.toHaveProperty('id');
+    expect(json).not.toHaveProperty('linkingKey');
+    expect(json).not.toHaveProperty('role');
+    expect(json).not.toHaveProperty('viewKey');
+    expect(Object.keys(json)).toHaveLength(4);
   });
 });

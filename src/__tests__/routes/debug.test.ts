@@ -59,6 +59,7 @@ describe('debugRoutes', () => {
       lightningAddress: 'a@b.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
       createdAt: 1,
     });
     const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
@@ -72,6 +73,7 @@ describe('debugRoutes', () => {
     expect(body.accounts).toHaveLength(1);
     expect(body.accounts[0]?.id).toBe('acc');
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
+    expect(body.accounts[0]).not.toHaveProperty('viewKey');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 });

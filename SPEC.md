@@ -67,6 +67,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options           |
 | POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session          |
 | GET    | `/me`                                        | `Authorization: Bearer`  | Account                                  |
+| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key          |
 | POST   | `/me/name`                                   | Bearer                   | Set/replace display name                 |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws   |
 | POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve    |
@@ -212,10 +213,13 @@ ID).
     "lightningAddress": null,
     "lightningAddressVerified": false,
     "forumLawsDismissed": false,
+    "viewKey": "<64-hex>",
     "createdAt": 0
   }
 }
 ```
+
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -256,6 +260,7 @@ Missing or invalid bearer → **Response** `401`:
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "forumLawsDismissed": false,
+  "viewKey": "<64-hex>",
   "createdAt": 0
 }
 ```
@@ -269,7 +274,31 @@ Missing or invalid bearer → **Response** `401`:
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                        |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                       |
 | `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed      |
+| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
 | `createdAt`                | number         | Creation time (epoch ms)                                                |
+
+### `GET /view/:viewKey`
+
+Public capability URL for a read-only profile card. No auth. Not a session:
+the key cannot write, cannot mint a session, and is not accepted as
+`Authorization: Bearer`.
+
+Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+**Response** `200` (four fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+
+```json
+{
+  "name": null,
+  "lightningAddress": null,
+  "lightningAddressVerified": false,
+  "createdAt": 0
+}
+```
 
 ### `POST /me/name`
 
@@ -545,6 +574,8 @@ Success → **Response** `200`:
   ]
 }
 ```
+
+The listing uses the eight-field dump and never includes `viewKey`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
