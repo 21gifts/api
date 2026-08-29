@@ -72,6 +72,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history          |
 | GET    | `/messages`                                  | Bearer                   | List public forum thread                   |
 | POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum        |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                        |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)           |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)   |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)   |

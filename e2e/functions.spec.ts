@@ -651,6 +651,11 @@ test('Function: InvoiceRateLimiter — POST /messages without bearer is 401', as
 test('Function: RecordingPublisher — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: WebsocketNostrPublisher — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: spaceAcked — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

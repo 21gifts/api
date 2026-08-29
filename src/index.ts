@@ -10,6 +10,8 @@
 import { SQL } from 'bun';
 import { openBootStores } from './lib/boot-stores';
 import type { SqlClient } from './lib/auth/sql';
+import { WebsocketNostrPublisher } from './lib/nostr/publish';
+import { startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -44,5 +46,19 @@ if (import.meta.main) {
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
+  if (nostrKek !== undefined && messageStore !== undefined) {
+    const publisher = new WebsocketNostrPublisher();
+    startNostrWorker(
+      {
+        messages: messageStore,
+        auth: authStore,
+        kek: nostrKek,
+        publisher,
+        now: Date.now,
+        env: process.env,
+      },
+      WORKER_INTERVAL_MS,
+    );
+  }
 }
 /* v8 ignore stop */

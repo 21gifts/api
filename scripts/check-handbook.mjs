@@ -135,7 +135,7 @@ function extractEndpoints() {
     'brand.ts': '',
     'debug.ts': '/debug/accounts',
   };
-  const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./]*)\2/g;
+  const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {
     const mount = Object.hasOwn(mountByFile, file)
       ? mountByFile[file]

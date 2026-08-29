@@ -14,6 +14,7 @@ import {
   type MessageRow,
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveWriteSet } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -185,8 +186,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       });
       let signed;
       try {
+        await ensureAccountNostrKey(deps.authStore, account.id, kek);
         signed = await signEventForAccount(deps.authStore, account.id, kek, unsigned);
-        /* v8 ignore next 4 -- missing payer key */
+        /* v8 ignore next 4 -- keygen or sign failure */
       } catch {
         logEvent('nostr.sign.failed', { messageId: row.id });
         return c.json({ error: 'Messages are unavailable' }, 503);

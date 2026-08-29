@@ -92,7 +92,8 @@ export function normalizeForumText(raw: string): string | null {
  * Project a store row to its public JSON shape.
  *
  * @param row - Persisted message.
- * @returns Public fields only (`accountId` omitted); `createdAt` as ISO-8601.
+ * @param payable - Whether the note can accept a NIP-57 zap payment.
+ * @returns Public fields (`sats`, `payable`; no `accountId`); `createdAt` ISO-8601.
  */
 export function serializeMessage(row: MessageRow, payable: boolean): PublicMessage {
   return {

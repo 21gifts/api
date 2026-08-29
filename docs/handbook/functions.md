@@ -380,9 +380,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name.
-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`messages.list.failed` / `messages.create.failed`). Public JSON omits `accountId`.
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (post/invoice rate limiters).
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits; 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -401,9 +401,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape.
-- **Inputs:** `MessageRow` (includes `accountId`).
-- **Returns / side effects:** `{ id, name, text, createdAt }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals and payability.
+- **Inputs:** `MessageRow` (includes `accountId`) and `payable` boolean.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: normalizeLightningAddress
@@ -728,6 +728,13 @@
 - **Returns / side effects:** ACK list; `ok` flag.
 - **Used by:** Worker tests.
 
+## Function: WebsocketNostrPublisher
+
+- **Purpose:** Production `NostrPublisher` that opens one WebSocket per relay URL, sends `["EVENT", event]`, and waits for a matching `["OK", id, true|false]` (or timeout/error) before closing.
+- **Inputs:** Optional `WebSocketFactory` (default `new WebSocket(url)`); `publish(event, urls, timeoutMs)`.
+- **Returns / side effects:** One `RelayAck` per URL in input order; never leaves sockets open after settle. Injectable factory keeps unit tests off the network.
+- **Used by:** Process entry `src/index.ts` when KEK + durable message store present.
+
 ## Function: spaceAcked
 
 - **Purpose:** Whether the space relay ACK'd OK.
@@ -754,7 +761,7 @@
 - **Purpose:** Interval handle around `runNostrWorkerTick`.
 - **Inputs:** deps, intervalMs.
 - **Returns / side effects:** `{ stop }`.
-- **Used by:** Process entry (when KEK is present).
+- **Used by:** Process entry `src/index.ts` when KEK + message store present.
 
 ## Function: buildZapRequest
 
@@ -768,7 +775,7 @@
 - **Purpose:** Validate provider pubkey and add sats once per receipt id.
 - **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
 - **Returns / side effects:** boolean; logs indexed/rejected.
-- **Used by:** Zap indexer (in-process set).
+- **Used by:** Unit tests (no in-process zap-receipt subscriber in this process yet).
 
 ## Function: resetZapReceiptIndex
 

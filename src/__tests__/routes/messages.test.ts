@@ -500,6 +500,85 @@ describe('POST /messages/:id/invoice', () => {
     expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
   });
 
+  it('ensures a Nostr key for a payer who has none yet', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    await authStore.createAccount({
+      id: 'payer',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1_000_001,
+    });
+    await authStore.createSession({ token: 'payer-tok', accountId: 'payer', createdAt: now() });
+    expect(await authStore.getNostrPublicKey('payer')).toBeUndefined();
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '44444444-4444-4444-8444-444444444444',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/44444444-4444-4444-8444-444444444444/invoice', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer payer-tok',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+    expect(await authStore.getNostrPublicKey('payer')).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('returns 400 when the note is unsigned', async () => {
     const kek = new Uint8Array(32).fill(2);
     const authStore = await namedStore('Ada');
