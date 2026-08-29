@@ -123,14 +123,14 @@
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop). Guard DROP/CREATE is one `DO` block.
+- **Returns / side effects:** Void; idempotent SQL matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop). The immutability-guard `DO` drops the append-only trigger once, hashes `view_key` values that still match a live `account.view_key`, leaves non-matches unchanged, then recreates the trigger.
 - **Used by:** `openBootStores` when SQL opens, immediately after `migrateContactSchema`.
 
 ## Function: DB_CHANGE_SCHEMA_SQL
 
-- **Purpose:** Ordered idempotent DDL statements that create the append-only `db_change` log, secret-redacting helpers, immutability guard, and per-table `trg_db_change` triggers on every public table except `db_change`.
+- **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard (including a one-time live `view_key` rewrite in that same `DO`), and per-table `trg_db_change` triggers on every public table except `db_change`.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, and `nonce` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, and `view_key` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore
