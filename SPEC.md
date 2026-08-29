@@ -821,11 +821,14 @@ Success → **Response** `200`:
 ### `GET /messages`
 
 Public member forum thread. Bearer session required. Returns newest messages
-first (`createdAt` descending, then `id`), capped at **200**. Each message
-exposes the author **name snapshotted at post time**, `text`, ISO-8601
-`createdAt`, `sats` (validated Lightning receipts on that note, default 0),
-and `payable` (true when the note is signed and the author has a Lightning
-Address). `accountId` and Nostr event ids are never included in the JSON.
+first (`createdAt` descending, then `id`), capped at **200**. This is the
+latest-200 **window** on the wire; clients must render the thread as a
+**messenger group** (oldest at the top, newest at the bottom above the
+composer), reversing the array for display. Each message exposes the author
+**name snapshotted at post time**, `text`, ISO-8601 `createdAt`, `sats`
+(validated Lightning receipts on that note, default 0), and `payable` (true
+when the note is signed and the author has a Lightning Address). `accountId`
+and Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

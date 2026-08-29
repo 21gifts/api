@@ -128,7 +128,7 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`, `sats`, and `payable`), capped at 200. Empty list is 200 `{ messages: [] }`. No `accountId` in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`, `sats`, and `payable`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
