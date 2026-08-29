@@ -85,13 +85,16 @@ $attach$;`,
 ];
 
 /**
- * Apply {@link DB_CHANGE_SCHEMA_SQL} in order. Idempotent.
+ * Apply {@link DB_CHANGE_SCHEMA_SQL}. `CREATE EXTENSION` runs first, then the
+ * remaining statements in one `BEGIN`/`COMMIT` batch so trigger drop/create
+ * is not visible to concurrent writers.
  *
  * @param sql - Parameter-bound SQL client.
- * @returns Resolves when every statement has executed.
+ * @returns Resolves when every statement has committed.
  */
 export async function migrateDbChangeSchema(sql: SqlClient): Promise<void> {
-  for (const statement of DB_CHANGE_SCHEMA_SQL) {
+  for (const statement of DB_CHANGE_SCHEMA_SQL.slice(0, 1)) {
     await sql.execute(statement);
   }
+  await sql.execute(`BEGIN;\n${DB_CHANGE_SCHEMA_SQL.slice(1).join('\n')}\nCOMMIT;`);
 }

@@ -5,6 +5,7 @@ import { DB_CHANGE_SCHEMA_SQL, migrateDbChangeSchema } from '@/lib/db-change';
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
+  failAt: number | undefined;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
@@ -13,6 +14,9 @@ class MockSql implements SqlClient {
 
   async execute(text: string, params: readonly unknown[] = []): Promise<void> {
     this.executes.push({ text, params });
+    if (this.failAt !== undefined && this.executes.length === this.failAt) {
+      throw new Error('ddl failed');
+    }
   }
 }
 
@@ -41,9 +45,21 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
 });
 
 describe('migrateDbChangeSchema', () => {
-  it('runs every DB_CHANGE_SCHEMA_SQL statement', async () => {
+  it('enables pgcrypto then applies the rest in one transaction', async () => {
     const sql = new MockSql();
     await migrateDbChangeSchema(sql);
-    expect(sql.executes.map((e) => e.text)).toEqual([...DB_CHANGE_SCHEMA_SQL]);
+    expect(sql.executes).toHaveLength(2);
+    expect(sql.executes[0]?.text).toBe(DB_CHANGE_SCHEMA_SQL[0]);
+    const batch = sql.executes[1]?.text ?? '';
+    expect(batch.startsWith('BEGIN;')).toBe(true);
+    expect(batch.endsWith('COMMIT;')).toBe(true);
+    expect(batch).toContain('CREATE TABLE IF NOT EXISTS db_change');
+    expect(batch).toContain('trg_db_change');
+  });
+
+  it('propagates a failed batch', async () => {
+    const sql = new MockSql();
+    sql.failAt = 2;
+    await expect(migrateDbChangeSchema(sql)).rejects.toThrow(/ddl failed/);
   });
 });
