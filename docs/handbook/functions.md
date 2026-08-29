@@ -310,8 +310,8 @@
 
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for passkey register and authenticate.
-- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony.
+- **Purpose:** Hono sub-app for passkey register and authenticate. Passes optional `nostrKek` / `nostrKeygen` into finish so new logins get a custodial nsec.
+- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony, optional `nostrKek` and `nostrKeygen`.
 - **Returns / side effects:** Hono app mounted at `/auth`.
 - **Used by:** `createApp`.
 
@@ -499,15 +499,15 @@
 
 ## Function: finishPasskeyAuthentication
 
-- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds.
-- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds. Optional `nostr` best-effort backfills a missing nsec.
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
 - **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`.
 - **Used by:** `POST /auth/passkey/authenticate/finish`.
 
 ## Function: finishPasskeyRegistration
 
-- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session.
-- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential.
+- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session. Optional `nostr` mints a custodial nsec (rollback on keygen failure).
+- **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
 - **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. A duplicate credential id rolls the new account back.
 - **Used by:** `POST /auth/passkey/register/finish`.
 

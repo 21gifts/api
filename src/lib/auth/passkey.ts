@@ -91,8 +91,9 @@ export async function startPasskeyRegistration(
 
 /**
  * Complete passkey registration: verify attestation, persist the account and
- * credential, issue a session. A duplicate credential id rolls the new
- * account back via `deleteAccount`.
+ * credential, issue a session. When `nostr` is set, generates a custodial
+ * nsec for the new account (rolls the account back if keygen fails). A
+ * duplicate credential id rolls the new account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -101,6 +102,7 @@ export async function startPasskeyRegistration(
  * @param origin - Request `Origin` header (must match `expectedOrigins`).
  * @param challengeId - Id returned by {@link startPasskeyRegistration}.
  * @param credential - Browser attestation JSON.
+ * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
  * @returns Session + account, or a 400 error string.
  */
 export async function finishPasskeyRegistration(
@@ -211,6 +213,7 @@ export async function startPasskeyAuthentication(
 
 /**
  * Complete passkey authentication: verify assertion, CAS-update signCount, issue a session.
+ * When `nostr` is set, best-effort backfills a missing custodial nsec.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -219,6 +222,7 @@ export async function startPasskeyAuthentication(
  * @param origin - Request `Origin` header.
  * @param challengeId - Id returned by {@link startPasskeyAuthentication}.
  * @param credential - Browser assertion JSON.
+ * @param nostr - Optional KEK (and test-only keygen) to backfill a missing nsec.
  * @returns Session + account, or a 400 error string.
  */
 export async function finishPasskeyAuthentication(

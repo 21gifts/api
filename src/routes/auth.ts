@@ -145,7 +145,7 @@ function nostrOpts(deps: AuthRouteDeps): { kek: Uint8Array; keygen?: NostrKeygen
   if (deps.nostrKek === undefined) {
     return undefined;
   }
-  /* v8 ignore start */
+  /* v8 ignore start -- optional test-only nostrKeygen injection */
   return deps.nostrKeygen === undefined
     ? { kek: deps.nostrKek }
     : { kek: deps.nostrKek, keygen: deps.nostrKeygen };
