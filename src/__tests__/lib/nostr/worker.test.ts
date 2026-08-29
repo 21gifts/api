@@ -657,6 +657,63 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(1);
   });
 
+  it('bumps kind:0 created_at past an in-flight older profile in the same second', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const t = 1_700_000_000_000;
+    let releaseFirst: () => void = () => {};
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let enteredFirst: () => void = () => {};
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (
+        event['kind'] === 0 &&
+        publisher.calls.filter((call) => call.event['kind'] === 0).length === 1
+      ) {
+        enteredFirst();
+        await firstHeld;
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => t,
+        env,
+      }),
+    );
+    await firstEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => t,
+        env,
+      }),
+    );
+    releaseFirst();
+    await first;
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0]?.event['created_at']).toBe(1_700_000_000);
+    expect(profiles[1]?.event['created_at']).toBe(1_700_000_001);
+    expect(JSON.parse(String(profiles[1]?.event['content'])).name).toBe('Anton');
+  });
+
   it('keeps a newer kind:0 reservation when an in-flight nack lands', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -829,6 +886,56 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     releaseSign();
+    await first;
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(1);
+    expect(JSON.parse(String(profiles[0]?.event['content'])).name).toBe('Anton');
+  });
+
+  it('skips kind:0 when the reservation moves during key lookup', async () => {
+    const { auth } = await seed();
+    const messages = new InMemoryMessageStore();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const originalPub = auth.getNostrPublicKey.bind(auth);
+    let releaseLookup: () => void = () => {};
+    const lookupHeld = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    let enteredLookup: () => void = () => {};
+    const lookupEntered = new Promise<void>((resolve) => {
+      enteredLookup = resolve;
+    });
+    auth.getNostrPublicKey = async (accountId: string) => {
+      enteredLookup();
+      await lookupHeld;
+      return originalPub(accountId);
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await lookupEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    auth.getNostrPublicKey = originalPub;
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    releaseLookup();
     await first;
     const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
     expect(profiles).toHaveLength(1);

@@ -44,17 +44,29 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
 }
 
-/** Reserved or last-acked kind:0 content per account, keyed by auth store. */
-const profileCaches = new WeakMap<AuthStore, Map<string, string>>();
+type Kind0Reservation = {
+  content: string;
+  createdAt: number;
+};
 
-function profileCacheFor(auth: AuthStore): Map<string, string> {
+/** Reserved or last-acked kind:0 content per account, keyed by auth store. */
+const profileCaches = new WeakMap<AuthStore, Map<string, Kind0Reservation>>();
+
+function profileCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
   const existing = profileCaches.get(auth);
   if (existing !== undefined) {
     return existing;
   }
-  const created = new Map<string, string>();
+  const created = new Map<string, Kind0Reservation>();
   profileCaches.set(auth, created);
   return created;
+}
+
+function reservedContent(
+  cache: Map<string, Kind0Reservation>,
+  accountId: string,
+): string | undefined {
+  return cache.get(accountId)?.content;
 }
 
 /**
@@ -68,7 +80,8 @@ function profileCacheFor(auth: AuthStore): Map<string, string> {
  * fans out a replaceable kind:0 profile (`name` / `display_name` from the
  * account row) to the space relay, and to the public list when
  * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Kind:0
- * `created_at` is the wall clock at sign time. Each tick also queries
+ * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
+ * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off.
@@ -173,26 +186,30 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       continue;
     }
     const content = buildKind0Content(live.name, live.lightningAddress);
-    if (cache.get(live.id) === content) {
+    if (reservedContent(cache, live.id) === content) {
       continue;
     }
-    cache.set(live.id, content);
+    const previous = cache.get(live.id);
+    cache.set(live.id, { content, createdAt: previous?.createdAt ?? 0 });
     try {
       const pubkey = await deps.auth.getNostrPublicKey(live.id);
       if (pubkey === undefined) {
-        if (cache.get(live.id) === content) {
+        if (reservedContent(cache, live.id) === content) {
           cache.delete(live.id);
         }
         continue;
       }
       attempted += 1;
-      const unsigned = buildKind0Event(
-        live.name,
-        live.lightningAddress,
-        Math.floor(deps.now() / 1000),
-      );
+      const wall = Math.floor(deps.now() / 1000);
+      const held = cache.get(live.id);
+      if (held?.content !== content) {
+        continue;
+      }
+      const createdAt = Math.max(wall, held.createdAt + 1);
+      cache.set(live.id, { content, createdAt });
+      const unsigned = buildKind0Event(live.name, live.lightningAddress, createdAt);
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
-      if (cache.get(live.id) !== content) {
+      if (reservedContent(cache, live.id) !== content) {
         continue;
       }
       const acks = await deps.publisher.publish(
@@ -203,7 +220,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
       const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
       if (!spaceOk || !publicOk) {
-        if (cache.get(live.id) === content) {
+        if (reservedContent(cache, live.id) === content) {
           cache.delete(live.id);
         }
         logEvent('nostr.profile.nack', { accountId: live.id });
@@ -211,7 +228,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
       logEvent('nostr.profile.ok', { accountId: live.id });
     } catch {
-      if (cache.get(live.id) === content) {
+      if (reservedContent(cache, live.id) === content) {
         cache.delete(live.id);
       }
       logEvent('nostr.profile.nack', { accountId: live.id });
