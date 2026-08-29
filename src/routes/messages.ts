@@ -8,9 +8,11 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
   MESSAGE_LIST_LIMIT,
+  decodeForumPhoto,
   normalizeForumText,
   serializeMessage,
   unsignedNostrDefaults,
+  type ForumPhoto,
   type MessageRow,
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -22,7 +24,9 @@ import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { bearerToken } from '@/routes/me';
 
 /**
- * `/messages` — signed-in member forum: list, post, and pay a note.
+ * `/messages` — signed-in member forum: list every message, post text and/or
+ * one photo when the account has a display name, fetch photo bytes by id, and
+ * pay a published note. Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
 /** Collaborators the `/messages` routes need. */
@@ -66,8 +70,21 @@ async function isPayable(deps: MessagesRouteDeps, row: MessageRow): Promise<bool
   return author !== undefined && author.lightningAddress !== null;
 }
 
-/** Body schema for posting a forum message. */
-const textBody = z.object({ text: z.string() });
+/** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
+const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Body schema for posting a forum message (text and/or photo). */
+const postBody = z
+  .object({
+    text: z.string().optional(),
+    photo: z
+      .object({
+        contentType: z.string(),
+        data: z.string(),
+      })
+      .optional(),
+  })
+  .refine((body) => body.text !== undefined || body.photo !== undefined);
 
 /** Body schema for a note invoice. */
 const invoiceBody = z.object({ sats: z.number().int().positive() });
@@ -75,8 +92,11 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
 /**
  * Build the `/messages` route group.
  *
+ * Mounted at `/messages` so the public paths are `GET /messages`,
+ * `POST /messages`, `GET /messages/:id/photo`, and `POST /messages/:id/invoice`.
+ *
  * @param deps - Message store, auth store, and clock.
- * @returns A Hono app with `GET /`, `POST /`, and `POST /:id/invoice`.
+ * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo`, and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -111,16 +131,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         c.header('Retry-After', '10');
         return c.json({ error: 'Too many messages' }, 429);
       }
-      const parsed = textBody.safeParse(await c.req.json().catch(() => null));
+      const parsed = postBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+        return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
       }
       if (account.name === null || account.name.trim() === '') {
         return c.json({ error: 'Set a name before posting' }, 400);
       }
-      const text = normalizeForumText(parsed.data.text);
+      const rawText = parsed.data.text ?? '';
+      const text = normalizeForumText(rawText);
       if (text === null) {
         return c.json({ error: 'Text must be 1–500 characters' }, 400);
+      }
+      let photo: ForumPhoto | undefined;
+      if (parsed.data.photo !== undefined) {
+        const decoded = decodeForumPhoto(parsed.data.photo.contentType, parsed.data.photo.data);
+        if (decoded === null) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        photo = decoded;
+      }
+      if (text === '' && photo === undefined) {
+        return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
       }
       const row: MessageRow = {
         id: crypto.randomUUID(),
@@ -128,13 +160,41 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         name: account.name.trim(),
         text,
         createdAt: new Date(deps.now()),
+        hasPhoto: photo !== undefined,
         ...unsignedNostrDefaults(),
       };
       try {
-        const created = await deps.store.create(row);
+        const created =
+          photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
         return c.json(serializeMessage(created, false), 200);
       } catch {
         logEvent('messages.create.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/photo', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Photo not found' }, 404);
+      }
+      try {
+        const photo = await deps.store.getPhoto(id);
+        if (photo === null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        return new Response(photo.bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': photo.contentType,
+            'Cache-Control': 'private',
+          },
+        });
+      } catch {
+        logEvent('messages.photo.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

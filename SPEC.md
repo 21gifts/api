@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; `GET /messages/:id/photo`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -75,7 +75,8 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment   |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history        |
 | GET    | `/messages`                                  | Bearer                   | List public forum thread                 |
-| POST   | `/messages`                                  | Bearer                   | Post `{ text }` to the public forum      |
+| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum  |
+| GET    | `/messages/:id/photo`                        | Bearer                   | Fetch forum message photo bytes          |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                      |
 | POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`   |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)         |
@@ -879,10 +880,11 @@ first (`createdAt` descending, then `id`), capped at **200**. This is the
 latest-200 **window** on the wire; clients must render the thread as a
 **messenger group** (oldest at the top, newest at the bottom above the
 composer), reversing the array for display. Each message exposes the author
-**name snapshotted at post time**, `text`, ISO-8601 `createdAt`, `sats`
-(validated Lightning receipts on that note, default 0), and `payable` (true
-when the note is signed and the author has a Lightning Address). `accountId`
-and Nostr event ids are never included in the JSON.
+**name snapshotted at post time**, `text` (may be empty when a photo is
+attached), ISO-8601 `createdAt`, `sats` (validated Lightning receipts on that
+note, default 0), `payable` (true when the note is signed and the author has
+a Lightning Address), and `hasPhoto`. List JSON never includes photo bytes.
+`accountId` and Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -907,7 +909,8 @@ Success → **Response** `200`:
       "text": "Thank you!",
       "createdAt": "2026-08-28T12:00:00.000Z",
       "sats": 0,
-      "payable": false
+      "payable": false,
+      "hasPhoto": false
     }
   ]
 }
@@ -915,7 +918,8 @@ Success → **Response** `200`:
 
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
-Postgres `message`.
+Postgres `message`. List queries select `(photo IS NOT NULL) AS has_photo`
+and must not select the `photo` bytea column.
 
 The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
@@ -928,21 +932,28 @@ objects, not JSON strings.
 
 ### `POST /messages`
 
-Post to the public member forum. Bearer session required. Body:
+Post to the public member forum. Bearer session required. JSON body (not
+multipart) with text and/or one photo:
 
 ```json
-{ "text": "…" }
+{ "text": "…", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
 ```
 
+`{ "text": "hello" }` without `photo` remains valid. Photo-only posts are
+allowed (`text` may be omitted or empty when a photo is present). At least
+one of (non-empty trimmed text, photo) is required.
+
 The account must already have a non-blank display name. The api stores a
-**name snapshot** (trimmed account name at post time), the normalised text,
-and a timestamp. Text is trimmed; length must be **1–500** characters.
-Newlines (`\n`, `\r`) are allowed; other C0 controls and DEL are rejected.
-The **200** body is the public message object itself (not wrapped in
-`{ messages }`). No `accountId` in the JSON. `sats` is 0 and `payable` is
-false until the worker signs the note. Over-limit posters get **429**
-`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
-20/UTC-day). The worker signs a top-level kind:1 and fans out when
+**name snapshot** (trimmed account name at post time), normalised text
+(possibly `""` for photo-only), optional JPEG/PNG/WebP bytes (≤ 1 MiB;
+MIME from magic bytes), and a timestamp. Text longer than **500** after
+trim, or with disallowed C0/DEL controls, is rejected. Newlines (`\n`,
+`\r`) are allowed. The **200** body is the public message object itself
+(not wrapped in `{ messages }`), including `sats`, `payable`, and
+`hasPhoto`. No `accountId` and no photo bytes in the JSON. `sats` is 0 and
+`payable` is false until the worker signs the note. Over-limit posters get
+**429** `{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s,
+6/h, 20/UTC-day). The worker signs a top-level kind:1 and fans out when
 `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -951,10 +962,10 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a `text` string → **Response** `400`:
+Body is not JSON with `text` and/or `photo` → **Response** `400`:
 
 ```json
-{ "error": "Expected a JSON body with a \"text\" string" }
+{ "error": "Expected a JSON body with text and/or photo" }
 ```
 
 Account has no display name (null or blank after trim) → **Response** `400`:
@@ -963,11 +974,24 @@ Account has no display name (null or blank after trim) → **Response** `400`:
 { "error": "Set a name before posting" }
 ```
 
-Text empty, longer than 500 after trim, or contains a disallowed control →
+Text longer than 500 after trim, or contains a disallowed control →
 **Response** `400`:
 
 ```json
 { "error": "Text must be 1–500 characters" }
+```
+
+Whitespace-only / empty text with no photo → **Response** `400`:
+
+```json
+{ "error": "Text must be 1–500 characters or include a photo" }
+```
+
+`photo` present but invalid base64, wrong magic (not JPEG/PNG/WebP), empty,
+or decoded size `> 1_048_576` → **Response** `400`:
+
+```json
+{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
 ```
 
 Store failure → **Response** `503`:
@@ -985,7 +1009,8 @@ Success → **Response** `200`:
   "text": "Thank you!",
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
-  "payable": false
+  "payable": false,
+  "hasPhoto": false
 }
 ```
 
@@ -1014,6 +1039,34 @@ limiter still counts. LNURL/zap failure →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
 
+### `GET /messages/:id/photo`
+
+Fetch the optional photo bytes for one forum message. Bearer session
+required. Missing message, message-without-photo, and a non-UUID `id` are
+the same **404** (Postgres would otherwise throw on `uuid` and become 503).
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+No photo for `id` → **Response** `404`:
+
+```json
+{ "error": "Photo not found" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`: raw image body, `Content-Type` one of
+`image/jpeg` / `image/png` / `image/webp` (from stored magic-derived type),
+`Cache-Control: private`. Not JSON.
+
 ### `POST /contact`
 
 Private in-app contact mailbox. Bearer session required. Body:
@@ -1024,12 +1077,13 @@ Private in-app contact mailbox. Bearer session required. Body:
 
 The account must already have a non-blank display name. The api stores a
 **name snapshot** (trimmed account name at post time), the normalised text,
-and a timestamp. Text rules match the public forum (`normalizeForumText`):
-trimmed length **1–500**; newlines (`\n`, `\r`) allowed; other C0 controls
-and DEL rejected. The **200** body is the public contact object itself (not
-wrapped). No `accountId` in the member-facing JSON. Contacts are **never**
-listed publicly — operators read them via `GET /debug/contacts`. No email,
-no DMs, no Nostr fan-out.
+and a timestamp. Text goes through `normalizeForumText` (newlines `\n`/`\r`
+allowed; other C0 and DEL rejected), then contact still requires trimmed
+length **1–500**. Forum photo-only empty text is not accepted here. The
+**200** body is the public contact object itself (not wrapped). No
+`accountId` in the member-facing JSON. Contacts are **never** listed
+publicly — operators read them via `GET /debug/contacts`. No email, no DMs,
+no Nostr fan-out.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

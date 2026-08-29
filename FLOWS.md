@@ -141,13 +141,15 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 ## 5. Message — **Shipped**
 
-Public comment / encouragement is a v1 surface. The composer POSTs `{ text }`
-to `POST /messages`; the public thread is listed via `GET /messages` (newest
-first, name snapshotted at post, plus `sats` and `payable`). The shipped UI
-is a messenger-group thread: oldest notes at the top, newest at the bottom,
-composer under the newest note. The welcome-forum living-room laws hint is
-dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
-notes; the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
+Public comment / encouragement is a v1 surface. The composer POSTs
+`{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
+the public thread is listed via `GET /messages` (newest first, name
+snapshotted at post, `sats`, `payable`, `hasPhoto` — never photo bytes).
+Bytes are `GET /messages/:id/photo`. The shipped UI is a messenger-group
+thread: oldest notes at the top, newest at the bottom, composer under the
+newest note. The welcome-forum living-room laws hint is dismissed via
+`POST /me/forum-laws-dismissed`. Posts are standalone kind:1 notes; the
+worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
@@ -158,8 +160,9 @@ not sketch a DM inbox as if it ships in v1.
 ## 6. Contact — **Shipped**
 
 Private mailbox so members can write to 21.gifts without a published email.
-Signed-in members POST `{ text }` to `POST /contact` (same text rules and
-name-snapshot requirement as forum messages). Operators read the mailbox via
+Signed-in members POST `{ text }` to `POST /contact` (name snapshot as
+forum messages; `normalizeForumText` plus a required 1–500 character body —
+forum photo-only empty text does not apply). Operators read the mailbox via
 `GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
 DMs, no Nostr fan-out. Do not invent `/events`.
 

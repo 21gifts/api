@@ -61,7 +61,9 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
       return c.json({ error: 'Set a name before posting' }, 400);
     }
     const text = normalizeForumText(parsed.data.text);
-    if (text === null) {
+    // Forum photo-only posts may be empty; contact has no photo and still
+    // requires 1–500 characters.
+    if (text === null || text === '') {
       return c.json({ error: 'Text must be 1–500 characters' }, 400);
     }
     const row: ContactRow = {

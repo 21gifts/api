@@ -1,10 +1,10 @@
 /**
  * Private in-app contact domain: public and debug JSON projection.
  *
- * Text validation reuses {@link normalizeForumText} from the forum message
- * module — same trim, length, and control-character rules. Contacts are
- * never listed on a member-facing route; operators read them via
- * `/debug/contacts`.
+ * Text validation reuses {@link normalizeForumText} for trim and control
+ * characters, then rejects empty text (forum photo-only empty bodies do not
+ * apply). Contacts are never listed on a member-facing route; operators
+ * read them via `/debug/contacts`.
  */
 
 /** Persisted contact row (store-internal; includes `accountId`). */

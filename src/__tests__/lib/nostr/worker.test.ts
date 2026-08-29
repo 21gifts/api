@@ -60,6 +60,7 @@ async function seed(): Promise<{
     name: 'Ada',
     text: 'hello',
     createdAt: new Date('2026-08-28T00:00:00.000Z'),
+    hasPhoto: false,
     ...unsignedNostrDefaults(),
   });
   return { auth, messages };
@@ -105,6 +106,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       text: 'later',
       createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'aa'.repeat(32),
       nostrEvent: null,
@@ -141,6 +143,7 @@ describe('runNostrWorkerTick', () => {
         name: 'Ada',
         text: `n${i}`,
         createdAt: new Date(Date.parse('2026-08-27T00:00:00.000Z') + i * 1000),
+        hasPhoto: false,
         ...unsignedNostrDefaults(),
       });
       await messages.updateSignedEvent(id, `${i.toString(16).padStart(2, '0')}`.repeat(32), {
@@ -358,6 +361,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       text: 'hello',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     await runNostrWorkerTick(
@@ -527,6 +531,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       text: 'hello',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId,
       nostrEvent: {

@@ -107,7 +107,7 @@
 
 ## Function: migrateMessageSchema
 
-- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` plus the newest-first index).
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, then additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases).
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -149,9 +149,9 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first (HTTP window; product UX is a messenger group — clients reverse); `create` inserts; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: PostgresContactStore
@@ -240,9 +240,9 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
-- **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
-- **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
+- **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
+- **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. No I/O.
 - **Used by:** `createApp` default `messageStore`.
 
 ## Function: InMemoryContactStore
@@ -436,9 +436,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200); `POST /` creates when the account has a non-blank display name; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto` and omits `accountId` and photo bytes.
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -457,16 +457,30 @@
 
 ## Function: normalizeForumText
 
-- **Purpose:** Trim and validate forum message text (1–500 characters; newlines `\n`/`\r` allowed; other C0 controls and DEL rejected).
+- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
 - **Inputs:** `raw` string.
-- **Returns / side effects:** Trimmed text or `null`. No I/O.
+- **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
 - **Used by:** `POST /messages`, `POST /contact`.
+
+## Function: detectImageContentType
+
+- **Purpose:** Detect JPEG / PNG / WebP from magic bytes for forum photo storage.
+- **Inputs:** Raw `Uint8Array` candidate bytes.
+- **Returns / side effects:** `'image/jpeg' | 'image/png' | 'image/webp'`, or `null` for empty/SVG/GIF/HEIC/unrecognized. No I/O.
+- **Used by:** `decodeForumPhoto`.
+
+## Function: decodeForumPhoto
+
+- **Purpose:** Decode a base64 forum photo, enforce the 1 MiB cap, and set MIME from magic bytes (declared `contentType` is ignored).
+- **Inputs:** Declared `contentType` string (non-authoritative) and standard base64 `data`.
+- **Returns / side effects:** `{ contentType, bytes }` with a copied `Uint8Array`, or `null` on invalid base64, empty, oversize, or unrecognized magic. No I/O.
+- **Used by:** `POST /messages`.
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals and payability.
-- **Inputs:** `MessageRow` (includes `accountId`) and `payable` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, and `hasPhoto`.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo bytes) and `payable` boolean.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: serializeContact

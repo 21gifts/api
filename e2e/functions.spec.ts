@@ -322,6 +322,38 @@ test('Function: normalizeForumText — POST /messages without bearer is 401', as
   expect(res.status()).toBe(401);
 });
 
+test('Function: detectImageContentType — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: decodeForumPhoto — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: detectImageContentType — POST /messages with a photo without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: {
+      photo: { contentType: 'image/jpeg', data: '/9j/4AAQ' },
+    },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: messagesRoutes — GET /messages/:id/photo without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: serializeMessage — GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);

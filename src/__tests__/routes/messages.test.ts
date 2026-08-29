@@ -27,6 +27,9 @@ const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const LINKING_KEY = `02${'a'.repeat(64)}`;
 
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+const JPEG_B64 = Buffer.from(JPEG_BYTES).toString('base64');
+
 function mount(
   authStore: InMemoryAuthStore,
   store: MessageStore = new InMemoryMessageStore(),
@@ -70,6 +73,28 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   }
   await store.updateAccount({ ...existing, name });
   return store;
+}
+
+function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
+  const boom = async (): Promise<never> => {
+    throw new Error('boom');
+  };
+  return {
+    listLatest: boom,
+    create: boom,
+    getPhoto: boom,
+    getById: boom,
+    getByEventId: boom,
+    claimUnsigned: boom,
+    claimUnpublished: boom,
+    listPendingSigned: boom,
+    clearSignedEvent: boom,
+    updateSignedEvent: boom,
+    updatePublishState: boom,
+    addSats: boom,
+    recordZapReceipt: boom,
+    ...overrides,
+  };
 }
 
 describe('GET /messages', () => {
@@ -116,8 +141,6 @@ describe('GET /messages', () => {
       body: JSON.stringify({ text: 'older' }),
     });
     expect(first.status).toBe(200);
-    // Advance clock via a second create with a later now by posting after
-    // mutating through a dedicated store create with a later timestamp.
     await messageStore.create({
       id: 'later',
       accountId: 'acc',
@@ -125,6 +148,7 @@ describe('GET /messages', () => {
       text: 'newer',
       createdAt: new Date(now() + 1_000),
       ...unsignedNostrDefaults(),
+      hasPhoto: false,
     });
     const res = await app.request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
@@ -150,6 +174,7 @@ describe('GET /messages', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -160,24 +185,7 @@ describe('GET /messages', () => {
   });
 
   it('returns 503 and logs when listLatest throws', async () => {
-    const boom = async (): Promise<never> => {
-      throw new Error('boom');
-    };
-    const throwing: MessageStore = {
-      listLatest: boom,
-      create: boom,
-      getById: boom,
-      getByEventId: boom,
-      claimUnsigned: boom,
-      claimUnpublished: boom,
-      listPendingSigned: boom,
-      clearSignedEvent: boom,
-      updateSignedEvent: boom,
-      updatePublishState: boom,
-      addSats: boom,
-      recordZapReceipt: boom,
-    };
-    const res = await mount(await seededStore(), throwing).request('/messages', {
+    const res = await mount(await seededStore(), throwingStore()).request('/messages', {
       headers: AUTH,
     });
     expect(res.status).toBe(503);
@@ -247,7 +255,7 @@ describe('POST /messages', () => {
     expect(res.status).toBe(401);
   });
 
-  it('posts and then lists the message', async () => {
+  it('posts and then lists the message with hasPhoto false', async () => {
     const app = mount(await namedStore('Ada'));
     const post = await app.request('/messages', {
       method: 'POST',
@@ -262,10 +270,12 @@ describe('POST /messages', () => {
       createdAt: string;
       sats: number;
       payable: boolean;
+      hasPhoto: boolean;
       accountId?: string;
     };
     expect(created.name).toBe('Ada');
     expect(created.text).toBe('hello world');
+    expect(created.hasPhoto).toBe(false);
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
@@ -307,11 +317,11 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "text" string',
+      error: 'Expected a JSON body with text and/or photo',
     });
   });
 
-  it('rejects a body without a text field', async () => {
+  it('rejects a body without text or photo', async () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -319,18 +329,20 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "text" string',
+      error: 'Expected a JSON body with text and/or photo',
     });
   });
 
-  it('rejects empty text', async () => {
+  it('rejects whitespace-only text without a photo', async () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: '   ' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({
+      error: 'Text must be 1–500 characters or include a photo',
+    });
   });
 
   it('rejects too-long text', async () => {
@@ -353,25 +365,96 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
   });
 
+  it('posts a photo-only message and serves the bytes', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as {
+      id: string;
+      text: string;
+      hasPhoto: boolean;
+    };
+    expect(created.text).toBe('');
+    expect(created.hasPhoto).toBe(true);
+
+    const list = await app.request('/messages', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { messages: Array<{ hasPhoto: boolean }> };
+    expect(body.messages[0]?.hasPhoto).toBe(true);
+
+    const photo = await app.request(`/messages/${created.id}/photo`, { headers: AUTH });
+    expect(photo.status).toBe(200);
+    expect(photo.headers.get('content-type')).toBe('image/jpeg');
+    expect(photo.headers.get('cache-control')).toBe('private');
+    expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('posts text together with a photo and serves both', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: '  hello with photo  ',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as {
+      id: string;
+      text: string;
+      hasPhoto: boolean;
+    };
+    expect(created.text).toBe('hello with photo');
+    expect(created.hasPhoto).toBe(true);
+
+    const list = await app.request('/messages', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as {
+      messages: Array<{ id: string; text: string; hasPhoto: boolean }>;
+    };
+    expect(body.messages[0]).toMatchObject({
+      id: created.id,
+      text: 'hello with photo',
+      hasPhoto: true,
+    });
+
+    const photo = await app.request(`/messages/${created.id}/photo`, { headers: AUTH });
+    expect(photo.status).toBe(200);
+    expect(photo.headers.get('content-type')).toBe('image/jpeg');
+    expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('rejects a bad photo payload', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: {
+          contentType: 'image/gif',
+          data: Buffer.from([0x47, 0x49, 0x46, 0x38]).toString('base64'),
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
+  });
+
   it('returns 503 and logs when create throws', async () => {
-    const boom = async (): Promise<never> => {
-      throw new Error('boom');
-    };
-    const throwing: MessageStore = {
-      listLatest: async () => [],
-      create: boom,
-      getById: boom,
-      getByEventId: boom,
-      claimUnsigned: boom,
-      claimUnpublished: boom,
-      listPendingSigned: boom,
-      clearSignedEvent: boom,
-      updateSignedEvent: boom,
-      updatePublishState: boom,
-      addSats: boom,
-      recordZapReceipt: boom,
-    };
-    const res = await mount(await namedStore('Ada'), throwing).request('/messages', {
+    const res = await mount(
+      await namedStore('Ada'),
+      throwingStore({
+        listLatest: async () => [],
+      }),
+    ).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
@@ -405,6 +488,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -498,6 +582,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'unsigned',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     await messageStore.create({
@@ -506,6 +591,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'payable',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -606,6 +692,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -642,6 +729,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -738,6 +826,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -794,6 +883,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
     const app = new Hono().route(
@@ -825,6 +915,7 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date(now()),
+      hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
@@ -866,5 +957,53 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /messages/:id/photo', () => {
+  it('returns 401 without an Authorization header', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(
+      '/messages/00000000-0000-0000-0000-000000000000/photo',
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 404 when the photo is missing', async () => {
+    const res = await mount(await seededStore()).request(
+      '/messages/00000000-0000-0000-0000-000000000000/photo',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 for a non-UUID id without calling the store', async () => {
+    const getPhoto = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const res = await mount(await seededStore(), throwingStore({ getPhoto })).request(
+      '/messages/not-a-uuid/photo',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+    expect(getPhoto).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(false);
+  });
+
+  it('returns 503 and logs when getPhoto throws', async () => {
+    const res = await mount(
+      await seededStore(),
+      throwingStore({
+        listLatest: async () => [],
+        create: async (row) => row,
+      }),
+    ).request('/messages/00000000-0000-0000-0000-000000000000/photo', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(true);
   });
 });

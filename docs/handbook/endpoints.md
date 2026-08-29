@@ -135,15 +135,22 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`, `sats`, and `payable`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /messages/:id/photo
+
+- **Purpose:** Bearer required. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: private`). List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Used by:** App forum photo display.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. Body `{ text }`. Account must have a non-blank display name. Stores name snapshot, text (1–500 chars after trim; newlines allowed; other C0/DEL rejected), timestamp. 200 is the public message object with `sats` and `payable` (not wrapped).
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
+- **Purpose:** Bearer required. JSON body `{ text?, photo?: { contentType, data } }` (base64; not multipart). Text-only `{ text }` stays valid; photo-only allowed; at least one of non-empty trimmed text or photo required. Name snapshot + optional JPEG/PNG/WebP ≤ 1 MiB. 200 is the public message including `sats`, `payable`, and `hasPhoto` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer.
 - **Auth:** `Authorization: Bearer` session.
 
@@ -156,7 +163,7 @@
 
 ## Endpoint: POST /contact
 
-- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Same name-snapshot and text rules as forum messages. 200 is the public contact object (no `accountId`).
+- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). 200 is the public contact object (no `accountId`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Contact is unavailable (`contact.create.failed`).
 - **Used by:** App in-app contact composer.
 - **Auth:** `Authorization: Bearer` session.
