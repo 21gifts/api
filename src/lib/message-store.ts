@@ -553,7 +553,7 @@ export class PostgresMessageStore implements MessageStore {
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id, message_id, sats
        )
-       UPDATE message SET sats = sats + inserted.sats
+       UPDATE message SET sats = message.sats + inserted.sats
        FROM inserted
        WHERE message.id = inserted.message_id
        RETURNING inserted.event_id`,

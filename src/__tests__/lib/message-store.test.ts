@@ -384,7 +384,7 @@ describe('PostgresMessageStore', () => {
     expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
-    expect(sql.queries[0]?.text).toMatch(/UPDATE message SET sats = sats \+/);
+    expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
     expect(sql.executes).toEqual([]);
   });
 
