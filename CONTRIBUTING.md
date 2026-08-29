@@ -308,12 +308,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                                       |
-| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
+| Workflow               | Trigger               | Action                                                                       |
+| ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
 
