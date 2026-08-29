@@ -23,6 +23,7 @@ function account(overrides: Partial<Account> = {}): Account {
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: T0,
+    rulesAgreedAt: null,
     ...overrides,
   };
 }

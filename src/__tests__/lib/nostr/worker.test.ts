@@ -51,6 +51,7 @@ async function seed(): Promise<{
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
+    rulesAgreedAt: null,
   });
   await ensureAccountNostrKey(auth, 'acc', KEK);
   const messages = new InMemoryMessageStore();
@@ -467,6 +468,7 @@ describe('runNostrWorkerTick', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await runNostrWorkerTick(
       deps({
@@ -493,6 +495,7 @@ describe('runNostrWorkerTick', () => {
       forumLawsDismissed: false,
       viewKey: 'c'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await runNostrWorkerTick(
       deps({
@@ -522,6 +525,7 @@ describe('runNostrWorkerTick', () => {
       forumLawsDismissed: false,
       viewKey: 'd'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await ensureAccountNostrKey(auth, 'acc-zap', KEK);
     const messages = new InMemoryMessageStore();

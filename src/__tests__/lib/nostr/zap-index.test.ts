@@ -49,6 +49,7 @@ async function seedStore(args: {
       forumLawsDismissed: false,
       viewKey: viewKeyFor(args.accountId),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
   }
   await args.store.create({
@@ -274,6 +275,7 @@ describe('indexOpenZapReceipts', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     const firstId = `${'01'.repeat(31)}00`;
     for (let i = 0; i < 21; i += 1) {

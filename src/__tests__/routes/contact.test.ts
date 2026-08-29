@@ -46,6 +46,7 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: 1_000_000,
+    rulesAgreedAt: null,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
   return store;

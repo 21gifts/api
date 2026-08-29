@@ -28,5 +28,9 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE UNIQUE INDEX IF NOT EXISTS account_view_key_uidx ON account \(view_key\) WHERE view_key IS NOT NULL/i,
     );
+    expect(AUTH_SCHEMA_SQL[0]).toMatch(/\brules_agreed_at timestamptz\b/i);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS rules_agreed_at timestamptz/i,
+    );
   });
 });

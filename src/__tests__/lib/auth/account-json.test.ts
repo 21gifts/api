@@ -16,10 +16,11 @@ const account: Account = {
   forumLawsDismissed: false,
   viewKey: 'a'.repeat(64),
   createdAt: 1,
+  rulesAgreedAt: null,
 };
 
 describe('serializeAccount', () => {
-  it('emits only the eight public fields without viewKey', () => {
+  it('emits only the nine public fields without viewKey', () => {
     const json = serializeAccount(account);
     expect(json).toEqual({
       id: 'acc',
@@ -30,15 +31,16 @@ describe('serializeAccount', () => {
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect(json).not.toHaveProperty('viewKey');
-    expect(Object.keys(json)).toHaveLength(8);
+    expect(Object.keys(json)).toHaveLength(9);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
 });
 
 describe('serializeOwnerAccount', () => {
-  it('includes viewKey alongside the eight public fields', () => {
+  it('includes viewKey alongside the nine public fields', () => {
     const json = serializeOwnerAccount(account);
     expect(json).toEqual({
       id: 'acc',
@@ -49,6 +51,7 @@ describe('serializeOwnerAccount', () => {
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
+      rulesAgreedAt: null,
       viewKey: 'a'.repeat(64),
     });
     expect(json.viewKey).toBe(account.viewKey);

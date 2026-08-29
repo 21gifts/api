@@ -69,6 +69,7 @@ describe('ensureAccountNostrKey', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     const first = await ensureAccountNostrKey(store, 'acc', KEK);
     expect(first).toHaveLength(64);

@@ -64,6 +64,7 @@ async function seededStore(
     forumLawsDismissed: false,
     viewKey: VIEW_KEY,
     createdAt: 1_000_000,
+    rulesAgreedAt: null,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
   return store;
@@ -141,6 +142,7 @@ describe('GET /me', () => {
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
       viewKey: string;
+      rulesAgreedAt: number | null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -148,6 +150,7 @@ describe('GET /me', () => {
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
     expect(body.viewKey).toBe(VIEW_KEY);
+    expect(body.rulesAgreedAt).toBeNull();
   });
 });
 
@@ -218,6 +221,89 @@ describe('POST /me/forum-laws-dismissed', () => {
     expect(body.name).toBe('Ada');
     expect(body.forumLawsDismissed).toBe(true);
     expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+  });
+});
+
+describe('POST /me/rules-agreement', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/rules-agreement', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('records the first agreement using the injected clock', async () => {
+    const store = await seededStore();
+    const agreedAt = 2_000_000;
+    const res = await mount(store, { clock: () => agreedAt }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rulesAgreedAt: number | null };
+    expect(body.rulesAgreedAt).toBe(agreedAt);
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(agreedAt);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.rules_agreement.set')).toBe(true);
+  });
+
+  it('keeps the original timestamp on later POSTs', async () => {
+    const store = await seededStore();
+    const first = 2_000_000;
+    await mount(store, { clock: () => first }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    const res = await mount(store, { clock: () => 9_000_000 }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ agreedAt: 9_000_000 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rulesAgreedAt: number | null };
+    expect(body.rulesAgreedAt).toBe(first);
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(first);
+    const agreeEvents = parsedEvents(warn).filter(
+      (e) => e['event'] === 'account.rules_agreement.set',
+    );
+    expect(agreeEvents).toHaveLength(1);
+  });
+
+  it('keeps the timestamp when the name or address changes', async () => {
+    const store = await seededStore();
+    const agreedAt = 2_000_000;
+    await mount(store, { clock: () => agreedAt }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    const named = await mount(store, { fetchImpl: happyFetch() }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(named.status).toBe(200);
+    expect(((await named.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(agreedAt);
+    const linked = await mount(store, { fetchImpl: happyFetch() }).request(
+      '/me/lightning-address',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ address: ADDRESS }),
+      },
+    );
+    expect(linked.status).toBe(200);
+    expect(((await linked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
+      agreedAt,
+    );
+    const unlinked = await mount(store).request('/me/lightning-address', {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(unlinked.status).toBe(200);
+    expect(((await unlinked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
+      agreedAt,
+    );
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(agreedAt);
   });
 });
 
@@ -850,6 +936,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
+      rulesAgreedAt: null,
     });
     const res = await mount(store).request('/me/lightning-address/verification/confirm', {
       method: 'POST',

@@ -153,6 +153,7 @@ export async function finishPasskeyRegistration(
     forumLawsDismissed: false,
     viewKey: randomHex(32),
     createdAt: now,
+    rulesAgreedAt: null,
   };
   await store.createAccount(account);
   if (nostr !== undefined) {

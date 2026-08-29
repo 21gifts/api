@@ -20,6 +20,7 @@ describe('signEventForAccount', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await ensureAccountNostrKey(store, 'acc', KEK);
     const signed = await signEventForAccount(

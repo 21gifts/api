@@ -48,12 +48,16 @@ The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a Lightning Address form, and
 **Sign out**.
 
+After name and address, the app records living-room rules agreement via
+`POST /me/rules-agreement`. `GET /me` carries `rulesAgreedAt` (epoch ms of
+the first agreement, or `null`).
+
 No email, no password. Losing the passkey (and platform sync) loses the
 account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/name`.
+`/me`, `/me/name`, `/me/rules-agreement`.
 
 ---
 

@@ -186,7 +186,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -422,7 +422,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, forum-laws dismiss, Lightning Address link with live LNURL resolve + zap metadata check, verification).
+- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check, verification).
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
@@ -653,14 +653,14 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the eight-field dump without `viewKey` (no Nostr fields).
+- **Purpose:** Project an account to the nine-field dump without `viewKey` (no Nostr fields).
 - **Inputs:** `Account`.
-- **Returns / side effects:** Eight public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`). No I/O. No Nostr key material.
+- **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
 - **Used by:** `GET /debug/accounts` only (not `/me`).
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the eight public fields plus `viewKey`, so the owner can copy the capability URL. Used by `GET /me`, `/me` writes, and passkey finish — never by the debug listing.
+- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, so the owner can copy the capability URL. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, and passkey finish — never by the debug listing.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `OwnerAccountResponse`. No I/O.
 - **Used by:** `meRoutes`, `authRoutes`.

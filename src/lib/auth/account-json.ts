@@ -1,7 +1,7 @@
 import type { Account } from '@/lib/auth/store';
 
 /**
- * Public JSON shape of an account (eight fields). Never includes Nostr
+ * Public JSON shape of an account (nine fields). Never includes Nostr
  * pubkey, ciphertext, or other key material. Omits `viewKey` (operator
  * debug listing only — not `/me` or passkey finish).
  */
@@ -22,10 +22,12 @@ export interface AccountResponse {
   forumLawsDismissed: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
+  /** Epoch ms of first living-room rules agreement, or `null`. */
+  rulesAgreedAt: number | null;
 }
 
 /**
- * Owner-facing account JSON: the eight public fields plus the durable
+ * Owner-facing account JSON: the nine public fields plus the durable
  * view-key capability secret.
  */
 export interface OwnerAccountResponse extends AccountResponse {
@@ -49,13 +51,13 @@ export interface ViewProfileResponse {
 }
 
 /**
- * Project an account to the eight-field debug listing shape.
+ * Project an account to the nine-field debug listing shape.
  *
  * Used by `GET /debug/accounts` only. Does not include `viewKey`.
  * Owner responses use {@link serializeOwnerAccount} instead.
  *
  * @param account - Stored account.
- * @returns The eight public fields only.
+ * @returns The nine public fields only.
  */
 export function serializeAccount(account: Account): AccountResponse {
   return {
@@ -67,6 +69,7 @@ export function serializeAccount(account: Account): AccountResponse {
     lightningAddressVerified: account.lightningAddressVerified,
     forumLawsDismissed: account.forumLawsDismissed,
     createdAt: account.createdAt,
+    rulesAgreedAt: account.rulesAgreedAt,
   };
 }
 
@@ -77,7 +80,7 @@ export function serializeAccount(account: Account): AccountResponse {
  * by the operator debug listing.
  *
  * @param account - Stored account.
- * @returns Nine fields including `viewKey`.
+ * @returns Ten fields including `viewKey`.
  */
 export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
   return {

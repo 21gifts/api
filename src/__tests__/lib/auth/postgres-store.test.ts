@@ -35,6 +35,7 @@ const ACCOUNT_ROW = {
   forum_laws_dismissed: false,
   view_key: VIEW_KEY,
   created_at: new Date(1_000),
+  rules_agreed_at: null as Date | string | null,
 };
 
 describe('PostgresAuthStore nostr keys', () => {
@@ -88,13 +89,22 @@ describe('PostgresAuthStore', () => {
     const mapped = await store.getAccount('acc');
     expect(mapped?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(mapped?.forumLawsDismissed).toBe(false);
+    expect(mapped?.rulesAgreedAt).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
+    expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.queries[0]?.text).toMatch(/rules_agreed_at/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
-    expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.queries[2]?.text).toMatch(/rules_agreed_at/);
+  });
+
+  it('maps a non-null rules_agreed_at timestamp', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, rules_agreed_at: new Date(5_000) }];
+    expect((await new PostgresAuthStore(sql).getAccount('acc'))?.rulesAgreedAt).toBe(5_000);
   });
 
   it('returns undefined for a missing account', async () => {
@@ -114,6 +124,7 @@ describe('PostgresAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1,
+      rulesAgreedAt: null,
     };
     await store.createAccount(account);
     await store.updateAccount({
@@ -126,15 +137,31 @@ describe('PostgresAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1,
+      rulesAgreedAt: 9_000,
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
     expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[0]?.text).toMatch(/view_key/);
+    expect(sql.executes[0]?.text).toMatch(/rules_agreed_at/);
     expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
+    expect(sql.executes[0]?.params[9]).toBeNull();
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
+    expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+    expect(sql.executes[1]?.params).toEqual([
+      'acc',
+      ACCOUNT_ROW.linking_key,
+      'basis',
+      null,
+      null,
+      false,
+      false,
+      1,
+      VIEW_KEY,
+      9_000,
+    ]);
   });
 
   it('looks up an account by view_key', async () => {
@@ -177,6 +204,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).resolves.toBeUndefined();
   });
@@ -195,6 +223,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toMatchObject({ code: '57014' });
   });
@@ -211,6 +240,7 @@ describe('PostgresAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
   });
@@ -229,6 +259,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).resolves.toBeUndefined();
   });
@@ -247,6 +278,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toMatchObject({ code: '57014' });
   });
@@ -265,6 +297,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toBeNull();
   });
@@ -283,6 +316,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toBe('boom');
   });
@@ -301,6 +335,7 @@ describe('PostgresAuthStore', () => {
         forumLawsDismissed: false,
         viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toThrow('disk full');
   });

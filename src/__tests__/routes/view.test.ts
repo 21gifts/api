@@ -46,6 +46,7 @@ describe('GET /view/:viewKey', () => {
       forumLawsDismissed: false,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
+      rulesAgreedAt: null,
     });
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
