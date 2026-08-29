@@ -117,6 +117,7 @@ describe('openBootStores', () => {
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
+    expect(executes.some((q) => q.includes('db_change'))).toBe(true);
     expect(executes.some((q) => /CREATE TABLE/i.test(q))).toBe(true);
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
 

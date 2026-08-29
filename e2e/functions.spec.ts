@@ -381,6 +381,16 @@ test('Function: migrateContactSchema — default boot has no DATABASE_URL', asyn
   expect(res.status()).toBe(200);
 });
 
+test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: DB_CHANGE_SCHEMA_SQL — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
