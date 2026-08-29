@@ -405,6 +405,58 @@ describe('POST /me/lightning-address', () => {
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
   });
+
+  it('rejects allowsNostr with empty nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: '',
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects allowsNostr with whitespace-only nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: '   ',
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
 });
 
 describe('DELETE /me/lightning-address', () => {
