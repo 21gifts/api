@@ -319,6 +319,53 @@ test('Function: migrateMessageSchema — default boot has no DATABASE_URL', asyn
   expect(res.status()).toBe(200);
 });
 
+test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 401 or 503', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/contacts');
+  expect([401, 503]).toContain(res.status());
+});
+
+test('Function: serializeContact — POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeDebugContact — GET /debug/contacts without bearer is 401 or 503', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/contacts');
+  expect([401, 503]).toContain(res.status());
+});
+
+test('Function: InMemoryContactStore — POST /contact without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresContactStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateContactSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: mapGiftQueryRow — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

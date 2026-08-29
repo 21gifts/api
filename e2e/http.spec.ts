@@ -84,6 +84,13 @@ test('POST /messages/:id/invoice without bearer is 401', async ({ request }) => 
   expect(res.status()).toBe(401);
 });
 
+test('POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },
@@ -129,6 +136,11 @@ test('GET /debug/accounts with the e2e token lists accounts', async ({ request }
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: unknown[] };
   expect(Array.isArray(body.accounts)).toBe(true);
+});
+
+test('GET /debug/contacts without bearer is 401 or 503', async ({ request }) => {
+  const res = await request.get('/debug/contacts');
+  expect([401, 503]).toContain(res.status());
 });
 
 test('GET /lightning-address without address is 400', async ({ request }) => {

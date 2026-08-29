@@ -146,7 +146,17 @@ not sketch a DM inbox as if it ships in v1.
 
 ---
 
-## Out of these five journeys
+## 6. Contact — **Shipped**
+
+Private mailbox so members can write to 21.gifts without a published email.
+Signed-in members POST `{ text }` to `POST /contact` (same text rules and
+name-snapshot requirement as forum messages). Operators read the mailbox via
+`GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
+DMs, no Nostr fan-out. Do not invent `/events`.
+
+---
+
+## Out of these six journeys
 
 Explicitly not journeys in this file:
 

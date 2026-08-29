@@ -105,6 +105,13 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migrateContactSchema
+
+- **Purpose:** Applies `CONTACT_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS contact` plus the newest-first index).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/contact.sql`.
+- **Used by:** `openBootStores` when SQL opens.
+
 ## Function: InMemoryBtcUsdStore
 
 - **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
@@ -124,6 +131,13 @@
 - **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: PostgresContactStore
+
+- **Purpose:** Durable `ContactStore` over Postgres (`contact` table). `listLatest` is newest-first with a limit; `create` inserts the row.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ContactRow`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
@@ -163,9 +177,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek }`. Migrates `btc_usd_daily` and `message` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder` and `PostgresMessageStore`; memory path returns `giftRecorder`/`messageStore`/`nostrKek` undefined.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, and `contact` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, and `PostgresContactStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`nostrKek` undefined.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -189,6 +203,13 @@
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ accounts }` otherwise. Logs `debug.accounts.listed` with count, never the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
+## Function: debugContactsRoutes
+
+- **Purpose:** Operator listing of private in-app contacts (includes `accountId`).
+- **Inputs:** `DebugContactsRouteDeps`: contact store, optional debugToken.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ contacts }` newest-first (cap 200); 503 on store throw (`contact.list.failed`). Logs `debug.contacts.listed` with count, never the token.
+- **Used by:** `createApp` at `/debug/contacts`.
+
 ## Function: InMemoryGiftStore
 
 - **Purpose:** Process-local GiftStore seeded at construction. Default empty so the process boots without a database.
@@ -202,6 +223,13 @@
 - **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `messageStore`.
+
+## Function: InMemoryContactStore
+
+- **Purpose:** Process-local `ContactStore` for the private in-app mailbox. Default empty so the process boots without a database.
+- **Inputs:** Optional seed `ContactRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
+- **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
+- **Used by:** `createApp` default `contactStore`.
 
 ## Function: InMemoryLnAddressCache
 
@@ -338,8 +366,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/gifts`, `/gifts/stats`, `/messages`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, and parsed KEK.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, lightning-address, `/debug/accounts`, `/debug/contacts`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and parsed KEK.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -385,6 +413,13 @@
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / unpaid note; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure. Public JSON includes `sats`/`payable` and omits `accountId`.
 - **Used by:** `createApp`.
 
+## Function: contactRoutes
+
+- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name.
+- **Inputs:** `ContactRouteDeps`: contact `store`, shared `authStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Used by:** `createApp`.
+
 ## Function: normalizeDisplayName
 
 - **Purpose:** Trim and validate an account display name (1–80 characters, no C0/DEL controls).
@@ -397,7 +432,7 @@
 - **Purpose:** Trim and validate forum message text (1–500 characters; newlines `\n`/`\r` allowed; other C0 controls and DEL rejected).
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed text or `null`. No I/O.
-- **Used by:** `POST /messages`.
+- **Used by:** `POST /messages`, `POST /contact`.
 
 ## Function: serializeMessage
 
@@ -405,6 +440,20 @@
 - **Inputs:** `MessageRow` (includes `accountId`) and `payable` boolean.
 - **Returns / side effects:** `{ id, name, text, createdAt, sats, payable }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
 - **Used by:** `messagesRoutes`.
+
+## Function: serializeContact
+
+- **Purpose:** Project a stored contact row to its public JSON shape.
+- **Inputs:** `ContactRow` (includes `accountId`).
+- **Returns / side effects:** `{ id, name, text, createdAt }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Used by:** `contactRoutes`.
+
+## Function: serializeDebugContact
+
+- **Purpose:** Project a stored contact row to its operator debug JSON shape.
+- **Inputs:** `ContactRow`.
+- **Returns / side effects:** `{ id, accountId, name, text, createdAt }` with ISO-8601 `createdAt`. No I/O.
+- **Used by:** `debugContactsRoutes`.
 
 ## Function: normalizeLightningAddress
 

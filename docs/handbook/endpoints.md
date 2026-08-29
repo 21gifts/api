@@ -21,6 +21,13 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: GET /debug/contacts
+
+- **Purpose:** Operator listing of private in-app contacts newest-first (cap 200), including `accountId`, name snapshot, text, and ISO `createdAt`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Contact is unavailable' }` if the store throws (`contact.list.failed`).
+- **Used by:** Operators reading the private mailbox.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
@@ -138,6 +145,13 @@
 - **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
 - **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /contact
+
+- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Same name-snapshot and text rules as forum messages. 200 is the public contact object (no `accountId`).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Contact is unavailable (`contact.create.failed`).
+- **Used by:** App in-app contact composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/lightning-address
