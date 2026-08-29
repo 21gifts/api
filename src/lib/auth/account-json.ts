@@ -1,0 +1,43 @@
+import type { Account } from '@/lib/auth/store';
+
+/**
+ * Public JSON shape of an account (six fields only). Never includes Nostr
+ * pubkey, ciphertext, or other key material.
+ */
+export interface AccountResponse {
+  /** Opaque unique account id. */
+  id: string;
+  /** Legacy LNURL-auth linking key, or `null` for passkey accounts. */
+  linkingKey: string | null;
+  /** Permission tier. */
+  role: string;
+  /** Display name, or `null` until set. */
+  name: string | null;
+  /** Linked Lightning Address, or `null`. */
+  lightningAddress: string | null;
+  /** Whether control of the linked address has been proven. */
+  lightningAddressVerified: boolean;
+  /** Creation time (epoch ms). */
+  createdAt: number;
+}
+
+/**
+ * Project an account to its public JSON shape.
+ *
+ * Used by passkey finish, `GET /me`, and `GET /debug/accounts` so those
+ * bodies never grow Nostr fields.
+ *
+ * @param account - Stored account.
+ * @returns The six public fields only.
+ */
+export function serializeAccount(account: Account): AccountResponse {
+  return {
+    id: account.id,
+    linkingKey: account.linkingKey,
+    role: account.role,
+    name: account.name,
+    lightningAddress: account.lightningAddress,
+    lightningAddressVerified: account.lightningAddressVerified,
+    createdAt: account.createdAt,
+  };
+}

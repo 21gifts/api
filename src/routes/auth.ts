@@ -7,9 +7,11 @@ import {
   startPasskeyAuthentication,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
+import { serializeAccount } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
+import type { NostrKeygen } from '@/lib/nostr/keys';
 
 /**
  * Passkey (WebAuthn) HTTP surface. Login is passkey-only; LNURL-auth is gone.
@@ -29,6 +31,10 @@ export interface AuthRouteDeps {
   webAuthnRpName: string | undefined;
   /** WebAuthn generate/verify collaborator. */
   passkeyCeremony: PasskeyCeremony;
+  /** Optional KEK for custodial Nostr keys. */
+  nostrKek?: Uint8Array;
+  /** Optional keygen (tests). */
+  nostrKeygen?: NostrKeygen;
 }
 
 /** Body schema for passkey finish (registration or authentication). */
@@ -75,12 +81,16 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         c.req.header('origin'),
         parsed.data.challengeId,
         parsed.data.credential,
+        nostrOpts(deps),
       );
       if (!result.ok) {
         return c.json({ error: result.error }, 400);
       }
       logEvent('auth.passkey.register.ok', { accountId: result.value.account.id });
-      return c.json(result.value, 200);
+      return c.json(
+        { token: result.value.token, account: serializeAccount(result.value.account) },
+        200,
+      );
     })
     .post('/passkey/authenticate/begin', async (c) => {
       const config = webAuthnConfig(deps);
@@ -112,13 +122,34 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         c.req.header('origin'),
         parsed.data.challengeId,
         parsed.data.credential,
+        nostrOpts(deps),
       );
       if (!result.ok) {
         return c.json({ error: result.error }, 400);
       }
       logEvent('auth.passkey.login.ok', { accountId: result.value.account.id });
-      return c.json(result.value, 200);
+      return c.json(
+        { token: result.value.token, account: serializeAccount(result.value.account) },
+        200,
+      );
     });
+}
+
+/**
+ * Optional Nostr keygen collaborators for passkey finish.
+ *
+ * @param deps - Auth route deps.
+ * @returns KEK payload, or `undefined` when no KEK is configured.
+ */
+function nostrOpts(deps: AuthRouteDeps): { kek: Uint8Array; keygen?: NostrKeygen } | undefined {
+  if (deps.nostrKek === undefined) {
+    return undefined;
+  }
+  /* v8 ignore start */
+  return deps.nostrKeygen === undefined
+    ? { kek: deps.nostrKek }
+    : { kek: deps.nostrKek, keygen: deps.nostrKeygen };
+  /* v8 ignore stop */
 }
 
 /**

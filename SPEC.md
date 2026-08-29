@@ -755,8 +755,10 @@ Success → **Response** `200`:
 
 Public member forum thread. Bearer session required. Returns newest messages
 first (`createdAt` descending, then `id`), capped at **200**. Each message
-exposes the author **name snapshotted at post time**, `text`, and ISO-8601
-`createdAt`. `accountId` is never included in the JSON.
+exposes the author **name snapshotted at post time**, `text`, ISO-8601
+`createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+and `payable` (true when the note is signed and the author has a Lightning
+Address). `accountId` and Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -779,7 +781,9 @@ Success → **Response** `200`:
       "id": "<uuid>",
       "name": "Ada",
       "text": "Thank you!",
-      "createdAt": "2026-08-28T12:00:00.000Z"
+      "createdAt": "2026-08-28T12:00:00.000Z",
+      "sats": 0,
+      "payable": false
     }
   ]
 }
@@ -802,8 +806,11 @@ The account must already have a non-blank display name. The api stores a
 and a timestamp. Text is trimmed; length must be **1–500** characters.
 Newlines (`\n`, `\r`) are allowed; other C0 controls and DEL are rejected.
 The **200** body is the public message object itself (not wrapped in
-`{ messages }`). No `accountId` in the JSON. Kind:1 relay fan-out is not
-wired — this route is custodial HTTP only.
+`{ messages }`). No `accountId` in the JSON. `sats` is 0 and `payable` is
+false until the worker signs the note. Over-limit posters get **429**
+`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
+20/UTC-day). The worker signs a top-level kind:1 and fans out when
+`NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -843,9 +850,30 @@ Success → **Response** `200`:
   "id": "<uuid>",
   "name": "Ada",
   "text": "Thank you!",
-  "createdAt": "2026-08-28T12:00:00.000Z"
+  "createdAt": "2026-08-28T12:00:00.000Z",
+  "sats": 0,
+  "payable": false
 }
 ```
+
+### `POST /messages/:id/invoice`
+
+Signed-in pay-on-note. Bearer session required. Body `{ "sats": <int ≥ 1> }`.
+The api signs a NIP-57 zap request with the **payer** key and returns a BOLT11
+invoice for the **author** Lightning Address. It does **not** increment
+`sats` (that happens when a validated kind:9735 receipt is indexed).
+
+Success → **Response** `200`:
+
+```json
+{ "pr": "lnbc…", "amountSats": 21 }
+```
+
+Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
+Unknown id → **404**. Unsigned note or author without a Lightning Address →
+**400** `{ "error": "This message cannot be paid yet" }`. LNURL/zap failure →
+**400** `{ "error": "Could not start the Bitcoin payment" }`. Missing KEK →
+**503**.
 
 ---
 

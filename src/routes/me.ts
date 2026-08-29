@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeDisplayName } from '@/lib/name';
+import { serializeAccount } from '@/lib/auth/account-json';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
@@ -25,17 +26,6 @@ export interface MeRouteDeps {
   payer: InvoicePayer;
   /** Injected `fetch` for LNURL-pay resolution. */
   fetchImpl: FetchFn;
-}
-
-/** The public JSON shape of an account. */
-interface AccountResponse {
-  id: string;
-  linkingKey: string | null;
-  role: string;
-  name: string | null;
-  lightningAddress: string | null;
-  lightningAddressVerified: boolean;
-  createdAt: number;
 }
 
 /**
@@ -80,19 +70,6 @@ async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | n
     return null;
   }
   return current;
-}
-
-/** Project an account to its public JSON shape. */
-function serializeAccount(account: Account): AccountResponse {
-  return {
-    id: account.id,
-    linkingKey: account.linkingKey,
-    role: account.role,
-    name: account.name,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
-    createdAt: account.createdAt,
-  };
 }
 
 /** Body schema for setting a display name. */

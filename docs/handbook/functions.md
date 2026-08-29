@@ -552,3 +552,241 @@
 - **Inputs:** store, ceremony, config, now.
 - **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
 - **Used by:** `POST /auth/passkey/register/begin`.
+
+## Function: serializeAccount
+
+- **Purpose:** Project an account to the public JSON shape (no Nostr fields).
+- **Inputs:** `Account`.
+- **Returns / side effects:** Six public fields. No I/O.
+- **Used by:** passkey finish, `GET /me`, `GET /debug/accounts`.
+
+## Function: parseNostrKek
+
+- **Purpose:** Parse `NOSTR_NSEC_KEK` as 32-byte AES key (64 lowercase hex).
+- **Inputs:** Env string or `undefined`.
+- **Returns / side effects:** `Uint8Array` or throw.
+- **Used by:** `openBootStores`.
+
+## Function: hexToBytes
+
+- **Purpose:** Decode lowercase hex.
+- **Inputs:** Even-length hex string.
+- **Returns / side effects:** Bytes or throw.
+- **Used by:** Tests and KEK helpers.
+
+## Function: bytesToHex
+
+- **Purpose:** Encode bytes as lowercase hex.
+- **Inputs:** `Uint8Array`.
+- **Returns / side effects:** Hex string.
+- **Used by:** Tests.
+
+## Function: publicKeyHexFromSecret
+
+- **Purpose:** Derive NIP-01 hex pubkey.
+- **Inputs:** 32-byte secret.
+- **Returns / side effects:** 64-char hex.
+- **Used by:** `ensureAccountNostrKey`.
+
+## Function: encryptNostrSecret
+
+- **Purpose:** AES-256-GCM envelope for a 32-byte nsec.
+- **Inputs:** secret, kek, accountId, optional kekId.
+- **Returns / side effects:** Envelope bytes.
+- **Used by:** `ensureAccountNostrKey`.
+
+## Function: decryptNostrSecret
+
+- **Purpose:** Decrypt a v1 envelope (`kek_id=1` only).
+- **Inputs:** envelope, kek, accountId.
+- **Returns / side effects:** 32-byte secret.
+- **Used by:** `signEventForAccount`.
+
+## Function: zeroizeSecret
+
+- **Purpose:** Overwrite a secret buffer with zeros.
+- **Inputs:** `Uint8Array`.
+- **Returns / side effects:** In-place fill.
+- **Used by:** `ensureAccountNostrKey`, `signEventForAccount`.
+
+## Function: ensureAccountNostrKey
+
+- **Purpose:** Generate and store a custodial keypair if missing (CAS).
+- **Inputs:** AuthStore, accountId, kek, optional keygen.
+- **Returns / side effects:** Hex pubkey. Logs `nostr.keygen`.
+- **Used by:** Worker, authenticate-finish.
+
+## Function: generateNostrKeyRecord
+
+- **Purpose:** Build a `NostrKeyRecord` for register-finish.
+- **Inputs:** accountId, kek, optional keygen.
+- **Returns / side effects:** Record for `setNostrKeyIfAbsent`.
+- **Used by:** `finishPasskeyRegistration`.
+
+## Function: kind1Tags
+
+- **Purpose:** Copy frozen kind:1 tags.
+- **Inputs:** none.
+- **Returns / side effects:** `[["t","21gifts"],["r","https://21.gifts"]]`.
+- **Used by:** `buildKind1Event`.
+
+## Function: buildKind1Event
+
+- **Purpose:** Unsigned top-level kind:1 for a forum line.
+- **Inputs:** content, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Worker sign path.
+
+## Function: buildKind0Content
+
+- **Purpose:** Kind:0 JSON without extra whitespace.
+- **Inputs:** name, lightningAddress or null.
+- **Returns / side effects:** JSON string; `lud16` only when address set.
+- **Used by:** `buildKind0Event`.
+
+## Function: buildKind0Event
+
+- **Purpose:** Unsigned replaceable kind:0.
+- **Inputs:** name, lightningAddress, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Profile publish (later worker).
+
+## Function: buildKind10002Event
+
+- **Purpose:** Unsigned NIP-65 relay list.
+- **Inputs:** relay URLs, unix created_at.
+- **Returns / side effects:** Unsigned fields.
+- **Used by:** Profile publish.
+
+## Function: signEventForAccount
+
+- **Purpose:** Decrypt nsec, `finalizeEvent`, zeroize.
+- **Inputs:** store, accountId, kek, unsigned template.
+- **Returns / side effects:** Signed event. Never logs the secret.
+- **Used by:** Worker, `POST /messages/:id/invoice`.
+
+## Function: isNostrPublishEnabled
+
+- **Purpose:** `NOSTR_PUBLISH === "1"`.
+- **Inputs:** env slice.
+- **Returns / side effects:** boolean.
+- **Used by:** `resolveWriteSet`.
+
+## Function: isNostrPublishPublicEnabled
+
+- **Purpose:** `NOSTR_PUBLISH_PUBLIC === "1"`.
+- **Inputs:** env slice.
+- **Returns / side effects:** boolean.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveRelaySpace
+
+- **Purpose:** Durability relay URL.
+- **Inputs:** env slice.
+- **Returns / side effects:** Trimmed `NOSTR_RELAY_SPACE` or PRD default.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveRelayPublic
+
+- **Purpose:** Public write relay list.
+- **Inputs:** env slice.
+- **Returns / side effects:** Split `NOSTR_RELAY_PUBLIC` or default three.
+- **Used by:** `resolveWriteSet`.
+
+## Function: resolveWriteSet
+
+- **Purpose:** Combine flags + URLs for one worker tick.
+- **Inputs:** env slice.
+- **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
+- **Used by:** Worker, invoice zap relays.
+
+## Function: utcDayKey
+
+- **Purpose:** UTC `YYYY-MM-DD` from epoch ms.
+- **Inputs:** nowMs.
+- **Returns / side effects:** Day key.
+- **Used by:** `PostRateLimiter`.
+
+## Function: PostRateLimiter
+
+- **Purpose:** In-process post caps (1/10s, 6/h, 20/UTC-day).
+- **Inputs:** `allow(accountId, nowMs)`.
+- **Returns / side effects:** boolean; idle eviction 48h.
+- **Used by:** `POST /messages`.
+
+## Function: InvoiceRateLimiter
+
+- **Purpose:** In-process invoice caps (1/10s, 20/h).
+- **Inputs:** `allow(accountId, nowMs)`.
+- **Returns / side effects:** boolean.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: RecordingPublisher
+
+- **Purpose:** Test fake that records EVENT publishes.
+- **Inputs:** event, urls, timeout.
+- **Returns / side effects:** ACK list; `ok` flag.
+- **Used by:** Worker tests.
+
+## Function: spaceAcked
+
+- **Purpose:** Whether the space relay ACK'd OK.
+- **Inputs:** acks, spaceUrl.
+- **Returns / side effects:** boolean.
+- **Used by:** Worker.
+
+## Function: publicAcked
+
+- **Purpose:** Whether a non-space relay ACK'd OK.
+- **Inputs:** acks, spaceUrl.
+- **Returns / side effects:** boolean.
+- **Used by:** Worker.
+
+## Function: runNostrWorkerTick
+
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`.
+- **Inputs:** worker deps.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*`.
+- **Used by:** `startNostrWorker`.
+
+## Function: startNostrWorker
+
+- **Purpose:** Interval handle around `runNostrWorkerTick`.
+- **Inputs:** deps, intervalMs.
+- **Returns / side effects:** `{ stop }`.
+- **Used by:** Process entry (when KEK is present).
+
+## Function: buildZapRequest
+
+- **Purpose:** Unsigned kind:9734 for a forum event.
+- **Inputs:** recipient pubkey, event id, amountMsat, relays.
+- **Returns / side effects:** EventTemplate.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: indexZapReceipt
+
+- **Purpose:** Validate provider pubkey and add sats once per receipt id.
+- **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
+- **Returns / side effects:** boolean; logs indexed/rejected.
+- **Used by:** Zap indexer (in-process set).
+
+## Function: resetZapReceiptIndex
+
+- **Purpose:** Clear the in-process receipt set.
+- **Inputs:** none.
+- **Returns / side effects:** Empties the set.
+- **Used by:** Tests.
+
+## Function: requestZapInvoice
+
+- **Purpose:** LNURL-pay callback with `nostr=` (not `comment=`).
+- **Inputs:** address, amountMsat, zapRequestJson, fetchImpl.
+- **Returns / side effects:** `{ pr, amountSats }` or `noZap`/`unreachable`.
+- **Used by:** `POST /messages/:id/invoice`.
+
+## Function: unsignedNostrDefaults
+
+- **Purpose:** Unsigned/pending defaults for a new forum row.
+- **Inputs:** none.
+- **Returns / side effects:** Column defaults including `sats: 0`.
+- **Used by:** `POST /messages`, stores.

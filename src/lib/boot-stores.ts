@@ -1,6 +1,7 @@
 import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
+import { parseNostrKek } from '@/lib/nostr/kek';
 import {
   InMemoryBtcUsdStore,
   PostgresBtcUsdStore,
@@ -36,6 +37,8 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
+  /** Parsed KEK when DATABASE_URL is set; `undefined` on memory boots. */
+  nostrKek: Uint8Array | undefined;
 }
 
 /** Optional FX wiring so tests never hit the network. */
@@ -89,8 +92,11 @@ export async function openBootStores(
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
       messageStore: undefined,
+      nostrKek: undefined,
     };
   }
+
+  const nostrKek = parseNostrKek(process.env['NOSTR_NSEC_KEK']);
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
@@ -122,5 +128,5 @@ export async function openBootStores(
   });
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
-  return { authStore, giftStore, giftRecorder, btcUsdRates, messageStore };
+  return { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek };
 }

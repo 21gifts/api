@@ -16,6 +16,10 @@ export interface LnurlpMetadata {
   minSendable: number;
   maxSendable: number;
   commentAllowed?: number;
+  /** NIP-57: wallet accepts zap requests. */
+  allowsNostr?: boolean;
+  /** NIP-57: pubkey that signs kind:9735 receipts. */
+  nostrPubkey?: string;
 }
 
 /** Successful metadata resolve, or a collapsed failure reason. */
@@ -29,6 +33,8 @@ const lnurlpMetadataSchema = z
     minSendable: z.number().int().min(0),
     maxSendable: z.number().int().min(0),
     commentAllowed: z.number().int().optional(),
+    allowsNostr: z.boolean().optional(),
+    nostrPubkey: z.string().optional(),
   })
   .refine((m) => m.maxSendable >= m.minSendable);
 
@@ -94,6 +100,12 @@ export async function resolveLnurlp(args: {
   };
   if (parsed.data.commentAllowed !== undefined) {
     metadata.commentAllowed = parsed.data.commentAllowed;
+  }
+  if (parsed.data.allowsNostr !== undefined) {
+    metadata.allowsNostr = parsed.data.allowsNostr;
+  }
+  if (parsed.data.nostrPubkey !== undefined) {
+    metadata.nostrPubkey = parsed.data.nostrPubkey;
   }
   return { ok: true, metadata };
 }

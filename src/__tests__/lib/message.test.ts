@@ -3,6 +3,7 @@ import {
   MESSAGE_MAX_LENGTH,
   normalizeForumText,
   serializeMessage,
+  unsignedNostrDefaults,
   type MessageRow,
 } from '@/lib/message';
 
@@ -57,13 +58,16 @@ describe('serializeMessage', () => {
       name: 'Ada',
       text: 'hi',
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row)).toEqual({
+    expect(serializeMessage(row, true)).toEqual({
       id: 'msg-1',
       name: 'Ada',
       text: 'hi',
       createdAt: '2026-08-28T12:00:00.000Z',
+      sats: 0,
+      payable: true,
     });
-    expect(serializeMessage(row)).not.toHaveProperty('accountId');
+    expect(serializeMessage(row, false)).not.toHaveProperty('accountId');
   });
 });

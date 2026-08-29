@@ -32,16 +32,15 @@ if (import.meta.main) {
   const databaseUrl = process.env['DATABASE_URL'];
   // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
   // falls back to Coinbase; unset does not fail boot.
-  const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore } = await openBootStores(
-    databaseUrl,
-    createBunSqlClient,
-  );
+  const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek } =
+    await openBootStores(databaseUrl, createBunSqlClient);
   const app = createApp({
     authStore,
     btcUsdRates,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(messageStore === undefined ? {} : { messageStore }),
+    ...(nostrKek === undefined ? {} : { nostrKek }),
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);

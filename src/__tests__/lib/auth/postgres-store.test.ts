@@ -33,6 +33,41 @@ const ACCOUNT_ROW = {
   created_at: new Date(1_000),
 };
 
+describe('PostgresAuthStore nostr keys', () => {
+  it('reads and writes nostr key material', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ nostr_pubkey: null }];
+    expect(await store.getNostrPublicKey('acc')).toBeUndefined();
+    sql.nextRows = [{ nostr_pubkey: 'aa'.repeat(32) }];
+    expect(await store.getNostrPublicKey('acc')).toBe('aa'.repeat(32));
+    sql.nextRows = [{ nostr_nsec_ciphertext: null }];
+    expect(await store.getNostrSecret('acc')).toBeUndefined();
+    sql.nextRows = [{ nostr_nsec_ciphertext: new Uint8Array([1, 2]) }];
+    expect(await store.getNostrSecret('acc')).toEqual(new Uint8Array([1, 2]));
+    sql.nextRows = [];
+    expect(
+      await store.setNostrKeyIfAbsent('acc', {
+        pubkey: 'aa'.repeat(32),
+        ciphertext: new Uint8Array([1]),
+        kekId: 1,
+        custody: 'custodial',
+      }),
+    ).toBe('exists');
+    sql.nextRows = [{ nostr_pubkey: 'aa'.repeat(32) }];
+    expect(
+      await store.setNostrKeyIfAbsent('acc', {
+        pubkey: 'aa'.repeat(32),
+        ciphertext: new Uint8Array([1]),
+        kekId: 1,
+        custody: 'custodial',
+      }),
+    ).toBe('inserted');
+    sql.nextRows = [{ id: 'acc' }];
+    expect(await store.listAccountIdsWithoutNostrKey(5)).toEqual(['acc']);
+  });
+});
+
 describe('migrateAuthSchema', () => {
   it('runs every AUTH_SCHEMA_SQL statement', async () => {
     const sql = new MockSql();

@@ -55,6 +55,28 @@ describe('passkey registration', () => {
     expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(finish.value.account.id);
   });
 
+  it('generates a Nostr key when a KEK is provided', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const kek = new Uint8Array(32).fill(9);
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+      { kek },
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(await store.getNostrPublicKey(finish.value.account.id)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('rejects an expired registration challenge', async () => {
     const store = new InMemoryAuthStore();
     const ceremony = new FakePasskeyCeremony();
@@ -196,6 +218,24 @@ describe('passkey authentication', () => {
     }
     expect(finish.value.account.id).toBe(accountId);
     expect((await store.getPasskeyCredential('cred-1'))?.signCount).toBe(1);
+  });
+
+  it('ensures a Nostr key on authenticate when a KEK is provided', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    const kek = new Uint8Array(32).fill(3);
+    const finish = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok', id: 'cred-1' },
+      { kek },
+    );
+    expect(finish.ok).toBe(true);
+    expect(await store.getNostrPublicKey(accountId)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects authentication when the account is gone', async () => {

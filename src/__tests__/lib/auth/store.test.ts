@@ -630,4 +630,32 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getPasskeyChallenge('old')).toBeUndefined();
     expect((await store.getPasskeyChallenge('new'))?.id).toBe('new');
   });
+
+  it('stores Nostr keys only if absent', async () => {
+    const store = new InMemoryAuthStore();
+    const record = {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array([1, 2, 3]),
+      kekId: 1,
+      custody: 'custodial' as const,
+    };
+    expect(await store.setNostrKeyIfAbsent('missing', record)).toBe('exists');
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      createdAt: 1,
+    });
+    expect(await store.listAccountIdsWithoutNostrKey(10)).toEqual(['acc']);
+    expect(await store.setNostrKeyIfAbsent('acc', record)).toBe('inserted');
+    expect(await store.getNostrPublicKey('acc')).toBe(record.pubkey);
+    expect(await store.getNostrSecret('acc')).toEqual(record.ciphertext);
+    expect(await store.setNostrKeyIfAbsent('acc', record)).toBe('exists');
+    expect(await store.listAccountIdsWithoutNostrKey(10)).toEqual([]);
+    await store.deleteAccount('acc');
+    expect(await store.getNostrPublicKey('acc')).toBeUndefined();
+  });
 });

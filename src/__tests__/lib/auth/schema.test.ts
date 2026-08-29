@@ -3,7 +3,7 @@ import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 
 describe('AUTH_SCHEMA_SQL', () => {
   it('creates the auth tables and backfills account.name idempotently', () => {
-    expect(AUTH_SCHEMA_SQL).toHaveLength(8);
+    expect(AUTH_SCHEMA_SQL.length).toBeGreaterThanOrEqual(8);
     expect(AUTH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS account/i);
     expect(AUTH_SCHEMA_SQL[0]).toMatch(/\bname text\b/i);
     expect(AUTH_SCHEMA_SQL[0]).not.toMatch(/linking_key text NOT NULL/i);
@@ -16,5 +16,6 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL[5]).toMatch(/CREATE TABLE IF NOT EXISTS address_verification/i);
     expect(AUTH_SCHEMA_SQL[6]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_challenge/i);
     expect(AUTH_SCHEMA_SQL[7]).toMatch(/CREATE TABLE IF NOT EXISTS passkey_credential/i);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/nostr_pubkey/);
   });
 });

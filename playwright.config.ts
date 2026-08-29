@@ -22,6 +22,8 @@ export default defineConfig({
       BIND_ADDR: '127.0.0.1:3000',
       PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
       DATABASE_URL: '',
+      NOSTR_NSEC_KEK: '',
+      NOSTR_PUBLISH: '',
       SPEND_API_TOKEN: '',
       DEBUG_TOKEN: 'e2e-debug-token',
       WEBAUTHN_RP_ID: 'localhost',

@@ -158,6 +158,32 @@ export interface AuthStore {
    * missing or the CAS predicate fails.
    */
   updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
+  /** Hex pubkey for the account, or `undefined` when none. */
+  getNostrPublicKey(accountId: string): Promise<string | undefined>;
+  /** Encrypted nsec envelope, or `undefined` when none. Never plaintext. */
+  getNostrSecret(accountId: string): Promise<Uint8Array | undefined>;
+  /**
+   * Persist key material only when the account has no pubkey yet.
+   *
+   * @returns `inserted` on first write, `exists` when a pubkey was already set.
+   */
+  setNostrKeyIfAbsent(accountId: string, record: NostrKeyRecord): Promise<'inserted' | 'exists'>;
+  /**
+   * Account ids with no Nostr pubkey yet, oldest first, capped at `limit`.
+   */
+  listAccountIdsWithoutNostrKey(limit: number): Promise<string[]>;
+}
+
+/** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
+export interface NostrKeyRecord {
+  /** NIP-01 pubkey, 64 lowercase hex. */
+  pubkey: string;
+  /** AES-GCM envelope (`version || kek_id || nonce || ciphertext+tag`). */
+  ciphertext: Uint8Array;
+  /** Envelope kek id (v1 = 1). */
+  kekId: number;
+  /** Custody mode. v1 is always `custodial`. */
+  custody: 'custodial' | 'user';
 }
 
 /**
@@ -172,6 +198,7 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #verifications = new Map<string, AddressVerification>();
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
+  readonly #nostrKeys = new Map<string, NostrKeyRecord>();
 
   async createAccount(account: Account): Promise<void> {
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
@@ -210,6 +237,7 @@ export class InMemoryAuthStore implements AuthStore {
       return;
     }
     this.#accounts.delete(id);
+    this.#nostrKeys.delete(id);
     if (previous.linkingKey !== null) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
@@ -290,6 +318,41 @@ export class InMemoryAuthStore implements AuthStore {
       signCount: credential.signCount,
     });
     return true;
+  }
+
+  async getNostrPublicKey(accountId: string): Promise<string | undefined> {
+    return this.#nostrKeys.get(accountId)?.pubkey;
+  }
+
+  async getNostrSecret(accountId: string): Promise<Uint8Array | undefined> {
+    const record = this.#nostrKeys.get(accountId);
+    return record === undefined ? undefined : new Uint8Array(record.ciphertext);
+  }
+
+  async setNostrKeyIfAbsent(
+    accountId: string,
+    record: NostrKeyRecord,
+  ): Promise<'inserted' | 'exists'> {
+    if (this.#accounts.get(accountId) === undefined) {
+      return 'exists';
+    }
+    if (this.#nostrKeys.has(accountId)) {
+      return 'exists';
+    }
+    this.#nostrKeys.set(accountId, {
+      ...record,
+      ciphertext: new Uint8Array(record.ciphertext),
+    });
+    return 'inserted';
+  }
+
+  async listAccountIdsWithoutNostrKey(limit: number): Promise<string[]> {
+    const ids = [...this.#accounts.values()]
+      .filter((account) => !this.#nostrKeys.has(account.id))
+      .sort(compareAccountsForList)
+      .slice(0, limit)
+      .map((account) => account.id);
+    return ids;
   }
 
   /** Drop passkey challenges older than the TTL. */

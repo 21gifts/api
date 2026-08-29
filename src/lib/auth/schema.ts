@@ -46,4 +46,14 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
     account_id uuid NOT NULL REFERENCES account (id),
     created_at timestamptz NOT NULL
   )`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS nostr_pubkey text`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS nostr_nsec_ciphertext bytea`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS nostr_kek_id integer NOT NULL DEFAULT 1`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS nostr_key_custody text NOT NULL DEFAULT 'custodial'`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS nostr_key_created_at timestamptz`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS account_nostr_pubkey_uidx
+    ON account (nostr_pubkey) WHERE nostr_pubkey IS NOT NULL`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_nostr_key_custody_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_nostr_key_custody_chk
+    CHECK (nostr_key_custody IN ('custodial', 'user'))`,
 ];
