@@ -134,8 +134,10 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 Public comment / encouragement is a v1 surface. The composer POSTs `{ text }`
 to `POST /messages`; the public thread is listed via `GET /messages` (newest
-first, name snapshotted at post). Custodial HTTP only for now; kind:1 relay
-fan-out remains unwired. Do not invent `/events` or `/comments` paths.
+first, name snapshotted at post, plus `sats` and `payable`). Posts are
+standalone kind:1 notes; the worker fans out when `NOSTR_PUBLISH=1`.
+Pay-on-note is `POST /messages/:id/invoice`. Do not invent `/events` or
+`/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
 not sketch a DM inbox as if it ships in v1.

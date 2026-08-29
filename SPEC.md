@@ -872,11 +872,13 @@ Success → **Response** `200`:
 { "pr": "lnbc…", "amountSats": 21 }
 ```
 
+Missing Bearer → **401** `{ "error": "Unauthorized" }`.
+Malformed body → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
-Unknown id → **404**. Unsigned note or author without a Lightning Address →
+Unknown id → **404** `{ "error": "Not found" }`. Unsigned note or author without a Lightning Address →
 **400** `{ "error": "This message cannot be paid yet" }`. LNURL/zap failure →
-**400** `{ "error": "Could not start the Bitcoin payment" }`. Missing KEK →
-**503**.
+**400** `{ "error": "Could not start the Bitcoin payment" }`. Missing KEK or unsigned payer →
+**503** `{ "error": "Messages are unavailable" }`.
 
 ---
 
@@ -896,12 +898,9 @@ recipients. Invoice fetch + preimage proof for the external payer is
 `POST /invoices` / `POST /invoices/proof`. No `/me/recurring` or in-process
 scheduler.
 
-**Custodial per-account NOSTR identities + server-side signing.** On sign-up
-the api would generate a keypair, store `nsec` encrypted, and sign that
-account's events server-side. Not wired yet.
-
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
-NOSTR events (profiles, campaigns, replies). Not wired yet.
+NOSTR events (profiles, campaigns, replies). Not wired yet. Custodial nsec
+and server-side kind:1 / zap signing ship in this version (KEK + worker).
 
 **Readiness probe.** `/healthz` remains liveness-only. A readiness check of
 downstream dependencies is still planned. The LUD-16 metadata cache on
