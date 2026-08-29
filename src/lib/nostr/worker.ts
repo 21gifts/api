@@ -181,6 +181,7 @@ async function publishProfiles(
     if (cache.get(account.id) === content) {
       continue;
     }
+    cache.set(account.id, content);
     try {
       const unsigned = buildKind0Event(
         account.name,
@@ -194,13 +195,18 @@ async function publishProfiles(
         RELAY_TIMEOUT_MS,
       );
       if (!spaceAcked(acks, writeSet.spaceUrl)) {
+        if (cache.get(account.id) === content) {
+          cache.delete(account.id);
+        }
         logEvent('nostr.profile.nack', { accountId: account.id });
         continue;
       }
-      cache.set(account.id, content);
       published += 1;
       logEvent('nostr.profile.ok', { accountId: account.id });
     } catch {
+      if (cache.get(account.id) === content) {
+        cache.delete(account.id);
+      }
       logEvent('nostr.profile.nack', { accountId: account.id });
     }
   }

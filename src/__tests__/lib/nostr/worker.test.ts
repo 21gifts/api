@@ -475,6 +475,170 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(20);
   });
 
+  it('publishes kind:0 only once when two ticks overlap', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    await Promise.all([
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+        }),
+      ),
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_001_000,
+          env,
+        }),
+      ),
+    ]);
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(1);
+  });
+
+  it('keeps a newer kind:0 reservation when an in-flight nack lands', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    let releaseNack: () => void = () => {};
+    const nackHeld = new Promise<void>((resolve) => {
+      releaseNack = resolve;
+    });
+    let enteredFirst: () => void = () => {};
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (
+        event['kind'] === 0 &&
+        publisher.calls.filter((call) => call.event['kind'] === 0).length === 1
+      ) {
+        enteredFirst();
+        await nackHeld;
+        return urls.map((url) => ({ url, ok: false }));
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await firstEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    releaseNack();
+    await first;
+    const profiles = publisher.calls.filter((call) => call.event['kind'] === 0);
+    expect(profiles).toHaveLength(2);
+    expect(JSON.parse(String(profiles.at(-1)?.event['content'])).name).toBe('Anton');
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
+  });
+
+  it('keeps a newer kind:0 reservation when an in-flight publish throws', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    let releaseThrow: () => void = () => {};
+    const throwHeld = new Promise<void>((resolve) => {
+      releaseThrow = resolve;
+    });
+    let enteredFirst: () => void = () => {};
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (
+        event['kind'] === 0 &&
+        publisher.calls.filter((call) => call.event['kind'] === 0).length === 1
+      ) {
+        enteredFirst();
+        await throwHeld;
+        throw new Error('ws down');
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const first = runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await firstEntered;
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: 'Anton' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    releaseThrow();
+    await first;
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(2);
+  });
+
   it('logs profile nack when space rejects the kind:0', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
