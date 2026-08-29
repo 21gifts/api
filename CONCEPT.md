@@ -332,7 +332,7 @@ app repo (`21gifts/app`) only carries frontend-specific docs.
 
 **Durability**: Durable Postgres writes are also appended to `db_change` with
 `at` / `op` / `before` / `after`. Secret columns `token`, `challenge`,
-`nostr_nsec_ciphertext`, and `nonce` are stored as SHA-256 hex in that JSON;
+`nostr_nsec_ciphertext`, `nonce`, and `view_key` are stored as SHA-256 hex in that JSON;
 other columns including `name` stay plaintext.
 
 ### Storage (client-side)

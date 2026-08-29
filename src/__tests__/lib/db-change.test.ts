@@ -34,6 +34,8 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/challenge/);
     expect(joined).toMatch(/nostr_nsec_ciphertext/);
     expect(joined).toMatch(/nonce/);
+    expect(joined).toMatch(/view_key/);
+    expect(joined).toMatch(/\$redact_view_key\$/);
     expect(joined).toMatch(/trg_db_change/);
     expect(joined).toMatch(/append-only/);
     expect(joined).toMatch(/BEFORE TRUNCATE/);

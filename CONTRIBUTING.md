@@ -297,7 +297,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - `db_change` is append-only. UPDATE, DELETE, and TRUNCATE on it **must** fail
   (exception `db_change is append-only`).
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
-  and `nonce` are SHA-256 hex of the column text. All other columns, including
+  `nonce`, and `view_key` are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
 - Compare OLD vs NEW **before** redaction

@@ -130,7 +130,7 @@
 
 - **Purpose:** Ordered idempotent DDL statements that create the append-only `db_change` log, secret-redacting helpers, immutability guard, and per-table `trg_db_change` triggers on every public table except `db_change`.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, and `nonce` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, and `view_key` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. A boot-time rewrite hashes live plaintext `view_key` values already in `db_change`.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore

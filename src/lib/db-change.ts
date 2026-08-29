@@ -27,7 +27,7 @@ BEGIN
   IF j IS NULL THEN
     RETURN NULL;
   END IF;
-  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce']
+  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key']
   LOOP
     IF outj ? k AND jsonb_typeof(outj -> k) IS DISTINCT FROM 'null' THEN
       outj := jsonb_set(
@@ -86,6 +86,38 @@ BEGIN
   END LOOP;
 END;
 $attach$;`,
+  `DO $redact_view_key$
+BEGIN
+  DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
+  UPDATE db_change AS d
+  SET after = jsonb_set(
+    d.after,
+    '{view_key}',
+    to_jsonb(encode(digest(convert_to(d.after ->> 'view_key', 'UTF8'), 'sha256'), 'hex'))
+  )
+  WHERE d.table_name = 'account'
+    AND d.after ? 'view_key'
+    AND jsonb_typeof(d.after -> 'view_key') IS DISTINCT FROM 'null'
+    AND EXISTS (
+      SELECT 1 FROM account a
+      WHERE a.view_key IS NOT NULL AND a.view_key = d.after ->> 'view_key'
+    );
+  UPDATE db_change AS d
+  SET before = jsonb_set(
+    d.before,
+    '{view_key}',
+    to_jsonb(encode(digest(convert_to(d.before ->> 'view_key', 'UTF8'), 'sha256'), 'hex'))
+  )
+  WHERE d.table_name = 'account'
+    AND d.before ? 'view_key'
+    AND jsonb_typeof(d.before -> 'view_key') IS DISTINCT FROM 'null'
+    AND EXISTS (
+      SELECT 1 FROM account a
+      WHERE a.view_key IS NOT NULL AND a.view_key = d.before ->> 'view_key'
+    );
+  CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change FOR EACH ROW EXECUTE PROCEDURE db_change_immutable();
+END;
+$redact_view_key$;`,
 ];
 
 /**
