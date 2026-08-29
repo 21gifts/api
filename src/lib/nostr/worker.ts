@@ -1,11 +1,14 @@
 import type { AuthStore } from '@/lib/auth/store';
+import type { FetchFn } from '@/lib/lnurlp';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
 import { buildKind1Event } from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
+import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import { resolveWriteSet, type ResolvedWriteSet } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
+import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 
 /** Max rows per claim. */
 export const WORKER_BATCH = 20;
@@ -29,6 +32,12 @@ export interface NostrWorkerDeps {
   kek: Uint8Array;
   /** Publisher (fake in tests). */
   publisher: NostrPublisher;
+  /** Querier for zap-receipt ingest (fake in tests). */
+  querier: NostrQuerier;
+  /** Fetch used for LNURL provider pubkey resolve. */
+  fetchImpl: FetchFn;
+  /** Optional 9735 signature check (tests inject; production uses nostr-tools). */
+  verifyReceipt?: (event: NostrEventFrame) => boolean;
   /** Clock. */
   now: () => number;
   /** Env slice for write-set flags. */
@@ -36,14 +45,16 @@ export interface NostrWorkerDeps {
 }
 
 /**
- * Sign unsigned rows, then optionally fan out to relays.
+ * Sign unsigned rows, optionally fan out to relays, then ingest zap receipts.
  *
  * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
- * until a public ACK makes `published`/`public`.
+ * until a public ACK makes `published`/`public`. Each tick also queries the
+ * write-set for kind:9735 receipts and indexes validated ones onto `sats`,
+ * even when publish is off.
  *
- * @param deps - Stores, kek, publisher, clock, env.
+ * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
@@ -52,6 +63,17 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   if (writeSet.publishEnabled) {
     await publishBatch(deps, writeSet, nowMs);
   }
+  const urls = [writeSet.spaceUrl, ...writeSet.publicUrls];
+  await indexOpenZapReceipts({
+    store: deps.messages,
+    auth: deps.auth,
+    querier: deps.querier,
+    urls,
+    timeoutMs: RELAY_TIMEOUT_MS,
+    now: deps.now,
+    fetchImpl: deps.fetchImpl,
+    ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
+  });
 }
 
 async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {

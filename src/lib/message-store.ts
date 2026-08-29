@@ -7,6 +7,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type MessageRow, type NostrPublishState } from '@/lib/message';
+import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
 /**
  * Persistence port for forum messages.
@@ -31,6 +32,9 @@ export interface MessageStore {
 
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
+
+  /** One row by Nostr event id, or `undefined`. */
+  getByEventId(eventId: string): Promise<MessageRow | undefined>;
 
   /**
    * Claim unsigned pending rows (`eventId` null) for signing.
@@ -58,6 +62,17 @@ export interface MessageStore {
 
   /** Add validated zap sats (idempotent receipt id is the caller's job). */
   addSats(id: string, extraSats: number): Promise<void>;
+
+  /**
+   * Persist a zap receipt once and add its sats to the message.
+   *
+   * @param receiptEventId - Kind:9735 event id (unique).
+   * @param messageId - Forum row to credit.
+   * @param sats - Whole sats to add.
+   * @returns `true` when the receipt was new and sats were added; `false` on
+   *   duplicate receipt id (no second add).
+   */
+  recordZapReceipt(receiptEventId: string, messageId: string, sats: number): Promise<boolean>;
 }
 
 /** Idempotent DDL for the forum table (matches `docs/schema/message.sql`). */
@@ -104,6 +119,7 @@ export async function migrateMessageSchema(sql: SqlClient): Promise<void> {
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
+  readonly #receiptIds = new Set<string>();
 
   /**
    * @param seed - Optional seed rows; copied into private storage.
@@ -143,6 +159,11 @@ export class InMemoryMessageStore implements MessageStore {
 
   getById(id: string): Promise<MessageRow | undefined> {
     const row = this.#rows.find((item) => item.id === id);
+    return Promise.resolve(row === undefined ? undefined : copyRow(row));
+  }
+
+  getByEventId(eventId: string): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.eventId === eventId);
     return Promise.resolve(row === undefined ? undefined : copyRow(row));
   }
 
@@ -195,6 +216,19 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
+  async recordZapReceipt(
+    receiptEventId: string,
+    messageId: string,
+    sats: number,
+  ): Promise<boolean> {
+    if (this.#receiptIds.has(receiptEventId)) {
+      return false;
+    }
+    this.#receiptIds.add(receiptEventId);
+    await this.addSats(messageId, sats);
+    return true;
+  }
+
   #claim(
     predicate: (row: MessageRow) => boolean,
     limit: number,
@@ -238,7 +272,7 @@ interface MessageSqlRow {
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
-  nostr_event?: Record<string, unknown> | null;
+  nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
   nostr_first_attempt_at?: Date | string | null;
   nostr_publish_epoch?: string | null;
@@ -268,7 +302,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
-    nostrEvent: row.nostr_event ?? defaults.nostrEvent,
+    nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
     nostrPublishEpoch: row.nostr_publish_epoch ?? defaults.nostrPublishEpoch,
@@ -327,6 +361,17 @@ export class PostgresMessageStore implements MessageStore {
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
        FROM message WHERE id = $1`,
       [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async getByEventId(eventId: string): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+       FROM message WHERE event_id = $1`,
+      [eventId],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);
@@ -400,5 +445,26 @@ export class PostgresMessageStore implements MessageStore {
 
   async addSats(id: string, extraSats: number): Promise<void> {
     await this.#sql.execute(`UPDATE message SET sats = sats + $2 WHERE id = $1`, [id, extraSats]);
+  }
+
+  async recordZapReceipt(
+    receiptEventId: string,
+    messageId: string,
+    sats: number,
+  ): Promise<boolean> {
+    const inserted = await this.#sql.query<{ event_id: string }>(
+      `WITH inserted AS (
+         INSERT INTO nostr_zap_receipt (event_id, message_id, sats)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (event_id) DO NOTHING
+         RETURNING event_id, message_id, sats
+       )
+       UPDATE message SET sats = sats + inserted.sats
+       FROM inserted
+       WHERE message.id = inserted.message_id
+       RETURNING inserted.event_id`,
+      [receiptEventId, messageId, sats],
+    );
+    return inserted[0] !== undefined;
   }
 }

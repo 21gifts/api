@@ -11,6 +11,7 @@ import { SQL } from 'bun';
 import { openBootStores } from './lib/boot-stores';
 import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
+import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
@@ -54,6 +55,8 @@ if (import.meta.main) {
         auth: authStore,
         kek: nostrKek,
         publisher,
+        querier: new WebsocketNostrQuerier(),
+        fetchImpl: globalThis.fetch,
         now: Date.now,
         env: process.env,
       },

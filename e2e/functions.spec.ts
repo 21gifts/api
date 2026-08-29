@@ -674,7 +674,16 @@ test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ 
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: resetZapReceiptIndex — default boot has no DATABASE_URL', async ({ request }) => {
+test('Function: normalizeSignedEvent — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: indexOpenZapReceipts — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: RecordingQuerier — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: WebsocketNostrQuerier — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: requestZapInvoice — default boot has no DATABASE_URL', async ({ request }) => {
