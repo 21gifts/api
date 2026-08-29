@@ -121,9 +121,9 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` is newest-first with a limit; `create` inserts the row.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` newest-first; `create` inserts; `getById`; `claimUnsigned`/`claimUnpublished` lease rows; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Errors propagate to the route (503).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
@@ -135,14 +135,14 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications. Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. `listAccounts` returns every account oldest-first.
 - **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists. `updateAccount` refuses a `linkingKey` owned by another account. `deleteAccount` drops the row and its linking-key index. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges and credentials. Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, and custodial Nostr key columns (`nostr_pubkey`, ciphertext, kek id, custody). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
@@ -151,7 +151,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -198,7 +198,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Same port as Postgres: `getById`, claim/sign/publish, `addSats`; `updateSignedEvent` returns false on duplicate `eventId`.
 - **Inputs:** Optional seed `MessageRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -466,8 +466,8 @@
 
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
 - **Inputs:** address + fetchImpl.
-- **Returns / side effects:** Callback URL + min/max sendable or error.
-- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`.
+- **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or error.
+- **Used by:** `lightningAddressRoutes`, `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
 
 ## Function: resolveSession
 

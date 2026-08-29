@@ -234,7 +234,7 @@ scope. The client-side-signing flow beneath it is target state.)
 | ------------------------------------- | --------------------------------------------------------- |
 | Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                |
 | Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata       |
-| Public comment / encouragement        | `kind:1` reply, with `e` and `p` tags                     |
+| Public comment / encouragement        | top-level `kind:1` (frozen `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`) |
 | Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy) |
 | Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)             |
 
