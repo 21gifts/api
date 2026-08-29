@@ -691,8 +691,10 @@ are converted at **that day's** close (not spot). Gap days in
 A query failure or a still-missing rate after ensure is **503**.
 
 Optional query `recipient` filters to one Wallet of Satoshi handle
-(case-insensitive). When `recipient` contains `@` after the first character,
-the local-part before `@` is used. Missing or blank `recipient` is unfiltered.
+(case-insensitive). The value is trimmed first. When the trimmed value
+contains `@` after the first character, the local-part before `@` is used;
+otherwise the whole trimmed string is the handle. Missing or blank
+(after trim) `recipient` is unfiltered.
 An unknown handle is empty **200** (zeros, `fx` present) without a Coinbase
 call. Rates are ensured only for the selected gifts' UTC days.
 
