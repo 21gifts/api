@@ -260,6 +260,15 @@ app  ←──indexed feed──  api  ←──subscribe──  relays
 - Private DMs (NIP-17) pass through the api as opaque encrypted payloads — the
   api never sees plaintext
 
+### Public member forum (v1)
+
+The `/messages` thread is a **forum / messenger group**, not a social-media
+feed. Visitors read it top-to-bottom like a group chat: oldest notes at the
+top, newest at the bottom, composer under the newest note. A new post is
+inserted at the bottom. `GET /messages` still returns the latest 200 notes
+newest-first so the window is "what is recent"; every client reverses that
+array for display.
+
 ### Trust & Verification
 
 **Protocol level**: completely open. Anyone publishes. Trust emerges from NOSTR
@@ -653,6 +662,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-29 | Member-forum posts are **top-level kind:1** notes (not replies). GET/POST `/messages` include `sats` and `payable`. `POST /messages/:id/invoice` is a NIP-57 zap. Guest Send-a-gift is removed from the app. Worker fans out when `NOSTR_PUBLISH=1`.                                                                                                                                                                                                               |
 | 2026-08-29 | Worker indexes validated kind:9735 zap receipts onto `message.sats` (durable `nostr_zap_receipt`, LNURL provider pubkey + bolt11 amount). Kind:1 EVENT frames are published as JSON objects so relays can ACK.                                                                                                                                                                                                                                                     |
 | 2026-08-29 | `POST /me/lightning-address` live-resolves LUD-16 and requires NIP-57 zap metadata before save (no migration of existing rows). Invoice limiter on `POST /messages/:id/invoice` runs only after auth, amount, payable, and KEK checks so early 400/404/401/503 do not burn quota.                                                                                                                                                                                  |
+| 2026-08-29 | Public member forum UX is a messenger-group thread (oldest top, newest bottom above the composer). `GET /messages` remains the latest-200 window newest-first; clients reverse for display.                                                                                                                                                                                                                                                                       |
 
 ---
 
