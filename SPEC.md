@@ -1077,12 +1077,13 @@ Private in-app contact mailbox. Bearer session required. Body:
 
 The account must already have a non-blank display name. The api stores a
 **name snapshot** (trimmed account name at post time), the normalised text,
-and a timestamp. Text rules match the public forum (`normalizeForumText`):
-trimmed length **1–500**; newlines (`\n`, `\r`) allowed; other C0 controls
-and DEL rejected. The **200** body is the public contact object itself (not
-wrapped). No `accountId` in the member-facing JSON. Contacts are **never**
-listed publicly — operators read them via `GET /debug/contacts`. No email,
-no DMs, no Nostr fan-out.
+and a timestamp. Text goes through `normalizeForumText` (newlines `\n`/`\r`
+allowed; other C0 and DEL rejected), then contact still requires trimmed
+length **1–500**. Forum photo-only empty text is not accepted here. The
+**200** body is the public contact object itself (not wrapped). No
+`accountId` in the member-facing JSON. Contacts are **never** listed
+publicly — operators read them via `GET /debug/contacts`. No email, no DMs,
+no Nostr fan-out.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

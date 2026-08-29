@@ -160,8 +160,9 @@ not sketch a DM inbox as if it ships in v1.
 ## 6. Contact — **Shipped**
 
 Private mailbox so members can write to 21.gifts without a published email.
-Signed-in members POST `{ text }` to `POST /contact` (same text rules and
-name-snapshot requirement as forum messages). Operators read the mailbox via
+Signed-in members POST `{ text }` to `POST /contact` (name snapshot as
+forum messages; `normalizeForumText` plus a required 1–500 character body —
+forum photo-only empty text does not apply). Operators read the mailbox via
 `GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
 DMs, no Nostr fan-out. Do not invent `/events`.
 

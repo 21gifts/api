@@ -163,7 +163,7 @@
 
 ## Endpoint: POST /contact
 
-- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Same name-snapshot and text rules as forum messages. 200 is the public contact object (no `accountId`).
+- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). 200 is the public contact object (no `accountId`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Contact is unavailable (`contact.create.failed`).
 - **Used by:** App in-app contact composer.
 - **Auth:** `Authorization: Bearer` session.
