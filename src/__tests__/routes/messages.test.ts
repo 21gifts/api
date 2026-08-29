@@ -59,6 +59,7 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: 1_000_000,
+    rulesAgreedAt: null,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
   return store;
@@ -816,6 +817,7 @@ describe('POST /messages/:id/invoice', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_001,
+      rulesAgreedAt: null,
     });
     await authStore.createSession({ token: 'payer-tok', accountId: 'payer', createdAt: now() });
     expect(await authStore.getNostrPublicKey('payer')).toBeUndefined();

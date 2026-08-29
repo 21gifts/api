@@ -61,6 +61,7 @@ describe('debugRoutes', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts', {

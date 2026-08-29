@@ -18,6 +18,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     };
     await store.createAccount(first);
     await store.createAccount({ ...first, id: 'acc-2', createdAt: 2, viewKey: 'b'.repeat(64) });
@@ -38,6 +39,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc'))?.linkingKey).toBe(KEY);
     expect((await store.getAccount('acc'))?.id).toBe('acc');
@@ -55,6 +57,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc',
@@ -66,6 +69,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
   });
@@ -126,6 +130,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 2,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'a',
@@ -137,6 +142,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     const listed = await store.listAccounts();
     expect(listed.map((row) => row.id)).toEqual(['a', 'b']);
@@ -150,6 +156,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'c'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['a', 'c', 'b']);
   });
@@ -163,6 +170,7 @@ describe('InMemoryAuthStore', () => {
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
+      rulesAgreedAt: null,
     };
     const early = { ...base, id: 'a', createdAt: 1 };
     const late = { ...base, id: 'a', createdAt: 2 };
@@ -261,6 +269,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '1'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'p2',
@@ -272,6 +281,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '2'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'ln',
@@ -283,6 +293,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: '3'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('p1'))?.id).toBe('p1');
     expect((await store.getAccount('p2'))?.id).toBe('p2');
@@ -301,6 +312,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc',
@@ -312,6 +324,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
   });
@@ -328,6 +341,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc',
@@ -339,6 +353,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc'))?.linkingKey).toBeNull();
   });
@@ -355,6 +370,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'acc',
@@ -366,6 +382,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('acc'))?.id).toBe('acc');
   });
@@ -551,6 +568,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.createAccount({
       id: 'pk',
@@ -562,6 +580,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.updateAccount({
       id: 'pk',
@@ -573,6 +592,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('ln'))?.linkingKey).toBe(KEY);
     expect((await store.getAccount('pk'))?.linkingKey).toBeNull();
@@ -738,6 +758,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     await store.deleteAccount('acc');
     await store.deleteAccount('missing');
@@ -752,6 +773,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect((await store.getAccount('other'))?.id).toBe('other');
   });
@@ -882,6 +904,7 @@ describe('InMemoryAuthStore', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect(await store.listAccountIdsWithoutNostrKey(10)).toEqual(['acc']);
     expect(await store.setNostrKeyIfAbsent('acc', record)).toBe('inserted');

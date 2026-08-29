@@ -70,6 +70,7 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey`                             | none                     | Public profile card by view key          |
 | POST   | `/me/name`                                   | Bearer                   | Set/replace display name                 |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws   |
+| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement       |
 | POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve    |
 | DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                           |
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment   |
@@ -262,7 +263,8 @@ Missing or invalid bearer → **Response** `401`:
   "lightningAddressVerified": false,
   "forumLawsDismissed": false,
   "viewKey": "<64-hex>",
-  "createdAt": 0
+  "createdAt": 0,
+  "rulesAgreedAt": null
 }
 ```
 
@@ -277,6 +279,7 @@ Missing or invalid bearer → **Response** `401`:
 | `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                            |
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                      |
+| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                      |
 
 ### `GET /view/:viewKey`
 
@@ -336,6 +339,23 @@ Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 Success → **Response** `200` with the updated account (same shape as
 `GET /me`), with `forumLawsDismissed: true`. Already-dismissed accounts return
 the same shape without a second write (idempotent). There is no un-dismiss.
+
+### `POST /me/rules-agreement`
+
+Record that the signed-in account agreed to the living-room rules. No body
+is required; any JSON body is ignored.
+
+Missing/invalid bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Success → **Response** `200` with the account (same shape as `GET /me`). The
+first successful POST sets `rulesAgreedAt` to the server clock (epoch ms).
+Later POSTs return the original timestamp unchanged (idempotent; no 409).
+New accounts start with `rulesAgreedAt: null`. Name and Lightning Address
+link/unlink do not clear the timestamp.
 
 ### `POST /me/lightning-address`
 

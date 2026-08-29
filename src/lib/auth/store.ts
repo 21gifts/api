@@ -44,6 +44,8 @@ export interface Account {
   viewKey: string;
   /** Creation time (epoch ms). */
   createdAt: number;
+  /** Epoch ms when the account first agreed to the living-room rules, or null. */
+  rulesAgreedAt: number | null;
 }
 
 /**

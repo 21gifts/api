@@ -16,7 +16,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`) **without** `viewKey`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`) **without** `viewKey`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -121,7 +121,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, owner `viewKey`).
+- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`).
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -187,6 +187,13 @@
 - **Purpose:** Triggers the 1-sat proof-of-control payment. JSON `{ status: 'sent', expiresInSeconds, sats }`. The nonce is **not** returned to the client; it is only in the LUD-12 wallet comment.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 409 `{ error: 'No Lightning Address linked' }` or `{ error: 'Lightning Address already verified' }`; 502 `{ error: 'Lightning Address did not accept the verification payment' }`; 503 `{ error: 'Verification payments are not configured' }`.
 - **Used by:** App `startLightningAddressVerification`.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/rules-agreement
+
+- **Purpose:** Bearer required. No body required. Records first living-room rules agreement using the server clock; later POSTs return the original timestamp (idempotent 200 account JSON).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session.
+- **Used by:** App after name and address onboarding.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: POST /me/lightning-address/verification/confirm

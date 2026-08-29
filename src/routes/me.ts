@@ -12,9 +12,9 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
- * welcome-forum laws dismiss, and the receiver's Lightning Address), including
- * proof-of-control verification. Shares the {@link AuthStore} instance with
- * `/auth`.
+ * welcome-forum laws dismiss, living-room rules agreement, and the receiver's
+ * Lightning Address), including proof-of-control verification. Shares the
+ * {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -137,6 +137,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
+      return c.json(serializeOwnerAccount(updated), 200);
+    })
+    .post('/rules-agreement', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.rulesAgreedAt !== null) {
+        return c.json(serializeOwnerAccount(current), 200);
+      }
+      const updated: Account = { ...current, rulesAgreedAt: deps.now() };
+      await deps.store.updateAccount(updated);
+      logEvent('account.rules_agreement.set', { accountId: current.id });
       return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {

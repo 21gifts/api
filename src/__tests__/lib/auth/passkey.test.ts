@@ -335,6 +335,7 @@ describe('passkey authentication', () => {
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
       createdAt: T0,
+      rulesAgreedAt: null,
     });
     const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
     const finish = await finishPasskeyAuthentication(

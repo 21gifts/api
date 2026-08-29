@@ -24,6 +24,7 @@ interface AccountRow {
   forum_laws_dismissed: boolean;
   view_key: string | null;
   created_at: Date | string;
+  rules_agreed_at: Date | string | null;
 }
 
 /** Row shape of `auth_session`. */
@@ -88,8 +89,8 @@ export class PostgresAuthStore implements AuthStore {
   async createAccount(account: Account): Promise<void> {
     try {
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0))
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -101,6 +102,7 @@ export class PostgresAuthStore implements AuthStore {
           account.forumLawsDismissed,
           account.createdAt,
           account.viewKey,
+          account.rulesAgreedAt,
         ],
       );
     } catch (error: unknown) {
@@ -117,7 +119,8 @@ export class PostgresAuthStore implements AuthStore {
         `UPDATE account
          SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
              forum_laws_dismissed = $7,
-             created_at = to_timestamp($8::double precision / 1000.0), view_key = $9
+             created_at = to_timestamp($8::double precision / 1000.0), view_key = $9,
+             rules_agreed_at = to_timestamp($10::double precision / 1000.0)
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -136,6 +139,7 @@ export class PostgresAuthStore implements AuthStore {
           account.forumLawsDismissed,
           account.createdAt,
           account.viewKey,
+          account.rulesAgreedAt,
         ],
       );
     } catch (error: unknown) {
@@ -148,7 +152,7 @@ export class PostgresAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
        FROM account WHERE id = $1`,
       [id],
     );
@@ -158,7 +162,7 @@ export class PostgresAuthStore implements AuthStore {
 
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
        FROM account WHERE view_key = $1`,
       [viewKey],
     );
@@ -172,7 +176,7 @@ export class PostgresAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
        FROM account ORDER BY created_at ASC, id ASC`,
     );
     const accounts: Account[] = [];
@@ -415,6 +419,7 @@ function mapAccount(row: AccountRow): Account | undefined {
     forumLawsDismissed: row.forum_laws_dismissed,
     viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
+    rulesAgreedAt: row.rules_agreed_at === null ? null : epochMs(row.rules_agreed_at),
   };
 }
 
