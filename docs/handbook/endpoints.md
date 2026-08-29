@@ -21,6 +21,13 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: PATCH /debug/accounts/:id
+
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /me`). Does not patch name or Lightning Address.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string' }` for unknown/missing/non-JSON body; 404 `{ error: 'Not found' }` when the account id is unknown.
+- **Used by:** Operator `gifts-debug role` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /debug/contacts
 
 - **Purpose:** Operator listing of private in-app contacts newest-first (cap 200), including `accountId`, name snapshot, text, and ISO `createdAt`.
@@ -135,7 +142,7 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address.
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, and live author `role`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
@@ -149,7 +156,7 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. JSON body `{ text?, photo?: { contentType, data } }` (base64; not multipart). Text-only `{ text }` stays valid; photo-only allowed; at least one of non-empty trimmed text or photo required. Name snapshot + optional JPEG/PNG/WebP ≤ 1 MiB. 200 is the public message including `sats`, `payable`, and `hasPhoto` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
+- **Purpose:** Bearer required. JSON body `{ text?, photo?: { contentType, data } }` (base64; not multipart). Text-only `{ text }` stays valid; photo-only allowed; at least one of non-empty trimmed text or photo required. Name snapshot + optional JPEG/PNG/WebP ≤ 1 MiB. 200 is the public message including `sats`, `payable`, `hasPhoto`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer.
 - **Auth:** `Authorization: Bearer` session.

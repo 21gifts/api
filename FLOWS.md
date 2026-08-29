@@ -148,12 +148,12 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
 the public thread is listed via `GET /messages` (newest first, name
-snapshotted at post, `sats`, `payable`, `hasPhoto` — never photo bytes).
-Bytes are `GET /messages/:id/photo`. The shipped UI is a messenger-group
-thread: oldest notes at the top, newest at the bottom, composer under the
-newest note. The welcome-forum living-room laws hint is dismissed via
-`POST /me/forum-laws-dismissed`. Posts are standalone kind:1 notes; the
-worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
+snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
+— never photo bytes). Bytes are `GET /messages/:id/photo`. The shipped UI
+is a messenger-group thread: oldest notes at the top, newest at the bottom,
+composer under the newest note. The welcome-forum living-room laws hint is
+dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
+notes; the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do

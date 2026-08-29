@@ -65,7 +65,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, true)).toEqual({
+    expect(serializeMessage(row, true, 'moderator')).toEqual({
       id: 'msg-1',
       name: 'Ada',
       text: 'hi',
@@ -73,8 +73,9 @@ describe('serializeMessage', () => {
       sats: 0,
       payable: true,
       hasPhoto: false,
+      role: 'moderator',
     });
-    expect(serializeMessage(row, false)).not.toHaveProperty('accountId');
+    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');
   });
 
   it('includes hasPhoto true', () => {
@@ -87,7 +88,7 @@ describe('serializeMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false).hasPhoto).toBe(true);
+    expect(serializeMessage(row, false, 'basis').hasPhoto).toBe(true);
   });
 });
 

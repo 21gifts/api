@@ -400,6 +400,15 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(new MockSql()).getVerification('x')).toBeUndefined();
   });
 
+  it('maps verified and founder account roles', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'verified' }];
+    expect((await store.getAccount('acc'))?.role).toBe('verified');
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'founder' }];
+    expect((await store.getAccount('acc'))?.role).toBe('founder');
+  });
+
   it('rejects an unknown account role', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, role: 'admin' }];
