@@ -23,7 +23,7 @@
 
 ## Endpoint: PATCH /debug/accounts/:id
 
-- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /me`). Does not patch name or Lightning Address.
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /debug/accounts`: eight fields via `serializeAccount`; no `viewKey`). Does not patch name or Lightning Address.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string' }` for unknown/missing/non-JSON body; 404 `{ error: 'Not found' }` when the account id is unknown.
 - **Used by:** Operator `gifts-debug role` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
