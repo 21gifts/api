@@ -508,20 +508,22 @@ describe('PostgresMessageStore', () => {
         name: 'Ada',
         text: 'hi',
         created_at: new Date(0),
+        has_photo: true,
         event_id: 'ee'.repeat(32),
         nostr_publish_state: 'pending',
         sats: 0,
       },
     ];
     const store = new PostgresMessageStore(sql);
-    expect((await store.getByEventId('ee'.repeat(32)))?.id).toBe('m1');
+    const found = await store.getByEventId('ee'.repeat(32));
+    expect(found?.id).toBe('m1');
+    expect(found?.hasPhoto).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/event_id = \$1/);
-    expect(sql.queries[0]?.text).toMatch(
-      /SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,/,
-    );
+    expect(sql.queries[0]?.text).toMatch(/\(photo IS NOT NULL\) AS has_photo/);
     expect(sql.queries[0]?.text).toMatch(
       /nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts/,
     );
+    expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     sql.nextRows = [];
     expect(await store.getByEventId('missing')).toBeUndefined();
   });
@@ -573,16 +575,23 @@ describe('PostgresMessageStore', () => {
         name: 'Ada',
         text: 'hi',
         created_at: new Date(0),
+        has_photo: true,
         event_id: 'ab'.repeat(32),
         nostr_publish_state: 'pending',
         sats: 0,
       },
     ];
     const store = new PostgresMessageStore(sql);
-    expect((await store.listPendingSigned(7))[0]?.id).toBe('m1');
-    expect(sql.queries.at(-1)?.text).toMatch(/event_id IS NOT NULL/);
-    expect(sql.queries.at(-1)?.text).toMatch(/tag->>1 = 'bitcoin'/);
-    expect(sql.queries.at(-1)?.text).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
+    const pending = await store.listPendingSigned(7);
+    expect(pending[0]?.id).toBe('m1');
+    expect(pending[0]?.hasPhoto).toBe(true);
+    const listSql = sql.queries.at(-1)?.text ?? '';
+    expect(listSql).toMatch(/event_id IS NOT NULL/);
+    expect(listSql).toMatch(/tag->>1 = 'bitcoin'/);
+    expect(listSql).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
+    expect(listSql).toMatch(/\(photo IS NOT NULL\) AS has_photo/);
+    expect(listSql).toMatch(/has_photo/);
+    expect(listSql).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     await store.clearSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);

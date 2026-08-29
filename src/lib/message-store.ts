@@ -520,8 +520,7 @@ export class PostgresMessageStore implements MessageStore {
 
   async getByEventId(eventId: string): Promise<MessageRow | undefined> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message WHERE event_id = $1`,
       [eventId],
     );
@@ -567,8 +566,7 @@ export class PostgresMessageStore implements MessageStore {
 
   async listPendingSigned(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT id, account_id, name, text, created_at, event_id, nostr_publish_state, sats,
-              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
        WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
          AND (
