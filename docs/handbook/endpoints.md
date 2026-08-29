@@ -16,7 +16,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `createdAt`). Same JSON fields as `GET /me`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`). Same JSON fields as `GET /me`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -121,7 +121,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag).
+- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed).
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -154,6 +154,13 @@
 - **Used by:** App in-app contact composer.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: POST /me/forum-laws-dismissed
+
+- **Purpose:** Bearer required. No body. Sets `forumLawsDismissed` to `true` on the account (idempotent; no un-dismiss). Returns the public account JSON.
+- **Errors:** 401 without session.
+- **Used by:** App welcome-forum living-room laws dismiss control.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
 ## Endpoint: POST /me/lightning-address
 
 - **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
@@ -168,16 +175,16 @@
 - **Used by:** App `startLightningAddressVerification`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
-## Endpoint: POST /me/name
-
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters).
-- **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
-- **Used by:** App `setName`.
-- **Auth:** See Purpose — Bearer where stated, else public.
-
 ## Endpoint: POST /me/lightning-address/verification/confirm
 
 - **Purpose:** Body `{ nonce }`. Marks the address verified when the invoice was paid.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "nonce" string' }` or `{ error: 'Incorrect verification code' }`; 409 `{ error: 'No verification in progress' }` or `{ error: 'Verification expired' }`.
 - **Used by:** App `confirmLightningAddressVerification`.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/name
+
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters).
+- **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
+- **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.

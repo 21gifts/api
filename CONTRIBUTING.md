@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; link/unlink + address verification
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)

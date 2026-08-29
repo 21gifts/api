@@ -66,6 +66,7 @@ describe('ensureAccountNostrKey', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     const first = await ensureAccountNostrKey(store, 'acc', KEK);

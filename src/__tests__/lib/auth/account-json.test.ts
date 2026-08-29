@@ -9,6 +9,7 @@ const account: Account = {
   name: 'Ada',
   lightningAddress: 'ada@walletofsatoshi.com',
   lightningAddressVerified: false,
+  forumLawsDismissed: false,
   createdAt: 1,
 };
 
@@ -22,6 +23,7 @@ describe('serializeAccount', () => {
       name: 'Ada',
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
       createdAt: 1,
     });
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);

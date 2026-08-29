@@ -21,6 +21,7 @@ interface AccountRow {
   name: string | null;
   lightning_address: string | null;
   lightning_address_verified: boolean;
+  forum_laws_dismissed: boolean;
   created_at: Date | string;
 }
 
@@ -85,8 +86,8 @@ export class PostgresAuthStore implements AuthStore {
 
   async createAccount(account: Account): Promise<void> {
     await this.#sql.execute(
-      `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))
+      `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0))
        ON CONFLICT (linking_key) DO NOTHING`,
       [
         account.id,
@@ -95,6 +96,7 @@ export class PostgresAuthStore implements AuthStore {
         account.name,
         account.lightningAddress,
         account.lightningAddressVerified,
+        account.forumLawsDismissed,
         account.createdAt,
       ],
     );
@@ -105,7 +107,8 @@ export class PostgresAuthStore implements AuthStore {
       await this.#sql.execute(
         `UPDATE account
          SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
-             created_at = to_timestamp($7::double precision / 1000.0)
+             forum_laws_dismissed = $7,
+             created_at = to_timestamp($8::double precision / 1000.0)
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -121,6 +124,7 @@ export class PostgresAuthStore implements AuthStore {
           account.name,
           account.lightningAddress,
           account.lightningAddressVerified,
+          account.forumLawsDismissed,
           account.createdAt,
         ],
       );
@@ -134,7 +138,7 @@ export class PostgresAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at
        FROM account WHERE id = $1`,
       [id],
     );
@@ -148,7 +152,7 @@ export class PostgresAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at
        FROM account ORDER BY created_at ASC, id ASC`,
     );
     return rows.map(mapAccount);
@@ -374,6 +378,7 @@ function mapAccount(row: AccountRow): Account {
     name: row.name,
     lightningAddress: row.lightning_address,
     lightningAddressVerified: row.lightning_address_verified,
+    forumLawsDismissed: row.forum_laws_dismissed,
     createdAt: epochMs(row.created_at),
   };
 }

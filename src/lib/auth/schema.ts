@@ -1,8 +1,8 @@
 /**
  * Idempotent DDL for the auth tables. Applied once at process boot when
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
- * `ALTER TABLE` backfills `account.name` and nullable `linking_key` on
- * databases created before passkey accounts existed.
+ * `ALTER TABLE` backfills `account.name`, nullable `linking_key`, and
+ * `forum_laws_dismissed` on databases created before those columns existed.
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
 
@@ -15,6 +15,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
     name text,
     lightning_address text,
     lightning_address_verified boolean NOT NULL,
+    forum_laws_dismissed boolean NOT NULL,
     created_at timestamptz NOT NULL
   )`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS name text`,
@@ -56,4 +57,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_nostr_key_custody_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_nostr_key_custody_chk
     CHECK (nostr_key_custody IN ('custodial', 'user'))`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS forum_laws_dismissed boolean NOT NULL DEFAULT false`,
 ];

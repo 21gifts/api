@@ -1,7 +1,7 @@
 import type { Account } from '@/lib/auth/store';
 
 /**
- * Public JSON shape of an account (seven fields). Never includes Nostr
+ * Public JSON shape of an account (eight fields). Never includes Nostr
  * pubkey, ciphertext, or other key material.
  */
 export interface AccountResponse {
@@ -17,6 +17,8 @@ export interface AccountResponse {
   lightningAddress: string | null;
   /** Whether control of the linked address has been proven. */
   lightningAddressVerified: boolean;
+  /** True after the user dismissed the welcome-forum living-room laws hint. */
+  forumLawsDismissed: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
 }
@@ -28,7 +30,7 @@ export interface AccountResponse {
  * bodies never grow Nostr fields.
  *
  * @param account - Stored account.
- * @returns The seven public fields only.
+ * @returns The eight public fields only.
  */
 export function serializeAccount(account: Account): AccountResponse {
   return {
@@ -38,6 +40,7 @@ export function serializeAccount(account: Account): AccountResponse {
     name: account.name,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
+    forumLawsDismissed: account.forumLawsDismissed,
     createdAt: account.createdAt,
   };
 }
