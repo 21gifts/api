@@ -163,7 +163,7 @@
 
 ## Endpoint: POST /me/forum-laws-dismissed
 
-- **Purpose:** Bearer required. No body. Sets `forumLawsDismissed` to `true` on the account (idempotent; no un-dismiss). Returns the public account JSON.
+- **Purpose:** Bearer required. No body. Sets `forumLawsDismissed` to `true` on the account (idempotent; no un-dismiss). Returns the owner account JSON (same as GET `/me`, including `viewKey`).
 - **Errors:** 401 without session.
 - **Used by:** App welcome-forum living-room laws dismiss control.
 - **Auth:** See Purpose — Bearer where stated, else public.
