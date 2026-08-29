@@ -51,13 +51,19 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 
 ### Roles
 
-| Role      | Capabilities                                                                     |
-| --------- | -------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (every account can receive by default) |
-| Moderator | Basis, plus extended permissions for content moderation                          |
+One exclusive `account.role` per account. New passkey accounts are **Basis**.
+Assignment is operator-side (`PATCH /debug/accounts/:id`, `DEBUG_TOKEN`).
+
+| Role      | Capabilities                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                       |
+| Verified  | Basis, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. |
+| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                      |
+| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                             |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
-its own (see below).
+its own (see below). The forum shows a tag only for Verified, Moderator, and
+Founder.
 
 ### Login: passkey only
 
@@ -87,15 +93,15 @@ Any account can additionally become a donor and spend money:
 ### Receiver address verification
 
 A receiver's Lightning Address is entered free-form on sign-up (a wrong
-address is self-punishing — gifts simply go elsewhere). The **verified
-badge** requires proof of control via micro-payment: the api pays 1 sat (or
-the provider's `minSendable` if higher, capped at 10 sat) with a one-time
-nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi allows 255
-characters); the user reads the nonce from the wallet's transaction history
-and enters it in the app (`POST /me/lightning-address/verification` +
-`…/confirm`). No LNDHub payer is wired yet — start returns 503 until one is
-injected; the process still boots. No LUD-21 dependency — WoS does not
-implement LNURL-verify.
+address is self-punishing — gifts simply go elsewhere). Proof of control
+sets `lightningAddressVerified` (not the forum role **Verified**) via
+micro-payment: the api pays 1 sat (or the provider's `minSendable` if
+higher, capped at 10 sat) with a one-time nonce in the LNURL-pay comment
+(LUD-12; Wallet of Satoshi allows 255 characters); the user reads the nonce
+from the wallet's transaction history and enters it in the app
+(`POST /me/lightning-address/verification` + `…/confirm`). No LNDHub payer
+is wired yet — start returns 503 until one is injected; the process still
+boots. No LUD-21 dependency — WoS does not implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
@@ -282,9 +288,11 @@ reputation (who follows / vouches for whom).
 - No KYC, no government ID
 
 (v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 NOSTR
-identities are custodial, server-held. The v1 verified badge is proof of
-Lightning-Address control via micro-payment nonce, see "Receiver address
-verification".)
+identities are custodial, server-held. Proof of Lightning-Address control is
+the account flag `lightningAddressVerified` via micro-payment nonce, see
+"Receiver address verification". That flag is not the forum role **Verified**,
+which means a moderator physically met the person (`account.role`, assigned
+with `PATCH /debug/accounts/:id`).)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
@@ -361,8 +369,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Sign-in via passkey (WebAuthn discoverable credential; session bound to
   `account.id`)
-- Receiver profile UI: name, photo, story, Lightning Address (+ verified
-  badge via micro-payment nonce)
+- Receiver profile UI: name, photo, story, Lightning Address (+
+  `lightningAddressVerified` via micro-payment nonce; not the forum role
+  Verified)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Recurring gifts: configure daily USD amounts per recipient (paid by the
@@ -667,6 +676,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-29 | Member-forum posts are **top-level kind:1** notes (not replies). GET/POST `/messages` include `sats` and `payable`. `POST /messages/:id/invoice` is a NIP-57 zap. Guest Send-a-gift is removed from the app. Worker fans out when `NOSTR_PUBLISH=1`.                                                                                                                                                                                                               |
 | 2026-08-29 | Worker indexes validated kind:9735 zap receipts onto `message.sats` (durable `nostr_zap_receipt`, LNURL provider pubkey + bolt11 amount). Kind:1 EVENT frames are published as JSON objects so relays can ACK.                                                                                                                                                                                                                                                     |
 | 2026-08-29 | `POST /me/lightning-address` live-resolves LUD-16 and requires NIP-57 zap metadata before save (no migration of existing rows). Invoice limiter on `POST /messages/:id/invoice` runs only after auth, amount, payable, and KEK checks so early 400/404/401/503 do not burn quota.                                                                                                                                                                                  |
+| 2026-08-29 | Forum display roles on exclusive `account.role`: `basis` \| `verified` \| `moderator` \| `founder`. New passkey accounts stay `basis`. `verified` = moderator physically met the person (not `lightningAddressVerified`). `GET/POST /messages` always include live author `role` (missing author → `basis`). Operator assignment via `PATCH /debug/accounts/:id` (`DEBUG_TOKEN`).                                                                                  |
 | 2026-08-29 | Public member forum UX is a messenger-group thread (oldest top, newest bottom above the composer). `GET /messages` remains the latest-200 window newest-first; clients reverse for display.                                                                                                                                                                                                                                                                        |
 | 2026-08-29 | Zap ingest and invoice `relays` always include the public list (space plus Damus / Primal / nos.lol); kind:1 public write stays gated on `NOSTR_PUBLISH_PUBLIC`.                                                                                                                                                                                                                                                                                                   |
 | 2026-08-29 | Zap-receipt sats UPDATE qualifies `message.sats` so Postgres can apply it.                                                                                                                                                                                                                                                                                                                                                                                         |

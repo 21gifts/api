@@ -62,14 +62,6 @@ async function authedAccount(
   return resolveSession(deps.authStore, deps.now(), token);
 }
 
-async function isPayable(deps: MessagesRouteDeps, row: MessageRow): Promise<boolean> {
-  if (row.eventId === null) {
-    return false;
-  }
-  const author = await deps.authStore.getAccount(row.accountId);
-  return author !== undefined && author.lightningAddress !== null;
-}
-
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -113,7 +105,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listLatest(MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          messages.push(serializeMessage(row, await isPayable(deps, row)));
+          const author = await deps.authStore.getAccount(row.accountId);
+          const payable =
+            row.eventId !== null && author !== undefined && author.lightningAddress !== null;
+          const role = author?.role ?? 'basis';
+          messages.push(serializeMessage(row, payable, role));
         }
         return c.json({ messages }, 200);
       } catch {
@@ -166,7 +162,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         const created =
           photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
-        return c.json(serializeMessage(created, false), 200);
+        return c.json(serializeMessage(created, false, account.role), 200);
       } catch {
         logEvent('messages.create.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

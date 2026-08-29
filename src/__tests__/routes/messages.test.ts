@@ -181,8 +181,75 @@ describe('GET /messages', () => {
     });
     const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ payable: boolean }> };
+    const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
     expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.role).toBe('basis');
+  });
+
+  it('includes the live author role for moderator, founder, and verified', async () => {
+    for (const role of ['moderator', 'founder', 'verified'] as const) {
+      const authStore = await namedStore('Ada');
+      const account = await authStore.getAccount('acc');
+      expect(account).toBeDefined();
+      if (account === undefined) {
+        throw new Error('expected account');
+      }
+      await authStore.updateAccount({ ...account, role });
+      const messageStore = new InMemoryMessageStore();
+      await messageStore.create({
+        id: `msg-${role}`,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      });
+      const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { messages: Array<{ role: string }> };
+      expect(body.messages[0]?.role).toBe(role);
+    }
+  });
+
+  it('marks a signed note without a Lightning Address as not payable', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'nopay',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.role).toBe('basis');
+  });
+
+  it('defaults role to basis and payable to false when the author is missing', async () => {
+    const authStore = await seededStore();
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'orphan',
+      accountId: 'gone',
+      name: 'Ghost',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ff'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.role).toBe('basis');
   });
 
   it('returns 503 and logs when listLatest throws', async () => {
@@ -272,6 +339,7 @@ describe('POST /messages', () => {
       sats: number;
       payable: boolean;
       hasPhoto: boolean;
+      role: string;
       accountId?: string;
     };
     expect(created.name).toBe('Ada');
@@ -280,6 +348,7 @@ describe('POST /messages', () => {
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
+    expect(created.role).toBe('basis');
     expect(created.accountId).toBeUndefined();
     expect(created.id.length).toBeGreaterThan(8);
 
@@ -288,6 +357,24 @@ describe('POST /messages', () => {
     const body = (await list.json()) as { messages: (typeof created)[] };
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]).toEqual(created);
+  });
+
+  it('includes the session account role on POST', async () => {
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({ ...account, role: 'moderator' });
+    const res = await mount(authStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { role: string };
+    expect(body.role).toBe('moderator');
   });
 
   it('rejects posting without a name', async () => {

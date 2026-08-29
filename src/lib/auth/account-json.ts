@@ -10,7 +10,7 @@ export interface AccountResponse {
   id: string;
   /** Legacy LNURL-auth linking key, or `null` for passkey accounts. */
   linkingKey: string | null;
-  /** Permission tier. */
+  /** Permission / forum display tier (`basis` \| `verified` \| `moderator` \| `founder`). */
   role: string;
   /** Display name, or `null` until set. */
   name: string | null;
@@ -53,7 +53,8 @@ export interface ViewProfileResponse {
 /**
  * Project an account to the nine-field debug listing shape.
  *
- * Used by `GET /debug/accounts` only. Does not include `viewKey`.
+ * Used by `GET /debug/accounts` and `PATCH /debug/accounts/:id` only.
+ * Does not include `viewKey`.
  * Owner responses use {@link serializeOwnerAccount} instead.
  *
  * @param account - Stored account.

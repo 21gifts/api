@@ -8,8 +8,13 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * used when a database URL is configured. Both implement {@link AuthStore}.
  */
 
-/** Account permission tier. Role assignment stays operator-side in v1. */
-export type AccountRole = 'basis' | 'moderator';
+/**
+ * Account permission / forum display tier. Role assignment stays operator-side
+ * in v1 (`PATCH /debug/accounts/:id`). New passkey accounts stay `basis`.
+ * `verified` is a human-identity badge (moderator met the person), not
+ * `lightningAddressVerified`.
+ */
+export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
 
 /**
  * A registered account.
@@ -24,7 +29,7 @@ export interface Account {
    * Legacy LNURL-auth linking key (hex), or `null` for passkey accounts.
    */
   linkingKey: string | null;
-  /** Permission tier. */
+  /** Permission / forum display tier. */
   role: AccountRole;
   /** Display name, or `null` until the user sets one. */
   name: string | null;

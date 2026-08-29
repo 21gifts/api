@@ -219,9 +219,9 @@
 
 ## Function: debugRoutes
 
-- **Purpose:** Operator listing of registered accounts.
+- **Purpose:** Operator listing of registered accounts and role assignment.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ accounts }` otherwise. Logs `debug.accounts.listed` with count, never the token.
+- **Returns / side effects:** Hono app (`GET /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` logs `debug.accounts.listed` with count. PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -436,9 +436,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto` and omits `accountId` and photo bytes.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -478,9 +478,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, and `hasPhoto`.
-- **Inputs:** `MessageRow` (includes `accountId`; never photo bytes) and `payable` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto }` with ISO-8601 `createdAt`; `accountId` omitted. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, and live author role.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo bytes), `payable` boolean, and `role` (`AccountRole`).
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, role }` with ISO-8601 `createdAt`; `accountId` omitted; never photo bytes. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: serializeContact
@@ -656,7 +656,7 @@
 - **Purpose:** Project an account to the nine-field dump without `viewKey` (no Nostr fields).
 - **Inputs:** `Account`.
 - **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
-- **Used by:** `GET /debug/accounts` only (not `/me`).
+- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id` only (not `/me`).
 
 ## Function: serializeOwnerAccount
 

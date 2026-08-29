@@ -395,7 +395,7 @@ function epochMs(value: Date | string): number {
 }
 
 function parseRole(raw: string): AccountRole {
-  if (raw === 'basis' || raw === 'moderator') {
+  if (raw === 'basis' || raw === 'verified' || raw === 'moderator' || raw === 'founder') {
     return raw;
   }
   throw new Error(`Unknown account role "${raw}"`);

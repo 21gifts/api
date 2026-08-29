@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; `GET /messages/:id/photo`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-29 (forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; `GET /messages/:id/photo`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -55,38 +55,39 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                  |
-| ------ | -------------------------------------------- | ------------------------ | ---------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                 |
-| GET    | `/info`                                      | none                     | Service identity                         |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                     |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                 |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)            |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options          |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session        |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options           |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session          |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                  |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key          |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                 |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws   |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement       |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve    |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                           |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment   |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history        |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                 |
-| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum  |
-| GET    | `/messages/:id/photo`                        | Bearer                   | Fetch forum message photo bytes          |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                      |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`   |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)         |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`) |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`) |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`) |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics      |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)     |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof         |
+| Method | Path                                         | Auth                     | Purpose                                     |
+| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------- |
+| GET    | `/healthz`                                   | none                     | Liveness                                    |
+| GET    | `/info`                                      | none                     | Service identity                            |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                        |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                    |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)               |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options             |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session           |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options              |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session             |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                     |
+| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key             |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                    |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws      |
+| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement          |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve       |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                              |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment      |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history           |
+| GET    | `/messages`                                  | Bearer                   | List public forum thread                    |
+| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum     |
+| GET    | `/messages/:id/photo`                        | Bearer                   | Fetch forum message photo bytes             |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                         |
+| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`      |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)            |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)    |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`) |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)    |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)    |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics         |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)        |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof            |
 
 ### `GET /healthz`
 
@@ -273,7 +274,7 @@ Missing or invalid bearer → **Response** `401`:
 | -------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
 | `id`                       | string         | Opaque account id                                                                             |
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                       |
-| `role`                     | string         | `basis` or `moderator`                                                                        |
+| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                |
 | `name`                     | string \| null | Display name, or `null` until set                                                             |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                              |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                             |
@@ -610,6 +611,50 @@ Environment:
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
 
+### `PATCH /debug/accounts/:id`
+
+Operator assignment of the account's forum display role. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
+`GET /debug/accounts`). Body:
+
+```json
+{ "role": "basis" }
+```
+
+`role` must be one of `basis`, `verified`, `moderator`, or `founder`. This
+path does not patch name or Lightning Address. `verified` is a human-identity
+badge (a moderator physically met the person); it is not
+`lightningAddressVerified`. New passkey accounts stay `basis` until an
+operator changes them here.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Body is not JSON with a known `role` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"role\" string" }
+```
+
+Unknown account id → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Success → **Response** `200` with the updated account JSON (same eight-field dump as
+`GET /debug/accounts`; no `viewKey`). The process logs
+`debug.accounts.role_set` with the account id and new role (never the token).
+
 ### `GET /debug/contacts`
 
 Operator listing of private in-app contact messages. Authenticated with
@@ -905,8 +950,10 @@ composer), reversing the array for display. Each message exposes the author
 **name snapshotted at post time**, `text` (may be empty when a photo is
 attached), ISO-8601 `createdAt`, `sats` (validated Lightning receipts on that
 note, default 0), `payable` (true when the note is signed and the author has
-a Lightning Address), and `hasPhoto`. List JSON never includes photo bytes.
-`accountId` and Nostr event ids are never included in the JSON.
+a Lightning Address), `hasPhoto`, and live `role` (the author's current
+`account.role`, or `"basis"` if the author is missing). List JSON never
+includes photo bytes. `accountId` and Nostr event ids are never included in
+the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -932,7 +979,8 @@ Success → **Response** `200`:
       "createdAt": "2026-08-28T12:00:00.000Z",
       "sats": 0,
       "payable": false,
-      "hasPhoto": false
+      "hasPhoto": false,
+      "role": "basis"
     }
   ]
 }
@@ -973,9 +1021,10 @@ trim, or with disallowed C0/DEL controls, is rejected. Newlines (`\n`,
 `\r`) are allowed. The **200** body is the public message object itself
 (not wrapped in `{ messages }`), including `sats`, `payable`, and
 `hasPhoto`. No `accountId` and no photo bytes in the JSON. `sats` is 0 and
-`payable` is false until the worker signs the note. Over-limit posters get
-**429** `{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s,
-6/h, 20/UTC-day). The worker signs a top-level kind:1 and fans out when
+`payable` is false until the worker signs the note. `role` is the posting
+session account's live `account.role`. Over-limit posters get **429**
+`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
+20/UTC-day). The worker signs a top-level kind:1 and fans out when
 `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -1032,7 +1081,8 @@ Success → **Response** `200`:
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
   "payable": false,
-  "hasPhoto": false
+  "hasPhoto": false,
+  "role": "basis"
 }
 ```
 
@@ -1177,8 +1227,8 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 when `DATABASE_URL` is set.
 
 **Moderator-only endpoints.** Content hide/unhide and related Moderator
-actions. Role values exist on the account model; `GET /debug/accounts` is
-an operator token route, not a moderator session.
+actions. Role values exist on the account model; `GET /debug/accounts` and
+`PATCH /debug/accounts/:id` are operator token routes, not a moderator session.
 
 ---
 

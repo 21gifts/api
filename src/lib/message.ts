@@ -1,3 +1,5 @@
+import type { AccountRole } from '@/lib/auth/store';
+
 /**
  * Forum message domain: validation, photo decode, and public JSON projection.
  *
@@ -82,6 +84,11 @@ export interface PublicMessage {
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
+  /**
+   * Author's live `account.role` (not a snapshot). Always present; `"basis"`
+   * when the author account is missing.
+   */
+  role: AccountRole;
 }
 
 /**
@@ -118,10 +125,15 @@ export function normalizeForumText(raw: string): string | null {
  *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
- * @returns Public fields (`sats`, `payable`, `hasPhoto`; no `accountId`);
+ * @param role - Author's live {@link AccountRole} (or `'basis'` if missing).
+ * @returns Public fields (`sats`, `payable`, `hasPhoto`, `role`; no `accountId`);
  * `createdAt` ISO-8601. Never includes photo bytes.
  */
-export function serializeMessage(row: MessageRow, payable: boolean): PublicMessage {
+export function serializeMessage(
+  row: MessageRow,
+  payable: boolean,
+  role: AccountRole,
+): PublicMessage {
   return {
     id: row.id,
     name: row.name,
@@ -130,6 +142,7 @@ export function serializeMessage(row: MessageRow, payable: boolean): PublicMessa
     sats: row.sats,
     payable,
     hasPhoto: row.hasPhoto,
+    role,
   };
 }
 

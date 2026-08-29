@@ -183,6 +183,13 @@ test('GET /debug/accounts with the e2e token lists accounts', async ({ request }
   expect(Array.isArray(body.accounts)).toBe(true);
 });
 
+test('PATCH /debug/accounts/:id without bearer is 401', async ({ request }) => {
+  const res = await request.patch('/debug/accounts/:id', {
+    data: { role: 'basis' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/contacts without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/contacts');
   expect(res.status()).toBe(401);
