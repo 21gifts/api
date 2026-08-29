@@ -326,11 +326,11 @@ test('Function: contactRoutes — POST /contact without bearer is 401', async ({
   expect(res.status()).toBe(401);
 });
 
-test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 401 or 503', async ({
+test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 401', async ({
   request,
 }) => {
   const res = await request.get('/debug/contacts');
-  expect([401, 503]).toContain(res.status());
+  expect(res.status()).toBe(401);
 });
 
 test('Function: serializeContact — POST /contact without bearer is 401', async ({ request }) => {
@@ -340,11 +340,11 @@ test('Function: serializeContact — POST /contact without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 
-test('Function: serializeDebugContact — GET /debug/contacts without bearer is 401 or 503', async ({
+test('Function: serializeDebugContact — GET /debug/contacts without bearer is 401', async ({
   request,
 }) => {
   const res = await request.get('/debug/contacts');
-  expect([401, 503]).toContain(res.status());
+  expect(res.status()).toBe(401);
 });
 
 test('Function: InMemoryContactStore — POST /contact without bearer is 401', async ({
