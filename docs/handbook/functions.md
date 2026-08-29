@@ -810,7 +810,7 @@
 - **Purpose:** Combine flags + URLs for one worker tick.
 - **Inputs:** env slice.
 - **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
-- **Used by:** Worker publish (`runNostrWorkerTick` / `publishBatch`).
+- **Used by:** Worker publish (`runNostrWorkerTick` / `publishProfiles` / `publishBatch`).
 
 ## Function: resolveZapRelays
 
@@ -891,7 +891,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database. Unchanged kind:0 content is not resent; the worker reserves the cache entry before the relay await so overlapping ticks do not double-publish, and a nack or throw drops that reservation only when it still matches. After signing, a tick that no longer owns the reservation skips the publish. At most `WORKER_BATCH` kind:0 attempts run per tick, including nacks. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database to the space relay, and to the public list when `NOSTR_PUBLISH_PUBLIC=1`. Unchanged kind:0 content is not resent; the worker reserves the cache entry before the relay await so overlapping ticks do not double-publish, and a nack or throw drops that reservation only when it still matches. After signing, a tick that no longer owns the reservation skips the publish. At most `WORKER_BATCH` kind:0 attempts run per tick, including nacks. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Inputs:** worker deps.
 - **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.

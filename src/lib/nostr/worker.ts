@@ -44,7 +44,7 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
 }
 
-/** Last published kind:0 content per account, keyed by auth store. */
+/** Reserved or last-acked kind:0 content per account, keyed by auth store. */
 const profileCaches = new WeakMap<AuthStore, Map<string, string>>();
 
 function profileCacheFor(auth: AuthStore): Map<string, string> {
