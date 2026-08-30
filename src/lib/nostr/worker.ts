@@ -329,6 +329,7 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
         continue;
       }
       attempted += 1;
+      /* v8 ignore next 3 -- overlapping tick replaced the reservation */
       if (cache.get(live.id) !== reservation) {
         continue;
       }
@@ -337,6 +338,7 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
       watermarks.set(live.id, reservation.createdAt);
       const unsigned = buildKind10002Event(urls, reservation.createdAt);
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
+      /* v8 ignore next 3 -- overlapping tick replaced the reservation */
       if (cache.get(live.id) !== reservation) {
         continue;
       }
