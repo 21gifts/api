@@ -1197,10 +1197,15 @@ Success → **Response** `200`:
 
 ### `POST /messages/:id/invoice`
 
-Signed-in pay-on-note. Bearer session required. Body `{ "sats": <int ≥ 1> }`.
-The api signs a NIP-57 zap request with the **payer** key and returns a BOLT11
-invoice for the **author** Lightning Address. It does **not** increment
-`sats` (that happens when a validated kind:9735 receipt is indexed).
+Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
+Body `{ "sats": <int ≥ 1> }`. The api signs a NIP-57 zap request with the
+**payer** key and returns a BOLT11 invoice for the **author** Lightning Address.
+It does **not** increment `sats` (that happens when a validated kind:9735
+receipt is indexed). After auth, every attempt with a valid UUID is persisted
+best-effort to `message_invoice` (result, HTTP status, `pr`, description vs
+`description_hash`, `isNip57Invoice`). Store failures log
+`message.invoice.record_failed` and do not change the HTTP response. A
+non-UUID `:id` is **404** without a persist row.
 
 Success → **Response** `200`:
 

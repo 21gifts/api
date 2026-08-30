@@ -177,8 +177,8 @@
 
 ## Endpoint: POST /messages/:id/invoice
 
-- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
-- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
+- **Purpose:** Bearer required. `:id` is a UUID. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
+- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found (unknown id or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
