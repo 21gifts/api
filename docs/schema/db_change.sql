@@ -1,7 +1,7 @@
 -- Append-only row-change log. AFTER INSERT/UPDATE/DELETE triggers on every
 -- public table (except db_change) write redacted before/after JSON. Secret
 -- columns token, challenge, nostr_nsec_ciphertext, nonce, view_key, endpoint,
--- p256dh, and auth are stored as SHA-256 hex; other columns including name stay
+-- p256dh, auth, and delivered_endpoints are stored as SHA-256 hex; other columns including name stay
 -- plaintext. The log itself
 -- rejects UPDATE, DELETE, and TRUNCATE at runtime. migrateDbChangeSchema may
 -- drop that trigger once to hash view_key values that still match a live
@@ -32,7 +32,7 @@ BEGIN
   IF j IS NULL THEN
     RETURN NULL;
   END IF;
-  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth']
+  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints']
   LOOP
     IF outj ? k AND jsonb_typeof(outj -> k) IS DISTINCT FROM 'null' THEN
       outj := jsonb_set(

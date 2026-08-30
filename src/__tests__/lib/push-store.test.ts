@@ -51,17 +51,20 @@ function pending(
     attempts: 0,
     claimedUntil: null,
     createdAt: new Date('2026-08-01T00:00:00.000Z'),
+    deliveredEndpoints: [],
     ...overrides,
   };
 }
 
 describe('PUSH_SCHEMA_SQL', () => {
   it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(4);
+    expect(PUSH_SCHEMA_SQL).toHaveLength(5);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/CREATE TABLE IF NOT EXISTS push_outbox/i);
+    expect(PUSH_SCHEMA_SQL[2]).toMatch(/delivered_endpoints/);
     expect(PUSH_SCHEMA_SQL[3]).toMatch(/push_outbox_pending_idx/i);
+    expect(PUSH_SCHEMA_SQL[4]).toMatch(/ADD COLUMN IF NOT EXISTS delivered_endpoints/i);
   });
 });
 
@@ -193,6 +196,26 @@ describe('InMemoryPushStore', () => {
     await store.markFailed('y');
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
   });
+
+  it('recordDelivered unions unique endpoints and isolates claimed copies', async () => {
+    const store = new InMemoryPushStore();
+    await store.enqueue(pending({ id: 'o', accountId: 'a' }));
+    await store.recordDelivered('missing', ['https://push.example/x']);
+    await store.recordDelivered('o', ['https://push.example/a', 'https://push.example/a', '']);
+    await store.recordDelivered('o', ['https://push.example/b']);
+    const claimed = await store.claimPending(10, 1, 1000);
+    expect(claimed[0]?.deliveredEndpoints).toEqual([
+      'https://push.example/a',
+      'https://push.example/b',
+    ]);
+    claimed[0]?.deliveredEndpoints.push('https://push.example/mutated');
+    await store.markFailed('o');
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again[0]?.deliveredEndpoints).toEqual([
+      'https://push.example/a',
+      'https://push.example/b',
+    ]);
+  });
 });
 
 describe('PostgresPushStore', () => {
@@ -260,6 +283,8 @@ describe('PostgresPushStore', () => {
 
     await store.enqueue(pending({ id: 'o1', accountId: 'acc-a' }));
     expect(sql.executes.at(-1)?.text).toMatch(/INSERT INTO push_outbox/i);
+    expect(sql.executes.at(-1)?.text).toMatch(/delivered_endpoints/);
+    expect(sql.executes.at(-1)?.params.at(-1)).toBe('[]');
 
     sql.nextRows = [
       {
@@ -272,16 +297,35 @@ describe('PostgresPushStore', () => {
         attempts: 0,
         claimed_until: '2026-08-03T00:01:00.000Z',
         created_at: '2026-08-01T00:00:00.000Z',
+        delivered_endpoints: '[]',
       },
     ];
     const claimed = await store.claimPending(5, Date.parse('2026-08-03T00:00:00.000Z'), 60_000);
     expect(claimed[0]?.claimedUntil).toBeInstanceOf(Date);
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(sql.queries.at(-1)?.text).toMatch(/FOR UPDATE SKIP LOCKED/);
 
     await store.markSent('o1');
     expect(sql.executes.at(-1)?.text).toMatch(/status = 'sent'/);
     await store.markFailed('o1');
     expect(sql.executes.at(-1)?.text).toMatch(/attempts = attempts \+ 1/);
+  });
+
+  it('recordDelivered selects and updates delivered_endpoints; unknown id is a no-op', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [];
+    await store.recordDelivered('missing', ['https://push.example/a']);
+    expect(sql.queries.at(-1)?.text).toMatch(/delivered_endpoints/);
+    expect(sql.executes).toHaveLength(0);
+
+    sql.nextRows = [{ delivered_endpoints: '["https://push.example/a"]' }];
+    await store.recordDelivered('o1', ['https://push.example/a', 'https://push.example/b']);
+    expect(sql.queries.at(-1)?.text).toMatch(/delivered_endpoints/);
+    expect(sql.executes.at(-1)?.text).toMatch(/delivered_endpoints/);
+    expect(sql.executes.at(-1)?.params[0]).toBe(
+      JSON.stringify(['https://push.example/a', 'https://push.example/b']),
+    );
   });
 
   it('throws when upsert RETURNING is empty', async () => {
@@ -305,12 +349,14 @@ describe('PostgresPushStore', () => {
         attempts: 1,
         claimed_until: null,
         created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: null,
       },
     ];
     const claimed = await store.claimPending(1, 1, 1000);
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.status).toBe('pending');
     expect(claimed[0]?.claimedUntil).toBeNull();
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
   });
 
   it('maps a Date claimed_until from Postgres without wrapping twice', async () => {
@@ -328,10 +374,71 @@ describe('PostgresPushStore', () => {
         attempts: 0,
         claimed_until: until,
         created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '["https://push.example/a"]',
       },
     ];
     const claimed = await store.claimPending(1, 1, 1000);
     expect(claimed[0]?.claimedUntil).toBeInstanceOf(Date);
     expect(claimed[0]?.claimedUntil?.toISOString()).toBe(until.toISOString());
+    expect(claimed[0]?.deliveredEndpoints).toEqual(['https://push.example/a']);
+  });
+
+  it('maps invalid delivered_endpoints JSON to an empty array', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'o4',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'msg',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: 'not-json',
+      },
+    ];
+    const claimed = await store.claimPending(1, 1, 1000);
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
+  });
+
+  it('maps non-array and dirty delivered_endpoints entries via parse rules', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'o5',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'msg',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '{}',
+      },
+    ];
+    expect((await store.claimPending(1, 1, 1000))[0]?.deliveredEndpoints).toEqual([]);
+
+    sql.nextRows = [
+      {
+        id: 'o6',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'msg',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[1,"","https://push.example/a","https://push.example/a",null]',
+      },
+    ];
+    expect((await store.claimPending(1, 1, 1000))[0]?.deliveredEndpoints).toEqual([
+      'https://push.example/a',
+    ]);
   });
 });

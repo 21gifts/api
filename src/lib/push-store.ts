@@ -41,6 +41,8 @@ export interface PushOutboxRow {
   claimedUntil: Date | null;
   /** Enqueue time. */
   createdAt: Date;
+  /** Endpoints that already received this payload (url strings). */
+  deliveredEndpoints: string[];
 }
 
 /**
@@ -109,6 +111,15 @@ export interface PushStore {
    * @param id - Outbox id.
    */
   markFailed(id: string): Promise<void>;
+
+  /**
+   * Union `endpoints` into the stored delivered list for this outbox row.
+   * Duplicate strings are stored once. Unknown id is a no-op.
+   *
+   * @param id - Outbox id.
+   * @param endpoints - Endpoint URLs that received the payload.
+   */
+  recordDelivered(id: string, endpoints: readonly string[]): Promise<void>;
 }
 
 /** Idempotent DDL for push tables (matches `docs/schema/push.sql`). */
@@ -130,9 +141,11 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   attempts integer NOT NULL DEFAULT 0,
   claimed_until timestamptz,
-  created_at timestamptz NOT NULL
+  created_at timestamptz NOT NULL,
+  delivered_endpoints text NOT NULL DEFAULT '[]'
 )`,
   `CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending'`,
+  `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]'`,
 ];
 
 /**
@@ -145,6 +158,52 @@ export async function migratePushSchema(sql: SqlClient): Promise<void> {
   for (const statement of PUSH_SCHEMA_SQL) {
     await sql.execute(statement);
   }
+}
+
+/** Parse `delivered_endpoints` JSON text into unique non-empty strings. */
+function parseDeliveredEndpoints(raw: unknown): string[] {
+  if (typeof raw !== 'string') {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of parsed) {
+    if (typeof item !== 'string' || item === '') {
+      continue;
+    }
+    if (seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+/** Union unique endpoint strings onto an existing list (first-seen order). */
+function unionDeliveredEndpoints(
+  current: readonly string[],
+  endpoints: readonly string[],
+): string[] {
+  const out = current.slice();
+  const seen = new Set(out);
+  for (const endpoint of endpoints) {
+    if (typeof endpoint !== 'string' || endpoint === '' || seen.has(endpoint)) {
+      continue;
+    }
+    seen.add(endpoint);
+    out.push(endpoint);
+  }
+  return out;
 }
 
 /** Copy a subscription so callers cannot mutate store state. */
@@ -161,6 +220,7 @@ function copyOutbox(row: PushOutboxRow): PushOutboxRow {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     claimedUntil: row.claimedUntil === null ? null : new Date(row.claimedUntil.getTime()),
+    deliveredEndpoints: row.deliveredEndpoints.slice(),
   };
 }
 
@@ -318,6 +378,21 @@ export class InMemoryPushStore implements PushStore {
     }
     return Promise.resolve();
   }
+
+  /**
+   * Union unique endpoints onto the in-memory delivered list.
+   *
+   * @param id - Outbox id.
+   * @param endpoints - Newly delivered endpoint URLs.
+   */
+  recordDelivered(id: string, endpoints: readonly string[]): Promise<void> {
+    const row = this.#outbox.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve();
+    }
+    row.deliveredEndpoints = unionDeliveredEndpoints(row.deliveredEndpoints, endpoints);
+    return Promise.resolve();
+  }
 }
 
 /** Row shape selected from `push_subscription`. */
@@ -340,6 +415,7 @@ interface PushOutboxSqlRow {
   attempts: number;
   claimed_until: Date | string | null;
   created_at: Date | string;
+  delivered_endpoints: string | null;
 }
 
 function mapSub(row: PushSubSqlRow): PushSubscriptionRecord {
@@ -373,11 +449,12 @@ function mapOutbox(row: PushOutboxSqlRow): PushOutboxRow {
           ? row.claimed_until
           : new Date(row.claimed_until),
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    deliveredEndpoints: parseDeliveredEndpoints(row.delivered_endpoints),
   };
 }
 
 const OUTBOX_SELECT =
-  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at';
+  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints';
 
 /**
  * Durable {@link PushStore} backed by Postgres.
@@ -479,8 +556,8 @@ export class PostgresPushStore implements PushStore {
   async enqueue(row: PushOutboxRow): Promise<void> {
     await this.#sql.execute(
       `INSERT INTO push_outbox
-         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         row.id,
         row.accountId,
@@ -491,6 +568,7 @@ export class PostgresPushStore implements PushStore {
         row.attempts,
         row.claimedUntil,
         row.createdAt,
+        JSON.stringify(row.deliveredEndpoints),
       ],
     );
   }
@@ -544,5 +622,30 @@ export class PostgresPushStore implements PushStore {
        WHERE id = $1`,
       [id],
     );
+  }
+
+  /**
+   * Read current delivered JSON, union `endpoints`, write back.
+   *
+   * @param id - Outbox id.
+   * @param endpoints - Newly delivered endpoint URLs.
+   */
+  async recordDelivered(id: string, endpoints: readonly string[]): Promise<void> {
+    const rows = await this.#sql.query<{ delivered_endpoints: string | null }>(
+      `SELECT delivered_endpoints FROM push_outbox WHERE id = $1`,
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      return;
+    }
+    const next = unionDeliveredEndpoints(
+      parseDeliveredEndpoints(existing.delivered_endpoints),
+      endpoints,
+    );
+    await this.#sql.execute(`UPDATE push_outbox SET delivered_endpoints = $1 WHERE id = $2`, [
+      JSON.stringify(next),
+      id,
+    ]);
   }
 }

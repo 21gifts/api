@@ -191,8 +191,9 @@ The api enqueues (does not send inline):
 - a **forum** payload when someone else posts (`tag: forum`)
 - a **zap** payload when a zap receipt is newly indexed onto the author's note
 
-The worker sends when VAPID is configured. Open focused tabs skip a second
-banner (service worker). Do not invent preference HTTP in v1.
+The worker sends when VAPID is configured. On outbox retry it does not re-send
+an endpoint that already succeeded for that outbox row. Open focused tabs skip
+a second banner (service worker). Do not invent preference HTTP in v1.
 
 HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/debug/push-ping`.
 

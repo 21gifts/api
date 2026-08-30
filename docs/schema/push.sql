@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS push_outbox (
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   attempts integer NOT NULL DEFAULT 0,
   claimed_until timestamptz,
-  created_at timestamptz NOT NULL
+  created_at timestamptz NOT NULL,
+  delivered_endpoints text NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending';
+ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]';
