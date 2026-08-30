@@ -389,7 +389,6 @@ Currently:
 | `VAPID_PRIVATE_KEY`    | _(unset → push HTTP 503)_               | URL-safe base64 P-256 private key. Secret. Never log. Pair with `VAPID_PUBLIC_KEY`. |
 | `VAPID_SUBJECT`        | `https://21.gifts`                      | VAPID `sub` URI. Optional. |
 
-
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
 (`LN_ADDRESS_CACHE_TTL_MS`), not an environment variable.

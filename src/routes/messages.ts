@@ -195,7 +195,7 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * `POST /messages`, `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` /
  * `.webp`), and `POST /messages/:id/invoice`.
  *
- * @param deps - Message store, auth store, and clock.
+ * @param deps - Message store, auth store, clock, and optional `pushStore`.
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, and `POST /:id/invoice`.
  */
