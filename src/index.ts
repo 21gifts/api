@@ -13,6 +13,10 @@ import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import { resolveVapidConfig } from './lib/push-config';
+import { UnconfiguredPushSender, WebPushSender } from './lib/push-sender';
+import { InMemoryPushStore } from './lib/push-store';
+import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -35,19 +39,28 @@ if (import.meta.main) {
   const databaseUrl = process.env['DATABASE_URL'];
   // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
   // falls back to Coinbase; unset does not fail boot.
+  const boot = await openBootStores(databaseUrl, createBunSqlClient);
   const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek, contactStore } =
-    await openBootStores(databaseUrl, createBunSqlClient);
+    boot;
+  const pushStore = boot.pushStore ?? new InMemoryPushStore();
+  const vapid = resolveVapidConfig(process.env);
+  const sender = vapid !== null ? new WebPushSender(vapid) : new UnconfiguredPushSender();
   const app = createApp({
     authStore,
     btcUsdRates,
+    pushStore,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(messageStore === undefined ? {} : { messageStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
+    ...(vapid === null ? {} : { vapidPublicKey: vapid.publicKey }),
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
+  if (vapid !== null) {
+    startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
+  }
   if (nostrKek !== undefined && messageStore !== undefined) {
     const publisher = new WebsocketNostrPublisher();
     startNostrWorker(
@@ -60,6 +73,7 @@ if (import.meta.main) {
         fetchImpl: globalThis.fetch,
         now: Date.now,
         env: process.env,
+        pushStore,
       },
       WORKER_INTERVAL_MS,
     );

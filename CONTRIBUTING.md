@@ -41,6 +41,8 @@ api/
 │   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; GET /debug/zap-ingests (DEBUG_TOKEN)
+│   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
+│   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
@@ -54,6 +56,11 @@ api/
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
+│   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
+│   │   ├── push.ts           # parsePushSubscription + English forum/zap payloads
+│   │   ├── push-store.ts     # PushStore port, memory + Postgres, PUSH_SCHEMA_SQL
+│   │   ├── push-sender.ts    # PushSender port, UnconfiguredPushSender, WebPushSender
+│   │   ├── push-worker.ts    # enqueue + outbox tick
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
@@ -123,6 +130,11 @@ api/
 │       │   ├── nostr/            # kek, keys, publish, worker, relays, zap, event, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
+│       │   ├── push.test.ts
+│       │   ├── push-config.test.ts
+│       │   ├── push-store.test.ts
+│       │   ├── push-sender.test.ts
+│       │   ├── push-worker.test.ts
 │       │   └── auth/
 │       │       ├── account-json.test.ts
 │       │       ├── hex.test.ts
@@ -149,6 +161,8 @@ api/
 │           ├── contact.test.ts
 │           ├── debug-contacts.test.ts
 │           ├── debug-payments.test.ts
+│           ├── push.test.ts
+│           ├── debug-push.test.ts
 │           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
@@ -159,6 +173,7 @@ api/
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── message.sql           # forum `message` plus `message_invoice` and `nostr_zap_ingest`
 │   ├── contact.sql           # private contact mailbox table for POST /contact
+│   ├── push.sql              # push_subscription + push_outbox
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
@@ -258,7 +273,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresMessageStore`, `migrateMessageSchema`,
-`PostgresContactStore`, `migrateContactSchema`, `migrateDbChangeSchema`,
+`PostgresContactStore`, `migrateContactSchema`,
+`PostgresPushStore`, `migratePushSchema`, `migrateDbChangeSchema`,
 `DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
@@ -294,7 +310,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
   named `trg_db_change` on every `public` table except `db_change` itself — **not**
   by application store methods. New public tables are covered on the next SQL boot
-  (`migrateDbChangeSchema` after `migrateContactSchema`) once the table exists. A
+  (`migrateDbChangeSchema` after `migratePushSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
 - `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
   **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
@@ -302,7 +318,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   still match a live `account.view_key`, then recreates it. Rows whose key no
   longer matches a live account are left unchanged.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
-  `nonce`, and `view_key` are SHA-256 hex of the column text. All other columns, including
+  `nonce`, `view_key`, `endpoint`, `p256dh`, and `auth` are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
 - Compare OLD vs NEW **before** redaction
@@ -354,8 +370,8 @@ Currently:
 | ---------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages` and `GET /messages/:id/photo` use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum and contact stores, empty gift stats, empty day lists, and a no-op gift recorder. |
-| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `POST /debug/accounts`, `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`, and `GET /debug/zap-ingests`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, `push_subscription`, `push_outbox`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages` and `GET /messages/:id/photo` use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum, contact, and push stores, empty gift stats, empty day lists, and a no-op gift recorder. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `POST /debug/accounts`, `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`, `GET /debug/zap-ingests`, and `POST /debug/push-ping`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -368,6 +384,10 @@ Currently:
 | `NOSTR_RELAY_SPACE`    | _(falls back to `NOSTR_RELAY_URL`)_     | Optional override of the durability relay WebSocket URL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `NOSTR_RELAY_PUBLIC`   | Damus, Primal, nos.lol                  | Optional comma-separated public relays. Used for kind:1, kind:0, and kind:10002 write when `NOSTR_PUBLISH_PUBLIC=1`, and always for zap ingest plus invoice `relays` tags (even when that flag is off).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `PUBLIC_BASE_URL`      | _(unset → no photo URL in kind:1)_      | Site origin for public photo URLs in kind:1 (`https://21.gifts` → `https://api.21.gifts`, `https://dev.21.gifts` → `https://dev-api.21.gifts`; otherwise the trimmed origin). Unset or blank → photo notes are signed without a URL and are not reset/re-signed. Not required at boot. Playwright pins it to `http://127.0.0.1:3000`.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `VAPID_PUBLIC_KEY`     | _(unset → push HTTP 503)_               | URL-safe base64 uncompressed P-256 public key (65 decoded bytes). Not a secret. Missing, blank, malformed, or unpaired with a valid private key → push HTTP **503**; the process still boots. |
+| `VAPID_PRIVATE_KEY`    | _(unset → push HTTP 503)_               | URL-safe base64 P-256 private key. Secret. Never log. Pair with `VAPID_PUBLIC_KEY`. |
+| `VAPID_SUBJECT`        | `https://21.gifts`                      | VAPID `sub` URI. Optional. |
+
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant

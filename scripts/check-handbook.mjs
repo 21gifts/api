@@ -133,9 +133,11 @@ function extractEndpoints() {
     'lightning-address.ts': '/lightning-address',
     'stats.ts': '/gifts/stats',
     'brand.ts': '',
+    'push.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
     'debug-payments.ts': '/debug',
+    'debug-push.ts': '/debug/push-ping',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {

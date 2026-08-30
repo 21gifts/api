@@ -56,6 +56,34 @@
 - **Used by:** Operators debugging zap receipt indexing.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: GET /push/vapid-public
+
+- **Purpose:** Bearer session. Returns `{ publicKey }` (URL-safe base64 VAPID public) so the app can subscribe.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 503 `{ error: 'Push is not configured' }` when VAPID keys are missing.
+- **Used by:** App `fetchVapidPublicKey` / enable-notifications.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: POST /me/push-subscriptions
+
+- **Purpose:** Bearer session. Upserts `{ endpoint, keys: { p256dh, auth } }` for the account. Rebinds the endpoint if another account owned it.
+- **Errors:** 401 Unauthorized; 503 Push is not configured; 400 `{ error: 'Invalid subscription' }`.
+- **Used by:** App `postPushSubscription`.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: DELETE /me/push-subscriptions
+
+- **Purpose:** Bearer session. Body `{ endpoint }` removes that device for the account.
+- **Errors:** 401 Unauthorized; 503 Push is not configured; 400 Invalid subscription; 404 `{ error: 'Not found' }`.
+- **Used by:** App `deletePushSubscription`.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: POST /debug/push-ping
+
+- **Purpose:** Operator enqueue of a test notification for `{ accountId }`. Returns `{ enqueued }` (`0` or `1`).
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 503 Push is not configured; 400 expected accountId; 404 Not found.
+- **Used by:** Operators verifying Web Push delivery.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.

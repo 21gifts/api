@@ -69,6 +69,18 @@ describe('createApp', () => {
     expect(res.status).toBe(503);
   });
 
+  it('returns 401 on GET /push/vapid-public without a session', async () => {
+    const app = createApp();
+    const res = await app.request('/push/vapid-public');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 on POST /debug/push-ping when debugToken is blank', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/push-ping', { method: 'POST' });
+    expect(res.status).toBe(503);
+  });
+
   it('emits http.request for GET /info', async () => {
     await createApp().request('/info');
     const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');

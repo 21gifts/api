@@ -26,6 +26,8 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import type { PushStore } from '@/lib/push-store';
+import { enqueueForumPushes } from '@/lib/push-worker';
 import { bearerToken } from '@/routes/me';
 
 /** Placeholder author id when the message/author is unknown at persist time. */
@@ -110,6 +112,8 @@ export interface MessagesRouteDeps {
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
+  /** Optional push outbox; forum create enqueues when present. */
+  pushStore?: PushStore;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -267,6 +271,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         const created =
           photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
+        if (deps.pushStore !== undefined) {
+          try {
+            await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
+          } catch {
+            logEvent('push.enqueue.failed');
+          }
+        }
         return c.json(serializeMessage(created, false, account.role), 200);
       } catch {
         logEvent('messages.create.failed');

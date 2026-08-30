@@ -21,6 +21,7 @@ import {
 } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
+import type { PushStore } from '@/lib/push-store';
 
 /** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
@@ -54,6 +55,8 @@ export interface NostrWorkerDeps {
   now: () => number;
   /** Env slice for write-set flags. */
   env: Record<string, string | undefined>;
+  /** Optional push store for zap enqueue after a newly indexed receipt. */
+  pushStore?: PushStore;
 }
 
 type Kind0Reservation = {
@@ -141,6 +144,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     now: deps.now,
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
+    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
 }
 

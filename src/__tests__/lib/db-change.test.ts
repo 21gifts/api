@@ -35,6 +35,9 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/nostr_nsec_ciphertext/);
     expect(joined).toMatch(/nonce/);
     expect(joined).toMatch(/view_key/);
+    expect(joined).toMatch(/endpoint/);
+    expect(joined).toMatch(/p256dh/);
+    expect(joined).toMatch(/auth/);
     const guardBlock = joined.slice(joined.indexOf('$guard$'));
     const dropAt = guardBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
     const afterMatchAt = guardBlock.indexOf("a.view_key = d.after ->> 'view_key'");

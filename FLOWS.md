@@ -1,13 +1,13 @@
 # 21.gifts — Core UI Flows
 
 > Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
-> plus the shipped in-app contact mailbox (journey 6).
+> plus the shipped in-app contact mailbox (journey 6) and Web Push (journey 7).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-29.
+**Status**: living document. Last revised 2026-08-30.
 
 ---
 
@@ -175,7 +175,30 @@ DMs, no Nostr fan-out. Do not invent `/events`.
 
 ---
 
-## Out of these six journeys
+## 7. Notifications — **Shipped**
+
+Transactional Web Push for signed-in members. The app is installable
+(Web App Manifest + service worker). After login the profile card has an
+icon-only bell: enable asks the OS permission, then `POST /me/push-subscriptions`.
+Disable `DELETE`s the endpoint. `GET /push/vapid-public` is Bearer.
+
+On iPhone Safari the site must be on the Home Screen before the OS will
+deliver pushes; the app shows that hint. Android and desktop Chrome do
+not need the icon.
+
+The api enqueues (does not send inline):
+
+- a **forum** payload when someone else posts (`tag: forum`)
+- a **zap** payload when a zap receipt is newly indexed onto the author's note
+
+The worker sends when VAPID is configured. Open focused tabs skip a second
+banner (service worker). Do not invent preference HTTP in v1.
+
+HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/debug/push-ping`.
+
+---
+
+## Out of these seven journeys
 
 Explicitly not journeys in this file:
 

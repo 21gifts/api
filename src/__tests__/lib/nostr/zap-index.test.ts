@@ -9,6 +9,7 @@ import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { indexOpenZapReceipts, indexZapReceipt } from '@/lib/nostr/zap-index';
+import { InMemoryPushStore } from '@/lib/push-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -1297,4 +1298,129 @@ describe('indexOpenZapReceipts', () => {
     expect(row?.reason).toBe('pubkey');
     expect(row?.receiptPubkey).toBeNull();
   });
+
+  it('enqueues a zap push for the author when a receipt is newly indexed', async () => {
+    const secret = generateSecretKey();
+    const pubkey = getPublicKey(secret);
+    const signed = finalizeEvent(
+      {
+        kind: 9735,
+        content: '',
+        created_at: 1_700_000_000,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-signed-push'],
+        ],
+      },
+      secret,
+    );
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-zap-push',
+      lightningAddress: 'zap-push@example.com',
+    });
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/author',
+      accountId: 'acc-zap-push',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(1),
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await indexOpenZapReceipts({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(pubkey),
+      pushStore,
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+    const claimed = await pushStore.claimPending(20, 2, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('acc-zap-push');
+    expect(claimed[0]?.type).toBe('zap');
+  });
+
+  it('indexes sats even when zap push enqueue throws', async () => {
+    const secret = generateSecretKey();
+    const pubkey = getPublicKey(secret);
+    const signed = finalizeEvent(
+      {
+        kind: 9735,
+        content: '',
+        created_at: 1_700_000_000,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-signed-push-fail'],
+        ],
+      },
+      secret,
+    );
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-zap-push-fail',
+      lightningAddress: 'zap-push-fail@example.com',
+    });
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('enqueue failed');
+    };
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/author',
+      accountId: 'acc-zap-push-fail',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(1),
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await indexOpenZapReceipts({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(pubkey),
+      pushStore,
+    });
+    warn.mockRestore();
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+  });
+});
+
 });

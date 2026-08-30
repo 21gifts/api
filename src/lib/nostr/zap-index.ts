@@ -7,6 +7,8 @@ import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
+import type { PushStore } from '@/lib/push-store';
+import { enqueueZapPush } from '@/lib/push-worker';
 import { verifyEvent } from 'nostr-tools/pure';
 
 /** Minimal zap receipt fields we validate. */
@@ -235,6 +237,8 @@ export async function indexOpenZapReceipts(args: {
   fetchImpl: FetchFn;
   /** Signature check; production uses nostr-tools `verifyEvent`. */
   verifyReceipt?: (event: NostrEventFrame) => boolean;
+  /** Optional push store; newly indexed receipts enqueue a zap push. */
+  pushStore?: PushStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
     return;
@@ -304,6 +308,7 @@ async function ingestOneReceipt(
     now: () => number;
     fetchImpl: FetchFn;
     verifyReceipt: (event: NostrEventFrame) => boolean;
+    pushStore?: PushStore;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -487,7 +492,7 @@ async function ingestOneReceipt(
     return;
   }
 
-  await indexZapReceipt({
+  const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
     receipt: { id: event.id, pubkey: event.pubkey, tags: event.tags },
@@ -496,6 +501,13 @@ async function ingestOneReceipt(
     receiptEvent: receipt,
     noteEventId,
   });
+  if (indexed && args.pushStore !== undefined) {
+    try {
+      await enqueueZapPush(args.pushStore, row.accountId, row.id, args.now());
+    } catch {
+      logEvent('push.enqueue.failed');
+    }
+  }
 }
 
 /**

@@ -119,18 +119,25 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/contact.sql`.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migratePushSchema
+
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` plus supporting indexes).
+- **Inputs:** `SqlClient` already opened by boot.
+- **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
+- **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
+
 ## Function: migrateDbChangeSchema
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods).
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent SQL matching `docs/schema/db_change.sql` (pgcrypto, table, redact/log/immutable functions, triggers, attach loop). The immutability-guard `DO` drops the append-only trigger once, hashes `view_key` values that still match a live `account.view_key`, leaves non-matches unchanged, then recreates the trigger.
-- **Used by:** `openBootStores` when SQL opens, immediately after `migrateContactSchema`.
+- **Used by:** `openBootStores` when SQL opens, immediately after `migratePushSchema`.
 
 ## Function: DB_CHANGE_SCHEMA_SQL
 
 - **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard (including a one-time live `view_key` rewrite in that same `DO`), and per-table `trg_db_change` triggers on every public table except `db_change`.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, and `view_key` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, and `auth` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore
@@ -198,9 +205,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migratePushSchema`, `PostgresPushStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, and `PostgresContactStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`nostrKek` undefined and skips migrates including `migrateDbChangeSchema`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `push_subscription`/`push_outbox` (via `migratePushSchema`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migratePushSchema` / `migrateDbChangeSchema`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -208,7 +215,7 @@
 - **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
 - **Inputs:** Configured token (non-empty) and raw header or `undefined`.
 - **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
-- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugPaymentsRoutes`.
+- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`.
 
 ## Function: compareAccountsForList
 
@@ -252,12 +259,110 @@
 - **Returns / side effects:** boolean.
 - **Used by:** `POST /messages/:id/invoice` when persisting an ok attempt.
 
-## Function: InMemoryGiftStore
+## Function: resolveVapidConfig
 
-- **Purpose:** Process-local GiftStore seeded at construction. Default empty so the process boots without a database.
-- **Inputs:** Optional `GiftRow[]`. `listOutbound()` copies and sorts by `paidAt`.
-- **Returns / side effects:** Promise of rows. Does not mutate the seed array.
-- **Used by:** `createApp` default `giftStore`.
+- **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing.
+- **Inputs:** `env` record (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, optional `VAPID_SUBJECT`).
+- **Returns / side effects:** `{ publicKey, privateKey, subject }` when both keys are non-blank after trim (`subject` defaults to `https://21.gifts`); otherwise `null`. Never logs the private key.
+- **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender + worker gate).
+
+## Function: UnconfiguredPushSender
+
+- **Purpose:** No-op `PushSender` used when VAPID env is missing so the process still boots and HTTP can return 503 without attempting delivery.
+- **Inputs:** Constructor none. `send(sub, payload)` ignores arguments.
+- **Returns / side effects:** `isConfigured()` is always `false`; `send` resolves `{ ok: false, reason: 'not_configured' }` and never calls `web-push`.
+- **Used by:** `src/index.ts` when `resolveVapidConfig` returns `null`.
+
+## Function: WebPushSender
+
+- **Purpose:** VAPID Web Push delivery via the `web-push` package to one browser subscription endpoint.
+- **Inputs:** Constructor takes resolved `VapidConfig`. `send(sub, payload)` takes a `PushSubscriptionRecord` and a JSON string body.
+- **Returns / side effects:** `isConfigured()` is `true`. Maps HTTP 404/410 to `gone`, other errors to `fail`, success to `{ ok: true }`. Optional ASCII `topic` from payload `tag` (max 32). TTL 86400.
+- **Used by:** `src/index.ts` when VAPID resolves; drained by `runPushWorkerTick`.
+
+## Function: InMemoryPushStore
+
+- **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict; `claimPending` leases oldest pending; `markFailed` fails at 8 attempts).
+- **Returns / side effects:** Caller-owned copies; mutating results does not change the store. No I/O.
+- **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
+
+## Function: PostgresPushStore
+
+- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases and attempt counting.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects. Errors propagate to callers.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: enqueueForumPushes
+
+- **Purpose:** Enqueue one forum notification per account that has at least one subscription, never for the message author.
+- **Inputs:** `PushStore`, `authorId`, `messageId`, `nowMs`. Payload from `buildForumPushPayload`.
+- **Returns / side effects:** One pending `type: 'forum'` outbox row per other subscriber account. Does not send HTTP push itself.
+- **Used by:** `messagesRoutes` after a successful `POST /messages` create.
+
+## Function: enqueueZapPush
+
+- **Purpose:** Enqueue one zap notification for the note author when they have at least one push subscription.
+- **Inputs:** `PushStore`, `authorId`, `messageId`, `nowMs`. Payload from `buildZapPushPayload(messageId)`.
+- **Returns / side effects:** Zero or one pending `type: 'zap'` outbox row. No-op when the author has no subscriptions.
+- **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a receipt.
+
+## Function: enqueueDebugPush
+
+- **Purpose:** Enqueue a single operator test notification for one account when it has a subscription.
+- **Inputs:** `PushStore`, `accountId`, `nowMs`. Uses a fixed zap-typed debug payload (`tag: 'debug'`).
+- **Returns / side effects:** `0` or `1` (rows enqueued). Does not deliver; the push worker drains the outbox.
+- **Used by:** `debugPushRoutes` (`POST /debug/push-ping`).
+
+## Function: runPushWorkerTick
+
+- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account.
+- **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`). Batch size and lease from module constants.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Deletes gone subscriptions; `markFailed` on fail; `markSent` when all gone / any ok / no subs.
+- **Used by:** `startPushWorker` interval; unit tests.
+
+## Function: startPushWorker
+
+- **Purpose:** Start a periodic `setInterval` that runs `runPushWorkerTick` until stopped.
+- **Inputs:** `PushWorkerDeps` and optional `intervalMs` (default `PUSH_WORKER_INTERVAL_MS` = 2s).
+- **Returns / side effects:** `{ stop }` clears the interval. Does not throw on tick failures inside the timer callback.
+- **Used by:** `src/index.ts` when VAPID resolves.
+
+## Function: parsePushSubscription
+
+- **Purpose:** Validate a browser PushSubscription JSON body into stored endpoint/key fields.
+- **Inputs:** Unknown request body expecting `{ endpoint, keys: { p256dh, auth } }`.
+- **Returns / side effects:** Parsed fields, or `null` when invalid (blank endpoint, bad url-safe base64 keys, non-https endpoint except localhost http).
+- **Used by:** `pushRoutes` `POST /me/push-subscriptions`.
+
+## Function: buildForumPushPayload
+
+- **Purpose:** Shared English forum notification payload (`type: 'forum'`, collapse tag `forum`, url `/welcome`).
+- **Inputs:** None.
+- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify` before enqueue/send.
+- **Used by:** `enqueueForumPushes`.
+
+## Function: buildZapPushPayload
+
+- **Purpose:** English zap notification payload for a note author (`type: 'zap'`, tag `zap:<messageId>`, url `/welcome`).
+- **Inputs:** `messageId` string used only in `tag`.
+- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify` before enqueue/send.
+- **Used by:** `enqueueZapPush`.
+
+## Function: pushRoutes
+
+- **Purpose:** Member Web Push HTTP: public VAPID key plus subscription upsert/delete for the signed-in account.
+- **Inputs:** `PushRouteDeps` (`authStore`, `pushStore`, `now`, optional `vapidPublicKey`).
+- **Returns / side effects:** Hono app with full path literals `/push/vapid-public` and `/me/push-subscriptions`. Session 401 before unconfigured 503.
+- **Used by:** `createApp` mounted at `/`.
+
+## Function: debugPushRoutes
+
+- **Purpose:** Operator debug ping that enqueues a test Web Push for one account via `DEBUG_TOKEN` (not an end-user session). Body `{ accountId }`. Returns `{ enqueued }` (`0` or `1`).
+- **Inputs:** `DebugPushRouteDeps` (`authStore`, `pushStore`, `now`, `debugToken`, `vapidPublicKey`).
+- **Returns / side effects:** Hono app `POST /` mounted at `/debug/push-ping`. Debug 503/401 before JSON; then unconfigured 503; unknown account 404. Calls `enqueueDebugPush`.
+- **Used by:** `createApp`.
 
 ## Function: InMemoryMessageStore
 
@@ -279,6 +384,13 @@
 - **Inputs:** `get(address, now)`, `put(entry, now)`. TTL from `LN_ADDRESS_CACHE_TTL_MS`.
 - **Returns / side effects:** `get` returns `CachedLnAddress` or `null`.
 - **Used by:** `lightningAddressRoutes`.
+
+## Function: InMemoryGiftStore
+
+- **Purpose:** Process-local GiftStore seeded at construction. Default empty so the process boots without a database.
+- **Inputs:** Optional `GiftRow[]`. `listOutbound()` copies and sorts by `paidAt`.
+- **Returns / side effects:** Promise of rows. Does not mutate the seed array.
+- **Used by:** `createApp` default `giftStore`.
 
 ## Function: mapGiftQueryRow
 
@@ -408,8 +520,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and parsed KEK.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -984,8 +1096,8 @@
 
 ## Function: indexOpenZapReceipts
 
-- **Purpose:** Each worker tick, query zap relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. Persists every ingest decision (`indexed` / `rejected` with reason). One throwing receipt does not skip the rest of the tick.
-- **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `verifyReceipt` (default: nostr-tools `verifyEvent`).
+- **Purpose:** Each worker tick, query zap relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. Persists every ingest decision (`indexed` / `rejected` with reason). One throwing receipt does not skip the rest of the tick. A newly indexed receipt enqueues a zap push when `pushStore` is set (`push.enqueue.failed` on throw, ingest continues).
+- **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `verifyReceipt` (default: nostr-tools `verifyEvent`); optional `pushStore`.
 - **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; records ingest rows; never logs full bolt11.
 - **Used by:** `runNostrWorkerTick`.
 
