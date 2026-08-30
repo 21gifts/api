@@ -105,10 +105,12 @@ function reservedContent(
  * Pending rows are EVENT'd even without the URL — resetting them first
  * renews the sign lease and they never reach a relay. Zapped rows keep
  * their event id so receipts still resolve. An empty API base leaves
- * them alone so it cannot un-publish and loop. When publishing, also fans
- * out a replaceable kind:0 profile (`name` / `display_name` / `picture`)
- * and a NIP-65 kind:10002 relay list. Kind:1 photo posts include the
- * public image URL and an `imeta` tag. Kind:0
+ * them alone so it cannot un-publish and loop. Signed unpaid notes whose
+ * kind:1 content lacks `#bitcoin` or `#21gifts` are reset and re-signed;
+ * zapped rows keep `eventId`. When publishing, also fans out a replaceable
+ * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
+ * kind:10002 relay list. Kind:1 photo posts include the public image URL
+ * and an `imeta` tag. Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
@@ -122,6 +124,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await resignPhotoKind1(deps);
+  await resignHashtagKind1(deps);
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
@@ -158,6 +161,13 @@ async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
     return;
   }
   const rows = await deps.messages.listSignedMissingPhoto(WORKER_BATCH);
+  for (const row of rows) {
+    await deps.messages.resetSignedEvent(row.id, row.eventId);
+  }
+}
+
+async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
+  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH);
   for (const row of rows) {
     await deps.messages.resetSignedEvent(row.id, row.eventId);
   }

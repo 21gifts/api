@@ -335,6 +335,90 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
   });
 
+  it('listSignedMissingHashtags finds unpaid notes missing Damus hashtags', async () => {
+    const store = new InMemoryMessageStore();
+    const jpeg: ForumPhoto = {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+    };
+    await store.create({ ...EARLY, text: 'ohne foto funktioniert es' });
+    await store.updateSignedEvent('a', 'ab'.repeat(32), {
+      content: 'ohne foto funktioniert es',
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      id: 'n',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      eventId: '11'.repeat(32),
+      nostrEvent: null,
+    });
+    await store.create({
+      ...EARLY,
+      id: 'z',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      eventId: '22'.repeat(32),
+      nostrEvent: { content: 1 },
+    });
+    const tiedAt = new Date('2026-08-15T00:00:00.000Z');
+    await store.create({
+      ...EARLY,
+      id: 'q',
+      text: 'only bitcoin',
+      createdAt: tiedAt,
+      eventId: '33'.repeat(32),
+      nostrEvent: { content: 'only bitcoin\n\n#bitcoin' },
+    });
+    await store.create({
+      ...EARLY,
+      id: 'p',
+      text: 'only 21gifts',
+      createdAt: tiedAt,
+      eventId: '44'.repeat(32),
+      nostrEvent: { content: 'only 21gifts\n\n#21gifts' },
+    });
+    await store.create(
+      {
+        ...EARLY,
+        id: 'c',
+        text: 'complete',
+        createdAt: new Date('2026-08-20T00:00:00.000Z'),
+        hasPhoto: true,
+        eventId: '55'.repeat(32),
+        nostrEvent: {
+          content: 'complete\nhttp://127.0.0.1:3000/messages/c/photo\n\n#bitcoin #21gifts',
+        },
+      },
+      jpeg,
+    );
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
+      'n',
+      'a',
+      'p',
+      'q',
+      'z',
+    ]);
+    expect((await store.listSignedMissingHashtags(2)).map((row) => row.id)).toEqual(['n', 'a']);
+    await store.addSats('z', 21);
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
+      'n',
+      'a',
+      'p',
+      'q',
+    ]);
+    await store.resetSignedEvent('a', 'ab'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBeNull();
+    expect((await store.getById('a'))?.nostrPublishState).toBe('pending');
+    await store.updateSignedEvent('a', 'cd'.repeat(32), {
+      content: 'ohne foto funktioniert es\n\n#bitcoin #21gifts',
+    });
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
+      'n',
+      'p',
+      'q',
+    ]);
+  });
+
   it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
     const store = new InMemoryMessageStore();
     await store.create(LATE);
@@ -817,6 +901,32 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/sats = 0/);
+  });
+
+  it('listSignedMissingHashtags hits Postgres', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ohne foto funktioniert es',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const missing = await store.listSignedMissingHashtags(4);
+    expect(missing[0]?.id).toBe('m1');
+    const listSql = sql.queries.at(-1)?.text ?? '';
+    expect(listSql).toMatch(/sats = 0/);
+    expect(listSql).toMatch(/jsonb_typeof\(nostr_event->'content'\) IS DISTINCT FROM 'string'/);
+    expect(listSql).toMatch(/NOT LIKE '%#21gifts%'/);
+    expect(listSql).toMatch(/NOT LIKE '%#bitcoin%'/);
+    expect(listSql).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
   });
 
   it('propagates getPhoto query errors', async () => {
