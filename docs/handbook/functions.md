@@ -257,7 +257,7 @@
 - **Purpose:** True when `descriptionHash` equals `sha256(utf8(zapRequestJson))`.
 - **Inputs:** description hash (or null) and zap request JSON string (or null).
 - **Returns / side effects:** boolean.
-- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting an ok attempt.
+- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`).
 
 ## Function: resolveVapidConfig
 
