@@ -1217,6 +1217,30 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts.find((row) => row.result === 'unreachable')?.pr).toBeNull();
   });
 
+  it('returns 404 for a non-uuid invoice id without persisting', async () => {
+    const kek = new Uint8Array(32).fill(2);
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/not-a-uuid/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(404);
+    expect(await messageStore.listInvoiceAttempts(10)).toHaveLength(0);
+  });
+
   it('persists no_event when the note has no eventId', async () => {
     const kek = new Uint8Array(32).fill(2);
     const authStore = await namedStore('Ada');

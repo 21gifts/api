@@ -261,6 +261,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const messageIdParam = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(messageIdParam)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         await persistInvoiceAttempt(
