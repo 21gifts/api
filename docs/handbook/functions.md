@@ -261,9 +261,9 @@
 
 ## Function: resolveVapidConfig
 
-- **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing.
+- **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing or unusable.
 - **Inputs:** `env` record (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, optional `VAPID_SUBJECT`).
-- **Returns / side effects:** `{ publicKey, privateKey, subject }` when both keys are non-blank after trim (`subject` defaults to `https://21.gifts`); otherwise `null`. Never logs the private key.
+- **Returns / side effects:** `{ publicKey, privateKey, subject }` when both keys decode (URL-safe base64) to 65-byte uncompressed P-256 public and 32-byte private, and `subject` is `https:` or `mailto:` (default `https://21.gifts`). Otherwise `null`. Never logs the private key. `src/index.ts` still try/catches `WebPushSender` construction so a library throw cannot kill listen.
 - **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender + worker gate).
 
 ## Function: UnconfiguredPushSender

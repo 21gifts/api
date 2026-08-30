@@ -14,7 +14,7 @@ import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { resolveVapidConfig } from './lib/push-config';
-import { UnconfiguredPushSender, WebPushSender } from './lib/push-sender';
+import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
 import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
@@ -44,7 +44,16 @@ if (import.meta.main) {
     boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
-  const sender = vapid !== null ? new WebPushSender(vapid) : new UnconfiguredPushSender();
+  let sender: PushSender = new UnconfiguredPushSender();
+  let vapidPublicKey: string | undefined;
+  if (vapid !== null) {
+    try {
+      sender = new WebPushSender(vapid);
+      vapidPublicKey = vapid.publicKey;
+    } catch {
+      console.warn(JSON.stringify({ event: 'push.vapid.invalid' }));
+    }
+  }
   const app = createApp({
     authStore,
     btcUsdRates,
@@ -54,11 +63,11 @@ if (import.meta.main) {
     ...(messageStore === undefined ? {} : { messageStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
-    ...(vapid === null ? {} : { vapidPublicKey: vapid.publicKey }),
+    ...(vapidPublicKey === undefined ? {} : { vapidPublicKey }),
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
-  if (vapid !== null) {
+  if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }
   if (nostrKek !== undefined && messageStore !== undefined) {
