@@ -98,6 +98,8 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
   };
   return {
     listLatest: boom,
+    listReplies: boom,
+    listPublishedEventIds: boom,
     create: boom,
     getPhoto: boom,
     getById: boom,
@@ -1620,6 +1622,8 @@ describe('POST /messages/:id/invoice', () => {
     });
     const store: MessageStore = {
       listLatest: (limit) => base.listLatest(limit),
+      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),

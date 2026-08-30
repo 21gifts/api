@@ -1056,6 +1056,8 @@ describe('indexOpenZapReceipts', () => {
       });
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
+        listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+        listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         getById: (id: string) => base.getById(id),

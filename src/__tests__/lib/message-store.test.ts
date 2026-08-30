@@ -97,6 +97,13 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_ingest_receipt_id_idx/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/parent_id/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/author_pubkey/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_parent_id_idx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/lnurl_response/);
   });
 });
 
@@ -154,6 +161,67 @@ describe('InMemoryMessageStore', () => {
   it('caps the list at limit', async () => {
     const store = new InMemoryMessageStore([EARLY, LATE, TIE_HIGH]);
     expect((await store.listLatest(1)).map((r) => r.id)).toEqual(['z']);
+  });
+
+  it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r1',
+      parentId: 'a',
+      text: 'reply-early',
+      createdAt: new Date('2026-08-01T12:00:00.000Z'),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r2',
+      parentId: 'a',
+      text: 'reply-late',
+      createdAt: new Date('2026-08-01T13:00:00.000Z'),
+    });
+    const listed = await store.listLatest(10);
+    expect(listed.map((r) => r.id)).toEqual(['a']);
+    expect(listed[0]?.replyCount).toBe(2);
+    const replies = await store.listReplies('a');
+    expect(replies.map((r) => r.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('listPublishedEventIds returns top-level non-null event ids oldest-first', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'p1',
+      eventId: '11'.repeat(32),
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+    });
+    await store.create({
+      ...EARLY,
+      id: 'p2',
+      eventId: '22'.repeat(32),
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    });
+    await store.create({
+      ...EARLY,
+      id: 'reply',
+      parentId: 'p1',
+      eventId: '33'.repeat(32),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    });
+    expect(await store.listPublishedEventIds(10)).toEqual(['11'.repeat(32), '22'.repeat(32)]);
+  });
+
+  it('claimUnsigned skips Damus-only rows and replies whose parent has no eventId', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'damus', accountId: null });
+    expect(await store.claimUnsigned(10, 1_000, 60_000)).toEqual([]);
+    await store.create({ ...EARLY, id: 'parent' });
+    await store.create({ ...LATE, id: 'child', parentId: 'parent' });
+    const first = await store.claimUnsigned(10, 1_000, 60_000);
+    expect(first.map((row) => row.id)).toEqual(['parent']);
+    expect(await store.claimUnsigned(10, 1_000, 60_000)).toEqual([]);
+    await store.updateSignedEvent('parent', 'ee'.repeat(32), { id: 'ee'.repeat(32) });
+    const claimed = await store.claimUnsigned(10, 2_000_000, 60_000);
+    expect(claimed.map((row) => row.id)).toEqual(['child']);
   });
 
   it('create then list returns the new row', async () => {
@@ -664,6 +732,7 @@ describe('InMemoryMessageStore', () => {
       description: null,
       descriptionHash: 'bb'.repeat(32),
       isNip57Invoice: true,
+      lnurlResponse: { pr: 'lnbc1', status: 'OK' },
     };
     const late: MessageInvoiceAttempt = {
       ...early,
@@ -673,12 +742,14 @@ describe('InMemoryMessageStore', () => {
       httpStatus: 400,
       pr: null,
       isNip57Invoice: false,
+      lnurlResponse: null,
     };
     const tieHigh: MessageInvoiceAttempt = {
       ...early,
       id: 'inv-z',
       createdAt: new Date('2026-08-02T00:00:00.000Z'),
       result: 'unreachable',
+      lnurlResponse: { error: 'down' },
     };
     await store.recordInvoiceAttempt(early);
     await store.recordInvoiceAttempt(late);
@@ -688,11 +759,16 @@ describe('InMemoryMessageStore', () => {
     if (listed[0] !== undefined) {
       listed[0].result = 'bad_body';
       listed[0].zapRequest = { mutated: true };
+      if (listed[0].lnurlResponse !== null) {
+        listed[0].lnurlResponse['mutated'] = true;
+      }
     }
     const again = await store.listInvoiceAttempts(10);
     expect(again.map((row) => row.id)).toEqual(['inv-z', 'inv-b', 'inv-a']);
     expect(again[0]?.result).toBe('unreachable');
     expect(again[0]?.zapRequest).toEqual({ kind: 9734 });
+    expect(again[0]?.lnurlResponse).toEqual({ error: 'down' });
+    expect(again[2]?.lnurlResponse).toEqual({ pr: 'lnbc1', status: 'OK' });
   });
 
   it('recordZapIngest lists newest-first and copies rows', async () => {
@@ -761,8 +837,10 @@ describe('PostgresMessageStore', () => {
     const listed = await store.listLatest(50);
     expect(sql.queries[0]?.text).toMatch(/has_photo/);
     expect(sql.queries[0]?.text).toMatch(/event_id/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(
-      /FROM message ORDER BY created_at DESC, id DESC LIMIT \$1/,
+      /ORDER BY created_at DESC, id DESC\s+LIMIT \$1/,
     );
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     expect(sql.queries[0]?.params).toEqual([50]);
@@ -770,12 +848,13 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.hasPhoto).toBe(true);
     expect(listed[0]?.hasVideo).toBe(true);
     expect(listed[0]?.sats).toBe(0);
+    expect(listed[0]?.replyCount).toBe(0);
     expect(listed[1]?.id).toBe('m2');
     expect(listed[1]?.hasPhoto).toBe(false);
     expect(listed[1]?.hasVideo).toBe(false);
   });
 
-  it('create binds seven params with null photo', async () => {
+  it('create binds fourteen params including video_content_type, parent_id and author_pubkey', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -789,7 +868,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event\s*\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -801,6 +880,12 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       row.createdAt,
+      'pending',
+      0,
+      null,
+      null,
+      null,
+      null,
     ]);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
@@ -1181,7 +1266,33 @@ describe('PostgresMessageStore', () => {
     await expect(new PostgresMessageStore(sql).getPhoto('m1')).rejects.toThrow('photo boom');
   });
 
-  it('recordInvoiceAttempt inserts into message_invoice with jsonb zap_request', async () => {
+  it('listReplies and listPublishedEventIds hit Postgres filters', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'r1',
+        account_id: null,
+        name: 'aabbccdd…8899',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        parent_id: 'm1',
+        author_pubkey: 'aa'.repeat(32),
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const replies = await store.listReplies('m1', 50);
+    expect(replies[0]?.parentId).toBe('m1');
+    expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.params).toEqual(['m1', 50]);
+    sql.nextRows = [{ event_id: 'ee'.repeat(32) }];
+    expect(await store.listPublishedEventIds(7)).toEqual(['ee'.repeat(32)]);
+    expect(sql.queries[1]?.text).toMatch(/event_id IS NOT NULL AND parent_id IS NULL/);
+    expect(sql.queries[1]?.params).toEqual([7]);
+  });
+
+  it('recordInvoiceAttempt inserts into message_invoice with jsonb zap_request and lnurl_response', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageInvoiceAttempt = {
@@ -1200,13 +1311,16 @@ describe('PostgresMessageStore', () => {
       description: null,
       descriptionHash: 'bb'.repeat(32),
       isNip57Invoice: true,
+      lnurlResponse: { pr: 'lnbc1', status: 'OK' },
     };
     await store.recordInvoiceAttempt(row);
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_invoice/);
     expect(sql.executes[0]?.text).toMatch(/zap_request/);
+    expect(sql.executes[0]?.text).toMatch(/lnurl_response/);
     expect(sql.executes[0]?.params[7]).toBe(JSON.stringify({ kind: 9734 }));
     expect(sql.executes[0]?.params[14]).toBe(true);
+    expect(sql.executes[0]?.params[15]).toBe(JSON.stringify({ pr: 'lnbc1', status: 'OK' }));
   });
 
   it('recordInvoiceAttempt binds null zap_request when the attempt has none', async () => {
@@ -1228,9 +1342,11 @@ describe('PostgresMessageStore', () => {
       description: null,
       descriptionHash: null,
       isNip57Invoice: false,
+      lnurlResponse: null,
     };
     await store.recordInvoiceAttempt(row);
     expect(sql.executes[0]?.params[7]).toBeNull();
+    expect(sql.executes[0]?.params[15]).toBeNull();
   });
 
   it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
@@ -1252,6 +1368,7 @@ describe('PostgresMessageStore', () => {
         description: null,
         description_hash: 'bb'.repeat(32),
         is_nip57_invoice: true,
+        lnurl_response: { pr: 'lnbc1' },
       },
       {
         id: 'inv-2',
@@ -1269,6 +1386,7 @@ describe('PostgresMessageStore', () => {
         description: 'plain',
         description_hash: null,
         is_nip57_invoice: 0,
+        lnurl_response: JSON.stringify({ error: 'noZap' }),
       },
       {
         id: 'inv-3',
@@ -1286,6 +1404,7 @@ describe('PostgresMessageStore', () => {
         description: null,
         description_hash: null,
         is_nip57_invoice: null,
+        lnurl_response: 'not-json',
       },
       {
         id: 'inv-4',
@@ -1303,6 +1422,7 @@ describe('PostgresMessageStore', () => {
         description: null,
         description_hash: null,
         is_nip57_invoice: false,
+        lnurl_response: null,
       },
       {
         id: 'inv-5',
@@ -1320,23 +1440,30 @@ describe('PostgresMessageStore', () => {
         description: null,
         description_hash: null,
         is_nip57_invoice: false,
+        lnurl_response: '[1,2]',
       },
     ];
     const store = new PostgresMessageStore(sql);
     const listed = await store.listInvoiceAttempts(50);
     expect(sql.queries[0]?.text).toMatch(/FROM message_invoice/);
+    expect(sql.queries[0]?.text).toMatch(/lnurl_response/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(sql.queries[0]?.text).toMatch(/LIMIT \$1/);
     expect(sql.queries[0]?.params).toEqual([50]);
     expect(listed[0]?.amountSats).toBe(21);
     expect(listed[0]?.zapRequest).toEqual({ kind: 9734 });
     expect(listed[0]?.isNip57Invoice).toBe(true);
+    expect(listed[0]?.lnurlResponse).toEqual({ pr: 'lnbc1' });
     expect(listed[1]?.createdAt.toISOString()).toBe('2026-08-27T12:00:00.000Z');
     expect(listed[1]?.zapRequest).toEqual({ kind: 9734, content: 'x' });
     expect(listed[1]?.isNip57Invoice).toBe(false);
+    expect(listed[1]?.lnurlResponse).toEqual({ error: 'noZap' });
     expect(listed[2]?.zapRequest).toBeNull();
+    expect(listed[2]?.lnurlResponse).toBeNull();
     expect(listed[3]?.zapRequest).toBeNull();
+    expect(listed[3]?.lnurlResponse).toBeNull();
     expect(listed[4]?.zapRequest).toBeNull();
+    expect(listed[4]?.lnurlResponse).toBeNull();
   });
 
   it('recordZapIngest inserts into nostr_zap_ingest', async () => {

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID: `GET /push/vapid-public`, `POST`/`DELETE /me/push-subscriptions`, `POST /debug/push-ping`; kind:1 content includes Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (forum replies via `parent_id` + `replyCount` / `GET /messages/:id/replies`; public `GET /messages/:id`; NIP-57 mint probe `probeNip57Mint` / `buildZapProbeRequest` before linking Lightning Address; `lnurlResponse` on invoice attempts; inbound Damus/member kind:1 reply indexing each worker tick; pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID; Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision with mint probe; passkey `viewKey` claim; `GET /debug/invoices` + `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; NIP-92 `imeta` photo URLs; forum roles; private `POST /contact`; zap invoices; SQL boot requires `NOSTR_NSEC_KEK`; gift stats BTC + historical USD; `GET /gifts?day=`).
 
 ---
 
@@ -75,8 +75,10 @@ Public base URLs used in examples:
 | DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                              |
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                      |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                           |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                                    |
-| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum                     |
+| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`)                 |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; optional `inReplyTo` parent UUID           |
+| GET    | `/messages/:id`                              | none                     | Public single-note JSON                                     |
+| GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                      |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                             |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                         |
 | POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                      |

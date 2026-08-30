@@ -8,6 +8,9 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { signEventForAccount } from '@/lib/nostr/sign';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
@@ -27,6 +30,8 @@ export interface MeRouteDeps {
   payer: InvoicePayer;
   /** Injected `fetch` for LNURL-pay resolution. */
   fetchImpl: FetchFn;
+  /** AES KEK for signing the NIP-57 mint probe; omit when unset. */
+  nostrKek?: Uint8Array;
 }
 
 /**
@@ -176,6 +181,40 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           ? resolved.metadata.nostrPubkey
           : undefined;
       if (zapPubkey === undefined || zapPubkey.trim() === '') {
+        logEvent('account.lightning_address.resolve_failed', {
+          accountId: account.id,
+          address,
+        });
+        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
+      }
+      const kek = deps.nostrKek;
+      if (kek === undefined) {
+        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
+      }
+      try {
+        await ensureAccountNostrKey(deps.store, account.id, kek);
+      } catch {
+        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
+      }
+      const accountPubkey = await deps.store.getNostrPublicKey(account.id);
+      if (accountPubkey === undefined || accountPubkey === '') {
+        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
+      }
+      const probe = await probeNip57Mint({
+        address,
+        recipientPubkey: accountPubkey,
+        sign: async (unsigned) => {
+          const signed = await signEventForAccount(deps.store, account.id, kek, unsigned);
+          return { ...signed };
+        },
+        fetchImpl: deps.fetchImpl,
+        env: process.env,
+      });
+      if (probe === 'not_zap') {
+        logEvent('account.lightning_address.not_zap', { accountId: account.id });
+        return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
+      }
+      if (probe === 'unreachable') {
         logEvent('account.lightning_address.resolve_failed', {
           accountId: account.id,
           address,

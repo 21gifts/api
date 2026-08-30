@@ -308,10 +308,11 @@ describe('requestZapInvoice', () => {
         throw new Error('no');
       },
     });
-    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
   });
 
-  it('returns pr when allowsNostr is true', async () => {
+  it('returns pr and lnurlResponse when allowsNostr is true', async () => {
+    const callbackBody = { pr: PR, status: 'OK' };
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
@@ -323,7 +324,7 @@ describe('requestZapInvoice', () => {
         });
       }
       expect(String(input)).toContain('nostr=');
-      return jsonResponse({ pr: PR });
+      return jsonResponse(callbackBody);
     };
     const result = await requestZapInvoice({
       address: ADDRESS,
@@ -331,7 +332,12 @@ describe('requestZapInvoice', () => {
       zapRequestJson: '{}',
       fetchImpl,
     });
-    expect(result).toEqual({ ok: true, pr: PR, amountSats: 21 });
+    expect(result).toEqual({
+      ok: true,
+      pr: PR,
+      amountSats: 21,
+      lnurlResponse: callbackBody,
+    });
   });
 
   it('returns noZap when allowsNostr is missing', async () => {
@@ -347,7 +353,7 @@ describe('requestZapInvoice', () => {
       zapRequestJson: '{}',
       fetchImpl,
     });
-    expect(result).toEqual({ ok: false, reason: 'noZap' });
+    expect(result).toEqual({ ok: false, reason: 'noZap', lnurlResponse: null });
   });
 
   it('returns unreachable when the amount is out of range', async () => {
@@ -365,10 +371,11 @@ describe('requestZapInvoice', () => {
       zapRequestJson: '{}',
       fetchImpl,
     });
-    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
   });
 
-  it('returns unreachable when the callback has no invoice', async () => {
+  it('returns unreachable with lnurlResponse when the callback JSON is schema-invalid', async () => {
+    const invalidBody = { error: 'nope', detail: 'missing pr' };
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
@@ -379,7 +386,7 @@ describe('requestZapInvoice', () => {
           nostrPubkey: 'aa'.repeat(32),
         });
       }
-      return jsonResponse({ error: 'nope' });
+      return jsonResponse(invalidBody);
     };
     const result = await requestZapInvoice({
       address: ADDRESS,
@@ -387,6 +394,54 @@ describe('requestZapInvoice', () => {
       zapRequestJson: '{}',
       fetchImpl,
     });
-    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unreachable',
+      lnurlResponse: invalidBody,
+    });
+  });
+
+  it('returns unreachable with lnurlResponse null when the callback JSON is an array', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse([{ pr: PR }]);
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
+  });
+
+  it('returns unreachable with lnurlResponse null when the callback HTTP fails', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({}, 500);
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
   });
 });

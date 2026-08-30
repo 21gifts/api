@@ -1,6 +1,13 @@
+import { verifyEvent } from 'nostr-tools/pure';
 import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
-import type { MessageRow } from '@/lib/message';
+import {
+  MESSAGE_INBOUND_REPLY_MAX_LENGTH,
+  MESSAGE_LIST_LIMIT,
+  normalizeForumText,
+  truncatePubkeyDisplay,
+  type MessageRow,
+} from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
 import {
@@ -10,6 +17,7 @@ import {
   buildKind10002Event,
   forumPhotoUrl,
   type Kind1Photo,
+  type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
 import { forumVideoUrl } from '@/lib/video';
@@ -18,6 +26,7 @@ import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publis
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
   resolvePublicApiBase,
+  resolveRelaySpace,
   resolveWriteSet,
   resolveZapRelays,
   writeRelayUrls,
@@ -29,6 +38,9 @@ import type { PushStore } from '@/lib/push-store';
 
 /** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
+
+/** Event-id chunk size for inbound kind:1 reply REQ filters. */
+const REPLY_QUERY_CHUNK = 20;
 
 /** Lease before WebSocket I/O. */
 export const WORKER_LEASE_MS = 60_000;
@@ -61,6 +73,8 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
   /** Optional push store for zap enqueue after a newly indexed receipt. */
   pushStore?: PushStore;
+  /** Optional signature check for inbound kind:1 replies (tests inject). */
+  verifyKind1?: (event: NostrEventFrame) => boolean;
 }
 
 type Kind0Reservation = {
@@ -121,7 +135,9 @@ function reservedContent(
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
- * when publish is off.
+ * when publish is off. Each tick also REQs kind:1 replies (`#e` = our note
+ * event ids) and persists inbound Damus/member replies (even when publish is
+ * off). Does not ingest private messages.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
@@ -150,6 +166,192 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
+  await indexInboundForumReplies(deps, urls);
+}
+
+/**
+ * Verify a queried kind:1 frame is a signed Nostr event.
+ *
+ * @param event - Frame from a relay.
+ * @returns Whether nostr-tools accepts the signature.
+ */
+function defaultVerifyKind1(event: NostrEventFrame): boolean {
+  if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
+    return false;
+  }
+  try {
+    return verifyEvent({
+      id: event.id,
+      pubkey: event.pubkey,
+      created_at: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content ?? '',
+      sig: event.sig,
+    });
+    /* v8 ignore next 3 -- nostr-tools verifyEvent returns boolean, does not throw */
+  } catch {
+    return false;
+  }
+}
+
+/** Project a queried kind:1 frame to the JSON object stored on the reply row. */
+function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    tags: event.tags,
+    created_at: event.created_at,
+    content: event.content ?? '',
+    sig: event.sig ?? '',
+  };
+}
+
+/**
+ * Pick the parent note event id from NIP-10 `e` tags.
+ *
+ * Prefers `reply`, then `root`, then the first matching `e` whose id is in
+ * `noteEventIds`. Does not require `t=21gifts`.
+ *
+ * @param tags - Event tags.
+ * @param noteEventIds - Top-level published note event ids.
+ * @returns Matching note event id, or null.
+ */
+function pickParentNoteEventId(
+  tags: string[][],
+  noteEventIds: ReadonlySet<string>,
+): string | null {
+  let replyMatch: string | null = null;
+  let rootMatch: string | null = null;
+  let firstMatch: string | null = null;
+  for (const tag of tags) {
+    if (tag[0] !== 'e' || typeof tag[1] !== 'string' || tag[1] === '') {
+      continue;
+    }
+    if (!noteEventIds.has(tag[1])) {
+      continue;
+    }
+    const marker = tag[3];
+    if (marker === 'reply' && replyMatch === null) {
+      replyMatch = tag[1];
+    } else if (marker === 'root' && rootMatch === null) {
+      rootMatch = tag[1];
+    }
+    if (firstMatch === null) {
+      firstMatch = tag[1];
+    }
+  }
+  return replyMatch ?? rootMatch ?? firstMatch;
+}
+
+/**
+ * REQ kind:1 replies referencing our published top-level notes and persist them.
+ *
+ * Runs every tick (even when `NOSTR_PUBLISH` is off). Does not require
+ * `t=21gifts`. Skips invalid signatures, already-stored event ids, empty /
+ * over-long content, and events that equal the parent note id.
+ *
+ * @param deps - Worker collaborators.
+ * @param urls - Zap relay URLs (space + public list).
+ */
+async function indexInboundForumReplies(
+  deps: NostrWorkerDeps,
+  urls: readonly string[],
+): Promise<void> {
+  if (urls.length === 0) {
+    return;
+  }
+  const noteEventIds = await deps.messages.listPublishedEventIds(MESSAGE_LIST_LIMIT);
+  if (noteEventIds.length === 0) {
+    return;
+  }
+  const noteIdSet = new Set(noteEventIds);
+  const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  const accounts = await deps.auth.listAccounts();
+  const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
+  for (const account of accounts) {
+    const pubkey = await deps.auth.getNostrPublicKey(account.id);
+    if (pubkey === undefined || pubkey === '') {
+      continue;
+    }
+    pubkeyToAccount.set(pubkey.toLowerCase(), { id: account.id, name: account.name });
+  }
+
+  for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
+    const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
+    const events = await deps.querier.query(
+      { kinds: [1], '#e': chunk },
+      urls,
+      RELAY_TIMEOUT_MS,
+    );
+    for (const event of events) {
+      if (event.kind !== 1) {
+        continue;
+      }
+      if (typeof event.id !== 'string' || event.id === '') {
+        continue;
+      }
+      if (typeof event.pubkey !== 'string' || event.pubkey === '') {
+        continue;
+      }
+      if (!verify(event)) {
+        continue;
+      }
+      const existing = await deps.messages.getByEventId(event.id);
+      if (existing !== undefined) {
+        continue;
+      }
+      const parentEventId = pickParentNoteEventId(event.tags, noteIdSet);
+      if (parentEventId === null || parentEventId === event.id) {
+        continue;
+      }
+      const parentNote = await deps.messages.getByEventId(parentEventId);
+      if (parentNote === undefined || parentNote.parentId !== null) {
+        continue;
+      }
+      const text = normalizeForumText(event.content ?? '', MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+      if (text === null || text === '') {
+        continue;
+      }
+      const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
+      let accountId: string | null = null;
+      let name: string;
+      if (matched !== undefined) {
+        accountId = matched.id;
+        const accountName = matched.name?.trim() ?? '';
+        name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
+      } else {
+        name = truncatePubkeyDisplay(event.pubkey);
+      }
+      const createdAt =
+        typeof event.created_at === 'number'
+          ? new Date(event.created_at * 1000)
+          : new Date(deps.now());
+      try {
+        await deps.messages.create({
+          id: crypto.randomUUID(),
+          accountId,
+          name,
+          text,
+          createdAt,
+          hasPhoto: false,
+          parentId: parentNote.id,
+          authorPubkey: event.pubkey,
+          eventId: event.id,
+          nostrPublishState: 'published',
+          sats: 0,
+          nostrEvent: kind1Frame(event),
+          claimedUntil: null,
+          nostrFirstAttemptAt: null,
+          nostrPublishEpoch: null,
+          nostrAttempts: 0,
+        });
+      } catch {
+        logEvent('nostr.reply.inbound.failed', { eventId: event.id });
+      }
+    }
+  }
 }
 
 /**
@@ -209,7 +411,11 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
     }
   }
   const rows = await deps.messages.claimUnsigned(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  const spaceRelay = resolveRelaySpace(deps.env);
   for (const row of rows) {
+    if (row.accountId === null) {
+      continue;
+    }
     try {
       await ensureAccountNostrKey(deps.auth, row.accountId, deps.kek);
       let createdAt = Math.floor(row.createdAt.getTime() / 1000);
@@ -236,11 +442,31 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
         }
       }
+      let replyTo: Kind1ReplyTo | undefined;
+      if (row.parentId !== null) {
+        const parent = await deps.messages.getById(row.parentId);
+        if (parent === undefined || parent.eventId === null) {
+          continue;
+        }
+        let noteAuthorPubkey = parent.authorPubkey;
+        if (noteAuthorPubkey === null && parent.accountId !== null) {
+          noteAuthorPubkey = (await deps.auth.getNostrPublicKey(parent.accountId)) ?? null;
+        }
+        if (noteAuthorPubkey === null) {
+          logEvent('nostr.sign.failed', { messageId: row.id, reason: 'parent_pubkey' });
+          continue;
+        }
+        replyTo = {
+          noteEventId: parent.eventId,
+          spaceRelay,
+          noteAuthorPubkey,
+        };
+      }
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           photo === undefined
-            ? buildKind1Event(row.text, createdAt)
-            : buildKind1Event(row.text, createdAt, photo);
+            ? buildKind1Event(row.text, createdAt, undefined, replyTo)
+            : buildKind1Event(row.text, createdAt, photo, replyTo);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,

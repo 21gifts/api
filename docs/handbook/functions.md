@@ -938,6 +938,27 @@
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishRelayLists`.
 
+## Function: buildZapProbeRequest
+
+- **Purpose:** Unsigned kind:9734 used only to probe whether a Lightning Address mints a NIP-57 invoice.
+- **Inputs:** recipient pubkey, amount msat, relay URLs.
+- **Returns / side effects:** Unsigned event template (`p` / `amount` / `relays` only).
+- **Used by:** `probeNip57Mint`.
+
+## Function: probeNip57Mint
+
+- **Purpose:** Request a throwaway zap invoice and accept the address only when `description_hash` matches the signed 9734 JSON.
+- **Inputs:** LUD-16 address, signer pubkey, sign helper, fetch, optional env.
+- **Returns / side effects:** `'ok' | 'not_zap' | 'unreachable'`. Never pays. Never writes `message_invoice`.
+- **Used by:** `POST /me/lightning-address`, `POST /debug/accounts`.
+
+## Function: truncatePubkeyDisplay
+
+- **Purpose:** Short npub-style label for Damus authors without a 21.gifts account.
+- **Inputs:** hex pubkey.
+- **Returns / side effects:** Truncated display string.
+- **Used by:** Inbound forum replies.
+
 ## Function: signEventForAccount
 
 - **Purpose:** Decrypt nsec, `finalizeEvent`, zeroize.

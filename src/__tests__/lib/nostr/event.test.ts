@@ -77,6 +77,29 @@ describe('kind1', () => {
     expect(kind1HasHashtag('#bitcoin.', 'bitcoin')).toBe(true);
     expect(kind1HasHashtag('#21gifts', '21gifts')).toBe(true);
   });
+
+  it('appends NIP-10 e/p tags when replyTo is set', () => {
+    const noteEventId = 'ee'.repeat(32);
+    const noteAuthorPubkey = 'aa'.repeat(32);
+    const event = buildKind1Event('reply', 1_700_000_000, undefined, {
+      noteEventId,
+      spaceRelay: 'wss://relay.nostr.space',
+      noteAuthorPubkey,
+    });
+    expect(event.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'root'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'reply'],
+      ['p', noteAuthorPubkey],
+    ]);
+  });
+
+  it('keeps top-level notes without e/p tags', () => {
+    const event = buildKind1Event('hello', 1);
+    expect(event.tags.some((tag) => tag[0] === 'e' || tag[0] === 'p')).toBe(false);
+  });
 });
 
 describe('kind0', () => {

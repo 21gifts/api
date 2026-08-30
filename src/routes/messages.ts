@@ -94,6 +94,7 @@ function invoiceAttemptBase(args: {
   description: string | null;
   descriptionHash: string | null;
   isNip57Invoice: boolean;
+  lnurlResponse?: Record<string, unknown> | null;
 }): MessageInvoiceAttempt {
   return {
     id: crypto.randomUUID(),
@@ -111,6 +112,7 @@ function invoiceAttemptBase(args: {
     description: args.description,
     descriptionHash: args.descriptionHash,
     isNip57Invoice: args.isNip57Invoice,
+    lnurlResponse: args.lnurlResponse ?? null,
   };
 }
 
@@ -350,10 +352,11 @@ async function postMultipartMessage(
   }
 }
 
-/** Body schema for posting a forum message (text and/or photo). */
+/** Body schema for posting a forum message (text and/or photo; optional reply). */
 const postBody = z
   .object({
     text: z.string().optional(),
+    inReplyTo: z.string().optional(),
     photo: z
       .object({
         contentType: z.string(),
@@ -372,12 +375,14 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
- * `GET /messages/:id/video.mp4|.webm|.mov`, and `POST /messages/:id/invoice`.
+ * `GET /messages/:id/video.mp4|.webm|.mov`, `GET /messages/:id/replies`,
+ * public `GET /messages/:id`, and `POST /messages/:id/invoice`. Photo, video,
+ * and replies register before the public single-note `GET /:id`.
  *
  * @param deps - Message store, auth store, clock, and optional `pushStore`.
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
- * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`, and
- * `POST /:id/invoice`.
+ * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
+ * `GET /:id/replies`, public `GET /:id`, and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -394,11 +399,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listLatest(MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          const author = await deps.authStore.getAccount(row.accountId);
+          const author =
+            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
           const payable =
             row.eventId !== null && author !== undefined && author.lightningAddress !== null;
           const role = author?.role ?? 'basis';
-          messages.push(serializeMessage(row, payable, role));
+          messages.push(serializeMessage(row, payable, role, row.replyCount));
         }
         return c.json({ messages }, 200);
       } catch {
@@ -444,6 +450,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (text === '' && photo === undefined) {
         return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
       }
+      let parentId: string | null = null;
+      if (parsed.data.inReplyTo !== undefined) {
+        if (!MESSAGE_ID_RE.test(parsed.data.inReplyTo)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const parent = await deps.store.getById(parsed.data.inReplyTo);
+        if (parent === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        parentId = parent.id;
+      }
       const row: MessageRow = {
         id: crypto.randomUUID(),
         accountId: account.id,
@@ -451,12 +468,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         text,
         createdAt: new Date(deps.now()),
         hasPhoto: photo !== undefined,
+        hasVideo: false,
+        videoContentType: null,
         ...unsignedNostrDefaults(),
+        parentId,
       };
       try {
         const created =
           photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
-        if (deps.pushStore !== undefined) {
+        if (deps.pushStore !== undefined && parentId === null) {
           try {
             await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
           } catch {
@@ -477,6 +497,58 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     .get('/:id/video.mp4', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mp4'))
     .get('/:id/video.webm', (c) => serveForumVideo(deps, c, c.req.param('id'), 'webm'))
     .get('/:id/video.mov', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mov'))
+    .get('/:id/replies', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const parent = await deps.store.getById(id);
+        if (parent === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
+        const messages = [];
+        for (const row of rows) {
+          if (row.accountId === null) {
+            messages.push(serializeMessage(row, false, undefined));
+            continue;
+          }
+          const author = await deps.authStore.getAccount(row.accountId);
+          const role = author?.role ?? 'basis';
+          messages.push(serializeMessage(row, false, role));
+        }
+        return c.json({ messages }, 200);
+      } catch {
+        logEvent('messages.replies.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id', async (c) => {
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+        const payable =
+          row.eventId !== null && author !== undefined && author.lightningAddress !== null;
+        const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+        return c.json(serializeMessage(row, payable, role), 200);
+      } catch {
+        logEvent('messages.get.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -551,6 +623,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         return c.json({ error: 'Not found' }, 404);
+      }
+      if (row.accountId === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: account.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
       }
       if (row.eventId === null) {
         await persistInvoiceAttempt(
@@ -725,6 +818,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             description: null,
             descriptionHash: null,
             isNip57Invoice: false,
+            lnurlResponse: zap.lnurlResponse,
           }),
         );
         if (zap.reason === 'noZap') {
@@ -753,6 +847,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             description,
             descriptionHash,
             isNip57Invoice: false,
+            lnurlResponse: zap.lnurlResponse,
           }),
         );
         return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
@@ -773,6 +868,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           description,
           descriptionHash,
           isNip57Invoice: true,
+          lnurlResponse: zap.lnurlResponse,
         }),
       );
       return c.json({ pr: zap.pr, amountSats: zap.amountSats }, 200);

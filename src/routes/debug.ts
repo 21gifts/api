@@ -1,13 +1,17 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
 import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import { normalizeDisplayName } from '@/lib/name';
+import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
+import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 
 /**
  * Operator debug surface for registered accounts.
@@ -22,6 +26,8 @@ export interface DebugRouteDeps {
   store: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** Injected `fetch` for NIP-57 mint probe on new addresses. */
+  fetchImpl: FetchFn;
 }
 
 /** Body schema for operator role assignment and Lightning Address unlink. */
@@ -117,6 +123,23 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             created: false,
           });
           continue;
+        }
+        const ephemeral = generateSecretKey();
+        const recipientPubkey = publicKeyHexFromSecret(ephemeral);
+        const probe = await probeNip57Mint({
+          address: row.lightningAddress,
+          recipientPubkey,
+          sign: async (unsigned) =>
+            finalizeEvent(unsigned, ephemeral) as unknown as Record<string, unknown>,
+          fetchImpl: deps.fetchImpl,
+          env: process.env,
+        });
+        ephemeral.fill(0);
+        if (probe === 'not_zap') {
+          return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
+        }
+        if (probe === 'unreachable') {
+          return c.json({ error: 'Lightning Address could not be resolved' }, 400);
         }
         const viewKey = randomHex(32);
         await deps.store.createAccount({

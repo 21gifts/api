@@ -222,13 +222,22 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
-  app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route(
+    '/me',
+    meRoutes({
+      store,
+      now,
+      payer: invoicePayer,
+      fetchImpl,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
+    }),
+  );
   app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
-  app.route('/debug/accounts', debugRoutes({ store, debugToken }));
+  app.route('/debug/accounts', debugRoutes({ store, debugToken, fetchImpl }));
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route(

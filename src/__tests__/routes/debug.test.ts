@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { FetchFn } from '@/lib/lnurlp';
 import { debugRoutes } from '@/routes/debug';
+
+const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -24,7 +27,11 @@ describe('debugRoutes', () => {
   it('returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(503);
@@ -34,7 +41,11 @@ describe('debugRoutes', () => {
   it('returns 503 when the token is blank', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: '  ' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: '  ',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', { headers: { authorization: 'Bearer   ' } });
     expect(res.status).toBe(503);
@@ -43,7 +54,11 @@ describe('debugRoutes', () => {
   it('returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(401);
@@ -63,7 +78,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -81,7 +96,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -95,7 +114,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -108,7 +131,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 for a missing role body', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -124,7 +151,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 for an unknown role', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -140,7 +171,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 for non-JSON', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -153,7 +188,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 404 for a missing account', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/missing', {
       method: 'PATCH',
@@ -178,7 +217,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -309,7 +348,11 @@ describe('debugRoutes', () => {
   it('POST returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -325,7 +368,11 @@ describe('debugRoutes', () => {
   it('POST returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -340,7 +387,11 @@ describe('debugRoutes', () => {
   it('POST returns 400 for an invalid body', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -356,7 +407,11 @@ describe('debugRoutes', () => {
   it('POST returns 400 when name or Lightning Address fail normalisation', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const badName = await app.request('/debug/accounts', {
       method: 'POST',
@@ -384,7 +439,7 @@ describe('debugRoutes', () => {
 
   it('POST returns 400 without persisting earlier rows when one address fails normalisation', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -401,7 +456,7 @@ describe('debugRoutes', () => {
 
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -443,7 +498,7 @@ describe('debugRoutes', () => {
 
   it('POST updates name idempotently for the same address ignoring case', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const first = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -500,7 +555,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -532,7 +587,7 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new HollowStore(), debugToken: 'secret' }),
+      debugRoutes({ store: new HollowStore(), debugToken: 'secret', fetchImpl: unusedFetch }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -566,7 +621,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new MissingNameUpdateStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new MissingNameUpdateStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -602,7 +661,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -650,7 +709,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -694,7 +753,7 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret' }),
+      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret', fetchImpl: unusedFetch }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -718,7 +777,7 @@ describe('debugRoutes', () => {
       }
     }
     const store = new NullCreatedStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -764,7 +823,7 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -799,7 +858,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new AddressFallbackStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new AddressFallbackStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const existing = await app.request('/debug/accounts', {
       method: 'POST',
@@ -826,7 +889,11 @@ describe('debugRoutes', () => {
     }
     const raceApp = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new RaceAddressFallbackStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new RaceAddressFallbackStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const raced = await raceApp.request('/debug/accounts', {
       method: 'POST',

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MESSAGE_INBOUND_REPLY_MAX_LENGTH,
   MESSAGE_MAX_LENGTH,
   MESSAGE_PHOTO_MAX_BASE64_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
@@ -7,6 +8,7 @@ import {
   detectImageContentType,
   normalizeForumText,
   serializeMessage,
+  truncatePubkeyDisplay,
   unsignedNostrDefaults,
   type MessageRow,
 } from '@/lib/message';
@@ -45,12 +47,39 @@ describe('normalizeForumText', () => {
     expect(normalizeForumText('A'.repeat(MESSAGE_MAX_LENGTH + 1))).toBeNull();
   });
 
+  it('accepts 501 characters when maxLength is the inbound reply cap', () => {
+    const text = 'A'.repeat(MESSAGE_MAX_LENGTH + 1);
+    expect(normalizeForumText(text, MESSAGE_INBOUND_REPLY_MAX_LENGTH)).toBe(text);
+  });
+
+  it('rejects text longer than the inbound reply cap', () => {
+    expect(
+      normalizeForumText('A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1), MESSAGE_INBOUND_REPLY_MAX_LENGTH),
+    ).toBeNull();
+  });
+
   it('rejects a tab', () => {
     expect(normalizeForumText('hello\tworld')).toBeNull();
   });
 
   it('rejects a DEL character', () => {
     expect(normalizeForumText(`hello${String.fromCharCode(127)}`)).toBeNull();
+  });
+});
+
+describe('truncatePubkeyDisplay', () => {
+  it('returns npub for empty input', () => {
+    expect(truncatePubkeyDisplay('')).toBe('npub');
+    expect(truncatePubkeyDisplay('   ')).toBe('npub');
+  });
+
+  it('returns the whole string when length is at most 12', () => {
+    expect(truncatePubkeyDisplay('AbCdEf123456')).toBe('abcdef123456');
+  });
+
+  it('truncates longer hex with an ellipsis', () => {
+    const hex = 'aabbccddeeff00112233445566778899';
+    expect(truncatePubkeyDisplay(hex)).toBe('aabbccdd…8899');
   });
 });
 
@@ -108,6 +137,35 @@ describe('serializeMessage', () => {
     const publicMsg = serializeMessage(row, false, 'basis');
     expect(publicMsg.hasVideo).toBe(true);
     expect(publicMsg.videoContentType).toBe('video/mp4');
+  });
+
+  it('includes replyCount when passed and omits role when undefined', () => {
+    const row: MessageRow = {
+      id: 'msg-4',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const withCount = serializeMessage(row, false, undefined, 2);
+    expect(withCount.replyCount).toBe(2);
+    expect(withCount).not.toHaveProperty('role');
+    const withoutCount = serializeMessage(row, false, undefined);
+    expect(withoutCount).not.toHaveProperty('replyCount');
+  });
+});
+
+describe('unsignedNostrDefaults', () => {
+  it('supplies null parentId and authorPubkey', () => {
+    expect(unsignedNostrDefaults()).toMatchObject({
+      parentId: null,
+      authorPubkey: null,
+      eventId: null,
+      nostrPublishState: 'pending',
+      sats: 0,
+    });
   });
 });
 

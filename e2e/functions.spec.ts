@@ -108,6 +108,20 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: probeNip57Mint — POST /me/lightning-address without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/lightning-address', {
+    data: { address: 'alice@walletofsatoshi.com' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: buildZapProbeRequest — GET /healthz is ok', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: viewRoutes — GET /view/:viewKey is 404 on default boot', async ({ request }) => {
   const res = await request.get('/view/:viewKey');
   expect(res.status()).toBe(404);
@@ -879,6 +893,15 @@ test('Function: buildKind0Event — default boot has no DATABASE_URL', async ({ 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: buildKind10002Event — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildZapProbeRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: probeNip57Mint — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: truncatePubkeyDisplay — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: signEventForAccount — default boot has no DATABASE_URL', async ({ request }) => {

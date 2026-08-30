@@ -80,10 +80,25 @@ export async function requestPayInvoice(args: RequestPayInvoiceArgs): Promise<Ln
 
 /** Zap invoice fetch: success with bolt11, or collapsed failure. */
 export type ZapInvoiceResult =
-  { ok: true; pr: string; amountSats: number } | { ok: false; reason: 'unreachable' | 'noZap' };
+  | {
+      ok: true;
+      pr: string;
+      amountSats: number;
+      /** Raw LNURL callback JSON object when the body was JSON; else null. */
+      lnurlResponse: Record<string, unknown> | null;
+    }
+  | {
+      ok: false;
+      reason: 'unreachable' | 'noZap';
+      /** Raw LNURL callback JSON when a JSON body was received; else null. */
+      lnurlResponse: Record<string, unknown> | null;
+    };
 
 /**
  * Fetch a BOLT11 invoice for a NIP-57 zap (`nostr=` query, not `comment=`).
+ *
+ * Captures the raw LNURL callback JSON body (even when schema-invalid) so
+ * callers can persist it on invoice-attempt rows. Never pays the invoice.
  *
  * @param args - Address, amount millisats, signed 9734 JSON, fetch.
  * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true).
@@ -99,23 +114,32 @@ export async function requestZapInvoice(args: {
     fetchImpl: args.fetchImpl,
   });
   if (!resolved.ok) {
-    return { ok: false, reason: 'unreachable' };
+    return { ok: false, reason: 'unreachable', lnurlResponse: null };
   }
   const metadata = resolved.metadata;
   if (metadata.allowsNostr !== true || metadata.nostrPubkey === undefined) {
-    return { ok: false, reason: 'noZap' };
+    return { ok: false, reason: 'noZap', lnurlResponse: null };
   }
   if (args.amountMsat < metadata.minSendable || args.amountMsat > metadata.maxSendable) {
-    return { ok: false, reason: 'unreachable' };
+    return { ok: false, reason: 'unreachable', lnurlResponse: null };
   }
   const callbackUrl = new URL(metadata.callback);
   callbackUrl.searchParams.set('amount', String(args.amountMsat));
   callbackUrl.searchParams.set('nostr', args.zapRequestJson);
-  const invoice = await fetchJson(args.fetchImpl, callbackUrl.toString(), lnurlpInvoiceSchema);
-  if (invoice === null) {
-    return { ok: false, reason: 'unreachable' };
+  const fetched = await fetchJsonRaw(args.fetchImpl, callbackUrl.toString());
+  if (fetched === null) {
+    return { ok: false, reason: 'unreachable', lnurlResponse: null };
   }
-  return { ok: true, pr: invoice.pr, amountSats: Math.floor(args.amountMsat / 1000) };
+  const parsed = lnurlpInvoiceSchema.safeParse(fetched.body);
+  if (!parsed.success) {
+    return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
+  }
+  return {
+    ok: true,
+    pr: parsed.data.pr,
+    amountSats: Math.floor(args.amountMsat / 1000),
+    lnurlResponse: fetched.asObject,
+  };
 }
 
 /**
@@ -144,4 +168,36 @@ async function fetchJson<T>(
   }
   const parsed = schema.safeParse(body);
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * GET `url` and parse JSON without schema enforcement.
+ *
+ * @returns Raw body plus object form when the body is a plain object; `null`
+ * on network/HTTP/JSON failure (no body).
+ */
+async function fetchJsonRaw(
+  fetchImpl: FetchFn,
+  url: string,
+): Promise<{ body: unknown; asObject: Record<string, unknown> | null } | null> {
+  let response: Response;
+  try {
+    response = await fetchImpl(url);
+  } catch {
+    return null;
+  }
+  if (!response.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  const asObject =
+    body !== null && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  return { body, asObject };
 }
