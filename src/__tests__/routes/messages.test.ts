@@ -753,6 +753,32 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 400 and persists bad_body when sats exceed 10 million', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore: await namedStore('Ada'),
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 10_000_001 }),
+    });
+    expect(res.status).toBe(400);
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('bad_body');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/messages/m1/invoice', {
       method: 'POST',

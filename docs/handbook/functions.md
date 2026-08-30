@@ -235,7 +235,7 @@
 
 - **Purpose:** Operator listing of forum invoice attempts (`message_invoice`) and kind:9735 ingest decisions (`nostr_zap_ingest`).
 - **Inputs:** `DebugPaymentsRouteDeps`: message store, optional debugToken.
-- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices` and `{ ingests }` on `GET /zap-ingests`, newest-first (cap 200). Logs `debug.invoices.listed` / `debug.zap_ingests.listed` with count, never the token or nsec.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices` and `{ ingests }` on `GET /zap-ingests`, newest-first (cap 200). Store throws → 503 `{ error: 'Messages are unavailable' }` and `debug.invoices.list_failed` / `debug.zap_ingests.list_failed`. Logs `debug.invoices.listed` / `debug.zap_ingests.listed` with count, never the token or nsec.
 - **Used by:** `createApp` at `/debug`.
 
 ## Function: inspectBolt11
