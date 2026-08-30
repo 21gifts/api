@@ -744,7 +744,7 @@ describe('runNostrWorkerTick', () => {
     );
     const row = await messages.getById('m-missing-bytes');
     expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
-    expect(row?.nostrEvent?.['content']).toBe('hallo');
+    expect(row?.nostrEvent?.['content']).toBe('hallo\n\n#bitcoin #21gifts');
     expect(row?.nostrPublishState).toBe('published');
   });
 
@@ -1933,6 +1933,7 @@ describe('runNostrWorkerTick', () => {
       nostrEvent: {
         id: eventId,
         kind: 1,
+        content: 'hello\n\n#bitcoin #21gifts',
         tags: [
           ['t', 'bitcoin'],
           ['t', '21gifts'],
