@@ -149,7 +149,7 @@ describe('runNostrWorkerTick', () => {
       });
       await messages.updateSignedEvent(id, `${i.toString(16).padStart(2, '0')}`.repeat(32), {
         kind: 1,
-        content: `n${i}`,
+        content: `n${i}\n\n#bitcoin #21gifts`,
         tags: modern,
         created_at: 1,
       });
@@ -170,11 +170,14 @@ describe('runNostrWorkerTick', () => {
         env: {},
       }),
     );
-    expect((await messages.getById('m1'))?.nostrEvent?.['tags']).toEqual([
+    const m1 = await messages.getById('m1');
+    expect(m1?.nostrEvent?.['tags']).toEqual([
       ['t', 'bitcoin'],
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
     ]);
+    expect(String(m1?.nostrEvent?.['content'])).toContain('#bitcoin');
+    expect(String(m1?.nostrEvent?.['content'])).toContain('#21gifts');
   });
 
   it('leaves pending kind:1 events that already have t=bitcoin', async () => {
@@ -187,7 +190,7 @@ describe('runNostrWorkerTick', () => {
     const eventId = 'cd'.repeat(32);
     await messages.updateSignedEvent('m1', eventId, {
       kind: 1,
-      content: 'hello',
+      content: 'hello\n\n#bitcoin #21gifts',
       tags,
       created_at: 1,
     });
@@ -202,6 +205,67 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     expect((await messages.getById('m1'))?.eventId).toBe(eventId);
+  });
+
+  it('re-signs published unpaid notes whose content lacks Damus hashtags', async () => {
+    const { auth, messages } = await seed();
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    await messages.create({
+      id: 'm-hashtag',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ohne foto funktioniert es',
+      createdAt: new Date('2026-08-28T00:10:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m-hashtag', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'ohne foto funktioniert es',
+      tags,
+      created_at: 1,
+    });
+    await messages.updatePublishState('m-hashtag', 'published', 'space');
+    await messages.create({
+      id: 'm-hashtag-zapped',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ohne foto funktioniert es',
+      createdAt: new Date('2026-08-28T00:11:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m-hashtag-zapped', 'cd'.repeat(32), {
+      kind: 1,
+      content: 'ohne foto funktioniert es',
+      tags,
+      created_at: 1,
+    });
+    await messages.updatePublishState('m-hashtag-zapped', 'published', 'space');
+    await messages.addSats('m-hashtag-zapped', 21);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    const unpaid = await messages.getById('m-hashtag');
+    expect(unpaid?.eventId).not.toBe('ab'.repeat(32));
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#bitcoin');
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#21gifts');
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('ohne foto funktioniert es');
+    const zapped = await messages.getById('m-hashtag-zapped');
+    expect(zapped?.eventId).toBe('cd'.repeat(32));
+    expect(zapped?.nostrEvent?.['content']).toBe('ohne foto funktioniert es');
+    expect(zapped?.sats).toBe(21);
   });
 
   it('re-signs pending rows whose stored event has no tag array', async () => {
@@ -431,7 +495,9 @@ describe('runNostrWorkerTick', () => {
     const notes = publisher.calls
       .filter((call) => call.event['kind'] === 1)
       .map((call) => String(call.event['content']));
-    expect(notes).toContain('pic\nhttps://dev-api.21.gifts/messages/m-pic/photo.jpg');
+    expect(notes).toContain(
+      'pic\nhttps://dev-api.21.gifts/messages/m-pic/photo.jpg\n\n#bitcoin #21gifts',
+    );
     const note = publisher.calls.find(
       (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-pic/photo'),
     );
@@ -513,7 +579,7 @@ describe('runNostrWorkerTick', () => {
     );
     await messages.updateSignedEvent('m-nophoto-url', 'ab'.repeat(32), {
       kind: 1,
-      content: '',
+      content: '#bitcoin #21gifts',
       tags: [
         ['t', 'bitcoin'],
         ['t', '21gifts'],
@@ -610,6 +676,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(
       deps({
@@ -707,6 +774,7 @@ describe('runNostrWorkerTick', () => {
     });
     await messages.addSats('m-zap-pending', 7);
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(
       deps({
@@ -768,13 +836,13 @@ describe('runNostrWorkerTick', () => {
     );
     const row = await messages.getById('m-plain-photo');
     expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
-    expect(row?.nostrEvent?.['content']).toBe('');
+    expect(row?.nostrEvent?.['content']).toBe('#bitcoin #21gifts');
     expect(row?.nostrPublishState).toBe('published');
     expect(
       publisher.calls.some(
         (call) =>
           call.event['kind'] === 1 &&
-          call.event['content'] === '' &&
+          call.event['content'] === '#bitcoin #21gifts' &&
           call.event['id'] === row?.eventId,
       ),
     ).toBe(true);

@@ -16,6 +16,12 @@ export const KIND1_TAGS: readonly [
   ['r', 'https://21.gifts'],
 ] as const;
 
+/** Damus-visible hashtags appended to kind:1 content (order fixed). */
+export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
+  '#bitcoin',
+  '#21gifts',
+] as const;
+
 /** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 
@@ -67,11 +73,44 @@ export function kind1Tags(): string[][] {
   return KIND1_TAGS.map((tag) => [...tag]);
 }
 
+/**
+ * True when `content` already contains `#name` as a hashtag (case-insensitive).
+ *
+ * @param content - Kind:1 content body.
+ * @param name - Hashtag name without `#` (e.g. `bitcoin`).
+ */
+export function kind1HasHashtag(content: string, name: string): boolean {
+  return content.toLowerCase().includes(`#${name.toLowerCase()}`);
+}
+
+/**
+ * Append any missing `#bitcoin` / `#21gifts` so Damus renders them.
+ * Forum text is unchanged by the caller; this only shapes Nostr content.
+ *
+ * Empty content → `"#bitcoin #21gifts"` (no leading blank line).
+ * Non-empty → trailing newlines stripped, then `\n\n` + missing tags joined by a single space.
+ * Already-present tags (any case, e.g. `#21Gifts`) are not duplicated; only missing ones are appended, still in KIND1_CONTENT_HASHTAGS order.
+ *
+ * @param content - Forum text and optional photo URL already composed.
+ * @returns Content with any missing hashtags appended.
+ */
+export function kind1ContentWithHashtags(content: string): string {
+  const missing = KIND1_CONTENT_HASHTAGS.filter((tag) => !kind1HasHashtag(content, tag.slice(1)));
+  if (missing.length === 0) {
+    return content;
+  }
+  const suffix = missing.join(' ');
+  if (content === '') {
+    return suffix;
+  }
+  return `${content.replace(/\n+$/, '')}\n\n${suffix}`;
+}
+
 /** Unsigned kind:1 fields before `finalizeEvent`. */
 export interface UnsignedKind1 {
   /** Kind 1. */
   kind: 1;
-  /** Exact `normalizeForumText` output. */
+  /** Forum text (plus optional photo URL) with Damus-visible `#bitcoin` / `#21gifts`. */
   content: string;
   /** Frozen tags. */
   tags: string[][];
@@ -82,7 +121,8 @@ export interface UnsignedKind1 {
 /**
  * Build an unsigned top-level kind:1 for a forum message.
  *
- * Content is plaintext (no name prefix). Tags are frozen — no `e`/`p`/`q`.
+ * Content is plaintext (no name prefix) plus Damus-visible `#bitcoin` /
+ * `#21gifts`. Tags are frozen — no `e`/`p`/`q`.
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
@@ -100,6 +140,7 @@ export function buildKind1Event(
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
     tags.push(['imeta', `url ${photo.url}`, `m ${photo.mime}`]);
   }
+  body = kind1ContentWithHashtags(body);
   return {
     kind: 1,
     content: body,

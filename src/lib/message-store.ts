@@ -14,6 +14,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
+import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
@@ -22,6 +23,14 @@ function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: 
   }
   const content = event['content'];
   return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo.`);
+}
+
+function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || kind1ContentWithHashtags(content) !== content;
 }
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -111,6 +120,15 @@ export interface MessageStore {
    * @param limit - Max rows.
    */
   listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Signed rows whose kind:1 content lacks `#21gifts` or `#bitcoin` (case-insensitive).
+   * Any publish state, `sats = 0` only. Oldest `createdAt` then `id` first.
+   * Includes `nostrEvent === null` and non-string content.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingHashtags(limit: number): Promise<MessageRow[]>;
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
@@ -467,6 +485,20 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(rows);
   }
 
+  listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) => row.eventId !== null && row.sats === 0 && kind1MissingHashtags(row.nostrEvent),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
     if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
@@ -812,6 +844,24 @@ export class PostgresMessageStore implements MessageStore {
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL AND sats = 0
+         AND (
+           nostr_event IS NULL
+           OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
+           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#21gifts%'
+           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#bitcoin%'
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,

@@ -1065,6 +1065,7 @@ describe('indexOpenZapReceipts', () => {
           base.claimUnpublished(...args),
         listPendingSigned: (limit: number) => base.listPendingSigned(limit),
         listSignedMissingPhoto: (limit: number) => base.listSignedMissingPhoto(limit),
+        listSignedMissingHashtags: (limit: number) => base.listSignedMissingHashtags(limit),
         clearSignedEvent: (...args: Parameters<InMemoryMessageStore['clearSignedEvent']>) =>
           base.clearSignedEvent(...args),
         resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>

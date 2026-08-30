@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (`POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (kind:1 content includes Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -1176,7 +1176,8 @@ trim, or with disallowed C0/DEL controls, is rejected. Newlines (`\n`,
 `payable` is false until the worker signs the note. `role` is the posting
 session account's live `account.role`. Over-limit posters get **429**
 `{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
-20/UTC-day). The worker signs a top-level kind:1 and fans out when
+20/UTC-day). The worker signs a top-level kind:1 (content includes Damus-visible
+`#bitcoin` and `#21gifts`; forum `text` stays the member's words) and fans out when
 `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
