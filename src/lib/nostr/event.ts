@@ -28,14 +28,38 @@ export interface Kind1Photo {
 }
 
 /**
+ * Filename extension Damus treats as an inline image.
+ *
+ * @param mime - Stored JPEG, PNG, or WebP type.
+ * @returns `jpg`, `png`, or `webp`.
+ */
+function forumPhotoExt(mime: Kind1Photo['mime']): 'jpg' | 'png' | 'webp' {
+  if (mime === 'image/png') {
+    return 'png';
+  }
+  if (mime === 'image/webp') {
+    return 'webp';
+  }
+  return 'jpg';
+}
+
+/**
  * Absolute photo URL for a forum message.
+ *
+ * Damus only embeds URLs that look like image files, so the path ends in
+ * `.jpg` / `.png` / `.webp` rather than a bare `/photo`.
  *
  * @param apiBase - Public API origin (no trailing slash).
  * @param messageId - Message id.
- * @returns `GET /messages/:id/photo` URL.
+ * @param mime - Stored type (defaults to JPEG).
+ * @returns `GET /messages/:id/photo.jpg` (or `.png` / `.webp`) URL.
  */
-export function forumPhotoUrl(apiBase: string, messageId: string): string {
-  return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo`;
+export function forumPhotoUrl(
+  apiBase: string,
+  messageId: string,
+  mime: Kind1Photo['mime'] = 'image/jpeg',
+): string {
+  return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo.${forumPhotoExt(mime)}`;
 }
 
 /** Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}). */

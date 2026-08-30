@@ -431,7 +431,7 @@ describe('runNostrWorkerTick', () => {
     const notes = publisher.calls
       .filter((call) => call.event['kind'] === 1)
       .map((call) => String(call.event['content']));
-    expect(notes).toContain('pic\nhttps://dev-api.21.gifts/messages/m-pic/photo');
+    expect(notes).toContain('pic\nhttps://dev-api.21.gifts/messages/m-pic/photo.jpg');
     const note = publisher.calls.find(
       (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-pic/photo'),
     );
@@ -439,7 +439,7 @@ describe('runNostrWorkerTick', () => {
       ['t', 'bitcoin'],
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
-      ['imeta', 'url https://dev-api.21.gifts/messages/m-pic/photo', 'm image/jpeg'],
+      ['imeta', 'url https://dev-api.21.gifts/messages/m-pic/photo.jpg', 'm image/jpeg'],
     ]);
   });
 
@@ -494,7 +494,7 @@ describe('runNostrWorkerTick', () => {
     );
     const row = await messages.getById('m-photo');
     expect(row?.eventId).not.toBe('ab'.repeat(32));
-    expect(String(row?.nostrEvent?.['content'])).toContain('/messages/m-photo/photo');
+    expect(String(row?.nostrEvent?.['content'])).toContain('/messages/m-photo/photo.png');
   });
 
   it('does not reset published photo posts when PUBLIC_BASE_URL is unset', async () => {

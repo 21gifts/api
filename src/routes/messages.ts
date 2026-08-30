@@ -130,6 +130,44 @@ async function authedAccount(
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Public photo bytes for Nostr clients. Same handler for `/photo` and
+ * `/photo.jpg` (Damus only embeds URLs with an image extension).
+ *
+ * @param deps - Message store.
+ * @param id - Path id.
+ * @returns 200 bytes, 404, or 503.
+ */
+async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Response> {
+  if (!MESSAGE_ID_RE.test(id)) {
+    return Response.json({ error: 'Photo not found' }, { status: 404 });
+  }
+  try {
+    const photo = await deps.store.getPhoto(id);
+    if (photo === null) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
+    const ext =
+      photo.contentType === 'image/png'
+        ? 'png'
+        : photo.contentType === 'image/webp'
+          ? 'webp'
+          : 'jpg';
+    return new Response(photo.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': photo.contentType,
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+        'Content-Disposition': `inline; filename="photo.${ext}"`,
+      },
+    });
+  } catch {
+    logEvent('messages.photo.failed');
+    return Response.json({ error: 'Messages are unavailable' }, { status: 503 });
+  }
+}
+
 /** Body schema for posting a forum message (text and/or photo). */
 const postBody = z
   .object({
@@ -150,10 +188,12 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * Build the `/messages` route group.
  *
  * Mounted at `/messages` so the public paths are `GET /messages`,
- * `POST /messages`, `GET /messages/:id/photo`, and `POST /messages/:id/invoice`.
+ * `POST /messages`, `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` /
+ * `.webp`), and `POST /messages/:id/invoice`.
  *
  * @param deps - Message store, auth store, and clock.
- * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo`, and `POST /:id/invoice`.
+ * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
+ * `.jpeg` / `.png` / `.webp`, and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -233,28 +273,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id/photo', async (c) => {
-      const id = c.req.param('id');
-      if (!MESSAGE_ID_RE.test(id)) {
-        return c.json({ error: 'Photo not found' }, 404);
-      }
-      try {
-        const photo = await deps.store.getPhoto(id);
-        if (photo === null) {
-          return c.json({ error: 'Photo not found' }, 404);
-        }
-        return new Response(photo.bytes, {
-          status: 200,
-          headers: {
-            'Content-Type': photo.contentType,
-            'Cache-Control': 'public, max-age=86400',
-          },
-        });
-      } catch {
-        logEvent('messages.photo.failed');
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
-    })
+    .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/photo.png', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/photo.webp', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/photo', (c) => serveForumPhoto(deps, c.req.param('id')))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {

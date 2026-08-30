@@ -1540,7 +1540,69 @@ describe('GET /messages/:id/photo', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/jpeg');
     expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.jpg"');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('serves the same bytes at /photo.jpg so Damus treats the URL as an image', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const res = await mount(await seededStore(), store).request(
+      '/messages/00000000-0000-4000-8000-000000000001/photo.jpg',
+    );
+    const jpeg = await mount(await seededStore(), store).request(
+      '/messages/00000000-0000-4000-8000-000000000001/photo.jpeg',
+    );
+    expect(res.status).toBe(200);
+    expect(jpeg.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('names png and webp files from the stored type', async () => {
+    const store = new InMemoryMessageStore();
+    const pngId = '00000000-0000-4000-8000-000000000002';
+    const webpId = '00000000-0000-4000-8000-000000000003';
+    await store.create(
+      {
+        id: pngId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/png', bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+    );
+    await store.create(
+      {
+        id: webpId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/webp', bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]) },
+    );
+    const png = await mount(await seededStore(), store).request(`/messages/${pngId}/photo.png`);
+    const webp = await mount(await seededStore(), store).request(`/messages/${webpId}/photo.webp`);
+    expect(png.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
+    expect(webp.headers.get('Content-Disposition')).toBe('inline; filename="photo.webp"');
   });
 
   it('returns 404 when the photo is missing', async () => {

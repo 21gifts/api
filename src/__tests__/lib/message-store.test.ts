@@ -328,7 +328,7 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.eventId).toBeNull();
     expect((await store.getById('a'))?.nostrPublishState).toBe('pending');
     await store.updateSignedEvent('a', 'cd'.repeat(32), {
-      content: 'http://127.0.0.1:3000/messages/a/photo',
+      content: 'http://127.0.0.1:3000/messages/a/photo.jpg',
     });
     expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual(['n', 'p', 'q']);
     await store.resetSignedEvent('a', 'ff'.repeat(32));
@@ -812,7 +812,7 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toMatch(/photo IS NOT NULL/);
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
-    expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo/);
+    expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo\./);
     await store.resetSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
