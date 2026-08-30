@@ -2513,6 +2513,7 @@ describe('runNostrWorkerTick', () => {
       claimedUntil: null,
     });
     const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -2520,7 +2521,18 @@ describe('runNostrWorkerTick', () => {
         kek: KEK,
         publisher,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
         conversations,
       }),
     );
@@ -2562,6 +2574,7 @@ describe('runNostrWorkerTick', () => {
     });
     const publisher = new RecordingPublisher();
     publisher.ok = false;
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -2569,7 +2582,18 @@ describe('runNostrWorkerTick', () => {
         kek: KEK,
         publisher,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
         conversations,
       }),
     );
@@ -2578,23 +2602,22 @@ describe('runNostrWorkerTick', () => {
 
   it('skips unsigned conversation rows when the counterpart has no pubkey', async () => {
     const { auth, messages } = await seed();
-    await auth.createAccount({
-      id: 'nokey',
-      linkingKey: null,
-      role: 'basis',
-      name: 'NoKey',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      viewKey: 'c'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-    });
-    const conversations = new InMemoryConversationStore();
-    const thread = await conversations.openMemberMember('acc', 'nokey', new Date(0));
+    const conversations = new InMemoryConversationStore([
+      {
+        id: 'c-nokey',
+        kind: 'member_damus',
+        accountA: 'acc',
+        accountB: null,
+        counterpartPubkey: null,
+        createdAt: new Date(0),
+        lastMessageAt: new Date(0),
+        name: '',
+        lastText: '',
+      },
+    ]);
     await conversations.appendMessage({
       id: 'out-nokey',
-      conversationId: thread.id,
+      conversationId: 'c-nokey',
       text: 'ping',
       createdAt: new Date(0),
       senderAccountId: 'acc',

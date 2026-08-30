@@ -365,12 +365,16 @@ describe('POST /messages', () => {
       sats: number;
       payable: boolean;
       hasPhoto: boolean;
+      hasVideo: boolean;
+      videoContentType: string | null;
       role: string;
       accountId?: string;
     };
     expect(created.name).toBe('Ada');
     expect(created.text).toBe('hello world');
     expect(created.hasPhoto).toBe(false);
+    expect(created.hasVideo).toBe(false);
+    expect(created.videoContentType).toBeNull();
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
@@ -380,9 +384,9 @@ describe('POST /messages', () => {
 
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
-    const body = (await list.json()) as { messages: (typeof created)[] };
+    const body = (await list.json()) as { messages: (typeof created & { replyCount: number })[] };
     expect(body.messages).toHaveLength(1);
-    expect(body.messages[0]).toEqual(created);
+    expect(body.messages[0]).toEqual({ ...created, replyCount: 0 });
   });
 
   it('enqueues a forum push for other subscribed accounts, not the author', async () => {

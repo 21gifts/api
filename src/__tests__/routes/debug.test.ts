@@ -6,6 +6,29 @@ import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** LNURL-pay that mints a zap-capable invoice (required for NEW-address provision). */
+function zapCapableFetch(): FetchFn {
+  return async (input) => {
+    if (String(input).includes('/.well-known/lnurlp/')) {
+      return jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: 100_000_000_000,
+        allowsNostr: true,
+        nostrPubkey: 'aa'.repeat(32),
+      });
+    }
+    return jsonResponse({ pr: 'lnbc10n1ptest' });
+  };
+}
+
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
     .map((call) => call[0])
@@ -15,13 +38,17 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 describe('debugRoutes', () => {
   let warn: ReturnType<typeof vi.spyOn>;
+  let nip57: { mockRestore: () => void };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bolt11 = await import('@/lib/bolt11');
+    nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    nip57.mockRestore();
   });
 
   it('returns 503 when debug is not configured', async () => {
@@ -529,7 +556,7 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -574,7 +601,7 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const first = await app.request('/debug/accounts', {
       method: 'POST',
@@ -667,7 +694,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new HollowStore(), debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({
+        store: new HollowStore(),
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -743,7 +774,7 @@ describe('debugRoutes', () => {
     });
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -794,7 +825,7 @@ describe('debugRoutes', () => {
     });
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -865,7 +896,7 @@ describe('debugRoutes', () => {
     const store = new NullCreatedStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -914,7 +945,7 @@ describe('debugRoutes', () => {
     });
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -984,7 +1015,7 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new RaceAddressFallbackStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
+        fetchImpl: zapCapableFetch(),
       }),
     );
     const raced = await raceApp.request('/debug/accounts', {

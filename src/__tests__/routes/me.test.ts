@@ -5,6 +5,7 @@ import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { parseNostrKek } from '@/lib/nostr/kek';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -15,13 +16,17 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
+let nip57: { mockRestore: () => void };
 
-beforeEach(() => {
+beforeEach(async () => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const bolt11 = await import('@/lib/bolt11');
+  nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
 });
 
 afterEach(() => {
   warn.mockRestore();
+  nip57.mockRestore();
 });
 
 const now = (): number => 1_000_000;
@@ -30,6 +35,7 @@ const LINKING_KEY = `02${'a'.repeat(64)}`;
 const VIEW_KEY = 'a'.repeat(64);
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc10n1testinvoice';
+const NOSTR_KEK = parseNostrKek('cd'.repeat(32));
 
 interface MountOpts {
   payer?: InvoicePayer;
@@ -45,6 +51,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       now: opts.clock ?? now,
       payer: opts.payer ?? new UnconfiguredInvoicePayer(),
       fetchImpl: opts.fetchImpl ?? globalThis.fetch,
+      nostrKek: NOSTR_KEK,
     }),
   );
 }

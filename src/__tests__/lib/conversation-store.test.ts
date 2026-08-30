@@ -157,14 +157,19 @@ describe('InMemoryConversationStore', () => {
   });
 
   it('caps listVisible at limit and breaks ties by id descending', async () => {
-    const early = thread({ id: 'z', lastMessageAt: NOW });
-    const late = thread({
+    const highId = thread({
+      id: 'z',
+      accountA: 'acc',
+      accountB: 'a',
+      lastMessageAt: NOW,
+    });
+    const lowId = thread({
       id: 'm',
       accountA: 'acc',
       accountB: 'x',
       lastMessageAt: NOW,
     });
-    const store = new InMemoryConversationStore([early, late]);
+    const store = new InMemoryConversationStore([highId, lowId]);
     expect((await store.listVisible('acc', false, null, 1)).map((t) => t.id)).toEqual(['z']);
   });
 
