@@ -183,7 +183,9 @@ describe('PostgresAuthStore', () => {
 
   it('looks up an account by lightning_address with lower(trim) SQL', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' }];
+    sql.nextRows = [
+      { ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' },
+    ];
     const store = new PostgresAuthStore(sql);
     const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
     expect(sql.queries[0]?.text).toMatch(/WHERE lower\(lightning_address\) = lower\(\$1\)/);

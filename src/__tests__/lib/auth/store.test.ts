@@ -634,9 +634,9 @@ describe('InMemoryAuthStore', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    expect(
-      (await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id,
-    ).toBe('acc');
+    expect((await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id).toBe(
+      'acc',
+    );
     expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
   });
 

@@ -229,25 +229,13 @@ describe('passkey claim', () => {
       accountId: 'provisioned',
       createdAt: T0,
     });
-    const result = await startPasskeyClaim(
-      store,
-      new FakePasskeyCeremony(),
-      CONFIG,
-      T0,
-      VIEW_KEY,
-    );
+    const result = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(result).toEqual({ ok: false, error: 'This profile already has a passkey' });
   });
 
   it('begins claim with the existing account id and display name', async () => {
     const store = await provisionedStore();
-    const result = await startPasskeyClaim(
-      store,
-      new FakePasskeyCeremony(),
-      CONFIG,
-      T0,
-      VIEW_KEY,
-    );
+    const result = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;

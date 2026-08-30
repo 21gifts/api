@@ -204,7 +204,9 @@ describe('debugRoutes', () => {
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] }),
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
@@ -218,7 +220,9 @@ describe('debugRoutes', () => {
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] }),
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
     });
     expect(res.status).toBe(401);
   });
@@ -276,9 +280,7 @@ describe('debugRoutes', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'debug.accounts.provisioned' &&
-          e['created'] === 1 &&
-          e['updated'] === 0,
+          e['event'] === 'debug.accounts.provisioned' && e['created'] === 1 && e['updated'] === 0,
       ),
     ).toBe(true);
   });
@@ -323,9 +325,7 @@ describe('debugRoutes', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'debug.accounts.provisioned' &&
-          e['created'] === 0 &&
-          e['updated'] === 1,
+          e['event'] === 'debug.accounts.provisioned' && e['created'] === 0 && e['updated'] === 1,
       ),
     ).toBe(true);
   });

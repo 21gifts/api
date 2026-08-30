@@ -58,18 +58,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         return c.json({ error: 'Server auth is not configured' }, 500);
       }
       const body = await c.req.json().catch(() => null);
-      if (
-        body !== null &&
-        typeof body === 'object' &&
-        !Array.isArray(body) &&
-        'viewKey' in body
-      ) {
+      if (body !== null && typeof body === 'object' && !Array.isArray(body) && 'viewKey' in body) {
         const viewKey = (body as { viewKey: unknown }).viewKey;
         if (typeof viewKey !== 'string') {
-          return c.json(
-            { error: 'Expected a JSON body with an optional "viewKey" string' },
-            400,
-          );
+          return c.json({ error: 'Expected a JSON body with an optional "viewKey" string' }, 400);
         }
         const claimed = await startPasskeyClaim(
           deps.store,
