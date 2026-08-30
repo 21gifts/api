@@ -431,6 +431,11 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(2);
+    expect(ingests.every((row) => row.outcome === 'rejected' && row.reason === 'event')).toBe(
+      true,
+    );
   });
 
   it('does not increment sats for an unknown e-tag event id', async () => {
@@ -465,6 +470,11 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('rejected');
+    expect(ingests[0]?.reason).toBe('event');
+    expect(ingests[0]?.noteEventId).toBe('ff'.repeat(32));
   });
 
   it('does not increment sats without bolt11 or when decodeBolt11 returns null', async () => {
@@ -505,6 +515,11 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(2);
+    expect(ingests.every((row) => row.outcome === 'rejected' && row.reason === 'bolt11')).toBe(
+      true,
+    );
   });
 
   it('does not increment sats when bolt11 tag value is empty', async () => {
@@ -830,7 +845,7 @@ describe('indexOpenZapReceipts', () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
-    await seedStore({
+    const messageId = await seedStore({
       store,
       auth,
       accountId: 'acc-ok',
@@ -858,6 +873,62 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('indexed');
+    expect(ingests[0]?.reason).toBeNull();
+    expect(ingests[0]?.amountSats).toBe(21);
+    expect(ingests[0]?.messageId).toBe(messageId);
+    expect(ingests[0]?.receiptId).toBe('r-ok');
+  });
+
+  it('records duplicate ingest when the same receipt is seen again', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-dup',
+      lightningAddress: 'zap-dup@example.com',
+    });
+    querier.events = [
+      {
+        id: 'r-dup',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-dup'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(2);
+    expect(ingests.some((row) => row.outcome === 'indexed' && row.reason === null)).toBe(true);
+    expect(ingests.some((row) => row.outcome === 'rejected' && row.reason === 'duplicate')).toBe(
+      true,
+    );
   });
 
   it('caches provider pubkey within TTL and refreshes after expiry', async () => {
@@ -966,6 +1037,86 @@ describe('indexOpenZapReceipts', () => {
       verifyReceipt: () => false,
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('rejected');
+    expect(ingests[0]?.reason).toBe('sig');
+    expect(ingests[0]?.receiptId).toBe('r-sig');
+  });
+
+  it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const base = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await seedStore({
+        store: base,
+        auth,
+        accountId: 'acc-record-fail',
+        lightningAddress: 'zap-record-fail@example.com',
+      });
+      const store = {
+        listLatest: (limit: number) => base.listLatest(limit),
+        create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+        getPhoto: (id: string) => base.getPhoto(id),
+        getById: (id: string) => base.getById(id),
+        getByEventId: (id: string) => base.getByEventId(id),
+        claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
+          base.claimUnsigned(...args),
+        claimUnpublished: (...args: Parameters<InMemoryMessageStore['claimUnpublished']>) =>
+          base.claimUnpublished(...args),
+        listPendingSigned: (limit: number) => base.listPendingSigned(limit),
+        clearSignedEvent: (...args: Parameters<InMemoryMessageStore['clearSignedEvent']>) =>
+          base.clearSignedEvent(...args),
+        updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
+          base.updateSignedEvent(...args),
+        updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
+          base.updatePublishState(...args),
+        addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
+          base.recordZapReceipt(...args),
+        recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
+          base.recordInvoiceAttempt(...args),
+        listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        recordZapIngest: async () => {
+          throw new Error('ingest persist boom');
+        },
+        listZapIngests: (limit: number) => base.listZapIngests(limit),
+      };
+      const querier = new RecordingQuerier();
+      querier.events = [
+        {
+          id: 'r-record-fail',
+          pubkey: PROVIDER_PUBKEY,
+          kind: 9735,
+          tags: [
+            ['e', NOTE_EVENT_ID],
+            ['bolt11', 'lnbc-ok'],
+          ],
+        },
+      ];
+      mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+      await expect(
+        ingest({
+          store,
+          auth,
+          querier,
+          urls: URLS,
+          timeoutMs: 50,
+          now: () => 1,
+          fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        }),
+      ).resolves.toBeUndefined();
+      expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.zap.ingest.record_failed')).toBe(true);
+      expect(events.some((e) => e['event'] === 'nostr.zap.indexed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('indexes a later receipt when an earlier verify throws', async () => {

@@ -390,6 +390,15 @@ test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 40
   expect(res.status()).toBe(401);
 });
 
+test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 401', async ({
+  request,
+}) => {
+  const invoices = await request.get('/debug/invoices');
+  expect(invoices.status()).toBe(401);
+  const ingests = await request.get('/debug/zap-ingests');
+  expect(ingests.status()).toBe(401);
+});
+
 test('Function: serializeContact — POST /contact without bearer is 401', async ({ request }) => {
   const res = await request.post('/contact', {
     data: { text: 'hi' },
@@ -630,6 +639,20 @@ test('Function: requestGiftInvoice — POST /invoices unconfigured is 503', asyn
 });
 
 test('Function: decodeBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: inspectBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: isNip57Invoice — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
     data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
   });

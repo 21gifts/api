@@ -149,9 +149,9 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns signed rows with a photo whose kind:1 content lacks `/messages/:id/photo` (any publish state, `sats = 0`, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns signed rows with a photo whose kind:1 content lacks `/messages/:id/photo` (any publish state, `sats = 0`, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto` / invoice and ingest rows. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503) except invoice/ingest persist failures which are caught by callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: PostgresContactStore
@@ -208,7 +208,7 @@
 - **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
 - **Inputs:** Configured token (non-empty) and raw header or `undefined`.
 - **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
-- **Used by:** `debugRoutes`, `debugContactsRoutes`.
+- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugPaymentsRoutes`.
 
 ## Function: compareAccountsForList
 
@@ -230,6 +230,27 @@
 - **Inputs:** `DebugContactsRouteDeps`: contact store, optional debugToken.
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ contacts }` newest-first (cap 200); 503 on store throw (`contact.list.failed`). Logs `debug.contacts.listed` with count, never the token.
 - **Used by:** `createApp` at `/debug/contacts`.
+
+## Function: debugPaymentsRoutes
+
+- **Purpose:** Operator listing of forum invoice attempts (`message_invoice`) and kind:9735 ingest decisions (`nostr_zap_ingest`).
+- **Inputs:** `DebugPaymentsRouteDeps`: message store, optional debugToken.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices` and `{ ingests }` on `GET /zap-ingests`, newest-first (cap 200). Logs `debug.invoices.listed` / `debug.zap_ingests.listed` with count, never the token or nsec.
+- **Used by:** `createApp` at `/debug`.
+
+## Function: inspectBolt11
+
+- **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
+- **Inputs:** BOLT11 string; optional decoder inject for tests.
+- **Returns / side effects:** `InspectedBolt11` or `null` when malformed / zero-amount.
+- **Used by:** `POST /messages/:id/invoice` when persisting an ok attempt.
+
+## Function: isNip57Invoice
+
+- **Purpose:** True when `descriptionHash` equals `sha256(utf8(zapRequestJson))`.
+- **Inputs:** description hash (or null) and zap request JSON string (or null).
+- **Returns / side effects:** boolean.
+- **Used by:** `POST /messages/:id/invoice` when persisting an ok attempt.
 
 ## Function: InMemoryGiftStore
 
@@ -387,7 +408,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and parsed KEK.
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
@@ -935,16 +956,16 @@
 
 ## Function: indexZapReceipt
 
-- **Purpose:** Validate provider pubkey (case-insensitive hex) and add sats once per receipt id. Callers verify the Nostr signature first.
-- **Inputs:** store, messageId, receipt, providerPubkey, amountSats.
-- **Returns / side effects:** boolean; logs indexed/rejected.
+- **Purpose:** Validate provider pubkey (case-insensitive hex) and add sats once per receipt id. Callers verify the Nostr signature first. Persists a `nostr_zap_ingest` row (`indexed`, or `rejected` with reason `pubkey` / `amount` / `duplicate`); store throw logs `nostr.zap.ingest.record_failed` and does not change the boolean result.
+- **Inputs:** store, messageId, receipt, providerPubkey, amountSats; optional receiptEvent / noteEventId for debug rows.
+- **Returns / side effects:** boolean; logs indexed/rejected; records ingest.
 - **Used by:** `indexOpenZapReceipts` (worker tick).
 
 ## Function: indexOpenZapReceipts
 
-- **Purpose:** Each worker tick, query zap relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. One throwing receipt does not skip the rest of the tick.
+- **Purpose:** Each worker tick, query zap relays for kind:9735 on recent notes (chunks of 20 event ids), verify the Nostr signature, validate provider pubkey via LNURL (module TTL cache, lowercased), bolt11 amount, e-tag, and index via `indexZapReceipt`. Persists every ingest decision (`indexed` / `rejected` with reason). One throwing receipt does not skip the rest of the tick.
 - **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `verifyReceipt` (default: nostr-tools `verifyEvent`).
-- **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; never logs full bolt11.
+- **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; records ingest rows; never logs full bolt11.
 - **Used by:** `runNostrWorkerTick`.
 
 ## Function: requestZapInvoice

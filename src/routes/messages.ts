@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -15,13 +16,76 @@ import {
   type ForumPhoto,
   type MessageRow,
 } from '@/lib/message';
-import type { MessageStore } from '@/lib/message-store';
+import type {
+  MessageInvoiceAttempt,
+  MessageInvoiceResult,
+  MessageStore,
+} from '@/lib/message-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { bearerToken } from '@/routes/me';
+
+/** Placeholder author id when the message/author is unknown at persist time. */
+const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Persist an invoice attempt without failing the HTTP payment response.
+ *
+ * @param store - Forum store.
+ * @param row - Attempt row.
+ */
+async function persistInvoiceAttempt(
+  store: MessageStore,
+  row: MessageInvoiceAttempt,
+): Promise<void> {
+  try {
+    await store.recordInvoiceAttempt(row);
+  } catch {
+    logEvent('message.invoice.record_failed');
+  }
+}
+
+/**
+ * Build an invoice-attempt row (caller sets result-specific fields).
+ *
+ * @param args - Common fields for every attempt after auth.
+ */
+function invoiceAttemptBase(args: {
+  messageId: string;
+  payerAccountId: string;
+  authorAccountId: string;
+  amountSats: number;
+  lightningAddress: string | null;
+  zapRequest: Record<string, unknown> | null;
+  result: MessageInvoiceResult;
+  httpStatus: number;
+  pr: string | null;
+  paymentHash: string | null;
+  description: string | null;
+  descriptionHash: string | null;
+  isNip57Invoice: boolean;
+}): MessageInvoiceAttempt {
+  return {
+    id: crypto.randomUUID(),
+    createdAt: new Date(),
+    messageId: args.messageId,
+    payerAccountId: args.payerAccountId,
+    authorAccountId: args.authorAccountId,
+    amountSats: args.amountSats,
+    lightningAddress: args.lightningAddress,
+    zapRequest: args.zapRequest,
+    result: args.result,
+    httpStatus: args.httpStatus,
+    pr: args.pr,
+    paymentHash: args.paymentHash,
+    description: args.description,
+    descriptionHash: args.descriptionHash,
+    isNip57Invoice: args.isNip57Invoice,
+  };
+}
 
 /**
  * `/messages` — signed-in member forum: list every message, post text and/or
@@ -196,37 +260,182 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const messageIdParam = c.req.param('id');
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
       /* v8 ignore next 3 -- zod already requires positive int; cap is extra */
       if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
-      const row = await deps.store.getById(c.req.param('id'));
+      const row = await deps.store.getById(messageIdParam);
       if (row === undefined) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'not_found',
+            httpStatus: 404,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Not found' }, 404);
       }
       if (row.eventId === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: row.accountId,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'no_event',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const author = await deps.authStore.getAccount(row.accountId);
       if (author === undefined || author.lightningAddress === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: row.accountId,
+            amountSats: parsed.data.sats,
+            lightningAddress: author?.lightningAddress ?? null,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
       /* v8 ignore next 3 -- payable notes have keys after the worker */
       if (recipientPubkey === undefined) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest: null,
+            result: 'no_key',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const kek = deps.nostrKek;
       if (kek === undefined) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest: null,
+            result: 'no_key',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       if (!invoiceLimiter.allow(account.id, deps.now())) {
         c.header('Retry-After', '10');
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest: null,
+            result: 'rate_limited',
+            httpStatus: 429,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Too many payments' }, 429);
       }
       const relays = resolveZapRelays(process.env);
@@ -243,18 +452,80 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         /* v8 ignore next 4 -- keygen or sign failure */
       } catch {
         logEvent('nostr.sign.failed', { messageId: row.id });
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest: null,
+            result: 'sign_failed',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
+      const zapRequestJson = JSON.stringify(signed);
+      const zapRequest =
+        signed !== null && typeof signed === 'object'
+          ? (signed as unknown as Record<string, unknown>)
+          : null;
       const zap = await requestZapInvoice({
         address: author.lightningAddress,
         amountMsat,
-        zapRequestJson: JSON.stringify(signed),
+        zapRequestJson,
         fetchImpl,
       });
       /* v8 ignore next 3 -- LNURL/zap collapsed failure */
       if (!zap.ok) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest,
+            result: zap.reason,
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
       }
+      const inspected = inspectBolt11(zap.pr);
+      const description = inspected?.description ?? null;
+      const descriptionHash = inspected?.descriptionHash ?? null;
+      await persistInvoiceAttempt(
+        deps.store,
+        invoiceAttemptBase({
+          messageId: row.id,
+          payerAccountId: account.id,
+          authorAccountId: author.id,
+          amountSats: parsed.data.sats,
+          lightningAddress: author.lightningAddress,
+          zapRequest,
+          result: 'ok',
+          httpStatus: 200,
+          pr: zap.pr,
+          paymentHash: inspected?.paymentHash ?? null,
+          description,
+          descriptionHash,
+          isNip57Invoice: isNip57Invoice(descriptionHash, zapRequestJson),
+        }),
+      );
       return c.json({ pr: zap.pr, amountSats: zap.amountSats }, 200);
     });
 }

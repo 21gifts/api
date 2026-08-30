@@ -3,7 +3,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT } from '@/lib/message';
-import type { MessageStore } from '@/lib/message-store';
+import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -57,6 +57,62 @@ function defaultVerifyReceipt(event: NostrEventFrame): boolean {
   }
 }
 
+/** Project a queried frame to the JSON object stored on ingest rows. */
+function receiptFrame(event: NostrEventFrame): Record<string, unknown> {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    tags: event.tags,
+    created_at: event.created_at,
+    content: event.content ?? '',
+    sig: event.sig ?? '',
+  };
+}
+
+/**
+ * Persist an ingest decision without failing the tick.
+ *
+ * @param store - Forum store.
+ * @param row - Ingest row.
+ */
+async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise<void> {
+  try {
+    await store.recordZapIngest(row);
+  } catch {
+    logEvent('nostr.zap.ingest.record_failed');
+  }
+}
+
+/**
+ * Build a zap ingest row for an indexed or rejected decision.
+ *
+ * @param args - Outcome fields plus the receipt frame.
+ */
+function zapIngestRow(args: {
+  receiptId: string;
+  noteEventId: string | null;
+  messageId: string | null;
+  outcome: 'indexed' | 'rejected';
+  reason: string | null;
+  amountSats: number | null;
+  receiptPubkey: string | null;
+  receipt: Record<string, unknown>;
+}): ZapIngestRow {
+  return {
+    id: crypto.randomUUID(),
+    createdAt: new Date(),
+    receiptId: args.receiptId,
+    noteEventId: args.noteEventId,
+    messageId: args.messageId,
+    outcome: args.outcome,
+    reason: args.reason,
+    amountSats: args.amountSats,
+    receiptPubkey: args.receiptPubkey,
+    receipt: args.receipt,
+  };
+}
+
 /**
  * Validate a kind:9735 receipt against the author's LNURL `nostrPubkey`
  * and add sats to the message once via durable receipt storage.
@@ -77,20 +133,88 @@ export async function indexZapReceipt(args: {
   receipt: ZapReceipt;
   providerPubkey: string;
   amountSats: number;
+  /** Full kind:9735 frame for debug ingest rows. */
+  receiptEvent?: Record<string, unknown>;
+  noteEventId?: string | null;
 }): Promise<boolean> {
+  const receipt =
+    args.receiptEvent ??
+    ({
+      id: args.receipt.id,
+      pubkey: args.receipt.pubkey,
+      kind: 9735,
+      tags: args.receipt.tags,
+      created_at: 0,
+      content: '',
+      sig: '',
+    } satisfies Record<string, unknown>);
+  const noteEventId = args.noteEventId ?? null;
+
   if (args.receipt.pubkey.toLowerCase() !== args.providerPubkey.toLowerCase()) {
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: args.receipt.id,
+        noteEventId,
+        messageId: args.messageId,
+        outcome: 'rejected',
+        reason: 'pubkey',
+        amountSats: args.amountSats,
+        receiptPubkey: args.receipt.pubkey,
+        receipt,
+      }),
+    );
     return false;
   }
   if (!Number.isInteger(args.amountSats) || args.amountSats <= 0) {
     logEvent('nostr.zap.rejected', { reason: 'amount' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: args.receipt.id,
+        noteEventId,
+        messageId: args.messageId,
+        outcome: 'rejected',
+        reason: 'amount',
+        amountSats: args.amountSats,
+        receiptPubkey: args.receipt.pubkey,
+        receipt,
+      }),
+    );
     return false;
   }
   const added = await args.store.recordZapReceipt(args.receipt.id, args.messageId, args.amountSats);
   if (!added) {
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: args.receipt.id,
+        noteEventId,
+        messageId: args.messageId,
+        outcome: 'rejected',
+        reason: 'duplicate',
+        amountSats: args.amountSats,
+        receiptPubkey: args.receipt.pubkey,
+        receipt,
+      }),
+    );
     return false;
   }
   logEvent('nostr.zap.indexed', { messageId: args.messageId, sats: args.amountSats });
+  await persistZapIngest(
+    args.store,
+    zapIngestRow({
+      receiptId: args.receipt.id,
+      noteEventId,
+      messageId: args.messageId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: args.amountSats,
+      receiptPubkey: args.receipt.pubkey,
+      receipt,
+    }),
+  );
   return true;
 }
 
@@ -145,6 +269,21 @@ export async function indexOpenZapReceipts(args: {
         await ingestOneReceipt(event, { ...args, verifyReceipt });
       } catch {
         logEvent('nostr.zap.rejected', { reason: 'error' });
+        if (typeof event.id === 'string' && event.id !== '') {
+          await persistZapIngest(
+            args.store,
+            zapIngestRow({
+              receiptId: event.id,
+              noteEventId: null,
+              messageId: null,
+              outcome: 'rejected',
+              reason: 'error',
+              amountSats: null,
+              receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
+              receipt: receiptFrame(event),
+            }),
+          );
+        }
       }
     }
   }
@@ -175,8 +314,24 @@ async function ingestOneReceipt(
   if (typeof event.pubkey !== 'string' || event.pubkey === '') {
     return;
   }
+
+  const receipt = receiptFrame(event);
+
   if (!args.verifyReceipt(event)) {
     logEvent('nostr.zap.rejected', { reason: 'sig' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId: null,
+        messageId: null,
+        outcome: 'rejected',
+        reason: 'sig',
+        amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
 
@@ -184,11 +339,37 @@ async function ingestOneReceipt(
   const noteEventId = eTag?.[1];
   if (noteEventId === undefined || noteEventId === '') {
     logEvent('nostr.zap.rejected', { reason: 'event' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId: null,
+        messageId: null,
+        outcome: 'rejected',
+        reason: 'event',
+        amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
   const row = await args.store.getByEventId(noteEventId);
   if (row === undefined) {
     logEvent('nostr.zap.rejected', { reason: 'event' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: null,
+        outcome: 'rejected',
+        reason: 'event',
+        amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
 
@@ -196,16 +377,55 @@ async function ingestOneReceipt(
   const pr = bolt11Tag?.[1];
   if (pr === undefined || pr === '') {
     logEvent('nostr.zap.rejected', { reason: 'bolt11' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'bolt11',
+        amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
   const decoded = decodeBolt11(pr);
   if (decoded === null) {
     logEvent('nostr.zap.rejected', { reason: 'bolt11' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'bolt11',
+        amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
   const amountSats = Math.floor(decoded.amountMsat / 1000);
   if (amountSats < 1) {
     logEvent('nostr.zap.rejected', { reason: 'amount' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'amount',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
 
@@ -213,6 +433,19 @@ async function ingestOneReceipt(
   const address = author?.lightningAddress;
   if (address === undefined || address === null || address.trim() === '') {
     logEvent('nostr.zap.rejected', { reason: 'address' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'address',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
 
@@ -223,6 +456,19 @@ async function ingestOneReceipt(
   });
   if (providerPubkey === null) {
     logEvent('nostr.zap.rejected', { reason: 'provider' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'provider',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
     return;
   }
 
@@ -232,6 +478,8 @@ async function ingestOneReceipt(
     receipt: { id: event.id, pubkey: event.pubkey, tags: event.tags },
     providerPubkey,
     amountSats,
+    receiptEvent: receipt,
+    noteEventId,
   });
 }
 

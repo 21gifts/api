@@ -6,6 +6,8 @@ import {
   MESSAGE_SCHEMA_SQL,
   migrateMessageSchema,
   PostgresMessageStore,
+  type MessageInvoiceAttempt,
+  type ZapIngestRow,
 } from '@/lib/message-store';
 
 class MockSql implements SqlClient {
@@ -91,6 +93,10 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/event_id/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_ingest_receipt_id_idx/i);
   });
 });
 
@@ -367,6 +373,93 @@ describe('InMemoryMessageStore', () => {
 
   it('getPhoto returns null for an unknown id', async () => {
     expect(await new InMemoryMessageStore().getPhoto('missing')).toBeNull();
+  });
+
+  it('recordInvoiceAttempt lists newest-first and copies rows', async () => {
+    const store = new InMemoryMessageStore();
+    const early: MessageInvoiceAttempt = {
+      id: 'inv-a',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      isNip57Invoice: true,
+    };
+    const late: MessageInvoiceAttempt = {
+      ...early,
+      id: 'inv-b',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      result: 'noZap',
+      httpStatus: 400,
+      pr: null,
+      isNip57Invoice: false,
+    };
+    const tieHigh: MessageInvoiceAttempt = {
+      ...early,
+      id: 'inv-z',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      result: 'unreachable',
+    };
+    await store.recordInvoiceAttempt(early);
+    await store.recordInvoiceAttempt(late);
+    await store.recordInvoiceAttempt(tieHigh);
+    const listed = await store.listInvoiceAttempts(2);
+    expect(listed.map((row) => row.id)).toEqual(['inv-z', 'inv-b']);
+    if (listed[0] !== undefined) {
+      listed[0].result = 'bad_body';
+      listed[0].zapRequest = { mutated: true };
+    }
+    const again = await store.listInvoiceAttempts(10);
+    expect(again.map((row) => row.id)).toEqual(['inv-z', 'inv-b', 'inv-a']);
+    expect(again[0]?.result).toBe('unreachable');
+    expect(again[0]?.zapRequest).toEqual({ kind: 9734 });
+  });
+
+  it('recordZapIngest lists newest-first and copies rows', async () => {
+    const store = new InMemoryMessageStore();
+    const early: ZapIngestRow = {
+      id: 'zi-a',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      receiptId: 'r1',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'm1',
+      outcome: 'rejected',
+      reason: 'sig',
+      amountSats: null,
+      receiptPubkey: 'aa'.repeat(32),
+      receipt: { id: 'r1', kind: 9735 },
+    };
+    const late: ZapIngestRow = {
+      ...early,
+      id: 'zi-b',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receipt: { id: 'r2', kind: 9735 },
+    };
+    await store.recordZapIngest(early);
+    await store.recordZapIngest(late);
+    const listed = await store.listZapIngests(1);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.id).toBe('zi-b');
+    if (listed[0] !== undefined) {
+      listed[0].outcome = 'rejected';
+      listed[0].receipt['mutated'] = true;
+    }
+    const again = await store.listZapIngests(10);
+    expect(again.map((row) => row.id)).toEqual(['zi-b', 'zi-a']);
+    expect(again[0]?.outcome).toBe('indexed');
+    expect(again[0]?.receipt).toEqual({ id: 'r2', kind: 9735 });
   });
 });
 
@@ -711,5 +804,164 @@ describe('PostgresMessageStore', () => {
     const sql = new MockSql();
     sql.queryError = new Error('photo boom');
     await expect(new PostgresMessageStore(sql).getPhoto('m1')).rejects.toThrow('photo boom');
+  });
+
+  it('recordInvoiceAttempt inserts into message_invoice with jsonb zap_request', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageInvoiceAttempt = {
+      id: 'inv-1',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      isNip57Invoice: true,
+    };
+    await store.recordInvoiceAttempt(row);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_invoice/);
+    expect(sql.executes[0]?.text).toMatch(/zap_request/);
+    expect(sql.executes[0]?.params[7]).toBe(JSON.stringify({ kind: 9734 }));
+    expect(sql.executes[0]?.params[14]).toBe(true);
+  });
+
+  it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'inv-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: '21',
+        lightning_address: 'a@b.com',
+        zap_request: { kind: 9734 },
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc1',
+        payment_hash: 'aa'.repeat(32),
+        description: null,
+        description_hash: 'bb'.repeat(32),
+        is_nip57_invoice: true,
+      },
+      {
+        id: 'inv-2',
+        created_at: '2026-08-27T12:00:00.000Z',
+        message_id: 'm2',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 7,
+        lightning_address: null,
+        zap_request: JSON.stringify({ kind: 9734, content: 'x' }),
+        result: 'noZap',
+        http_status: 400,
+        pr: null,
+        payment_hash: null,
+        description: 'plain',
+        description_hash: null,
+        is_nip57_invoice: 0,
+      },
+      {
+        id: 'inv-3',
+        created_at: new Date('2026-08-26T12:00:00.000Z'),
+        message_id: 'm3',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 0,
+        lightning_address: null,
+        zap_request: 'not-json',
+        result: 'bad_body',
+        http_status: 400,
+        pr: null,
+        payment_hash: null,
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: null,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listInvoiceAttempts(50);
+    expect(sql.queries[0]?.text).toMatch(/FROM message_invoice/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$1/);
+    expect(sql.queries[0]?.params).toEqual([50]);
+    expect(listed[0]?.amountSats).toBe(21);
+    expect(listed[0]?.zapRequest).toEqual({ kind: 9734 });
+    expect(listed[0]?.isNip57Invoice).toBe(true);
+    expect(listed[1]?.createdAt.toISOString()).toBe('2026-08-27T12:00:00.000Z');
+    expect(listed[1]?.zapRequest).toEqual({ kind: 9734, content: 'x' });
+    expect(listed[1]?.isNip57Invoice).toBe(false);
+    expect(listed[2]?.zapRequest).toBeNull();
+  });
+
+  it('recordZapIngest inserts into nostr_zap_ingest', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: ZapIngestRow = {
+      id: 'zi-1',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      receiptId: 'r1',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'm1',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'aa'.repeat(32),
+      receipt: { id: 'r1', kind: 9735 },
+    };
+    await store.recordZapIngest(row);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO nostr_zap_ingest/);
+    expect(sql.executes[0]?.params[9]).toBe(JSON.stringify({ id: 'r1', kind: 9735 }));
+  });
+
+  it('listZapIngests maps receipt JSON string, non-indexed outcome, and null amount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'zi-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        receipt_id: 'r1',
+        note_event_id: 'ee'.repeat(32),
+        message_id: 'm1',
+        outcome: 'indexed',
+        reason: null,
+        amount_sats: '21',
+        receipt_pubkey: 'aa'.repeat(32),
+        receipt: JSON.stringify({ id: 'r1', kind: 9735 }),
+      },
+      {
+        id: 'zi-2',
+        created_at: '2026-08-27T12:00:00.000Z',
+        receipt_id: 'r2',
+        note_event_id: null,
+        message_id: null,
+        outcome: 'weird',
+        reason: 'sig',
+        amount_sats: null,
+        receipt_pubkey: null,
+        receipt: 'not-json',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listZapIngests(10);
+    expect(sql.queries[0]?.text).toMatch(/FROM nostr_zap_ingest/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(listed[0]?.outcome).toBe('indexed');
+    expect(listed[0]?.amountSats).toBe(21);
+    expect(listed[0]?.receipt).toEqual({ id: 'r1', kind: 9735 });
+    expect(listed[1]?.outcome).toBe('rejected');
+    expect(listed[1]?.amountSats).toBeNull();
+    expect(listed[1]?.receipt).toEqual({});
   });
 });
