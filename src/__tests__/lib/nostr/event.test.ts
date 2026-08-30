@@ -44,9 +44,7 @@ describe('kind1', () => {
       url: 'http://127.0.0.1:3000/messages/m1/photo.png',
       mime: 'image/png',
     });
-    expect(event.content).toBe(
-      'http://127.0.0.1:3000/messages/m1/photo.png\n\n#bitcoin #21gifts',
-    );
+    expect(event.content).toBe('http://127.0.0.1:3000/messages/m1/photo.png\n\n#bitcoin #21gifts');
   });
 
   it('does not treat https://21.gifts as #21gifts', () => {
