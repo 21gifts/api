@@ -86,6 +86,7 @@ describe('kind0', () => {
       display_name: 'Ada',
       website: 'https://21.gifts',
       picture: KIND0_PICTURE_URL,
+      about: '21.gifts',
     });
     expect(forumPhotoUrl('https://api.21.gifts/', 'm1')).toBe(
       'https://api.21.gifts/messages/m1/photo.jpg',

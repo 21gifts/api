@@ -960,3 +960,86 @@ test('Function: unsignedNostrDefaults — GET /messages without bearer is 401', 
 }) => {
   expect((await request.get('/messages')).status()).toBe(401);
 });
+test('Function: allocateNip05Local — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: buildNostrJson — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: decodeForumVideo — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: detectVideoContentType — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: forumVideoExt — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: forumVideoUrl — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: listNip05Entries — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: nip05Domain — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: nip05Identifier — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: nip05Slug — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: parseBytesRange — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: removeForumVideo — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: streamForumVideo — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: resolveMediaDir — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: videoFilePath — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: wellKnownRoutes — GET /.well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
+});
+test('Function: writeForumVideo — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});

@@ -107,7 +107,7 @@
 
 ## Function: migrateMessageSchema
 
-- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases, then `message_invoice` and `nostr_zap_ingest` without FKs plus their `created_at`/`message_id` and `receipt_id` indexes).
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), then `message_invoice` and `nostr_zap_ingest` without FKs plus their `created_at`/`message_id` and `receipt_id` indexes).
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -156,7 +156,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns published rows with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid rows whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes and optional `video_content_type` (disk write via `writeForumVideo`; `removeForumVideo` unlink on INSERT failure); `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns published rows with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, video rows / `video_content_type` excluded so posters are not treated as missing photos, `created_at ASC, id ASC`); `listSignedMissingVideo` returns published rows with `video_content_type` set whose kind:1 content lacks `/messages/:id/video.` (`sats = 0`, pending excluded, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid rows whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto` / invoice and ingest rows. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503) except invoice/ingest persist failures which are caught by callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -366,9 +366,9 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches and `sats` is 0), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts`, `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
-- **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
-- **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. No I/O.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded, video rows excluded so posters are not treated as missing photos), `listSignedMissingVideo` (published + video MIME, kind:1 content lacks `/messages/:id/video.`, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches and `sats` is 0), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts`, `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
+- **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?, video?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
+- **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. When `video` is set, `create` awaits `writeForumVideo` (disk under `MEDIA_DIR`); if that write throws, the row is never pushed (no unlink).
 - **Used by:** `createApp` default `messageStore`.
 
 ## Function: InMemoryContactStore
@@ -520,7 +520,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/contact`, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
@@ -569,9 +569,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo (JSON) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` streams stored files with `Accept-Ranges` / 206 / 416; `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 photo/video missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits `accountId` and media bytes (missing author → `role` `"basis"` on list).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -590,7 +590,7 @@
 
 ## Function: normalizeForumText
 
-- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
+- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
 - **Used by:** `POST /messages`, `POST /contact`.
@@ -611,9 +611,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, and live author role.
-- **Inputs:** `MessageRow` (includes `accountId`; never photo bytes), `payable` boolean, and `role` (`AccountRole`).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, role }` with ISO-8601 `createdAt`; `accountId` omitted; never photo bytes. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, and live author role.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, and `role` (`AccountRole`).
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType, role }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `accountId` omitted; never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: serializeContact
@@ -905,22 +905,22 @@
 
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional photo appends the public image URL to content and a NIP-92 `imeta` tag. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified).
-- **Inputs:** content, unix created_at, optional `{ url, mime }`.
+- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag; video may add `imeta` `image` from `posterUrl`. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified).
+- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl? }`.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker sign path.
 
 ## Function: buildKind0Content
 
-- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, optional `lud16`).
-- **Inputs:** name, lightningAddress or null.
-- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `lud16` only when address set.
+- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, `about: '21.gifts'`, optional `lud16`, optional `nip05`).
+- **Inputs:** name, lightningAddress or null, optional nip05 or null.
+- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `about` is always `21.gifts`; `lud16` only when address set; `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
 
-- **Purpose:** Unsigned replaceable kind:0.
-- **Inputs:** name, lightningAddress, unix created_at.
+- **Purpose:** Unsigned replaceable kind:0, including optional `nip05`.
+- **Inputs:** name, lightningAddress, unix created_at, optional nip05.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishProfiles`.
 
@@ -1066,7 +1066,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick. Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture`) and NIP-65 kind:10002 relay lists. Kind:1 photo posts include the public image URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
 - **Inputs:** worker deps.
@@ -1114,3 +1114,122 @@
 - **Inputs:** none.
 - **Returns / side effects:** Column defaults including `sats: 0`.
 - **Used by:** `POST /messages`, stores.
+
+## Function: allocateNip05Local
+
+- **Purpose:** Unique NIP-05 local-part; first slug wins, collisions append account-id hex.
+- **Inputs:** name, account id, taken set.
+- **Returns / side effects:** local-part string.
+- **Used by:** `nip05Identifier`, `listNip05Entries`.
+
+## Function: buildNostrJson
+
+- **Purpose:** NIP-05 `names` + `relays` map for `GET /.well-known/nostr.json`.
+- **Inputs:** auth store, env, optional name filter.
+- **Returns / side effects:** JSON body.
+- **Used by:** `wellKnownRoutes`.
+
+## Function: decodeForumVideo
+
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap).
+- **Inputs:** raw bytes.
+- **Returns / side effects:** `{ contentType, bytes }` or null.
+- **Used by:** `POST /messages` multipart.
+
+## Function: detectVideoContentType
+
+- **Purpose:** `ftyp` / WebM magic → MIME.
+- **Inputs:** bytes.
+- **Returns / side effects:** MIME or null.
+- **Used by:** `decodeForumVideo`.
+
+## Function: forumVideoExt
+
+- **Purpose:** Damus path extension for a video MIME.
+- **Inputs:** MIME.
+- **Returns / side effects:** `mp4` / `webm` / `mov`.
+- **Used by:** public video URLs.
+
+## Function: forumVideoUrl
+
+- **Purpose:** Absolute `GET /messages/:id/video.mp4` (or `.webm` / `.mov`) URL.
+- **Inputs:** API origin, message id, MIME.
+- **Returns / side effects:** URL string.
+- **Used by:** Worker sign path.
+
+## Function: listNip05Entries
+
+- **Purpose:** Named accounts with pubkeys, oldest first, unique locals.
+- **Inputs:** auth store.
+- **Returns / side effects:** `Nip05Entry[]`.
+- **Used by:** `buildNostrJson`.
+
+## Function: nip05Domain
+
+- **Purpose:** Hostname from `PUBLIC_BASE_URL`; null for loopback/IP.
+- **Inputs:** env.
+- **Returns / side effects:** hostname or null.
+- **Used by:** kind:0 `nip05`.
+
+## Function: nip05Identifier
+
+- **Purpose:** `local@domain` for one account matching `nostr.json`.
+- **Inputs:** account, named accounts oldest-first, domain.
+- **Returns / side effects:** identifier string.
+- **Used by:** Worker kind:0.
+
+## Function: nip05Slug
+
+- **Purpose:** Display name → `a-z0-9-` local-part (`user` if empty).
+- **Inputs:** name.
+- **Returns / side effects:** slug.
+- **Used by:** `allocateNip05Local`.
+
+## Function: parseBytesRange
+
+- **Purpose:** Parse `bytes=start-end` for 200 / 206 / 416 responses (RFC 7233).
+- **Inputs:** header, file size.
+- **Returns / side effects:** `{ type: 'full' }` | `{ type: 'partial'; start; end }` | `{ type: 'unsatisfiable' }`.
+- **Used by:** `GET /messages/:id/video.*`.
+
+## Function: removeForumVideo
+
+- **Purpose:** Best-effort unlink of a stored video file.
+- **Inputs:** message id, MIME, env.
+- **Returns / side effects:** void.
+- **Used by:** tests; create rollback.
+
+## Function: resolveMediaDir
+
+- **Purpose:** `MEDIA_DIR` or process temp `21gifts-media`.
+- **Inputs:** env.
+- **Returns / side effects:** directory path.
+- **Used by:** video read/write.
+
+## Function: streamForumVideo
+
+- **Purpose:** Inclusive byte-range file stream for `GET /messages/:id/video.*` without loading the file into RAM.
+- **Inputs:** absolute path, inclusive start, inclusive end.
+- **Returns / side effects:** `ReadableStream<Uint8Array>` as the HTTP body.
+- **Used by:** `serveForumVideo`.
+
+## Function: videoFilePath
+
+- **Purpose:** `{dir}/{id}.{ext}` on disk.
+- **Inputs:** dir, id, MIME.
+- **Returns / side effects:** path.
+- **Used by:** write/read/serve.
+
+## Function: wellKnownRoutes
+
+- **Purpose:** Hono `GET /nostr.json` (CORS `*`).
+- **Inputs:** auth store, env.
+- **Returns / side effects:** Hono app mounted at `/.well-known`.
+- **Used by:** `createApp`.
+
+## Function: writeForumVideo
+
+- **Purpose:** Persist video bytes under `MEDIA_DIR`.
+- **Inputs:** message id, video, env.
+- **Returns / side effects:** mkdir + writeFile.
+- **Used by:** `MessageStore.create`.

@@ -24,7 +24,8 @@ RUN bun build src/index.ts --target=bun --outdir=dist
 
 FROM oven/bun:1.3-alpine
 WORKDIR /app
-RUN addgroup -S app && adduser -S app -G app
+RUN addgroup -S app && adduser -S app -G app \
+  && mkdir -p /data/media && chown app:app /data/media
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json

@@ -1,4 +1,5 @@
 import type { AccountRole } from '@/lib/auth/store';
+import type { ForumVideoContentType } from '@/lib/video';
 
 /**
  * Forum message domain: validation, photo decode, and public JSON projection.
@@ -6,7 +7,7 @@ import type { AccountRole } from '@/lib/auth/store';
  * Text is free-form encouragement (not unique). Over-long or disallowed
  * control-character input is rejected so a bad value cannot be stored and
  * re-served on every list response. Empty trimmed text is allowed when a
- * photo is attached. Newlines (`\n`, `\r`) are allowed; other C0 controls
+ * photo is attached or `hasVideo`. Newlines (`\n`, `\r`) are allowed; other C0 controls
  * and DEL are not. Photos are JPEG/PNG/WebP only, capped at 1 MiB.
  */
 
@@ -44,12 +45,16 @@ export interface MessageRow {
   accountId: string;
   /** Display name snapshotted at post time. */
   name: string;
-  /** Message body (already normalised; may be empty when `hasPhoto`). */
+  /** Message body (already normalised; may be empty when `hasPhoto` or `hasVideo`). */
   text: string;
   /** Creation instant. */
   createdAt: Date;
   /** Whether a photo is stored for this message (bytes never on the row). */
   hasPhoto: boolean;
+  /** Whether a video file is stored for this message. */
+  hasVideo?: boolean;
+  /** Stored video MIME, or `null`. */
+  videoContentType?: ForumVideoContentType | null;
   /** Signed kind:1 id, or `null` until the worker signs. */
   eventId: string | null;
   /** Fan-out state. */
@@ -74,7 +79,7 @@ export interface PublicMessage {
   id: string;
   /** Author display name at post time. */
   name: string;
-  /** Message body (may be empty when `hasPhoto` is true). */
+  /** Message body (may be empty when `hasPhoto` or `hasVideo` is true). */
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
@@ -84,6 +89,10 @@ export interface PublicMessage {
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
+  /** True when a video can be fetched via GET `/messages/:id/video.mp4|.webm|.mov`. */
+  hasVideo: boolean;
+  /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
+  videoContentType: ForumVideoContentType | null;
   /**
    * Author's live `account.role` (not a snapshot). Always present; `"basis"`
    * when the author account is missing.
@@ -94,7 +103,7 @@ export interface PublicMessage {
 /**
  * Trim and validate forum message text.
  *
- * Empty / whitespace-only input becomes `''` (valid for photo-only posts).
+ * Empty / whitespace-only input becomes `''` (valid for photo-only or video-only posts).
  * Over-long text and disallowed controls still reject.
  *
  * @param raw - User input.
@@ -126,8 +135,9 @@ export function normalizeForumText(raw: string): string | null {
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole} (or `'basis'` if missing).
- * @returns Public fields (`sats`, `payable`, `hasPhoto`, `role`; no `accountId`);
- * `createdAt` ISO-8601. Never includes photo bytes.
+ * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
+ * `videoContentType`, `role`; no `accountId`); `createdAt` ISO-8601. Never
+ * includes photo or video bytes.
  */
 export function serializeMessage(
   row: MessageRow,
@@ -142,6 +152,8 @@ export function serializeMessage(
     sats: row.sats,
     payable,
     hasPhoto: row.hasPhoto,
+    hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
     role,
   };
 }
