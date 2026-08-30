@@ -320,6 +320,82 @@ describe('passkey claim', () => {
       viewKey: VIEW_KEY,
     });
   });
+
+  it('rejects claim finish when a passkey appeared after begin', async () => {
+    const store = await provisionedStore();
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    await store.createPasskeyCredential({
+      credentialId: 'cred-existing',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'provisioned',
+      createdAt: T0,
+    });
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('mints a Nostr key on claim when a KEK is provided', async () => {
+    const store = await provisionedStore();
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const kek = new Uint8Array(32).fill(3);
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+      { kek },
+    );
+    expect(finish.ok).toBe(true);
+    expect(await store.getNostrPublicKey('provisioned')).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('still issues a claim session when Nostr keygen fails', async () => {
+    const store = await provisionedStore();
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+      {
+        kek: new Uint8Array(32).fill(3),
+        keygen: {
+          generateSecretKey: (): never => {
+            throw new Error('no entropy');
+          },
+        },
+      },
+    );
+    expect(finish.ok).toBe(true);
+    expect(await store.getNostrPublicKey('provisioned')).toBeUndefined();
+  });
 });
 
 describe('passkey authentication', () => {

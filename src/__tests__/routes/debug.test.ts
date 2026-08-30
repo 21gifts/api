@@ -329,4 +329,69 @@ describe('debugRoutes', () => {
       ),
     ).toBe(true);
   });
+
+  it('POST returns 500 when create does not persist the address', async () => {
+    class HollowStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress(): Promise<undefined> {
+        return undefined;
+      }
+      override async createAccount(): Promise<void> {
+        return;
+      }
+    }
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new HollowStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it('POST applies the name when create loses a race to an existing address', async () => {
+    class RaceStore extends InMemoryAuthStore {
+      #lookups = 0;
+      override async getAccountByLightningAddress(address: string) {
+        this.#lookups += 1;
+        if (this.#lookups === 1) {
+          return undefined;
+        }
+        return super.getAccountByLightningAddress(address);
+      }
+    }
+    const store = new RaceStore();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Old',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{ name: string; created: boolean; viewKey: string }>;
+    };
+    expect(body.accounts[0]?.created).toBe(false);
+    expect(body.accounts[0]?.name).toBe('Ada');
+    expect(body.accounts[0]?.viewKey).toBe('c'.repeat(64));
+    expect((await store.getAccount('existing'))?.name).toBe('Ada');
+  });
 });

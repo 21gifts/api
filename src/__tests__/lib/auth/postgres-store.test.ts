@@ -9,9 +9,13 @@ class MockSql implements SqlClient {
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
   executeError: unknown | undefined;
+  queryError: unknown | undefined;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
+    if (this.queryError !== undefined) {
+      throw this.queryError;
+    }
     return this.nextRows as T[];
   }
 
@@ -616,6 +620,36 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential treats a unique_violation as false', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = new Error('disk full');
+    await expect(
+      store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).rejects.toThrow(/disk full/);
   });
 
   it('returns undefined for a missing passkey credential', async () => {
