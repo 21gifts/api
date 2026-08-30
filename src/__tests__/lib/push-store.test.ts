@@ -279,7 +279,7 @@ describe('PostgresPushStore', () => {
         payload: '{}',
         status: 'weird',
         attempts: 1,
-        claimed_until: null,
+        claimed_until: new Date('2026-08-03T00:01:00.000Z'),
         created_at: new Date('2026-08-01T00:00:00.000Z'),
       },
     ];

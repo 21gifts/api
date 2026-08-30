@@ -50,6 +50,15 @@ describe('resolveVapidConfig', () => {
     ).toBeNull();
   });
 
+  it('returns null when url-safe base64 decodes to empty bytes', () => {
+    expect(
+      resolveVapidConfig({
+        VAPID_PUBLIC_KEY: '!!!!',
+        VAPID_PRIVATE_KEY: PRIVATE_KEY,
+      }),
+    ).toBeNull();
+  });
+
   it('returns null when keys do not decode to P-256 lengths', () => {
     expect(
       resolveVapidConfig({

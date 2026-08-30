@@ -94,5 +94,7 @@ describe('WebPushSender', () => {
     expect(await sender.send(SUB, '{}')).toEqual({ ok: false, reason: 'fail' });
     sendNotification.mockRejectedValueOnce(null);
     expect(await sender.send(SUB, '{}')).toEqual({ ok: false, reason: 'fail' });
+    sendNotification.mockRejectedValueOnce({ statusCode: '410' });
+    expect(await sender.send(SUB, '{}')).toEqual({ ok: false, reason: 'fail' });
   });
 });

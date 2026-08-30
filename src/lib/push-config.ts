@@ -30,6 +30,7 @@ function decodeUrlSafeBase64(value: string): Uint8Array | null {
       return null;
     }
     return new Uint8Array(buf);
+    /* v8 ignore next 3 -- Buffer.from does not throw on invalid alphabet */
   } catch {
     return null;
   }

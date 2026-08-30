@@ -184,9 +184,16 @@ export function startPushWorker(
   deps: PushWorkerDeps,
   intervalMs: number = PUSH_WORKER_INTERVAL_MS,
 ): { stop: () => void } {
-  /* v8 ignore next 3 -- interval callback */
+  let inFlight = false;
+  /* v8 ignore next 8 -- interval callback */
   const timer = setInterval(() => {
-    void runPushWorkerTick(deps);
+    if (inFlight) {
+      return;
+    }
+    inFlight = true;
+    void runPushWorkerTick(deps).finally(() => {
+      inFlight = false;
+    });
   }, intervalMs);
   return {
     stop: () => {

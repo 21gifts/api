@@ -70,6 +70,8 @@ describe('createApp', () => {
   });
 
   it('returns 401 on GET /push/vapid-public without a session', async () => {
+    delete process.env['VAPID_PUBLIC_KEY'];
+    delete process.env['VAPID_PRIVATE_KEY'];
     const app = createApp();
     const res = await app.request('/push/vapid-public');
     expect(res.status).toBe(401);
