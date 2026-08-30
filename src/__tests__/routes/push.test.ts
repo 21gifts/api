@@ -86,7 +86,7 @@ describe('POST /me/push-subscriptions', () => {
     ).toBe(401);
 
     const auth = await seededStore();
-    const unconfigured = await mount(auth, new InMemoryPushStore(), undefined).request(
+    const unconfigured = await mount(auth, new InMemoryPushStore(), '  ').request(
       '/me/push-subscriptions',
       {
         method: 'POST',
@@ -134,7 +134,7 @@ describe('DELETE /me/push-subscriptions', () => {
     const auth = await seededStore();
     expect(
       (
-        await mount(auth, new InMemoryPushStore(), undefined).request('/me/push-subscriptions', {
+        await mount(auth, new InMemoryPushStore(), '  ').request('/me/push-subscriptions', {
           method: 'DELETE',
           headers: { ...AUTH, 'content-type': 'application/json' },
           body: JSON.stringify({ endpoint: validBody.endpoint }),
