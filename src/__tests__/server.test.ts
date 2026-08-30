@@ -99,7 +99,7 @@ describe('createApp', () => {
       createdAt: 1_000_000,
       rulesAgreedAt: null,
     });
-    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1 });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: Date.now() });
     const app = createApp({ authStore: store });
     const res = await app.request('/push/vapid-public', {
       headers: { authorization: 'Bearer tok' },
