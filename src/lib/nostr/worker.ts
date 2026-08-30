@@ -108,9 +108,12 @@ function reservedContent(
  * Pending rows are EVENT'd even without the URL — resetting them first
  * renews the sign lease and they never reach a relay. Zapped rows keep
  * their event id so receipts still resolve. An empty API base leaves
- * them alone so it cannot un-publish and loop. Signed unpaid notes whose
- * kind:1 content lacks `#bitcoin` or `#21gifts` are reset and re-signed;
- * zapped rows keep `eventId`. When publishing, also fans out a replaceable
+ * them alone so it cannot un-publish and loop. Published unpaid notes whose
+ * kind:1 content lacks `#bitcoin` or `#21gifts` are reset after unsigned rows
+ * are signed, then re-signed on the next tick; pending rows are EVENT'd as-is
+ * so a reset cannot renew the sign lease. Zapped rows keep `eventId`. When
+ * publishing,
+ * also fans out a replaceable
  * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
  * kind:10002 relay list. Kind:1 photo posts include the public image URL
  * and an `imeta` tag. Kind:0
@@ -127,8 +130,8 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await resignPhotoKind1(deps);
-  await resignHashtagKind1(deps);
   await signBatch(deps, nowMs);
+  await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
     await publishRelayLists(deps, writeSet);

@@ -122,9 +122,10 @@ export interface MessageStore {
   listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
 
   /**
-   * Signed rows whose kind:1 content lacks `#21gifts` or `#bitcoin` (case-insensitive).
-   * Any publish state, `sats = 0` only. Oldest `createdAt` then `id` first.
-   * Includes `nostrEvent === null` and non-string content.
+   * Published rows whose kind:1 content lacks `#21gifts` or `#bitcoin` (case-insensitive).
+   * `sats = 0` only. Pending rows are left for fan-out — resetting them
+   * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
+   * first. Includes `nostrEvent === null` and non-string content.
    *
    * @param limit - Max rows.
    */
@@ -489,7 +490,11 @@ export class InMemoryMessageStore implements MessageStore {
   listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
     const rows = this.#rows
       .filter(
-        (row) => row.eventId !== null && row.sats === 0 && kind1MissingHashtags(row.nostrEvent),
+        (row) =>
+          row.eventId !== null &&
+          row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
+          kind1MissingHashtags(row.nostrEvent),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -858,6 +863,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
        WHERE event_id IS NOT NULL AND sats = 0
+         AND nostr_publish_state = 'published'
          AND (
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
