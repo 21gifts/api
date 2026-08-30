@@ -24,23 +24,23 @@ describe('kind1', () => {
 
   it('appends the photo URL and imeta when a photo is set', () => {
     const event = buildKind1Event('hello', 1, {
-      url: 'http://127.0.0.1:3000/messages/m1/photo',
+      url: 'http://127.0.0.1:3000/messages/m1/photo.jpg',
       mime: 'image/jpeg',
     });
-    expect(event.content).toBe('hello\nhttp://127.0.0.1:3000/messages/m1/photo');
+    expect(event.content).toBe('hello\nhttp://127.0.0.1:3000/messages/m1/photo.jpg');
     expect(event.tags.at(-1)).toEqual([
       'imeta',
-      'url http://127.0.0.1:3000/messages/m1/photo',
+      'url http://127.0.0.1:3000/messages/m1/photo.jpg',
       'm image/jpeg',
     ]);
   });
 
   it('uses the photo URL as content when text is empty', () => {
     const event = buildKind1Event('', 1, {
-      url: 'http://127.0.0.1:3000/messages/m1/photo',
+      url: 'http://127.0.0.1:3000/messages/m1/photo.png',
       mime: 'image/png',
     });
-    expect(event.content).toBe('http://127.0.0.1:3000/messages/m1/photo');
+    expect(event.content).toBe('http://127.0.0.1:3000/messages/m1/photo.png');
   });
 });
 
@@ -53,7 +53,13 @@ describe('kind0', () => {
       picture: KIND0_PICTURE_URL,
     });
     expect(forumPhotoUrl('https://api.21.gifts/', 'm1')).toBe(
-      'https://api.21.gifts/messages/m1/photo',
+      'https://api.21.gifts/messages/m1/photo.jpg',
+    );
+    expect(forumPhotoUrl('https://api.21.gifts', 'm1', 'image/png')).toBe(
+      'https://api.21.gifts/messages/m1/photo.png',
+    );
+    expect(forumPhotoUrl('https://api.21.gifts', 'm1', 'image/webp')).toBe(
+      'https://api.21.gifts/messages/m1/photo.webp',
     );
     expect(buildKind0Event('Ada', null, 1).tags).toEqual([]);
   });

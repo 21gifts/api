@@ -21,7 +21,7 @@ function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: 
     return true;
   }
   const content = event['content'];
-  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo`);
+  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo.`);
 }
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -811,7 +811,7 @@ export class PostgresMessageStore implements MessageStore {
          AND nostr_publish_state = 'published'
          AND (
            nostr_event IS NULL
-           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo%'
+           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,

@@ -163,9 +163,37 @@
 
 ## Endpoint: GET /messages/:id/photo
 
-- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`) so Nostr clients can load NIP-92 `imeta` URLs. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
+- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
 - **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
 - **Used by:** App forum photo display; Damus/Primal via kind:1 photo URLs.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.jpg
+
+- **Purpose:** Same public bytes as `GET /messages/:id/photo`. Kind:1 and `imeta` use this path so Damus embeds the image instead of a website card.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus, Primal, njump via kind:1 photo URLs.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.jpeg
+
+- **Purpose:** Alias of `GET /messages/:id/photo.jpg`.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Clients that request `.jpeg`.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.png
+
+- **Purpose:** Same handler as `GET /messages/:id/photo` when the stored type is PNG. Kind:1 URLs use `.png` for PNG posts.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus/Primal for PNG forum photos.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.webp
+
+- **Purpose:** Same handler as `GET /messages/:id/photo` when the stored type is WebP. Kind:1 URLs use `.webp` for WebP posts.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus/Primal for WebP forum photos.
 - **Auth:** none.
 
 ## Endpoint: POST /messages

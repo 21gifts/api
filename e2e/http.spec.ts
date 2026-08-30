@@ -125,6 +125,22 @@ test('GET /messages/:id/photo UUID path without bearer is 404', async ({ request
   const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
   expect(res.status()).toBe(404);
 });
+test('GET /messages/:id/photo.jpg UUID path without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.jpg');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.jpeg without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.jpeg');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.png without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.png');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.webp without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.webp');
+  expect(res.status()).toBe(404);
+});
 
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {

@@ -195,7 +195,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
         const storedPhoto = await deps.messages.getPhoto(row.id);
         if (storedPhoto !== null) {
           photo = {
-            url: forumPhotoUrl(apiBase, row.id),
+            url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
           };
         } else if (row.hasPhoto) {
