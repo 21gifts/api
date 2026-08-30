@@ -128,6 +128,16 @@ export interface AuthStore {
    * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
+  /**
+   * Set only `name` on the account that owns this Lightning Address
+   * (`lower(trim)` match). Other columns stay unchanged.
+   *
+   * @returns The updated account, or `undefined` when no row matches.
+   */
+  updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
@@ -285,6 +295,18 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
+  }
+
+  async updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined> {
+    const account = await this.getAccountByLightningAddress(lightningAddress);
+    if (account === undefined) {
+      return undefined;
+    }
+    account.name = name;
+    return account;
   }
 
   async deleteAccount(id: string): Promise<void> {

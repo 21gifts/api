@@ -150,6 +150,21 @@ export class PostgresAuthStore implements AuthStore {
     }
   }
 
+  async updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `UPDATE account
+       SET name = $2
+       WHERE lower(trim(lightning_address)) = lower(trim($1))
+       RETURNING id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at`,
+      [lightningAddress, name],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at

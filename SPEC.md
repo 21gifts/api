@@ -635,7 +635,8 @@ passkey and `rulesAgreedAt` null. Same `DEBUG_TOKEN` bearer as GET.
 non-empty). Invalid body, C0/DEL in a name, or an address that is not LUD-16
 → **Response** `400` `{ "error": "Expected a JSON body with an \"accounts\" array" }`
 (no row is written). Create that does not persist the
-address → **Response** `500` `{ "error": "Could not save the account" }`.
+address, or a name-only update that matches no row → **Response** `500`
+`{ "error": "Could not save the account" }`.
 
 Success → **Response** `200`:
 
@@ -652,9 +653,10 @@ Success → **Response** `200`:
 }
 ```
 
-Existing address (`lower(trim)`): updates `name`, keeps `viewKey`, `created` is
-`false`. New address: fresh `viewKey`, `created` is `true`. GET still omits
-`viewKey`.
+Existing address (`lower(trim)`): updates **only** `name` (atomic name-only
+write; `viewKey`, `role`, `rulesAgreedAt`, and other columns stay unchanged),
+`created` is `false`. New address: fresh `viewKey`, `created` is `true`. GET
+still omits `viewKey`.
 
 ### `PATCH /debug/accounts/:id`
 

@@ -208,6 +208,47 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
+  it('updateAccountNameByLightningAddress sets only name by lower(trim) address', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        role: 'moderator',
+        name: 'Ada Lovelace',
+        lightning_address: 'guest@walletofsatoshi.com',
+        rules_agreed_at: new Date(9_000),
+      },
+    ];
+    const store = new PostgresAuthStore(sql);
+    const named = await store.updateAccountNameByLightningAddress(
+      '  Guest@WalletOfSatoshi.com  ',
+      'Ada Lovelace',
+    );
+    expect(sql.queries[0]?.text).toMatch(/SET name = \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/RETURNING id, linking_key, role, name/);
+    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ', 'Ada Lovelace']);
+    expect(named).toMatchObject({
+      id: 'acc',
+      name: 'Ada Lovelace',
+      role: 'moderator',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      rulesAgreedAt: 9_000,
+      viewKey: VIEW_KEY,
+    });
+  });
+
+  it('updateAccountNameByLightningAddress returns undefined when no row matches', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).updateAccountNameByLightningAddress(
+        'missing@example.com',
+        'Ada',
+      ),
+    ).toBeUndefined();
+  });
+
   it('accountHasPasskey queries passkey_credential by account_id', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
@@ -227,6 +268,8 @@ describe('PostgresAuthStore', () => {
     expect(await store.getAccount('acc')).toBeUndefined();
     expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
     expect(await store.listAccounts()).toEqual([]);
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, lightning_address: 'a@b.com' }];
+    expect(await store.updateAccountNameByLightningAddress('a@b.com', 'Ada')).toBeUndefined();
   });
 
   it('createAccount treats a unique_violation as a no-op', async () => {
