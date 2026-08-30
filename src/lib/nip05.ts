@@ -117,7 +117,7 @@ export function nip05Identifier(
 export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
   const accounts = await auth.listAccounts();
   const named = accounts
-    .filter((row) => row.name !== null && row.name.trim() !== '')
+    .filter((row): row is Account & { name: string } => row.name !== null && row.name.trim() !== '')
     .sort((left, right) => {
       const byTime = left.createdAt - right.createdAt;
       /* v8 ignore next -- same createdAt, sort by id */
@@ -126,12 +126,12 @@ export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
   const taken = new Set<string>();
   const entries: Nip05Entry[] = [];
   for (const account of named) {
-    const pubkey = await auth.getNostrPublicKey(account.id);
-    if (pubkey === undefined || account.name === null) {
-      continue;
-    }
     const local = allocateNip05Local(account.name, account.id, taken);
     taken.add(local);
+    const pubkey = await auth.getNostrPublicKey(account.id);
+    if (pubkey === undefined) {
+      continue;
+    }
     entries.push({ accountId: account.id, name: account.name, pubkey, local });
   }
   return entries;

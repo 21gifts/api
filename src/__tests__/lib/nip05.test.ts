@@ -96,4 +96,35 @@ describe('nip05', () => {
     const all = await buildNostrJson(auth, {}, '');
     expect(all.names['ada']).toBe('aa'.repeat(32));
   });
+
+  it('reserves slugs for named accounts without a pubkey so kind:0 matches nostr.json', async () => {
+    const auth = new InMemoryAuthStore();
+    const older = account({
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'Ada',
+      createdAt: 1,
+    });
+    const younger = account({
+      id: '00000000-0000-4000-8000-00000000000a',
+      name: 'Ada',
+      createdAt: 2,
+      viewKey: 'ff'.repeat(32),
+    });
+    await auth.createAccount(older);
+    await auth.createAccount(younger);
+    await auth.setNostrKeyIfAbsent(younger.id, {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array(16),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const named = [older, younger];
+    const identifier = nip05Identifier(younger, named, '21.gifts');
+    const body = await buildNostrJson(auth, {}, 'ada');
+    expect(body.names['ada']).toBeUndefined();
+    const local = identifier.slice(0, identifier.indexOf('@'));
+    expect(local).toBe('ada-00000000');
+    const filtered = await buildNostrJson(auth, {}, local);
+    expect(filtered.names[local]).toBe('aa'.repeat(32));
+  });
 });
