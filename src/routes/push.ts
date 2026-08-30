@@ -75,14 +75,14 @@ export function pushRoutes(deps: PushRouteDeps): Hono {
         return c.json({ error: 'Invalid subscription' }, 400);
       }
       const createdAt = new Date(deps.now());
-      await deps.pushStore.upsertSubscription({
+      const stored = await deps.pushStore.upsertSubscription({
         endpoint: parsed.endpoint,
         accountId: account.id,
         p256dh: parsed.p256dh,
         auth: parsed.auth,
         createdAt,
       });
-      return c.json({ endpoint: parsed.endpoint, createdAt: createdAt.toISOString() }, 200);
+      return c.json({ endpoint: stored.endpoint, createdAt: stored.createdAt.toISOString() }, 200);
     })
     .delete('/me/push-subscriptions', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

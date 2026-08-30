@@ -52,7 +52,7 @@ export interface PushStore {
    *
    * @param row - Fully formed subscription.
    */
-  upsertSubscription(row: PushSubscriptionRecord): Promise<void>;
+  upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord>;
 
   /**
    * Remove a subscription for an account + endpoint.
@@ -176,20 +176,21 @@ export class InMemoryPushStore implements PushStore {
    *
    * @param row - Subscription to store.
    */
-  upsertSubscription(row: PushSubscriptionRecord): Promise<void> {
+  upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord> {
     const existing = this.#subs.get(row.endpoint);
     if (existing !== undefined) {
-      this.#subs.set(row.endpoint, {
+      const stored: PushSubscriptionRecord = {
         endpoint: row.endpoint,
         accountId: row.accountId,
         p256dh: row.p256dh,
         auth: row.auth,
         createdAt: new Date(existing.createdAt.getTime()),
-      });
-    } else {
-      this.#subs.set(row.endpoint, copySub(row));
+      };
+      this.#subs.set(row.endpoint, stored);
+      return Promise.resolve(copySub(stored));
     }
-    return Promise.resolve();
+    this.#subs.set(row.endpoint, copySub(row));
+    return Promise.resolve(copySub(row));
   }
 
   /**
@@ -394,16 +395,35 @@ export class PostgresPushStore implements PushStore {
    *
    * @param row - Subscription to store.
    */
-  async upsertSubscription(row: PushSubscriptionRecord): Promise<void> {
-    await this.#sql.execute(
+  async upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord> {
+    const rows = await this.#sql.query<{
+      endpoint: string;
+      account_id: string;
+      p256dh: string;
+      auth: string;
+      created_at: Date | string;
+    }>(
       `INSERT INTO push_subscription (endpoint, account_id, p256dh, auth, created_at)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (endpoint) DO UPDATE SET
          account_id = EXCLUDED.account_id,
          p256dh = EXCLUDED.p256dh,
-         auth = EXCLUDED.auth`,
+         auth = EXCLUDED.auth
+       RETURNING endpoint, account_id, p256dh, auth, created_at`,
       [row.endpoint, row.accountId, row.p256dh, row.auth, row.createdAt],
     );
+    const stored = rows[0];
+    if (stored === undefined) {
+      throw new Error('push.subscription.upsert_empty');
+    }
+    return {
+      endpoint: stored.endpoint,
+      accountId: stored.account_id,
+      p256dh: stored.p256dh,
+      auth: stored.auth,
+      createdAt:
+        stored.created_at instanceof Date ? stored.created_at : new Date(stored.created_at),
+    };
   }
 
   /**

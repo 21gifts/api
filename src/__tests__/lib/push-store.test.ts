@@ -76,15 +76,17 @@ describe('migratePushSchema', () => {
 describe('InMemoryPushStore', () => {
   it('upserts, rebinds account, and keeps original createdAt', async () => {
     const store = new InMemoryPushStore();
-    await store.upsertSubscription(SUB);
+    const first = await store.upsertSubscription(SUB);
+    expect(first.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
     const later = new Date('2026-08-10T00:00:00.000Z');
-    await store.upsertSubscription({
+    const rebound = await store.upsertSubscription({
       ...SUB,
       accountId: 'acc-b',
       p256dh: 'new',
       auth: 'new-auth',
       createdAt: later,
     });
+    expect(rebound.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
     const listed = await store.listByAccount('acc-b');
     expect(listed).toHaveLength(1);
     expect(listed[0]?.accountId).toBe('acc-b');
@@ -197,9 +199,20 @@ describe('PostgresPushStore', () => {
   it('upserts with ON CONFLICT and maps list/delete/enqueue/claim/mark', async () => {
     const sql = new MockSql();
     const store = new PostgresPushStore(sql);
-    await store.upsertSubscription(SUB);
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(endpoint\) DO UPDATE/i);
-    expect(sql.executes[0]?.text).not.toMatch(/created_at = EXCLUDED/i);
+    sql.nextRows = [
+      {
+        endpoint: SUB.endpoint,
+        account_id: SUB.accountId,
+        p256dh: SUB.p256dh,
+        auth: SUB.auth,
+        created_at: SUB.createdAt,
+      },
+    ];
+    const stored = await store.upsertSubscription(SUB);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(endpoint\) DO UPDATE/i);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/i);
+    expect(sql.queries[0]?.text).not.toMatch(/created_at = EXCLUDED/i);
+    expect(stored.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
 
     sql.nextRows = [{ endpoint: SUB.endpoint }];
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(true);
@@ -245,6 +258,13 @@ describe('PostgresPushStore', () => {
     expect(sql.executes.at(-1)?.text).toMatch(/status = 'sent'/);
     await store.markFailed('o1');
     expect(sql.executes.at(-1)?.text).toMatch(/attempts = attempts \+ 1/);
+  });
+
+  it('throws when upsert RETURNING is empty', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [];
+    await expect(store.upsertSubscription(SUB)).rejects.toThrow(/upsert_empty/);
   });
 
   it('maps unknown type/status and null claimed_until safely', async () => {
