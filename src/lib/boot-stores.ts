@@ -1,6 +1,7 @@
 import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
+import { parseNostrKek } from '@/lib/nostr/kek';
 import {
   InMemoryBtcUsdStore,
   PostgresBtcUsdStore,
@@ -9,13 +10,15 @@ import {
   type BtcUsdRateBook,
 } from '@/lib/btc-usd-store';
 import { resolveCandlesUrl, type FetchFn } from '@/lib/btc-usd-candles';
+import { migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 
-/** Auth, gift, forum, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, contact, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -36,6 +39,13 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
+  /** Parsed KEK when DATABASE_URL is set; `undefined` on memory boots. */
+  nostrKek: Uint8Array | undefined;
+  /**
+   * Postgres-backed contact mailbox, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  contactStore: ContactStore | undefined;
 }
 
 /** Optional FX wiring so tests never hit the network. */
@@ -49,23 +59,28 @@ export interface BootFxOptions {
 }
 
 /**
- * Open auth, optional gift and forum persistence, and the BTC-USD rate book
- * from `DATABASE_URL`.
+ * Open auth, optional gift, forum, and contact persistence, and the BTC-USD
+ * rate book from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
- * `giftRecorder: undefined`, `messageStore: undefined`, and an empty
+ * `giftRecorder: undefined`, `messageStore: undefined`,
+ * `contactStore: undefined`, `nostrKek: undefined`, and an empty
  * {@link InMemoryBtcUsdStore}. A set URL asks `createClient` for one
- * `SqlClient`, migrates auth (via `openAuthStore`) then the FX and `message`
- * tables, builds a {@link QueryGiftStore}, {@link SqlGiftRecorder}, and
- * {@link PostgresMessageStore}, constructs {@link PostgresBtcUsdStore}, and
- * best-effort fills rates for the outbound gift day range (failures log
- * `gifts.fx.boot_fill.failed` and do not throw).
+ * `SqlClient`, migrates auth (via `openAuthStore`) then the FX, `message`,
+ * `contact`, and `db_change` schemas, builds a {@link QueryGiftStore},
+ * {@link SqlGiftRecorder}, {@link PostgresMessageStore}, and
+ * {@link PostgresContactStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
+ * constructs {@link PostgresBtcUsdStore}, and best-effort fills rates for
+ * the outbound gift day range (failures log `gifts.fx.boot_fill.failed` and
+ * do not throw). Memory boots leave `nostrKek` undefined and do not run
+ * the `db_change` migrate.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional fetch / URL / clock overrides for tests.
  * @returns Stores to inject into `createApp`.
- * @throws If `databaseUrl` is set and `createClient` is omitted.
+ * @throws If `databaseUrl` is set and `createClient` is omitted, or if the
+ *   SQL path has a missing or malformed `NOSTR_NSEC_KEK`.
  */
 export async function openBootStores(
   databaseUrl: string | undefined,
@@ -89,11 +104,17 @@ export async function openBootStores(
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
       messageStore: undefined,
+      nostrKek: undefined,
+      contactStore: undefined,
     };
   }
 
+  const nostrKek = parseNostrKek(process.env['NOSTR_NSEC_KEK']);
+
   await migrateBtcUsdSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
+  await migrateContactSchema(sqlClient);
+  await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
@@ -122,5 +143,6 @@ export async function openBootStores(
   });
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
-  return { authStore, giftStore, giftRecorder, btcUsdRates, messageStore };
+  const contactStore = new PostgresContactStore(sqlClient);
+  return { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek, contactStore };
 }

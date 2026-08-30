@@ -35,19 +35,24 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; POST /me/name; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
-│   │   ├── debug.ts          # GET /debug/accounts (operator DEBUG_TOKEN)
+│   │   ├── debug.ts          # GET /debug/accounts; PATCH /debug/accounts/:id (DEBUG_TOKEN)
+│   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
-│   │   └── messages.ts       # GET /messages, POST /messages
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, POST /messages/:id/invoice
+│   │   └── contact.ts        # POST /contact (private in-app mailbox)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
-│   │   ├── message.ts        # Forum text trim/validate + public JSON projection
+│   │   ├── message.ts        # Forum text/photo validate + public JSON (hasPhoto; no bytes)
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
+│   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
+│   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
@@ -62,13 +67,16 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, BTC-USD rates
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, BTC-USD rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
+│   │   ├── db-change.ts      # append-only `db_change` change log migrate
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
+│   │   ├── nostr/            # Custodial nsec, kind:0 profile + kind:1 note worker, NIP-57 zap, write-set relays
 │   │   └── auth/
+│   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
@@ -106,11 +114,16 @@ api/
 │       │   ├── money.test.ts
 │       │   ├── btc-usd-candles.test.ts
 │       │   ├── btc-usd-store.test.ts
+│       │   ├── db-change.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
 │       │   ├── message-store.test.ts
+│       │   ├── nostr/            # kek, keys, publish, worker, relays, zap, event, sign, rate-limit
+│       │   ├── contact.test.ts
+│       │   ├── contact-store.test.ts
 │       │   └── auth/
+│       │       ├── account-json.test.ts
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
@@ -131,7 +144,10 @@ api/
 │           ├── stats.test.ts
 │           ├── gifts.test.ts
 │           ├── invoices.test.ts
-│           └── messages.test.ts
+│           ├── messages.test.ts
+│           ├── contact.test.ts
+│           ├── debug-contacts.test.ts
+│           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
 │   ├── functions.md
@@ -139,11 +155,13 @@ api/
 ├── docs/schema/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
-│   └── message.sql           # public forum message table for GET/POST /messages
+│   ├── message.sql           # public forum message table for GET/POST /messages, GET /messages/:id/photo
+│   ├── contact.sql           # private contact mailbox table for POST /contact
+│   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts
+│   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts and PATCH /debug/accounts/:id
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   └── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
@@ -238,6 +256,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresMessageStore`, `migrateMessageSchema`,
+`PostgresContactStore`, `migrateContactSchema`, `migrateDbChangeSchema`,
+`DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
@@ -248,13 +268,51 @@ LNURL-pay;
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, or a
 healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
-`DATABASE_URL` and `SPEND_API_TOKEN` to blank so those outcomes do not depend
-on the host environment.
+`DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
+`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`, and
+`NOSTR_RELAY_PUBLIC` to blank
+so those outcomes do not depend on the host environment.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.
 Adding a route or export without an e2e call in the **same PR** is an
 undeclared deviation and is rejected. CI runs `e2e:check` then `e2e`.
+
+### Durable writes (hard requirement)
+
+When `DATABASE_URL` is set, every INSERT, UPDATE, and DELETE on a public Postgres
+table **must** be reconstructable from append-only `db_change` with timestamp
+(`at`), operation (`op`: INSERT/UPDATE/DELETE), previous row (`before`; null on
+INSERT), and new row (`after`; null on DELETE). Example: a display-name change
+(`POST /me/name`) **must** produce an UPDATE row with the old and new `name` in
+plaintext. A durable write without that trail is forbidden — there **must** be no
+gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
+`docs/schema/db_change.sql` is the attach path.
+
+- Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
+  named `trg_db_change` on every `public` table except `db_change` itself — **not**
+  by application store methods. New public tables are covered on the next SQL boot
+  (`migrateDbChangeSchema` after `migrateContactSchema`) once the table exists. A
+  missing table **fails** the write; it does not skip the log.
+- `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
+  **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
+  may drop that trigger once per boot to hash plaintext `view_key` values that
+  still match a live `account.view_key`, then recreates it. Rows whose key no
+  longer matches a live account are left unchanged.
+- In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
+  `nonce`, and `view_key` are SHA-256 hex of the column text. All other columns, including
+  `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation
+  **must** still be visible as a hash change).
+- Compare OLD vs NEW **before** redaction
+  (`to_jsonb(OLD) IS NOT DISTINCT FROM to_jsonb(NEW)`). No-op UPDATEs skip the
+  log row.
+- In-memory boots (`DATABASE_URL` unset) do not migrate `db_change` and have no
+  log.
+
+Weakening attach, logging from app code instead of triggers, omitting
+`before`/`after`, hashing `name`, dropping a public table from coverage, or
+landing a durable write without a `db_change` row in the **same PR** is an
+undeclared deviation and is rejected.
 
 ### Tests
 
@@ -290,17 +348,23 @@ docker run -p 3000:3000 -e BIND_ADDR=0.0.0.0:3000 21gifts/api:dev
 Configuration is read from environment variables only — no config files.
 Currently:
 
-| Variable               | Default                                 | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ---------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, and `message` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages` use `PostgresMessageStore`, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum store, empty gift stats, empty day lists, and a no-op gift recorder. |
-| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                       |
-| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                                                                                                                                                   |
-| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                                                                                                                                                                                                                          |
-| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                                                                                                                                                                                                                                |
-| `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts` and `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                                                                                                                                                                                                                 |
+| Variable               | Default                                 | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message`, `contact`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages` and `GET /messages/:id/photo` use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum and contact stores, empty gift stats, empty day lists, and a no-op gift recorder. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and `GET /debug/contacts`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `CORS_ALLOWED_ORIGINS` | built-in apex / app aliases / localhost | Comma-separated browser origins. Passkey finish keeps those whose hostname is the RP ID or `app.<rpId>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `SPEND_API_TOKEN`      | _(none — optional)_                     | Bearer for spend-worker `POST /invoices` / `POST /invoices/proof`. Unset/blank → **503**; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `BTC_USD_CANDLES_URL`  | Coinbase Exchange BTC-USD candles URL   | Optional override for daily close fetch used by `GET /gifts` and `GET /gifts/stats`. Blank/unset → default Coinbase URL; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `NOSTR_NSEC_KEK`       | _(required with `DATABASE_URL`)_        | 32-byte hex AES-GCM KEK for custodial nsec. With `DATABASE_URL`, missing or malformed KEK **throws at boot**. Memory boots omit it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `NOSTR_PUBLISH`        | _(unset → sign only)_                   | Set to `1` to fan out signed kind:1 notes and replaceable kind:0 profiles over WebSockets. Unchanged kind:0 content is skipped for the life of the AuthStore instance. Other values do not publish.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `NOSTR_PUBLISH_PUBLIC` | _(unset → space-only published)_        | Set to `1` (with `NOSTR_PUBLISH=1`) to also write kind:1 notes and kind:0 profiles to Damus / Primal / nos.lol. Unset: space ACK is terminal `published`. Does not gate zap ingest or invoice `relays`.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `NOSTR_RELAY_URL`      | `wss://relay.nostr.space`               | Compose durability relay (nostr.space). Used when `NOSTR_RELAY_SPACE` is unset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `NOSTR_RELAY_SPACE`    | _(falls back to `NOSTR_RELAY_URL`)_     | Optional override of the durability relay WebSocket URL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `NOSTR_RELAY_PUBLIC`   | Damus, Primal, nos.lol                  | Optional comma-separated public relays. Used for kind:1 and kind:0 write when `NOSTR_PUBLISH_PUBLIC=1`, and always for zap ingest plus invoice `relays` tags (even when that flag is off).                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
@@ -308,12 +372,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger           | Action                                                                       |
-| ---------------------- | ----------------- | ---------------------------------------------------------------------------- |
-| `ci.yaml`              | PR                | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop` | Docker build → push `21gifts/api:beta` → notify infrastructure               |
-| `deploy-prd.yaml`      | push to `main`    | Docker build → push `21gifts/api:latest` → notify infrastructure             |
-| `auto-release-pr.yaml` | push to `develop` | Auto-create Release PR (`develop → main`)                                    |
+| Workflow               | Trigger               | Action                                                                       |
+| ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify infrastructure               |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
 

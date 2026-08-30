@@ -23,6 +23,8 @@ class MockSql implements SqlClient {
   }
 }
 
+const VIEW_KEY = 'a'.repeat(64);
+
 const ACCOUNT_ROW = {
   id: 'acc',
   linking_key: `02${'a'.repeat(64)}`,
@@ -30,8 +32,46 @@ const ACCOUNT_ROW = {
   name: null as string | null,
   lightning_address: null as string | null,
   lightning_address_verified: false,
+  forum_laws_dismissed: false,
+  view_key: VIEW_KEY,
   created_at: new Date(1_000),
+  rules_agreed_at: null as Date | string | null,
 };
+
+describe('PostgresAuthStore nostr keys', () => {
+  it('reads and writes nostr key material', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ nostr_pubkey: null }];
+    expect(await store.getNostrPublicKey('acc')).toBeUndefined();
+    sql.nextRows = [{ nostr_pubkey: 'aa'.repeat(32) }];
+    expect(await store.getNostrPublicKey('acc')).toBe('aa'.repeat(32));
+    sql.nextRows = [{ nostr_nsec_ciphertext: null }];
+    expect(await store.getNostrSecret('acc')).toBeUndefined();
+    sql.nextRows = [{ nostr_nsec_ciphertext: new Uint8Array([1, 2]) }];
+    expect(await store.getNostrSecret('acc')).toEqual(new Uint8Array([1, 2]));
+    sql.nextRows = [];
+    expect(
+      await store.setNostrKeyIfAbsent('acc', {
+        pubkey: 'aa'.repeat(32),
+        ciphertext: new Uint8Array([1]),
+        kekId: 1,
+        custody: 'custodial',
+      }),
+    ).toBe('exists');
+    sql.nextRows = [{ nostr_pubkey: 'aa'.repeat(32) }];
+    expect(
+      await store.setNostrKeyIfAbsent('acc', {
+        pubkey: 'aa'.repeat(32),
+        ciphertext: new Uint8Array([1]),
+        kekId: 1,
+        custody: 'custodial',
+      }),
+    ).toBe('inserted');
+    sql.nextRows = [{ id: 'acc' }];
+    expect(await store.listAccountIdsWithoutNostrKey(5)).toEqual(['acc']);
+  });
+});
 
 describe('migrateAuthSchema', () => {
   it('runs every AUTH_SCHEMA_SQL statement', async () => {
@@ -46,10 +86,25 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     sql.nextRows = [ACCOUNT_ROW];
     const store = new PostgresAuthStore(sql);
-    expect((await store.getAccount('acc'))?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    const mapped = await store.getAccount('acc');
+    expect(mapped?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    expect(mapped?.forumLawsDismissed).toBe(false);
+    expect(mapped?.rulesAgreedAt).toBeNull();
+    const account = await store.getAccount('acc');
+    expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
+    expect(account?.viewKey).toBe(VIEW_KEY);
+    expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.queries[0]?.text).toMatch(/rules_agreed_at/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
-    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[2]?.text).toMatch(/rules_agreed_at/);
+  });
+
+  it('maps a non-null rules_agreed_at timestamp', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, rules_agreed_at: new Date(5_000) }];
+    expect((await new PostgresAuthStore(sql).getAccount('acc'))?.rulesAgreedAt).toBe(5_000);
   });
 
   it('returns undefined for a missing account', async () => {
@@ -59,15 +114,19 @@ describe('PostgresAuthStore', () => {
   it('inserts and updates accounts', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
-    await store.createAccount({
+    const account = {
       id: 'acc',
       linkingKey: ACCOUNT_ROW.linking_key,
-      role: 'moderator',
+      role: 'moderator' as const,
       name: 'Ada',
       lightningAddress: 'a@b.com',
       lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
-    });
+      rulesAgreedAt: null,
+    };
+    await store.createAccount(account);
     await store.updateAccount({
       id: 'acc',
       linkingKey: ACCOUNT_ROW.linking_key,
@@ -75,11 +134,98 @@ describe('PostgresAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
+      rulesAgreedAt: 9_000,
     });
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
+    expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.executes[0]?.text).toMatch(/view_key/);
+    expect(sql.executes[0]?.text).toMatch(/rules_agreed_at/);
+    expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
+    expect(sql.executes[0]?.params[9]).toBeNull();
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
+    expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
+    expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+    expect(sql.executes[1]?.params).toEqual([
+      'acc',
+      ACCOUNT_ROW.linking_key,
+      'basis',
+      null,
+      null,
+      false,
+      false,
+      1,
+      VIEW_KEY,
+      9_000,
+    ]);
+  });
+
+  it('looks up an account by view_key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByViewKey(VIEW_KEY);
+    expect(sql.queries[0]?.text).toMatch(/WHERE view_key = \$1/);
+    expect(sql.queries[0]?.params).toEqual([VIEW_KEY]);
+    expect(found?.viewKey).toBe(VIEW_KEY);
+    expect(found?.id).toBe('acc');
+  });
+
+  it('returns undefined for a missing view_key', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByViewKey(VIEW_KEY),
+    ).toBeUndefined();
+  });
+
+  it('skips rows with a null view_key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null }];
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccount('acc')).toBeUndefined();
+    expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
+    expect(await store.listAccounts()).toEqual([]);
+  });
+
+  it('createAccount treats a unique_violation as a no-op', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    await expect(
+      new PostgresAuthStore(sql).createAccount({
+        id: 'acc',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('createAccount rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('canceled'), { code: '57014' });
+    await expect(
+      new PostgresAuthStore(sql).createAccount({
+        id: 'acc',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      }),
+    ).rejects.toMatchObject({ code: '57014' });
   });
 
   it('updateAccount SQL refuses a linking_key owned by another id', async () => {
@@ -91,7 +237,10 @@ describe('PostgresAuthStore', () => {
       name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1,
+      rulesAgreedAt: null,
     });
     expect(sql.executes[0]?.text).toMatch(/other\.linking_key = \$2 AND other\.id <> \$1/);
   });
@@ -107,7 +256,10 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).resolves.toBeUndefined();
   });
@@ -123,7 +275,10 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toMatchObject({ code: '57014' });
   });
@@ -139,7 +294,10 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toBeNull();
   });
@@ -155,7 +313,10 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toBe('boom');
   });
@@ -171,7 +332,10 @@ describe('PostgresAuthStore', () => {
         name: null,
         lightningAddress: null,
         lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: VIEW_KEY,
         createdAt: 1,
+        rulesAgreedAt: null,
       }),
     ).rejects.toThrow('disk full');
   });
@@ -234,6 +398,15 @@ describe('PostgresAuthStore', () => {
 
   it('returns undefined for a missing verification', async () => {
     expect(await new PostgresAuthStore(new MockSql()).getVerification('x')).toBeUndefined();
+  });
+
+  it('maps verified and founder account roles', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'verified' }];
+    expect((await store.getAccount('acc'))?.role).toBe('verified');
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'founder' }];
+    expect((await store.getAccount('acc'))?.role).toBe('founder');
   });
 
   it('rejects an unknown account role', async () => {

@@ -16,9 +16,23 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `createdAt`). Same JSON fields as `GET /me`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`) **without** `viewKey`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: PATCH /debug/accounts/:id
+
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /debug/accounts`: eight fields via `serializeAccount`; no `viewKey`). Does not patch name or Lightning Address.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string' }` for unknown/missing/non-JSON body; 404 `{ error: 'Not found' }` when the account id is unknown.
+- **Used by:** Operator `gifts-debug role` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/contacts
+
+- **Purpose:** Operator listing of private in-app contacts newest-first (cap 200), including `accountId`, name snapshot, text, and ISO `createdAt`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Contact is unavailable' }` if the store throws (`contact.list.failed`).
+- **Used by:** Operators reading the private mailbox.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /auth/passkey/authenticate/begin
@@ -72,9 +86,9 @@
 
 ## Endpoint: GET /gifts/stats
 
-- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
-- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
-- **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy).
+- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and `fx` (no Coinbase call). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
+- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any selected gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
+- **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy); optional per-recipient view via `?recipient=`.
 - **Auth:** Public.
 
 ## Endpoint: GET /healthz
@@ -114,29 +128,64 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag).
+- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`).
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /view/:viewKey
+
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). No auth. Not a session.
+- **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown.
+- **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`).
+- **Auth:** none.
+
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, text, ISO `createdAt`), capped at 200. Empty list is 200 `{ messages: [] }`. No `accountId` in JSON.
+- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, and live author `role`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /messages/:id/photo
+
+- **Purpose:** Bearer required. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: private`). List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Used by:** App forum photo display.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. Body `{ text }`. Account must have a non-blank display name. Stores name snapshot, text (1–500 chars after trim; newlines allowed; other C0/DEL rejected), timestamp. 200 is the public message object (not wrapped).
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Messages are unavailable (`messages.create.failed`).
+- **Purpose:** Bearer required. JSON body `{ text?, photo?: { contentType, data } }` (base64; not multipart). Text-only `{ text }` stays valid; photo-only allowed; at least one of non-empty trimmed text or photo required. Name snapshot + optional JPEG/PNG/WebP ≤ 1 MiB. 200 is the public message including `sats`, `payable`, `hasPhoto`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: POST /messages/:id/invoice
+
+- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
+- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
+- **Used by:** App pay sheet for forum notes.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /contact
+
+- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). 200 is the public contact object (no `accountId`).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Contact is unavailable (`contact.create.failed`).
+- **Used by:** App in-app contact composer.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /me/forum-laws-dismissed
+
+- **Purpose:** Bearer required. No body. Sets `forumLawsDismissed` to `true` on the account (idempotent; no un-dismiss). Returns the owner account JSON (same as GET `/me`, including `viewKey`).
+- **Errors:** 401 without session.
+- **Used by:** App welcome-forum living-room laws dismiss control.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
 ## Endpoint: POST /me/lightning-address
 
-- **Purpose:** Body `{ address }`. Stores unverified LUD-16 on the account.
-- **Errors:** 401/400.
+- **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged).
 - **Used by:** App `setLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
@@ -147,11 +196,11 @@
 - **Used by:** App `startLightningAddressVerification`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
-## Endpoint: POST /me/name
+## Endpoint: POST /me/rules-agreement
 
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters).
-- **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
-- **Used by:** App `setName`.
+- **Purpose:** Bearer required. No body required. Records first living-room rules agreement using the server clock; later POSTs return the original timestamp (idempotent 200 account JSON).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session.
+- **Used by:** App after name and address onboarding.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: POST /me/lightning-address/verification/confirm
@@ -159,4 +208,11 @@
 - **Purpose:** Body `{ nonce }`. Marks the address verified when the invoice was paid.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "nonce" string' }` or `{ error: 'Incorrect verification code' }`; 409 `{ error: 'No verification in progress' }` or `{ error: 'Verification expired' }`.
 - **Used by:** App `confirmLightningAddressVerification`.
+- **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/name
+
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters).
+- **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
+- **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.

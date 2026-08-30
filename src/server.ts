@@ -8,17 +8,22 @@ import { authRoutes } from '@/routes/auth';
 import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
+import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
 import { giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { contactRoutes } from '@/routes/contact';
+import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
+import { InMemoryContactStore } from '@/lib/contact-store';
+import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -63,7 +68,8 @@ export interface AppDeps {
   readBrand?: BrandReader;
   /**
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
-   * blank → `GET /debug/accounts` returns 503.
+   * blank → `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and
+   * `GET /debug/contacts` return 503.
    */
   debugToken?: string;
   /**
@@ -102,6 +108,14 @@ export interface AppDeps {
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
   messageStore?: MessageStore;
+  /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
+  nostrKek?: Uint8Array;
+  /**
+   * Private in-app contact mailbox (default: empty
+   * {@link InMemoryContactStore}). Boot injects
+   * {@link PostgresContactStore} when `DATABASE_URL` is set.
+   */
+  contactStore?: ContactStore;
 }
 
 /**
@@ -110,12 +124,13 @@ export interface AppDeps {
  * Kept separate from the runtime entry point so tests can drive the handlers
  * via Hono's `app.request()` helper without binding to a TCP port. Every
  * wire-up change — middleware, routes, error handlers — flows through this
- * single factory so the test surface matches production exactly.
+ * single factory so the test surface matches production exactly. Mounts
+ * public `GET /view/:viewKey` alongside `/me` and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, WebAuthn RP, spend token,
- *   and gift invoice store.
+ *   gift recorder, BTC-USD rates, message store, contact store, nostrKek, WebAuthn RP, spend
+ *   token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -130,6 +145,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
+  const nostrKek = deps.nostrKek;
+  const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -165,17 +182,30 @@ export function createApp(deps: AppDeps = {}): Hono {
       webAuthnRpId,
       webAuthnRpName,
       passkeyCeremony,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
   app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
+  app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
-  app.route('/messages', messagesRoutes({ store: messageStore, authStore: store, now }));
+  app.route(
+    '/messages',
+    messagesRoutes({
+      store: messageStore,
+      authStore: store,
+      now,
+      fetchImpl,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
+    }),
+  );
+  app.route('/contact', contactRoutes({ store: contactStore, authStore: store, now }));
   app.route(
     '/invoices',
     invoiceRoutes({

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildGiftDay,
   buildGiftStats,
+  giftsForRecipient,
   isUtcDay,
   mapGiftQueryRow,
   utcDayFromPaidAt,
@@ -41,6 +42,38 @@ describe('mapGiftQueryRow', () => {
     expect(mapped.paidAt.toISOString()).toBe('2026-06-01T12:00:00.000Z');
     expect(mapped.amountSats).toBe(42);
     expect(mapped.recipientWosUser).toBe('bob');
+  });
+});
+
+describe('giftsForRecipient', () => {
+  const alice = row('2026-06-01T12:00:00.000Z', 1000, 'alice');
+  const aliceCaps = row('2026-06-02T12:00:00.000Z', 500, 'Alice');
+  const bob = row('2026-06-03T12:00:00.000Z', 2000, 'bob');
+  const rows = [alice, aliceCaps, bob];
+
+  it('returns [] for empty or whitespace-only recipient (never all gifts)', () => {
+    expect(giftsForRecipient(rows, '')).toEqual([]);
+    expect(giftsForRecipient(rows, '   ')).toEqual([]);
+  });
+
+  it('matches a handle case-insensitively and preserves order', () => {
+    expect(giftsForRecipient(rows, 'alice')).toEqual([alice, aliceCaps]);
+    expect(giftsForRecipient(rows, 'ALICE')).toEqual([alice, aliceCaps]);
+  });
+
+  it('uses the local-part when indexOf("@") > 0', () => {
+    expect(giftsForRecipient(rows, 'alice@walletofsatoshi.com')).toEqual([alice, aliceCaps]);
+  });
+
+  it('uses the whole string when "@" is at index 0', () => {
+    expect(giftsForRecipient(rows, '@alice')).toEqual([]);
+    expect(giftsForRecipient([row('2026-06-01T00:00:00.000Z', 1, '@alice')], '@alice')).toEqual([
+      row('2026-06-01T00:00:00.000Z', 1, '@alice'),
+    ]);
+  });
+
+  it('returns [] when no handle matches', () => {
+    expect(giftsForRecipient(rows, 'carol')).toEqual([]);
   });
 });
 

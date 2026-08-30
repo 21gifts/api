@@ -78,6 +78,46 @@ export async function requestPayInvoice(args: RequestPayInvoiceArgs): Promise<Ln
   return { ok: true, pr: invoice.pr, payMsat };
 }
 
+/** Zap invoice fetch: success with bolt11, or collapsed failure. */
+export type ZapInvoiceResult =
+  { ok: true; pr: string; amountSats: number } | { ok: false; reason: 'unreachable' | 'noZap' };
+
+/**
+ * Fetch a BOLT11 invoice for a NIP-57 zap (`nostr=` query, not `comment=`).
+ *
+ * @param args - Address, amount millisats, signed 9734 JSON, fetch.
+ * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true).
+ */
+export async function requestZapInvoice(args: {
+  address: string;
+  amountMsat: number;
+  zapRequestJson: string;
+  fetchImpl: FetchFn;
+}): Promise<ZapInvoiceResult> {
+  const resolved = await resolveLnurlp({
+    address: args.address,
+    fetchImpl: args.fetchImpl,
+  });
+  if (!resolved.ok) {
+    return { ok: false, reason: 'unreachable' };
+  }
+  const metadata = resolved.metadata;
+  if (metadata.allowsNostr !== true || metadata.nostrPubkey === undefined) {
+    return { ok: false, reason: 'noZap' };
+  }
+  if (args.amountMsat < metadata.minSendable || args.amountMsat > metadata.maxSendable) {
+    return { ok: false, reason: 'unreachable' };
+  }
+  const callbackUrl = new URL(metadata.callback);
+  callbackUrl.searchParams.set('amount', String(args.amountMsat));
+  callbackUrl.searchParams.set('nostr', args.zapRequestJson);
+  const invoice = await fetchJson(args.fetchImpl, callbackUrl.toString(), lnurlpInvoiceSchema);
+  if (invoice === null) {
+    return { ok: false, reason: 'unreachable' };
+  }
+  return { ok: true, pr: invoice.pr, amountSats: Math.floor(args.amountMsat / 1000) };
+}
+
 /**
  * GET `url`, parse JSON, and validate with `schema`. Any network, HTTP, JSON,
  * or schema failure yields `null` (mapped to `unreachable` by the caller).

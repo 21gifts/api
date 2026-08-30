@@ -253,6 +253,28 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
 }
 
 /**
+ * Gifts whose Wallet of Satoshi handle matches `recipient` case-insensitively.
+ *
+ * Trims `recipient`. When `indexOf('@') > 0`, compares the local-part before `@`;
+ * otherwise the whole trimmed string. Empty after trim matches nothing
+ * (returns `[]`), never "all gifts".
+ *
+ * @param rows - Outbound gifts to filter.
+ * @param recipient - Handle or Lightning Address to match.
+ * @returns Matching rows (order preserved); `[]` when the needle is empty.
+ */
+export function giftsForRecipient(rows: readonly GiftRow[], recipient: string): GiftRow[] {
+  const trimmed = recipient.trim();
+  if (trimmed === '') {
+    return [];
+  }
+  const at = trimmed.indexOf('@');
+  const needle = at > 0 ? trimmed.slice(0, at) : trimmed;
+  const target = needle.toLowerCase();
+  return rows.filter((row) => row.recipientWosUser.toLowerCase() === target);
+}
+
+/**
  * Aggregate outbound gifts into the public stats payload.
  *
  * Empty input yields zeros, null dates, empty series, and `fx` — no rates

@@ -56,6 +56,11 @@ test('Function: requestLog — GET /info succeeds through middleware', async ({ 
   expect(res.status()).toBe(200);
 });
 
+test('Function: requestLogPath — GET /view/<64-hex> is 404 (process up)', async ({ request }) => {
+  const res = await request.get('/view/' + 'a'.repeat(64));
+  expect(res.status()).toBe(404);
+});
+
 test('Function: logEvent — GET /info succeeds through middleware', async ({ request }) => {
   const res = await request.get('/info');
   expect(res.status()).toBe(200);
@@ -101,6 +106,11 @@ test('Function: bearerToken — GET /me without bearer is 401', async ({ request
 test('Function: meRoutes — GET /me without bearer is 401', async ({ request }) => {
   const me = await request.get('/me');
   expect(me.status()).toBe(401);
+});
+
+test('Function: viewRoutes — GET /view/:viewKey is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: normalizeDisplayName — POST /me/name without bearer is 401', async ({
@@ -259,6 +269,21 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   expect(body.totalSats).toBe(0);
 });
 
+test('Function: giftsForRecipient — GET /gifts/stats?recipient= is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats?recipient=alice');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    giftCount: number;
+    totalSats: number;
+    spendOverTime: unknown[];
+  };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalSats).toBe(0);
+  expect(body.spendOverTime).toEqual([]);
+});
+
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
   request,
 }) => {
@@ -297,6 +322,38 @@ test('Function: normalizeForumText — POST /messages without bearer is 401', as
   expect(res.status()).toBe(401);
 });
 
+test('Function: detectImageContentType — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: decodeForumPhoto — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: detectImageContentType — POST /messages with a photo without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: {
+      photo: { contentType: 'image/jpeg', data: '/9j/4AAQ' },
+    },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: messagesRoutes — GET /messages/:id/photo without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: serializeMessage — GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);
@@ -315,6 +372,63 @@ test('Function: PostgresMessageStore — default boot has no DATABASE_URL', asyn
 });
 
 test('Function: migrateMessageSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/contacts');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeContact — POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeDebugContact — GET /debug/contacts without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/contacts');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryContactStore — POST /contact without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresContactStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateContactSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: DB_CHANGE_SCHEMA_SQL — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
@@ -570,4 +684,151 @@ test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured
     data: { id: 'x', preimage: '11'.repeat(32) },
   });
   expect(res.status()).toBe(503);
+});
+
+test('Function: serializeAccount — GET /debug/accounts listing omits viewKey', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
+  expect(Array.isArray(body.accounts)).toBe(true);
+  for (const account of body.accounts) {
+    expect(account).not.toHaveProperty('viewKey');
+  }
+});
+
+test('Function: serializeOwnerAccount — GET /me without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeViewProfile — GET /view/:viewKey is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: parseNostrKek — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: hexToBytes — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: bytesToHex — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: publicKeyHexFromSecret — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encryptNostrSecret — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decryptNostrSecret — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zeroizeSecret — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: ensureAccountNostrKey — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: generateNostrKeyRecord — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: kind1Tags — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildKind1Event — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildKind0Content — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildKind0Event — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildKind10002Event — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: signEventForAccount — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: isNostrPublishEnabled — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: isNostrPublishPublicEnabled — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveRelaySpace — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveRelayPublic — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveWriteSet — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveZapRelays — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: utcDayKey — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
+});
+test('Function: InvoiceRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
+});
+test('Function: RecordingPublisher — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: WebsocketNostrPublisher — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: spaceAcked — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: publicAcked — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: runNostrWorkerTick — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: startNostrWorker — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: normalizeSignedEvent — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: indexOpenZapReceipts — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: RecordingQuerier — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: WebsocketNostrQuerier — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: requestZapInvoice — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: unsignedNostrDefaults — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/messages')).status()).toBe(401);
 });

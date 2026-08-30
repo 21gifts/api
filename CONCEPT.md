@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-23.
+**Status**: draft, in active iteration. Last revised 2026-08-29.
 
 ---
 
@@ -51,13 +51,19 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 
 ### Roles
 
-| Role      | Capabilities                                                                     |
-| --------- | -------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (every account can receive by default) |
-| Moderator | Basis, plus extended permissions for content moderation                          |
+One exclusive `account.role` per account. New passkey accounts are **Basis**.
+Assignment is operator-side (`PATCH /debug/accounts/:id`, `DEBUG_TOKEN`).
+
+| Role      | Capabilities                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                       |
+| Verified  | Basis, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. |
+| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                      |
+| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                             |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
-its own (see below).
+its own (see below). The forum shows a tag only for Verified, Moderator, and
+Founder.
 
 ### Login: passkey only
 
@@ -87,15 +93,15 @@ Any account can additionally become a donor and spend money:
 ### Receiver address verification
 
 A receiver's Lightning Address is entered free-form on sign-up (a wrong
-address is self-punishing — gifts simply go elsewhere). The **verified
-badge** requires proof of control via micro-payment: the api pays 1 sat (or
-the provider's `minSendable` if higher, capped at 10 sat) with a one-time
-nonce in the LNURL-pay comment (LUD-12; Wallet of Satoshi allows 255
-characters); the user reads the nonce from the wallet's transaction history
-and enters it in the app (`POST /me/lightning-address/verification` +
-`…/confirm`). No LNDHub payer is wired yet — start returns 503 until one is
-injected; the process still boots. No LUD-21 dependency — WoS does not
-implement LNURL-verify.
+address is self-punishing — gifts simply go elsewhere). Proof of control
+sets `lightningAddressVerified` (not the forum role **Verified**) via
+micro-payment: the api pays 1 sat (or the provider's `minSendable` if
+higher, capped at 10 sat) with a one-time nonce in the LNURL-pay comment
+(LUD-12; Wallet of Satoshi allows 255 characters); the user reads the nonce
+from the wallet's transaction history and enters it in the app
+(`POST /me/lightning-address/verification` + `…/confirm`). No LNDHub payer
+is wired yet — start returns 503 until one is injected; the process still
+boots. No LUD-21 dependency — WoS does not implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
@@ -230,13 +236,13 @@ below applies to v1 for the surfaces v1 ships — profile metadata, campaign
 post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
 scope. The client-side-signing flow beneath it is target state.)
 
-| UI surface                            | NOSTR primitive                                           |
-| ------------------------------------- | --------------------------------------------------------- |
-| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                |
-| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata       |
-| Public comment / encouragement        | `kind:1` reply, with `e` and `p` tags                     |
-| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy) |
-| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)             |
+| UI surface                            | NOSTR primitive                                                                              |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                                   |
+| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                                          |
+| Public comment / encouragement        | top-level `kind:1` (frozen `t=bitcoin` / `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`) |
+| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                                    |
+| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                                |
 
 **Flow** — the app does not talk to NOSTR relays directly. It talks to the
 backend API, which acts as the user's edge to the network:
@@ -260,6 +266,15 @@ app  ←──indexed feed──  api  ←──subscribe──  relays
 - Private DMs (NIP-17) pass through the api as opaque encrypted payloads — the
   api never sees plaintext
 
+### Public member forum (v1)
+
+The `/messages` thread is a **forum / messenger group**, not a social-media
+feed. Visitors read it top-to-bottom like a group chat: oldest notes at the
+top, newest at the bottom, composer under the newest note. A new post is
+inserted at the bottom. `GET /messages` still returns the latest 200 notes
+newest-first so the window is "what is recent"; every client reverses that
+array for display.
+
 ### Trust & Verification
 
 **Protocol level**: completely open. Anyone publishes. Trust emerges from NOSTR
@@ -273,9 +288,11 @@ reputation (who follows / vouches for whom).
 - No KYC, no government ID
 
 (v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 NOSTR
-identities are custodial, server-held. The v1 verified badge is proof of
-Lightning-Address control via micro-payment nonce, see "Receiver address
-verification".)
+identities are custodial, server-held. Proof of Lightning-Address control is
+the account flag `lightningAddressVerified` via micro-payment nonce, see
+"Receiver address verification". That flag is not the forum role **Verified**,
+which means a moderator physically met the person (`account.role`, assigned
+with `PATCH /debug/accounts/:id`).)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
@@ -321,6 +338,11 @@ The api lives in its own repository (`21gifts/api`) and is the **canonical
 home for project-level documentation**, including this concept document. The
 app repo (`21gifts/app`) only carries frontend-specific docs.
 
+**Durability**: Durable Postgres writes are also appended to `db_change` with
+`at` / `op` / `before` / `after`. Secret columns `token`, `challenge`,
+`nostr_nsec_ciphertext`, `nonce`, and `view_key` are stored as SHA-256 hex in that JSON;
+other columns including `name` stay plaintext.
+
 ### Storage (client-side)
 
 > **Post-v1 target architecture** (like "Identity & Keys" above). v1 stores
@@ -347,8 +369,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Sign-in via passkey (WebAuthn discoverable credential; session bound to
   `account.id`)
-- Receiver profile UI: name, photo, story, Lightning Address (+ verified
-  badge via micro-payment nonce)
+- Receiver profile UI: name, photo, story, Lightning Address (+
+  `lightningAddressVerified` via micro-payment nonce; not the forum role
+  Verified)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Recurring gifts: configure daily USD amounts per recipient (paid by the
@@ -650,6 +673,13 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-24 | Matching `POST /invoices/proof` inserts an outbound `gift` row when `DATABASE_URL` is set so `GET /gifts/stats` includes spend-worker payments. Insert failure logs `gifts.record_failed` and still returns 200. Memory boots keep a no-op recorder.                                                                                                                                                                                                               |
 | 2026-08-24 | Public `GET /gifts?day=YYYY-MM-DD` lists each outbound gift on that UTC day (time, recipient, sats/BTC/USD at that day's close). No invoices. Empty day is 200.                                                                                                                                                                                                                                                                                                    |
 | 2026-08-28 | v1 public comments ship as custodial HTTP `GET/POST /messages` (name snapshot, text, timestamp); kind:1 relay fan-out remains unwired.                                                                                                                                                                                                                                                                                                                             |
+| 2026-08-29 | Member-forum posts are **top-level kind:1** notes (not replies). GET/POST `/messages` include `sats` and `payable`. `POST /messages/:id/invoice` is a NIP-57 zap. Guest Send-a-gift is removed from the app. Worker fans out when `NOSTR_PUBLISH=1`.                                                                                                                                                                                                               |
+| 2026-08-29 | Worker indexes validated kind:9735 zap receipts onto `message.sats` (durable `nostr_zap_receipt`, LNURL provider pubkey + bolt11 amount). Kind:1 EVENT frames are published as JSON objects so relays can ACK.                                                                                                                                                                                                                                                     |
+| 2026-08-29 | `POST /me/lightning-address` live-resolves LUD-16 and requires NIP-57 zap metadata before save (no migration of existing rows). Invoice limiter on `POST /messages/:id/invoice` runs only after auth, amount, payable, and KEK checks so early 400/404/401/503 do not burn quota.                                                                                                                                                                                  |
+| 2026-08-29 | Forum display roles on exclusive `account.role`: `basis` \| `verified` \| `moderator` \| `founder`. New passkey accounts stay `basis`. `verified` = moderator physically met the person (not `lightningAddressVerified`). `GET/POST /messages` always include live author `role` (missing author → `basis`). Operator assignment via `PATCH /debug/accounts/:id` (`DEBUG_TOKEN`).                                                                                  |
+| 2026-08-29 | Public member forum UX is a messenger-group thread (oldest top, newest bottom above the composer). `GET /messages` remains the latest-200 window newest-first; clients reverse for display.                                                                                                                                                                                                                                                                        |
+| 2026-08-29 | Zap ingest and invoice `relays` always include the public list (space plus Damus / Primal / nos.lol); kind:1 public write stays gated on `NOSTR_PUBLISH_PUBLIC`.                                                                                                                                                                                                                                                                                                   |
+| 2026-08-29 | Zap-receipt sats UPDATE qualifies `message.sats` so Postgres can apply it.                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ---
 

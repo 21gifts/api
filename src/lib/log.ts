@@ -18,9 +18,25 @@ export function logEvent(event: string, fields?: LogFields): void {
 }
 
 /**
+ * Redact capability-URL path segments before request logging.
+ *
+ * A raw `/view/<secret>` would print the durable view key. The first
+ * segment after `/view/` is replaced with `:viewKey`, including when a
+ * trailing slash or extra segments follow. `/view` alone and unrelated
+ * paths are unchanged.
+ *
+ * @param path - Request path without the query string.
+ * @returns Redacted path for `http.request` logs.
+ */
+export function requestLogPath(path: string): string {
+  return path.replace(/^\/view\/[^/]+/, '/view/:viewKey');
+}
+
+/**
  * Hono middleware: one `http.request` event after the handler.
  * Skips `/healthz` and `OPTIONS`. Never includes the query string
- * (LNURL-pay callbacks would leak invoice query params).
+ * (LNURL-pay callbacks would leak invoice query params). Redacts
+ * `/view/<segment>` via {@link requestLogPath}.
  *
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
  */
@@ -33,7 +49,7 @@ export function requestLog(): MiddlewareHandler {
     }
     logEvent('http.request', {
       method: c.req.method,
-      path: c.req.path,
+      path: requestLogPath(c.req.path),
       status: c.res.status,
       ms: Date.now() - started,
     });

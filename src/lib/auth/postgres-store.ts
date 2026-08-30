@@ -6,6 +6,7 @@ import type {
   AccountRole,
   AddressVerification,
   AuthStore,
+  NostrKeyRecord,
   PasskeyChallenge,
   PasskeyChallengeType,
   PasskeyCredential,
@@ -20,7 +21,10 @@ interface AccountRow {
   name: string | null;
   lightning_address: string | null;
   lightning_address_verified: boolean;
+  forum_laws_dismissed: boolean;
+  view_key: string | null;
   created_at: Date | string;
+  rules_agreed_at: Date | string | null;
 }
 
 /** Row shape of `auth_session`. */
@@ -83,20 +87,30 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async createAccount(account: Account): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))
-       ON CONFLICT (linking_key) DO NOTHING`,
-      [
-        account.id,
-        account.linkingKey,
-        account.role,
-        account.name,
-        account.lightningAddress,
-        account.lightningAddressVerified,
-        account.createdAt,
-      ],
-    );
+    try {
+      await this.#sql.execute(
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0))
+         ON CONFLICT (linking_key) DO NOTHING`,
+        [
+          account.id,
+          account.linkingKey,
+          account.role,
+          account.name,
+          account.lightningAddress,
+          account.lightningAddressVerified,
+          account.forumLawsDismissed,
+          account.createdAt,
+          account.viewKey,
+          account.rulesAgreedAt,
+        ],
+      );
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async updateAccount(account: Account): Promise<void> {
@@ -104,7 +118,9 @@ export class PostgresAuthStore implements AuthStore {
       await this.#sql.execute(
         `UPDATE account
          SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
-             created_at = to_timestamp($7::double precision / 1000.0)
+             forum_laws_dismissed = $7,
+             created_at = to_timestamp($8::double precision / 1000.0), view_key = $9,
+             rules_agreed_at = to_timestamp($10::double precision / 1000.0)
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -120,7 +136,10 @@ export class PostgresAuthStore implements AuthStore {
           account.name,
           account.lightningAddress,
           account.lightningAddressVerified,
+          account.forumLawsDismissed,
           account.createdAt,
+          account.viewKey,
+          account.rulesAgreedAt,
         ],
       );
     } catch (error: unknown) {
@@ -133,9 +152,19 @@ export class PostgresAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
        FROM account WHERE id = $1`,
       [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
+       FROM account WHERE view_key = $1`,
+      [viewKey],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
@@ -147,10 +176,17 @@ export class PostgresAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     const rows = await this.#sql.query<AccountRow>(
-      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, created_at
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
        FROM account ORDER BY created_at ASC, id ASC`,
     );
-    return rows.map(mapAccount);
+    const accounts: Account[] = [];
+    for (const row of rows) {
+      const mapped = mapAccount(row);
+      if (mapped !== undefined) {
+        accounts.push(mapped);
+      }
+    }
+    return accounts;
   }
 
   async createSession(session: Session): Promise<void> {
@@ -283,6 +319,51 @@ export class PostgresAuthStore implements AuthStore {
     return rows[0] !== undefined;
   }
 
+  async getNostrPublicKey(accountId: string): Promise<string | undefined> {
+    const rows = await this.#sql.query<{ nostr_pubkey: string | null }>(
+      'SELECT nostr_pubkey FROM account WHERE id = $1',
+      [accountId],
+    );
+    const pubkey = rows[0]?.nostr_pubkey;
+    return pubkey === null || pubkey === undefined ? undefined : pubkey;
+  }
+
+  async getNostrSecret(accountId: string): Promise<Uint8Array | undefined> {
+    const rows = await this.#sql.query<{ nostr_nsec_ciphertext: Uint8Array | null }>(
+      'SELECT nostr_nsec_ciphertext FROM account WHERE id = $1',
+      [accountId],
+    );
+    const blob = rows[0]?.nostr_nsec_ciphertext;
+    return blob === null || blob === undefined ? undefined : new Uint8Array(blob);
+  }
+
+  async setNostrKeyIfAbsent(
+    accountId: string,
+    record: NostrKeyRecord,
+  ): Promise<'inserted' | 'exists'> {
+    const rows = await this.#sql.query<{ nostr_pubkey: string }>(
+      `UPDATE account
+       SET nostr_pubkey = $2,
+           nostr_nsec_ciphertext = $3,
+           nostr_kek_id = $4,
+           nostr_key_custody = $5,
+           nostr_key_created_at = now()
+       WHERE id = $1 AND nostr_pubkey IS NULL
+       RETURNING nostr_pubkey`,
+      [accountId, record.pubkey, record.ciphertext, record.kekId, record.custody],
+    );
+    return rows[0] === undefined ? 'exists' : 'inserted';
+  }
+
+  async listAccountIdsWithoutNostrKey(limit: number): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id FROM account WHERE nostr_pubkey IS NULL
+       ORDER BY created_at ASC, id ASC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => row.id);
+  }
+
   async #evictExpiredSessions(now: number): Promise<void> {
     const cutoff = now - SESSION_TTL_MS;
     await this.#sql.execute(
@@ -314,13 +395,20 @@ function epochMs(value: Date | string): number {
 }
 
 function parseRole(raw: string): AccountRole {
-  if (raw === 'basis' || raw === 'moderator') {
+  if (raw === 'basis' || raw === 'verified' || raw === 'moderator' || raw === 'founder') {
     return raw;
   }
   throw new Error(`Unknown account role "${raw}"`);
 }
 
-function mapAccount(row: AccountRow): Account {
+/**
+ * Map a DB row to {@link Account}. Rows with a null `view_key` are skipped
+ * (pre-backfill or incomplete migration) rather than inventing a key on read.
+ */
+function mapAccount(row: AccountRow): Account | undefined {
+  if (row.view_key === null) {
+    return undefined;
+  }
   return {
     id: row.id,
     linkingKey: row.linking_key,
@@ -328,7 +416,10 @@ function mapAccount(row: AccountRow): Account {
     name: row.name,
     lightningAddress: row.lightning_address,
     lightningAddressVerified: row.lightning_address_verified,
+    forumLawsDismissed: row.forum_laws_dismissed,
+    viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
+    rulesAgreedAt: row.rules_agreed_at === null ? null : epochMs(row.rules_agreed_at),
   };
 }
 

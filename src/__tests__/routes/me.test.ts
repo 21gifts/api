@@ -4,7 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
-import type { FetchFn } from '@/lib/lnurl-pay';
+import type { FetchFn } from '@/lib/lnurlp';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -27,6 +27,7 @@ afterEach(() => {
 const now = (): number => 1_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const LINKING_KEY = `02${'a'.repeat(64)}`;
+const VIEW_KEY = 'a'.repeat(64);
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc10n1testinvoice';
 
@@ -60,7 +61,10 @@ async function seededStore(
     name: null,
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
+    forumLawsDismissed: false,
+    viewKey: VIEW_KEY,
     createdAt: 1_000_000,
+    rulesAgreedAt: null,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
   return store;
@@ -73,7 +77,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Fake LNURL-pay that always yields a 1-sat invoice. */
+/** Fake LNURL-pay that always yields zap-capable metadata and a 1-sat invoice. */
 function happyFetch(): FetchFn {
   return async (input) => {
     if (String(input).includes('/.well-known/lnurlp/')) {
@@ -82,6 +86,8 @@ function happyFetch(): FetchFn {
         minSendable: 1000,
         maxSendable: 100_000_000_000,
         commentAllowed: 255,
+        allowsNostr: true,
+        nostrPubkey: 'aa'.repeat(32),
       });
     }
     return jsonResponse({ pr: PR });
@@ -135,12 +141,169 @@ describe('GET /me', () => {
       name: string | null;
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
+      viewKey: string;
+      rulesAgreedAt: number | null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
     expect(body.name).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
+    expect(body.viewKey).toBe(VIEW_KEY);
+    expect(body.rulesAgreedAt).toBeNull();
+  });
+});
+
+describe('POST /me/forum-laws-dismissed', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/forum-laws-dismissed', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('sets forumLawsDismissed on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/forum-laws-dismissed', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { forumLawsDismissed: boolean };
+    expect(body.forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.forum_laws.dismissed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const before = warn.mock.calls.length;
+    const res = await app.request('/me/forum-laws-dismissed', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { forumLawsDismissed: boolean }).forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+    const dismissLogs = parsedEvents(warn)
+      .slice(before)
+      .filter((e) => e['event'] === 'account.forum_laws.dismissed');
+    expect(dismissLogs).toHaveLength(0);
+  });
+
+  it('includes forumLawsDismissed true on GET /me after dismiss', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { forumLawsDismissed: boolean }).forumLawsDismissed).toBe(true);
+  });
+
+  it('does not clear forumLawsDismissed when setting a name', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/forum-laws-dismissed', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; forumLawsDismissed: boolean };
+    expect(body.name).toBe('Ada');
+    expect(body.forumLawsDismissed).toBe(true);
+    expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+  });
+});
+
+describe('POST /me/rules-agreement', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/rules-agreement', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('records the first agreement using the injected clock', async () => {
+    const store = await seededStore();
+    const agreedAt = 2_000_000;
+    const res = await mount(store, { clock: () => agreedAt }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rulesAgreedAt: number | null };
+    expect(body.rulesAgreedAt).toBe(agreedAt);
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(agreedAt);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.rules_agreement.set')).toBe(true);
+  });
+
+  it('keeps the original timestamp on later POSTs', async () => {
+    const store = await seededStore();
+    const first = 2_000_000;
+    await mount(store, { clock: () => first }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    const res = await mount(store, { clock: () => 9_000_000 }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ agreedAt: 9_000_000 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rulesAgreedAt: number | null };
+    expect(body.rulesAgreedAt).toBe(first);
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(first);
+    const agreeEvents = parsedEvents(warn).filter(
+      (e) => e['event'] === 'account.rules_agreement.set',
+    );
+    expect(agreeEvents).toHaveLength(1);
+  });
+
+  it('keeps the timestamp when the name or address changes', async () => {
+    const store = await seededStore();
+    const agreedAt = 2_000_000;
+    await mount(store, { clock: () => agreedAt }).request('/me/rules-agreement', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    const named = await mount(store, { fetchImpl: happyFetch() }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(named.status).toBe(200);
+    expect(((await named.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(agreedAt);
+    const linked = await mount(store, { fetchImpl: happyFetch() }).request(
+      '/me/lightning-address',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ address: ADDRESS }),
+      },
+    );
+    expect(linked.status).toBe(200);
+    expect(((await linked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
+      agreedAt,
+    );
+    const unlinked = await mount(store).request('/me/lightning-address', {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(unlinked.status).toBe(200);
+    expect(((await unlinked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
+      agreedAt,
+    );
+    expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(agreedAt);
   });
 });
 
@@ -212,8 +375,9 @@ describe('POST /me/name', () => {
       body: JSON.stringify({ name: '  Ada  ' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string | null };
+    const body = (await res.json()) as { name: string | null; viewKey: string };
     expect(body.name).toBe('Ada');
+    expect(body.viewKey).toBe(VIEW_KEY);
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
@@ -264,7 +428,7 @@ describe('POST /me/lightning-address', () => {
 
   it('links a valid Lightning Address', async () => {
     const store = await seededStore();
-    const res = await mount(store).request('/me/lightning-address', {
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: ADDRESS }),
@@ -295,7 +459,7 @@ describe('POST /me/lightning-address', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1_000_000,
     });
-    const res = await mount(store).request('/me/lightning-address', {
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'bob@getalby.com' }),
@@ -313,13 +477,147 @@ describe('POST /me/lightning-address', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects an invalid Lightning Address', async () => {
-    const res = await mount(await seededStore()).request('/me/lightning-address', {
+  it('rejects an invalid Lightning Address without calling fetch', async () => {
+    const fetchCalls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      fetchCalls.push(String(input));
+      return jsonResponse({});
+    };
+    const res = await mount(await seededStore(), { fetchImpl }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'not-an-address' }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it('rejects an unreachable well-known without saving', async () => {
+    const store = await seededStore({ lightningAddress: 'keep@example.com' });
+    const fetchImpl: FetchFn = async () => jsonResponse({}, 502);
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBe('keep@example.com');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.lightning_address.resolve_failed' &&
+          e['accountId'] === 'acc' &&
+          e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects metadata without allowsNostr without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects allowsNostr without nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects allowsNostr with empty nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: '',
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects allowsNostr with whitespace-only nostrPubkey without saving', async () => {
+    const store = await seededStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: '   ',
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
   });
 });
 
@@ -601,7 +899,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1_000_000,
     });
-    await mount(store).request('/me/lightning-address', {
+    await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ address: ADDRESS }),
@@ -635,7 +933,10 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       name: null,
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
       createdAt: 1_000_000,
+      rulesAgreedAt: null,
     });
     const res = await mount(store).request('/me/lightning-address/verification/confirm', {
       method: 'POST',

@@ -20,7 +20,10 @@ function account(overrides: Partial<Account> = {}): Account {
     name: null,
     lightningAddress: ADDRESS,
     lightningAddressVerified: false,
+    forumLawsDismissed: false,
+    viewKey: 'a'.repeat(64),
     createdAt: T0,
+    rulesAgreedAt: null,
     ...overrides,
   };
 }

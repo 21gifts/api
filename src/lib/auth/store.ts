@@ -8,8 +8,13 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * used when a database URL is configured. Both implement {@link AuthStore}.
  */
 
-/** Account permission tier. Role assignment stays operator-side in v1. */
-export type AccountRole = 'basis' | 'moderator';
+/**
+ * Account permission / forum display tier. Role assignment stays operator-side
+ * in v1 (`PATCH /debug/accounts/:id`). New passkey accounts stay `basis`.
+ * `verified` is a human-identity badge (moderator met the person), not
+ * `lightningAddressVerified`.
+ */
+export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
 
 /**
  * A registered account.
@@ -24,7 +29,7 @@ export interface Account {
    * Legacy LNURL-auth linking key (hex), or `null` for passkey accounts.
    */
   linkingKey: string | null;
-  /** Permission tier. */
+  /** Permission / forum display tier. */
   role: AccountRole;
   /** Display name, or `null` until the user sets one. */
   name: string | null;
@@ -35,8 +40,17 @@ export interface Account {
    * verification. Set only by successful confirm; linking/unlinking resets it.
    */
   lightningAddressVerified: boolean;
+  /** True after the user dismissed the welcome-forum living-room laws hint. */
+  forumLawsDismissed: boolean;
+  /**
+   * Durable capability secret for the public profile URL (`GET /view/:viewKey`).
+   * 64 lowercase hex characters. Never a session; never accepted as Bearer.
+   */
+  viewKey: string;
   /** Creation time (epoch ms). */
   createdAt: number;
+  /** Epoch ms when the account first agreed to the living-room rules, or null. */
+  rulesAgreedAt: number | null;
 }
 
 /**
@@ -108,13 +122,19 @@ export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
   /**
-   * Overwrite a stored account. A non-null `linkingKey` owned by another id
-   * is refused (in-memory no-op; Postgres `UPDATE` matches no row or a
-   * `linking_key` unique_violation is swallowed).
+   * Overwrite a stored account. A `viewKey` or non-null `linkingKey` owned
+   * by another id is refused (in-memory no-op; Postgres `linkingKey` via
+   * `UPDATE` matching no row, `viewKey` via swallowed `view_key`
+   * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
+  /**
+   * Look up an account by its durable view key, or `undefined` if unknown.
+   * Used by the public capability URL; never mints a session.
+   */
+  getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
   /**
    * Drop an account row. Used to roll back `finishPasskeyRegistration` when
    * the credential insert loses a duplicate-id race.
@@ -158,6 +178,32 @@ export interface AuthStore {
    * missing or the CAS predicate fails.
    */
   updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
+  /** Hex pubkey for the account, or `undefined` when none. */
+  getNostrPublicKey(accountId: string): Promise<string | undefined>;
+  /** Encrypted nsec envelope, or `undefined` when none. Never plaintext. */
+  getNostrSecret(accountId: string): Promise<Uint8Array | undefined>;
+  /**
+   * Persist key material only when the account has no pubkey yet.
+   *
+   * @returns `inserted` on first write, `exists` when a pubkey was already set.
+   */
+  setNostrKeyIfAbsent(accountId: string, record: NostrKeyRecord): Promise<'inserted' | 'exists'>;
+  /**
+   * Account ids with no Nostr pubkey yet, oldest first, capped at `limit`.
+   */
+  listAccountIdsWithoutNostrKey(limit: number): Promise<string[]>;
+}
+
+/** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
+export interface NostrKeyRecord {
+  /** NIP-01 pubkey, 64 lowercase hex. */
+  pubkey: string;
+  /** AES-GCM envelope (`version || kek_id || nonce || ciphertext+tag`). */
+  ciphertext: Uint8Array;
+  /** Envelope kek id (v1 = 1). */
+  kekId: number;
+  /** Custody mode. v1 is always `custodial`. */
+  custody: 'custodial' | 'user';
 }
 
 /**
@@ -168,16 +214,22 @@ export interface AuthStore {
 export class InMemoryAuthStore implements AuthStore {
   readonly #accounts = new Map<string, Account>();
   readonly #accountsByLinkingKey = new Map<string, string>();
+  readonly #accountsByViewKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
   readonly #verifications = new Map<string, AddressVerification>();
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
+  readonly #nostrKeys = new Map<string, NostrKeyRecord>();
 
   async createAccount(account: Account): Promise<void> {
+    if (this.#accountsByViewKey.has(account.viewKey)) {
+      return;
+    }
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
       return;
     }
     this.#accounts.set(account.id, account);
+    this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
@@ -190,6 +242,10 @@ export class InMemoryAuthStore implements AuthStore {
         return;
       }
     }
+    const viewKeyOwnerId = this.#accountsByViewKey.get(account.viewKey);
+    if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
+      return;
+    }
     const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
@@ -198,7 +254,11 @@ export class InMemoryAuthStore implements AuthStore {
     ) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
+    if (previous !== undefined && previous.viewKey !== account.viewKey) {
+      this.#accountsByViewKey.delete(previous.viewKey);
+    }
     this.#accounts.set(account.id, account);
+    this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
@@ -210,6 +270,8 @@ export class InMemoryAuthStore implements AuthStore {
       return;
     }
     this.#accounts.delete(id);
+    this.#nostrKeys.delete(id);
+    this.#accountsByViewKey.delete(previous.viewKey);
     if (previous.linkingKey !== null) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
@@ -217,6 +279,11 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     return this.#accounts.get(id);
+  }
+
+  async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
+    const id = this.#accountsByViewKey.get(viewKey);
+    return id === undefined ? undefined : this.#accounts.get(id);
   }
 
   async listAccounts(): Promise<Account[]> {
@@ -290,6 +357,41 @@ export class InMemoryAuthStore implements AuthStore {
       signCount: credential.signCount,
     });
     return true;
+  }
+
+  async getNostrPublicKey(accountId: string): Promise<string | undefined> {
+    return this.#nostrKeys.get(accountId)?.pubkey;
+  }
+
+  async getNostrSecret(accountId: string): Promise<Uint8Array | undefined> {
+    const record = this.#nostrKeys.get(accountId);
+    return record === undefined ? undefined : new Uint8Array(record.ciphertext);
+  }
+
+  async setNostrKeyIfAbsent(
+    accountId: string,
+    record: NostrKeyRecord,
+  ): Promise<'inserted' | 'exists'> {
+    if (this.#accounts.get(accountId) === undefined) {
+      return 'exists';
+    }
+    if (this.#nostrKeys.has(accountId)) {
+      return 'exists';
+    }
+    this.#nostrKeys.set(accountId, {
+      ...record,
+      ciphertext: new Uint8Array(record.ciphertext),
+    });
+    return 'inserted';
+  }
+
+  async listAccountIdsWithoutNostrKey(limit: number): Promise<string[]> {
+    const ids = [...this.#accounts.values()]
+      .filter((account) => !this.#nostrKeys.has(account.id))
+      .sort(compareAccountsForList)
+      .slice(0, limit)
+      .map((account) => account.id);
+    return ids;
   }
 
   /** Drop passkey challenges older than the TTL. */

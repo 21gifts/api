@@ -1,12 +1,13 @@
 # 21.gifts — Core UI Flows
 
-> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7.
+> Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
+> plus the shipped in-app contact mailbox (journey 6).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-28.
+**Status**: living document. Last revised 2026-08-29.
 
 ---
 
@@ -47,12 +48,16 @@ The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a Lightning Address form, and
 **Sign out**.
 
+After name and address, the app records living-room rules agreement via
+`POST /me/rules-agreement`. `GET /me` carries `rulesAgreedAt` (epoch ms of
+the first agreement, or `null`).
+
 No email, no password. Losing the passkey (and platform sync) loses the
 account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/name`.
+`/me`, `/me/name`, `/me/rules-agreement`.
 
 ---
 
@@ -63,11 +68,14 @@ HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 Every account can receive. From the signed-in view the user can link, replace,
 or unlink a LUD-16 Lightning Address:
 
-- `POST /me/lightning-address` — link or replace (always leaves the address
-  **unverified**)
+- `POST /me/lightning-address` — link or replace after a live well-known
+  resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
+  leaves the address **unverified**. Unreachable or non-zap addresses are
+  rejected and not stored.
 - `DELETE /me/lightning-address` — unlink
 
-The **verified** badge is proof-of-control:
+Proof-of-control of the linked Lightning Address is the flag
+`lightningAddressVerified` (not the forum role **Verified**):
 
 1. `POST /me/lightning-address/verification` (no body). The api pays 1 sat, or
    the provider's `minSendable` when higher, capped at 10 sat, with a LUD-12
@@ -85,6 +93,12 @@ any pending verification (`SPEC.md`).
 Receiver name is stored on the account (`POST /me/name`). Photo and story
 will become custodial `kind:0` metadata signed server-side. **No HTTP for
 photo/story yet**. Do not invent `POST /me/profile`.
+
+### View-key link — **Shipped**
+
+The owner can copy a view-key link from `viewKey` on `GET /me`. The URL is
+`GET /view/:viewKey`. Opening that URL shows a read-only public profile card.
+It cannot write and cannot mint a session. Do not invent extra paths.
 
 ---
 
@@ -132,17 +146,34 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 ## 5. Message — **Shipped**
 
-Public comment / encouragement is a v1 surface. The composer POSTs `{ text }`
-to `POST /messages`; the public thread is listed via `GET /messages` (newest
-first, name snapshotted at post). Custodial HTTP only for now; kind:1 relay
-fan-out remains unwired. Do not invent `/events` or `/comments` paths.
+Public comment / encouragement is a v1 surface. The composer POSTs
+`{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
+the public thread is listed via `GET /messages` (newest first, name
+snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
+— never photo bytes). Bytes are `GET /messages/:id/photo`. The shipped UI
+is a messenger-group thread: oldest notes at the top, newest at the bottom,
+composer under the newest note. The welcome-forum living-room laws hint is
+dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
+notes; the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
+`POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
 not sketch a DM inbox as if it ships in v1.
 
 ---
 
-## Out of these five journeys
+## 6. Contact — **Shipped**
+
+Private mailbox so members can write to 21.gifts without a published email.
+Signed-in members POST `{ text }` to `POST /contact` (name snapshot as
+forum messages; `normalizeForumText` plus a required 1–500 character body —
+forum photo-only empty text does not apply). Operators read the mailbox via
+`GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
+DMs, no Nostr fan-out. Do not invent `/events`.
+
+---
+
+## Out of these six journeys
 
 Explicitly not journeys in this file:
 

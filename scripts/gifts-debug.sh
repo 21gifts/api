@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# gifts-debug — operator listing of 21.gifts registered accounts
-#               (GET /debug/accounts). Read-only. No raw SQL.
+# gifts-debug — operator listing and role assignment for 21.gifts accounts
+#               (GET /debug/accounts, PATCH /debug/accounts/:id). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL
@@ -10,10 +10,12 @@
 # Usage:
 #   gifts-debug auth                 # check token; print account count on stderr
 #   gifts-debug accounts [--raw]     # table (default) or JSON
+#   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #
 # Example:
 #   gifts-debug accounts
 #   gifts-debug accounts --raw
+#   gifts-debug role <account-id> moderator
 #
 set -euo pipefail
 
@@ -86,6 +88,28 @@ print("%s rows" % len(rows), file=sys.stderr)
 '
 }
 
+cmd_role() {
+  local id="${1:-}" role="${2:-}" tmp status body
+  [ -n "$id" ] || die "usage: gifts-debug role <account-id> <role>"
+  [ -n "$role" ] || die "usage: gifts-debug role <account-id> <role>"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -X PATCH \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"role\":\"${role}\"}" \
+    "${DEBUG_API_URL}/debug/accounts/${id}") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -101,6 +125,7 @@ set -- "${ARGS[@]+"${ARGS[@]}"}"
 case "${1:-}" in
   auth) cmd_auth ;;
   accounts) cmd_accounts ;;
+  role) shift; cmd_role "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

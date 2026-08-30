@@ -67,6 +67,21 @@ test('GET /me without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /view/not-a-key is 404', async ({ request }) => {
+  const res = await request.get('/view/not-a-key');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/<64-hex> is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/' + 'a'.repeat(64));
+  expect(res.status()).toBe(404);
+});
+
 test('GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);
@@ -79,10 +94,52 @@ test('POST /messages without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /messages/:id/invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages/:id/invoice', { data: { sats: 21 } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /contact without bearer is 401', async ({ request }) => {
+  const res = await request.post('/contact', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /messages with a photo without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: {
+      photo: { contentType: 'image/jpeg', data: '/9j/4AAQ' },
+    },
+  });
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('GET /messages/:id/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /messages/:id/photo UUID path without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },
   });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/forum-laws-dismissed');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/rules-agreement without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/rules-agreement');
   expect(res.status()).toBe(401);
 });
 
@@ -126,6 +183,27 @@ test('GET /debug/accounts with the e2e token lists accounts', async ({ request }
   expect(Array.isArray(body.accounts)).toBe(true);
 });
 
+test('PATCH /debug/accounts/:id without bearer is 401', async ({ request }) => {
+  const res = await request.patch('/debug/accounts/:id', {
+    data: { role: 'basis' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/contacts without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/contacts');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/contacts with the e2e token lists contacts', async ({ request }) => {
+  const res = await request.get('/debug/contacts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { contacts: unknown[] };
+  expect(Array.isArray(body.contacts)).toBe(true);
+});
+
 test('GET /lightning-address without address is 400', async ({ request }) => {
   const res = await request.get('/lightning-address');
   expect(res.status()).toBe(400);
@@ -138,6 +216,25 @@ test('GET /gifts without a day is 400', async ({ request }) => {
 
 test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual({
+    totalSats: 0,
+    totalBtc: '0.00000000',
+    totalUsd: '0.00',
+    giftCount: 0,
+    recipientCount: 0,
+    firstPaidAt: null,
+    lastPaidAt: null,
+    spendOverTime: [],
+    byRecipient: [],
+    byMonth: [],
+    fx: { quote: 'BTC-USD', dayBasis: 'utc', source: 'coinbase-exchange-daily-close' },
+  });
+});
+
+test('GET /gifts/stats?recipient=alice is empty without a database', async ({ request }) => {
+  const res = await request.get('/gifts/stats?recipient=alice');
   expect(res.status()).toBe(200);
   const body = await res.json();
   expect(body).toEqual({

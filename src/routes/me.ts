@@ -3,16 +3,18 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeDisplayName } from '@/lib/name';
+import { serializeOwnerAccount } from '@/lib/auth/account-json';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
-import type { FetchFn } from '@/lib/lnurl-pay';
+import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
- * `/me` — the authenticated account and its editable profile (display name
- * and the receiver's Lightning Address), including proof-of-control
- * verification. Shares the {@link AuthStore} instance with `/auth`.
+ * `/me` — the authenticated account and its editable profile (display name,
+ * welcome-forum laws dismiss, living-room rules agreement, and the receiver's
+ * Lightning Address), including proof-of-control verification. Shares the
+ * {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -25,17 +27,6 @@ export interface MeRouteDeps {
   payer: InvoicePayer;
   /** Injected `fetch` for LNURL-pay resolution. */
   fetchImpl: FetchFn;
-}
-
-/** The public JSON shape of an account. */
-interface AccountResponse {
-  id: string;
-  linkingKey: string | null;
-  role: string;
-  name: string | null;
-  lightningAddress: string | null;
-  lightningAddressVerified: boolean;
-  createdAt: number;
 }
 
 /**
@@ -82,19 +73,6 @@ async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | n
   return current;
 }
 
-/** Project an account to its public JSON shape. */
-function serializeAccount(account: Account): AccountResponse {
-  return {
-    id: account.id,
-    linkingKey: account.linkingKey,
-    role: account.role,
-    name: account.name,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
-    createdAt: account.createdAt,
-  };
-}
-
 /** Body schema for setting a display name. */
 const nameBody = z.object({ name: z.string() });
 
@@ -108,8 +86,8 @@ const confirmBody = z.object({ nonce: z.string() });
  * Build the `/me` route group.
  *
  * @param deps - Shared store, clock, payer, and fetch.
- * @returns A Hono app exposing account, display-name, link/unlink, and
- * verification routes.
+ * @returns A Hono app exposing account, display-name, forum-laws dismiss,
+ * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   return new Hono()
@@ -118,7 +96,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      return c.json(serializeAccount(account), 200);
+      return c.json(serializeOwnerAccount(account), 200);
     })
     .post('/name', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -141,7 +119,43 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, name };
       await deps.store.updateAccount(updated);
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
+    })
+    .post('/forum-laws-dismissed', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.forumLawsDismissed === true) {
+        return c.json(serializeOwnerAccount(current), 200);
+      }
+      const updated: Account = { ...current, forumLawsDismissed: true };
+      await deps.store.updateAccount(updated);
+      logEvent('account.forum_laws.dismissed', { accountId: current.id });
+      return c.json(serializeOwnerAccount(updated), 200);
+    })
+    .post('/rules-agreement', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.rulesAgreedAt !== null) {
+        return c.json(serializeOwnerAccount(current), 200);
+      }
+      const updated: Account = { ...current, rulesAgreedAt: deps.now() };
+      await deps.store.updateAccount(updated);
+      logEvent('account.rules_agreement.set', { accountId: current.id });
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -155,6 +169,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const address = normalizeLightningAddress(parsed.data.address);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+      const zapPubkey =
+        resolved.ok && resolved.metadata.allowsNostr === true
+          ? resolved.metadata.nostrPubkey
+          : undefined;
+      if (zapPubkey === undefined || zapPubkey.trim() === '') {
+        logEvent('account.lightning_address.resolve_failed', {
+          accountId: account.id,
+          address,
+        });
+        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
@@ -174,7 +200,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         accountId: account.id,
         address,
       });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .delete('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -194,7 +220,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       await deps.store.deleteVerification(account.id);
       logEvent('account.lightning_address.unlinked', { accountId: account.id });
-      return c.json(serializeAccount(updated), 200);
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/lightning-address/verification', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -256,6 +282,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         }
       }
       logEvent('account.verification.confirmed', { accountId: account.id });
-      return c.json(serializeAccount(result.account), 200);
+      return c.json(serializeOwnerAccount(result.account), 200);
     });
 }

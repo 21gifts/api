@@ -19,6 +19,12 @@ describe('createApp', () => {
     warn.mockRestore();
   });
 
+  it('accepts an injected Nostr KEK', async () => {
+    const app = createApp({ nostrKek: new Uint8Array(32).fill(4) });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
   it('mounts /favicon.ico', async () => {
     const app = createApp();
     const res = await app.request('/favicon.ico');
@@ -78,6 +84,31 @@ describe('createApp', () => {
     expect(raw).not.toContain('?');
   });
 
+  it('returns 404 for GET /view/not-a-key', async () => {
+    const res = await createApp().request('/view/not-a-key');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for GET /view/<64-hex> when unknown', async () => {
+    const res = await createApp().request('/view/' + 'a'.repeat(64));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('emits http.request for GET /view/<64-hex> with redacted path', async () => {
+    const key = 'a'.repeat(64);
+    await createApp().request('/view/' + key);
+    const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
+    expect(httpEvents).toHaveLength(1);
+    expect(httpEvents[0]?.['path']).toBe('/view/:viewKey');
+    const raw = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
+    expect(raw).toBeDefined();
+    expect(raw).not.toContain(key);
+  });
+
   it('mounts /lightning-address', async () => {
     const app = createApp();
     const res = await app.request('/lightning-address');
@@ -116,6 +147,22 @@ describe('createApp', () => {
     const app = createApp();
     const res = await app.request('/messages');
     expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for unauthenticated POST /contact', async () => {
+    const app = createApp();
+    const res = await app.request('/contact', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 on /debug/contacts when debugToken is blank', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/contacts');
+    expect(res.status).toBe(503);
   });
 });
 

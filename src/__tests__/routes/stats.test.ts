@@ -18,6 +18,12 @@ const GIFT: GiftRow = {
   recipientWosUser: 'alice',
 };
 
+const BOB_GIFT: GiftRow = {
+  paidAt: new Date('2026-06-03T12:00:00.000Z'),
+  amountSats: 2000,
+  recipientWosUser: 'bob',
+};
+
 const EMPTY_STATS = {
   totalSats: 0,
   totalBtc: '0.00000000',
@@ -112,5 +118,102 @@ describe('GET /gifts/stats', () => {
     const res = await app.request('/');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(EMPTY_STATS);
+  });
+
+  it('treats missing or whitespace-only recipient as unfiltered', async () => {
+    const app = createApp({
+      giftStore: new InMemoryGiftStore([GIFT, BOB_GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({
+        '2026-06-01': '100000',
+        '2026-06-03': '100000',
+      }),
+    });
+    const missing = await app.request('/gifts/stats');
+    const blank = await app.request('/gifts/stats?recipient=');
+    const spaces = await app.request('/gifts/stats?recipient=%20%20');
+    expect(missing.status).toBe(200);
+    expect(blank.status).toBe(200);
+    expect(spaces.status).toBe(200);
+    const missingBody = (await missing.json()) as { giftCount: number; totalSats: number };
+    const blankBody = (await blank.json()) as { giftCount: number; totalSats: number };
+    const spacesBody = (await spaces.json()) as { giftCount: number; totalSats: number };
+    expect(missingBody.giftCount).toBe(2);
+    expect(missingBody.totalSats).toBe(3000);
+    expect(blankBody.giftCount).toBe(2);
+    expect(blankBody.totalSats).toBe(3000);
+    expect(spacesBody.giftCount).toBe(2);
+    expect(spacesBody.totalSats).toBe(3000);
+  });
+
+  it('filters stats to one recipient handle case-insensitively', async () => {
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT, BOB_GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({
+        '2026-06-01': '100000',
+        '2026-06-03': '100000',
+      }),
+    }).request('/gifts/stats?recipient=Alice');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      giftCount: number;
+      totalSats: number;
+      recipientCount: number;
+      byRecipient: Array<{ recipient: string }>;
+      spendOverTime: Array<{ day: string; sats: number }>;
+    };
+    expect(body.giftCount).toBe(1);
+    expect(body.totalSats).toBe(1000);
+    expect(body.recipientCount).toBe(1);
+    expect(body.byRecipient.map((r) => r.recipient)).toEqual(['alice']);
+    expect(body.spendOverTime).toEqual([
+      expect.objectContaining({ day: '2026-06-01', sats: 1000 }),
+    ]);
+  });
+
+  it('accepts a Lightning Address local-part as recipient', async () => {
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT, BOB_GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({
+        '2026-06-01': '100000',
+        '2026-06-03': '100000',
+      }),
+    }).request('/gifts/stats?recipient=alice@walletofsatoshi.com');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { giftCount: number; totalSats: number };
+    expect(body.giftCount).toBe(1);
+    expect(body.totalSats).toBe(1000);
+  });
+
+  it('returns empty stats without ensureDays when recipient matches nothing', async () => {
+    const ensureDays = vi.fn(async () => new Map<string, string>());
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT, BOB_GIFT]),
+      btcUsdRates: { ensureDays },
+    }).request('/gifts/stats?recipient=carol');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(EMPTY_STATS);
+    expect(ensureDays).not.toHaveBeenCalled();
+  });
+
+  it('does not match @alice against handle alice', async () => {
+    const ensureDays = vi.fn(async () => new Map<string, string>());
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT]),
+      btcUsdRates: { ensureDays },
+    }).request('/gifts/stats?recipient=%40alice');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(EMPTY_STATS);
+    expect(ensureDays).not.toHaveBeenCalled();
+  });
+
+  it('ensures rates only for the selected recipient days', async () => {
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT, BOB_GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
+    }).request('/gifts/stats?recipient=alice');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { giftCount: number; totalSats: number };
+    expect(body.giftCount).toBe(1);
+    expect(body.totalSats).toBe(1000);
   });
 });
