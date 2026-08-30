@@ -147,7 +147,7 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public image (URL in content + NIP-92 `imeta`).
+ * @param photo - Optional public media (image URL or video URL + MIME; poster URL when video).
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(

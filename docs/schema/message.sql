@@ -1,10 +1,11 @@
 -- Public forum messages (GET/POST /messages, GET /messages/:id/photo,
--- POST /messages/:id/invoice). Author display name is snapshotted at post
--- time. Indexed newest-first for listLatest. Nostr columns are filled by the
--- worker (event_id, signed JSON, publish state, sats). Optional photo (bytea)
--- + photo_content_type; list queries must not SELECT the photo column — use
--- (photo IS NOT NULL) AS has_photo only. ALTER ADD COLUMN IF NOT EXISTS keeps
--- existing databases additive.
+-- GET /messages/:id/video.*, POST /messages/:id/invoice). Author display name
+-- is snapshotted at post time. Indexed newest-first for listLatest. Nostr
+-- columns are filled by the worker (event_id, signed JSON, publish state,
+-- sats). Optional photo (bytea) + photo_content_type; list queries must not
+-- SELECT the photo column — use (photo IS NOT NULL) AS has_photo only.
+-- Optional video_content_type; bytes on disk under MEDIA_DIR (not bytea).
+-- ALTER ADD COLUMN IF NOT EXISTS keeps existing databases additive.
 
 CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,

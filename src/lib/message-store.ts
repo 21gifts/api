@@ -72,11 +72,13 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageRow[]>;
 
   /**
-   * Persist a new message row and optional photo.
+   * Persist a new message row and optional photo and video.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
-   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo`.
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo` and
+   *   `hasVideo` / `videoContentType` from `video`.
    */
   create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow>;
 
@@ -413,11 +415,13 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Append a copy of `row` and optional photo; return a copy.
+   * Append a copy of `row` and optional photo and video; return a copy.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
-   * @returns A copy of the stored row with `hasPhoto` from `photo`.
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns A copy of the stored row with `hasPhoto` from `photo` and
+   *   `hasVideo` / `videoContentType` from `video`.
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
@@ -803,11 +807,14 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Insert `row` (and optional photo) into `message` and return it.
+   * Insert `row` (and optional photo and video) into `message` and return it.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
-   * @returns The stored row after a successful insert (a copy).
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns The stored row after a successful insert (a copy) with `hasPhoto`
+   *   from `photo` and `hasVideo` / `videoContentType` from `video`. INSERT
+   *   failure unlinks the video (`removeForumVideo`).
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
