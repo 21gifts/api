@@ -545,6 +545,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const inspected = inspectBolt11(zap.pr);
       const description = inspected?.description ?? null;
       const descriptionHash = inspected?.descriptionHash ?? null;
+      const nip57 = isNip57Invoice(descriptionHash, zapRequestJson);
+      if (!nip57) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: author.lightningAddress,
+            zapRequest,
+            result: 'not_zap',
+            httpStatus: 400,
+            pr: zap.pr, // keep for debug; this is the exception to "failure rows have pr null"
+            paymentHash: inspected?.paymentHash ?? null,
+            description,
+            descriptionHash,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
+      }
       await persistInvoiceAttempt(
         deps.store,
         invoiceAttemptBase({
@@ -560,7 +582,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           paymentHash: inspected?.paymentHash ?? null,
           description,
           descriptionHash,
-          isNip57Invoice: isNip57Invoice(descriptionHash, zapRequestJson),
+          isNip57Invoice: true,
         }),
       );
       return c.json({ pr: zap.pr, amountSats: zap.amountSats }, 200);

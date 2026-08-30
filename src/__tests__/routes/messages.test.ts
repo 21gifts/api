@@ -14,6 +14,17 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .map((arg) => JSON.parse(arg) as Record<string, unknown>);
 }
 
+/** Fake BOLT11s are not NIP-57; spy `isNip57Invoice` true for HTTP 200 invoice paths. */
+async function withNip57True<T>(run: () => Promise<T>): Promise<T> {
+  const bolt11 = await import('@/lib/bolt11');
+  const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+  try {
+    return await run();
+  } finally {
+    nip57Spy.mockRestore();
+  }
+}
+
 let warn: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -700,7 +711,9 @@ describe('POST /messages/:id/invoice', () => {
           body: JSON.stringify({ sats: 21 }),
         })
       ).status;
-    expect(await hit()).toBe(200);
+    await withNip57True(async () => {
+      expect(await hit()).toBe(200);
+    });
     expect(await hit()).toBe(429);
   });
 
@@ -805,7 +818,9 @@ describe('POST /messages/:id/invoice', () => {
       ).status;
     expect(await hit('66666666-6666-4666-8666-666666666666')).toBe(400);
     expect(await hit('66666666-6666-4666-8666-666666666666')).toBe(400);
-    expect(await hit('77777777-7777-4777-8777-777777777777')).toBe(200);
+    await withNip57True(async () => {
+      expect(await hit('77777777-7777-4777-8777-777777777777')).toBe(200);
+    });
   });
 
   it('returns 400 for a non-integer sats body', async () => {
@@ -963,20 +978,22 @@ describe('POST /messages/:id/invoice', () => {
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
-      const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ sats: 21 }),
+      await withNip57True(async () => {
+        const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+        expect(callbackUrl).toBeDefined();
+        const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
+        expect(nostrParam).toBeTruthy();
+        const zapRequest = JSON.parse(nostrParam ?? '') as { tags: string[][] };
+        const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
+        expect(relaysTag).toBeDefined();
+        expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
       });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
-      expect(callbackUrl).toBeDefined();
-      const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
-      expect(nostrParam).toBeTruthy();
-      const zapRequest = JSON.parse(nostrParam ?? '') as { tags: string[][] };
-      const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
-      expect(relaysTag).toBeDefined();
-      expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
     } finally {
       if (prevPublishPublic === undefined) {
         delete process.env['NOSTR_PUBLISH_PUBLIC'];
@@ -1056,17 +1073,19 @@ describe('POST /messages/:id/invoice', () => {
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
-    const res = await app.request('/messages/44444444-4444-4444-8444-444444444444/invoice', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer payer-tok',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ sats: 21 }),
+    await withNip57True(async () => {
+      const res = await app.request('/messages/44444444-4444-4444-8444-444444444444/invoice', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer payer-tok',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(await authStore.getNostrPublicKey('payer')).toMatch(/^[0-9a-f]{64}$/);
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
-    expect(await authStore.getNostrPublicKey('payer')).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('returns 400 when the note is unsigned', async () => {
@@ -1207,6 +1226,7 @@ describe('POST /messages/:id/invoice', () => {
       descriptionHash: 'bb'.repeat(32),
       expirySeconds: 86400,
     });
+    const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
     try {
       const app = new Hono().route(
         '/messages',
@@ -1229,10 +1249,101 @@ describe('POST /messages/:id/invoice', () => {
       const attempts = await messageStore.listInvoiceAttempts(10);
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.result).toBe('ok');
-      expect(attempts[0]?.pr).toBe('lnbc21n1test');
+      expect(attempts[0]?.isNip57Invoice).toBe(true);
       expect(attempts[0]?.httpStatus).toBe(200);
+      expect(attempts[0]?.pr).toBe('lnbc21n1test');
       expect(attempts[0]?.paymentHash).toBe('aa'.repeat(32));
       expect(attempts[0]?.descriptionHash).toBe('bb'.repeat(32));
+      expect(attempts[0]?.zapRequest).not.toBeNull();
+    } finally {
+      inspectSpy.mockRestore();
+      nip57Spy.mockRestore();
+    }
+  });
+
+  it('persists not_zap when LNURL returns a non-NIP-57 invoice', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '99999999-9999-4999-8999-999999999999',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: 'Wallet of Satoshi',
+      descriptionHash: null,
+      expirySeconds: 86400,
+    });
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/99999999-9999-4999-8999-999999999999/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toEqual({ error: 'Could not start the Bitcoin payment' });
+      expect(body).not.toHaveProperty('pr');
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.result).toBe('not_zap');
+      expect(attempts[0]?.httpStatus).toBe(400);
+      expect(attempts[0]?.pr).toBe('lnbc21n1test');
+      expect(attempts[0]?.isNip57Invoice).toBe(false);
+      expect(attempts[0]?.description).toBe('Wallet of Satoshi');
+      expect(attempts[0]?.descriptionHash).toBeNull();
+      expect(attempts[0]?.paymentHash).toBe('aa'.repeat(32));
       expect(attempts[0]?.zapRequest).not.toBeNull();
     } finally {
       inspectSpy.mockRestore();
@@ -1471,16 +1582,18 @@ describe('POST /messages/:id/invoice', () => {
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
-    const res = await app.request('/messages/dddddddd-dddd-4ddd-8ddd-dddddddddddd/invoice', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ sats: 21 }),
+    await withNip57True(async () => {
+      const res = await app.request('/messages/dddddddd-dddd-4ddd-8ddd-dddddddddddd/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'message.invoice.record_failed')).toBe(
+        true,
+      );
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'message.invoice.record_failed')).toBe(
-      true,
-    );
   });
 
   it('persists sign_failed when signing throws', async () => {
@@ -1598,15 +1711,17 @@ describe('POST /messages/:id/invoice', () => {
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
-      const res = await app.request('/messages/ffffffff-ffff-4fff-8fff-ffffffffffff/invoice', {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ sats: 21 }),
+      await withNip57True(async () => {
+        const res = await app.request('/messages/ffffffff-ffff-4fff-8fff-ffffffffffff/invoice', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        });
+        expect(res.status).toBe(200);
+        const attempts = await messageStore.listInvoiceAttempts(10);
+        expect(attempts[0]?.result).toBe('ok');
+        expect(attempts[0]?.zapRequest).toBeNull();
       });
-      expect(res.status).toBe(200);
-      const attempts = await messageStore.listInvoiceAttempts(10);
-      expect(attempts[0]?.result).toBe('ok');
-      expect(attempts[0]?.zapRequest).toBeNull();
     } finally {
       spy.mockRestore();
     }
