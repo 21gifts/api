@@ -33,6 +33,9 @@ import { bearerToken } from '@/routes/me';
 /** Placeholder author id when the message/author is unknown at persist time. */
 const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 
+/** 400 body when the author's LNURL cannot mint a forum-creditable zap (`noZap` / `not_zap`). */
+const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
+
 /**
  * Persist an invoice attempt without failing the HTTP payment response.
  *
@@ -520,7 +523,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         zapRequestJson,
         fetchImpl,
       });
-      /* v8 ignore next 3 -- LNURL/zap collapsed failure */
       if (!zap.ok) {
         await persistInvoiceAttempt(
           deps.store,
@@ -540,6 +542,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
+        if (zap.reason === 'noZap') {
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
         return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
       }
       const inspected = inspectBolt11(zap.pr);
@@ -565,7 +570,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
       }
       await persistInvoiceAttempt(
         deps.store,
