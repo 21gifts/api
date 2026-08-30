@@ -101,12 +101,14 @@ function reservedContent(
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Signed photo posts
  * whose kind:1 lacks the public photo URL are reset and re-signed when
- * `PUBLIC_BASE_URL` is set and `sats === 0`; zapped rows keep their event
- * id so receipts still resolve. An empty API base leaves them alone so it
- * cannot un-publish and loop. When publishing, also fans out a replaceable
- * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
- * kind:10002 relay list. Kind:1 photo posts include the public image URL
- * and an `imeta` tag. Kind:0
+ * they are already published, `PUBLIC_BASE_URL` is set, and `sats === 0`.
+ * Pending rows are EVENT'd even without the URL — resetting them first
+ * renews the sign lease and they never reach a relay. Zapped rows keep
+ * their event id so receipts still resolve. An empty API base leaves
+ * them alone so it cannot un-publish and loop. When publishing, also fans
+ * out a replaceable kind:0 profile (`name` / `display_name` / `picture`)
+ * and a NIP-65 kind:10002 relay list. Kind:1 photo posts include the
+ * public image URL and an `imeta` tag. Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
@@ -189,13 +191,15 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       let stored = false;
       const apiBase = resolvePublicApiBase(deps.env);
       let photo: { url: string; mime: 'image/jpeg' | 'image/png' | 'image/webp' } | undefined;
-      if (row.hasPhoto && apiBase !== '') {
+      if (apiBase !== '') {
         const storedPhoto = await deps.messages.getPhoto(row.id);
         if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id),
             mime: storedPhoto.contentType,
           };
+        } else if (row.hasPhoto) {
+          logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
         }
       }
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
@@ -402,16 +406,6 @@ async function publishBatch(
       continue;
     }
     /* v8 ignore stop */
-    const photoContent = row.nostrEvent['content'];
-    if (
-      resolvePublicApiBase(deps.env) !== '' &&
-      row.hasPhoto &&
-      row.sats === 0 &&
-      (typeof photoContent !== 'string' || !photoContent.includes(`/messages/${row.id}/photo`))
-    ) {
-      await deps.messages.resetSignedEvent(row.id, row.eventId);
-      continue;
-    }
     try {
       const acks = await deps.publisher.publish(row.nostrEvent, urls, RELAY_TIMEOUT_MS);
       const space = spaceAcked(acks, writeSet.spaceUrl);

@@ -290,6 +290,10 @@ describe('InMemoryMessageStore', () => {
       },
       jpeg,
     );
+    await store.updatePublishState('n', 'published', 'space');
+    await store.updatePublishState('p', 'published', 'space');
+    await store.updatePublishState('q', 'published', 'space');
+    await store.updatePublishState('z', 'published', 'space');
     expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
@@ -297,6 +301,20 @@ describe('InMemoryMessageStore', () => {
       'q',
       'z',
     ]);
+    await store.create(
+      {
+        ...EARLY,
+        id: 'pending-photo',
+        createdAt: new Date('2026-06-01T00:00:00.000Z'),
+        hasPhoto: true,
+        eventId: '55'.repeat(32),
+        nostrEvent: { content: '' },
+      },
+      jpeg,
+    );
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).not.toContain(
+      'pending-photo',
+    );
     await store.addSats('z', 21);
     expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
       'n',
@@ -793,6 +811,7 @@ describe('PostgresMessageStore', () => {
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/photo IS NOT NULL/);
     expect(listSql).toMatch(/sats = 0/);
+    expect(listSql).toMatch(/nostr_publish_state = 'published'/);
     expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo/);
     await store.resetSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
