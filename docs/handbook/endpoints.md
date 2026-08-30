@@ -28,7 +28,7 @@
 - **Used by:** Damus/Primal.
 - **Auth:** none.
 
-## Endpoint: GET /well-known/nostr.json
+## Endpoint: GET /.well-known/nostr.json
 
 - **Purpose:** NIP-05 directory `{ names, relays }`. CORS `*`. Optional `?name=`.
 - **Errors:** 503 `{ error: 'Directory is unavailable' }`.

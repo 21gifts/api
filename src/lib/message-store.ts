@@ -16,7 +16,12 @@ import {
 } from '@/lib/message';
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
-import { writeForumVideo, type ForumVideo, type ForumVideoContentType } from '@/lib/video';
+import {
+  removeForumVideo,
+  writeForumVideo,
+  type ForumVideo,
+  type ForumVideoContentType,
+} from '@/lib/video';
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
   if (event === null) {
@@ -817,20 +822,27 @@ export class PostgresMessageStore implements MessageStore {
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
-    await this.#sql.execute(
-      `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',0)`,
-      [
-        stored.id,
-        stored.accountId,
-        stored.name,
-        stored.text,
-        photo === undefined ? null : photo.bytes,
-        photo === undefined ? null : photo.contentType,
-        stored.videoContentType,
-        stored.createdAt,
-      ],
-    );
+    try {
+      await this.#sql.execute(
+        `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',0)`,
+        [
+          stored.id,
+          stored.accountId,
+          stored.name,
+          stored.text,
+          photo === undefined ? null : photo.bytes,
+          photo === undefined ? null : photo.contentType,
+          stored.videoContentType,
+          stored.createdAt,
+        ],
+      );
+    } catch (err) {
+      if (video !== undefined) {
+        await removeForumVideo(stored.id, video.contentType);
+      }
+      throw err;
+    }
     return stored;
   }
 
@@ -946,7 +958,9 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND video_content_type IS NOT NULL AND sats = 0
+       WHERE event_id IS NOT NULL
+         AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
+         AND sats = 0
          AND nostr_publish_state = 'published'
          AND (
            nostr_event IS NULL

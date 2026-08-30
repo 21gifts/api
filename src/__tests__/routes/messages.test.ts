@@ -1992,6 +1992,113 @@ describe('forum video', () => {
     expect((await app.request('/messages/not-a-uuid/video.mp4')).status).toBe(404);
   });
 
+  it('rejects an oversized poster part before decoding', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    form.set('poster', new File([new Uint8Array(1_048_577)], 'poster.jpg', { type: 'image/jpeg' }));
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('still returns 200 when video push enqueue throws', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('enqueue failed');
+    };
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'push.enqueue.failed')).toBe(true);
+  });
+
+  it('enqueues a forum push for other subscribed accounts after a video post', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/author',
+      accountId: 'acc',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const claimed = await pushStore.claimPending(20, now() + 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('other');
+    expect(claimed[0]?.type).toBe('forum');
+  });
+
+  it('rejects an oversized video part before decoding', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    const file = new File([new Uint8Array(32 * 1024 * 1024 + 1)], 'clip.mp4', {
+      type: 'video/mp4',
+    });
+    form.set('video', file);
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('rejects overlong multipart text', async () => {
     const form = new FormData();
     form.set('text', 'a'.repeat(501));

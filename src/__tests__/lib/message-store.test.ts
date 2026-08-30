@@ -970,6 +970,28 @@ describe('PostgresMessageStore', () => {
     ).rejects.toThrow('create boom');
   });
 
+  it('unlinks a written video when the insert fails', async () => {
+    const sql = new MockSql();
+    sql.executeError = new Error('create boom');
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await expect(
+      new PostgresMessageStore(sql).create(
+        {
+          id: 'm-vid-fail',
+          accountId: 'acc',
+          name: 'Ada',
+          text: 'clip',
+          createdAt: new Date(0),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+        },
+        undefined,
+        { contentType: 'video/mp4', bytes: mp4 },
+      ),
+    ).rejects.toThrow('create boom');
+  });
+
   it('getByEventId SQL matches event_id and the same SELECT column list as getById', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -1118,7 +1140,9 @@ describe('PostgresMessageStore', () => {
     const missing = await store.listSignedMissingVideo(4);
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
-    expect(listSql).toMatch(/video_content_type IS NOT NULL/);
+    expect(listSql).toMatch(
+      /video_content_type IN \('video\/mp4', 'video\/webm', 'video\/quicktime'\)/,
+    );
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
     expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/video\./);

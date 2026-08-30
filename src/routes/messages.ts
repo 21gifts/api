@@ -9,6 +9,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
   MESSAGE_LIST_LIMIT,
+  MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
   normalizeForumText,
   serializeMessage,
@@ -30,6 +31,7 @@ import type { PushStore } from '@/lib/push-store';
 import { enqueueForumPushes } from '@/lib/push-worker';
 import { bearerToken } from '@/routes/me';
 import {
+  MESSAGE_VIDEO_MAX_BYTES,
   decodeForumVideo,
   forumVideoExt,
   parseBytesRange,
@@ -296,6 +298,9 @@ async function postMultipartMessage(
   const videoPart = form.get('video');
   let video: ForumVideo | undefined;
   if (videoPart instanceof File && videoPart.size > 0) {
+    if (videoPart.size > MESSAGE_VIDEO_MAX_BYTES) {
+      return c.json({ error: 'Video must be an MP4, WebM, or MOV under 32 MiB' }, 400);
+    }
     const decoded = decodeForumVideo(new Uint8Array(await videoPart.arrayBuffer()));
     if (decoded === null) {
       return c.json({ error: 'Video must be an MP4, WebM, or MOV under 32 MiB' }, 400);
@@ -305,6 +310,9 @@ async function postMultipartMessage(
   const posterPart = form.get('poster');
   let photo: ForumPhoto | undefined;
   if (posterPart instanceof File && posterPart.size > 0) {
+    if (posterPart.size > MESSAGE_PHOTO_MAX_BYTES) {
+      return c.json({ error: 'Poster must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+    }
     const raw = new Uint8Array(await posterPart.arrayBuffer());
     const decoded = decodeForumPhoto('image/jpeg', Buffer.from(raw).toString('base64'));
     if (decoded === null) {
@@ -328,6 +336,13 @@ async function postMultipartMessage(
   };
   try {
     const created = await deps.store.create(row, photo, video);
+    if (deps.pushStore !== undefined) {
+      try {
+        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
+    }
     return c.json(serializeMessage(created, false, account.role), 200);
   } catch {
     logEvent('messages.create.failed');

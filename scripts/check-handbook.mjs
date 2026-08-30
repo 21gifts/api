@@ -138,6 +138,7 @@ function extractEndpoints() {
     'debug-contacts.ts': '/debug/contacts',
     'debug-payments.ts': '/debug',
     'debug-push.ts': '/debug/push-ping',
+    'well-known.ts': '/.well-known',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {
