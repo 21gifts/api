@@ -301,12 +301,17 @@ export class InMemoryAuthStore implements AuthStore {
     lightningAddress: string,
     name: string,
   ): Promise<Account | undefined> {
-    const account = await this.getAccountByLightningAddress(lightningAddress);
-    if (account === undefined) {
-      return undefined;
+    const needle = lightningAddress.trim().toLowerCase();
+    for (const account of this.#accounts.values()) {
+      if (account.lightningAddress === null) {
+        continue;
+      }
+      if (account.lightningAddress.trim().toLowerCase() === needle) {
+        account.name = name;
+        return account;
+      }
     }
-    account.name = name;
-    return account;
+    return undefined;
   }
 
   async deleteAccount(id: string): Promise<void> {

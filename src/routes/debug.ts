@@ -102,12 +102,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             row.lightningAddress,
             row.name,
           );
-          if (named === undefined) {
+          if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           updated += 1;
           results.push({
-            name: named.name ?? row.name,
+            name: named.name,
             lightningAddress: named.lightningAddress ?? row.lightningAddress,
             viewKey: named.viewKey,
             created: false,
@@ -145,12 +145,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             row.lightningAddress,
             row.name,
           );
-          if (named === undefined) {
+          if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           updated += 1;
           results.push({
-            name: named.name ?? row.name,
+            name: named.name,
             lightningAddress: named.lightningAddress ?? row.lightningAddress,
             viewKey: named.viewKey,
             created: false,

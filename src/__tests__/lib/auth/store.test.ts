@@ -643,6 +643,18 @@ describe('InMemoryAuthStore', () => {
   it('updateAccountNameByLightningAddress changes only name', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
+      id: 'nameless',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Skip',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
       id: 'acc',
       linkingKey: null,
       role: 'moderator',

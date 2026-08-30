@@ -551,7 +551,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(500);
   });
 
-  it('POST falls back to the request name and address when the name-only update returns null fields', async () => {
+  it('POST returns 500 when the name-only update does not persist the request name', async () => {
     class NullAddressStore extends InMemoryAuthStore {
       override async getAccountByLightningAddress() {
         return {
@@ -593,13 +593,8 @@ describe('debugRoutes', () => {
         accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
       }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{ name: string; lightningAddress: string; created: boolean }>;
-    };
-    expect(body.accounts[0]?.created).toBe(false);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'Could not save the account' });
   });
 
   it('POST falls back to the request name and address when create returns null fields', async () => {
@@ -630,7 +625,7 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
   });
 
-  it('POST falls back to the request name and address when a create race returns null fields', async () => {
+  it('POST returns 500 when a create-race name-only update does not persist the request name', async () => {
     class RaceNullAddressStore extends InMemoryAuthStore {
       #lookups = 0;
       override async getAccountByLightningAddress(address: string) {
@@ -667,12 +662,74 @@ describe('debugRoutes', () => {
         accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
       }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{ name: string; lightningAddress: string; created: boolean }>;
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'Could not save the account' });
+  });
+
+  it('POST falls back to the request address when the name-only update omits it', async () => {
+    const saved = {
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis' as const,
+      name: 'Ada',
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
     };
-    expect(body.accounts[0]?.created).toBe(false);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+    class AddressFallbackStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress() {
+        return saved;
+      }
+      override async updateAccountNameByLightningAddress() {
+        return saved;
+      }
+    }
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new AddressFallbackStore(), debugToken: 'secret' }),
+    );
+    const existing = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(existing.status).toBe(200);
+    expect(
+      ((await existing.json()) as { accounts: Array<{ lightningAddress: string }> }).accounts[0]
+        ?.lightningAddress,
+    ).toBe('guest@walletofsatoshi.com');
+
+    class RaceAddressFallbackStore extends InMemoryAuthStore {
+      #lookups = 0;
+      override async getAccountByLightningAddress() {
+        this.#lookups += 1;
+        return this.#lookups === 1 ? undefined : saved;
+      }
+      override async updateAccountNameByLightningAddress() {
+        return saved;
+      }
+    }
+    const raceApp = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new RaceAddressFallbackStore(), debugToken: 'secret' }),
+    );
+    const raced = await raceApp.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(raced.status).toBe(200);
+    const racedBody = (await raced.json()) as {
+      accounts: Array<{ lightningAddress: string; created: boolean }>;
+    };
+    expect(racedBody.accounts[0]?.created).toBe(false);
+    expect(racedBody.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
   });
 });

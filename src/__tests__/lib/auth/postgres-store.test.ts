@@ -224,7 +224,7 @@ describe('PostgresAuthStore', () => {
       '  Guest@WalletOfSatoshi.com  ',
       'Ada Lovelace',
     );
-    expect(sql.queries[0]?.text).toMatch(/SET name = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/SET name = \$2\s+WHERE/);
     expect(sql.queries[0]?.text).toMatch(
       /lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
     );
