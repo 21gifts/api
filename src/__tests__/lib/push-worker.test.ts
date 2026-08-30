@@ -71,6 +71,7 @@ describe('enqueueForumPushes', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('other');
     expect(claimed[0]?.type).toBe('forum');
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({ type: 'forum', tag: 'forum' });
   });
 
@@ -90,6 +91,7 @@ describe('enqueueZapPush', () => {
     const claimed = await store.claimPending(10, 5, 1000);
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.type).toBe('zap');
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(JSON.parse(claimed[0]?.payload ?? '{}').tag).toBe('zap:msg-9');
   });
 
@@ -108,6 +110,7 @@ describe('enqueueDebugPush', () => {
     expect(await enqueueDebugPush(store, 'author', 2)).toBe(1);
     const claimed = await store.claimPending(10, 2, 1000);
     expect(claimed[0]?.messageId).toBeNull();
+    expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       type: 'zap',
       tag: 'debug',
@@ -139,6 +142,7 @@ describe('runPushWorkerTick', () => {
       attempts: 0,
       claimedUntil: null,
       createdAt: new Date(1),
+      deliveredEndpoints: [],
     };
     await store.enqueue(row);
     const sender = new FakeSender(true);
@@ -177,7 +181,9 @@ describe('runPushWorkerTick', () => {
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'gone' }]);
     await runPushWorkerTick({ store, sender, now: () => 1 });
-    expect(await store.listByAccount('other')).toHaveLength(1);
+    const remaining = await store.listByAccount('other');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.endpoint).toBe('https://push.example/b');
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
   });
 
@@ -189,6 +195,55 @@ describe('runPushWorkerTick', () => {
     await runPushWorkerTick({ store, sender, now: () => 1 });
     const again = await store.claimPending(10, 1, 1000);
     expect(again[0]?.attempts).toBe(1);
+  });
+
+  it('skips already-delivered endpoints on mixed-device retry', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({
+      ...SUB_B,
+      endpoint: 'https://push.example/a',
+    });
+    await store.upsertSubscription({
+      ...SUB_B,
+      endpoint: 'https://push.example/b',
+    });
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail' }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toHaveLength(2);
+    const afterFail = await store.claimPending(10, 1, 1000);
+    expect(afterFail).toHaveLength(1);
+    expect(afterFail[0]?.attempts).toBe(1);
+    expect(afterFail[0]?.deliveredEndpoints).toEqual(['https://push.example/a']);
+
+    sender.results = [{ ok: true }];
+    // Previous claimPending held a lease; advance past it so the retry can claim.
+    await runPushWorkerTick({ store, sender, now: () => 2_000 });
+    expect(sender.calls).toHaveLength(3);
+    expect(sender.calls[2]?.endpoint).toBe('https://push.example/b');
+    expect(await store.claimPending(10, 2_000, 1000)).toEqual([]);
+  });
+
+  it('marks sent without sending when every remaining subscription was already delivered', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({
+      ...SUB_B,
+      endpoint: 'https://push.example/a',
+    });
+    await store.upsertSubscription({
+      ...SUB_B,
+      endpoint: 'https://push.example/b',
+    });
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail' }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toHaveLength(2);
+    await store.deleteSubscription('other', 'https://push.example/b');
+    const callsBefore = sender.calls.length;
+    sender.results = [{ ok: true }];
+    await runPushWorkerTick({ store, sender, now: () => 2 });
+    expect(sender.calls).toHaveLength(callsBefore);
+    expect(await store.claimPending(10, 2, 1000)).toEqual([]);
   });
 });
 
