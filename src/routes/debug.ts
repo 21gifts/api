@@ -111,12 +111,21 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           createdAt: Date.now(),
           rulesAgreedAt: null,
         });
-        created += 1;
+        const stored = await deps.store.getAccountByLightningAddress(row.lightningAddress);
+        if (stored === undefined) {
+          return c.json({ error: 'Could not save the account' }, 500);
+        }
+        const didCreate = stored.viewKey === viewKey;
+        if (didCreate) {
+          created += 1;
+        } else {
+          updated += 1;
+        }
         results.push({
-          name: row.name,
-          lightningAddress: row.lightningAddress,
-          viewKey,
-          created: true,
+          name: stored.name ?? row.name,
+          lightningAddress: stored.lightningAddress ?? row.lightningAddress,
+          viewKey: stored.viewKey,
+          created: didCreate,
         });
       }
       logEvent('debug.accounts.provisioned', { created, updated });

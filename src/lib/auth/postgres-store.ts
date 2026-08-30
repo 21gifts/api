@@ -313,23 +313,30 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
-    const rows = await this.#sql.query<{ credential_id: string }>(
-      `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-       SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
-       WHERE NOT EXISTS (
-         SELECT 1 FROM passkey_credential WHERE account_id = $4
-       )
-       ON CONFLICT (credential_id) DO NOTHING
-       RETURNING credential_id`,
-      [
-        credential.credentialId,
-        credential.publicKey,
-        credential.signCount,
-        credential.accountId,
-        credential.createdAt,
-      ],
-    );
-    return rows[0] !== undefined;
+    try {
+      const rows = await this.#sql.query<{ credential_id: string }>(
+        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+         WHERE NOT EXISTS (
+           SELECT 1 FROM passkey_credential WHERE account_id = $4
+         )
+         ON CONFLICT (credential_id) DO NOTHING
+         RETURNING credential_id`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
