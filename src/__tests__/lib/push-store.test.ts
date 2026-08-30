@@ -214,6 +214,18 @@ describe('PostgresPushStore', () => {
     expect(sql.queries[0]?.text).not.toMatch(/created_at = EXCLUDED/i);
     expect(stored.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
 
+    sql.nextRows = [
+      {
+        endpoint: SUB.endpoint,
+        account_id: SUB.accountId,
+        p256dh: SUB.p256dh,
+        auth: SUB.auth,
+        created_at: '2026-08-01T00:00:00.000Z',
+      },
+    ];
+    const storedFromString = await store.upsertSubscription(SUB);
+    expect(storedFromString.createdAt.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+
     sql.nextRows = [{ endpoint: SUB.endpoint }];
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(true);
     sql.nextRows = [];
@@ -230,6 +242,18 @@ describe('PostgresPushStore', () => {
     ];
     const listed = await store.listByAccount('acc-a');
     expect(listed[0]?.createdAt).toBeInstanceOf(Date);
+
+    sql.nextRows = [
+      {
+        endpoint: SUB.endpoint,
+        account_id: 'acc-a',
+        p256dh: 'p',
+        auth: 'a',
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+      },
+    ];
+    const listedDate = await store.listByAccount('acc-a');
+    expect(listedDate[0]?.createdAt.toISOString()).toBe('2026-08-01T00:00:00.000Z');
 
     sql.nextRows = [{ account_id: 'acc-a' }, { account_id: 'acc-b' }];
     expect(await store.listAccountIdsWithSubscriptions()).toEqual(['acc-a', 'acc-b']);
