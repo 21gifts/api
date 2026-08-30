@@ -669,6 +669,262 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.filter((call) => call.event['kind'] === 0)).toHaveLength(20);
   });
 
+  it('publishes kind:10002 with only the space URL when public is off', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const relayList = publisher.calls.find((call) => call.event['kind'] === 10002);
+    expect(relayList).toBeDefined();
+    expect(relayList?.event['kind']).toBe(10002);
+    expect(relayList?.event['content']).toBe('');
+    expect(relayList?.event['tags']).toEqual([['r', 'wss://relay.nostr.space']]);
+    expect(relayList?.urls).toEqual(['wss://relay.nostr.space']);
+    expect(relayList?.event['id']).toMatch(/^[0-9a-f]{64}$/);
+    expect(relayList?.event['sig']).toMatch(/^[0-9a-f]{128}$/);
+  });
+
+  it('publishes kind:10002 to public relays when NOSTR_PUBLISH_PUBLIC=1', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const relayList = publisher.calls.find((call) => call.event['kind'] === 10002);
+    expect(relayList?.event['tags']).toEqual([
+      ['r', 'wss://relay.nostr.space'],
+      ['r', 'wss://relay.damus.io'],
+    ]);
+    expect(relayList?.urls).toEqual(['wss://relay.nostr.space', 'wss://relay.damus.io']);
+  });
+
+  it('does not republish kind:10002 when the relay list is unchanged', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const afterFirst = publisher.calls.filter((call) => call.event['kind'] === 10002).length;
+    expect(afterFirst).toBe(1);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_120_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 10002)).toHaveLength(1);
+  });
+
+  it('retries kind:10002 when space rejects', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.ok = false;
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 10002)).toHaveLength(2);
+  });
+
+  it('retries kind:10002 when public relays nack and space acks', async () => {
+    const { auth, messages } = await seed();
+    const space = 'wss://relay.nostr.space';
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return urls.map((url) => ({ url, ok: url === space }));
+    };
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 10002)).toHaveLength(2);
+  });
+
+  it('skips kind:10002 when the account has no name', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    await auth.updateAccount({ ...acc!, name: null });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    expect(publisher.calls.every((call) => call.event['kind'] !== 10002)).toBe(true);
+  });
+
+  it('skips kind:10002 when the account has no Nostr key', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'nameless-key-relays',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'f'.repeat(64),
+      rulesAgreedAt: null,
+      createdAt: 1,
+    });
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages: new InMemoryMessageStore(),
+        auth,
+        kek: new Uint8Array(16),
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 10002)).toHaveLength(0);
+  });
+
+  it('publishes kind:0 before kind:10002', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const kinds = publisher.calls.map((call) => call.event['kind']);
+    expect(kinds[0]).toBe(0);
+    const idx0 = kinds.indexOf(0);
+    const idx10002 = kinds.indexOf(10002);
+    expect(idx10002).toBeGreaterThan(idx0);
+  });
+
+  it('caps kind:10002 publishes at WORKER_BATCH per tick', async () => {
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    for (let i = 0; i < 21; i += 1) {
+      const id = `acc-r-${String(i).padStart(2, '0')}`;
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: `RelayUser${i}`,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: `${(i + 40).toString(16).padStart(2, '0')}`.repeat(32),
+        rulesAgreedAt: null,
+        createdAt: i + 1,
+      });
+      await ensureAccountNostrKey(auth, id, KEK);
+    }
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    expect(publisher.calls.filter((call) => call.event['kind'] === 10002)).toHaveLength(20);
+  });
+
   it('publishes kind:0 only once when two ticks overlap', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();

@@ -768,7 +768,7 @@
 - **Purpose:** Unsigned NIP-65 relay list.
 - **Inputs:** relay URLs, unix created_at.
 - **Returns / side effects:** Unsigned fields.
-- **Used by:** Profile publish.
+- **Used by:** Worker `publishRelayLists`.
 
 ## Function: signEventForAccount
 
@@ -810,7 +810,7 @@
 - **Purpose:** Combine flags + URLs for one worker tick.
 - **Inputs:** env slice.
 - **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
-- **Used by:** Worker publish (`runNostrWorkerTick` / `publishProfiles` / `publishBatch`).
+- **Used by:** Worker publish (`runNostrWorkerTick` / `publishProfiles` / `publishRelayLists` / `publishBatch`).
 
 ## Function: resolveZapRelays
 
@@ -891,11 +891,13 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database to the space relay, and to the public list when `NOSTR_PUBLISH_PUBLIC=1`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database to the space relay, and to the public list when `NOSTR_PUBLISH_PUBLIC=1`. After profiles, fans out replaceable kind:10002 (NIP-65) relay lists for the same write URLs. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
+- **Kind:10002 cache:** Unchanged write-URL list (cache key = joined write URLs, not profile JSON) is not resent for the life of the AuthStore instance. Same reservation / watermark / ACK / overlap pattern as kind:0, with separate WeakMaps. Kind:10002 `created_at` is `max(wall clock, last issued + 1)`.
+- **Kind:10002 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. Space ACK required; public ACK required when public fan-out is on. A single-account nack does not fail the rest of the tick.
 - **Inputs:** worker deps.
-- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack`. Event-id collision retries once with `created_at + 1`.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
 
 ## Function: startNostrWorker

@@ -2,7 +2,12 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
-import { buildKind0Event, buildKind0Content, buildKind1Event } from '@/lib/nostr/event';
+import {
+  buildKind0Event,
+  buildKind0Content,
+  buildKind1Event,
+  buildKind10002Event,
+} from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -49,9 +54,18 @@ type Kind0Reservation = {
   createdAt: number;
 };
 
+type Kind10002Reservation = {
+  urlsKey: string;
+  createdAt: number;
+};
+
 /** Reserved or last-acked kind:0 content per account, keyed by auth store. */
 const profileCaches = new WeakMap<AuthStore, Map<string, Kind0Reservation>>();
 const profileWatermarks = new WeakMap<AuthStore, Map<string, number>>();
+
+/** Reserved or last-acked kind:10002 write-URL list per account, keyed by auth store. */
+const relayListCaches = new WeakMap<AuthStore, Map<string, Kind10002Reservation>>();
+const relayListWatermarks = new WeakMap<AuthStore, Map<string, number>>();
 
 function profileCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
   const existing = profileCaches.get(auth);
@@ -73,11 +87,38 @@ function profileWatermarkFor(auth: AuthStore): Map<string, number> {
   return created;
 }
 
+function relayListCacheFor(auth: AuthStore): Map<string, Kind10002Reservation> {
+  const existing = relayListCaches.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, Kind10002Reservation>();
+  relayListCaches.set(auth, created);
+  return created;
+}
+
+function relayListWatermarkFor(auth: AuthStore): Map<string, number> {
+  const existing = relayListWatermarks.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, number>();
+  relayListWatermarks.set(auth, created);
+  return created;
+}
+
 function reservedContent(
   cache: Map<string, Kind0Reservation>,
   accountId: string,
 ): string | undefined {
   return cache.get(accountId)?.content;
+}
+
+function reservedUrlsKey(
+  cache: Map<string, Kind10002Reservation>,
+  accountId: string,
+): string | undefined {
+  return cache.get(accountId)?.urlsKey;
 }
 
 /**
@@ -90,12 +131,13 @@ function reservedContent(
  * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
  * fans out a replaceable kind:0 profile (`name` / `display_name` from the
  * account row) to the space relay, and to the public list when
- * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Kind:0
- * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
- * profile cannot win a same-second replaceable-event tie. Each tick also queries
- * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
- * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
- * when publish is off.
+ * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. After
+ * profiles, fans out a replaceable kind:10002 (NIP-65) relay list for the
+ * same write URLs. Kind:0 and kind:10002 `created_at` are
+ * `max(wall clock, last issued + 1)` so an in-flight older replaceable event
+ * cannot win a same-second tie. Each tick also queries zap relays (space plus
+ * the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735
+ * receipts and indexes validated ones onto `sats`, even when publish is off.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
@@ -106,6 +148,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await signBatch(deps, nowMs);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
+    await publishRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
@@ -247,6 +290,76 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         cache.delete(live.id);
       }
       logEvent('nostr.profile.nack', { accountId: live.id });
+    }
+  }
+}
+
+async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
+  const cache = relayListCacheFor(deps.auth);
+  const watermarks = relayListWatermarkFor(deps.auth);
+  const urls = writeSet.publicEnabled
+    ? [writeSet.spaceUrl, ...writeSet.publicUrls]
+    : [writeSet.spaceUrl];
+  const urlsKey = urls.join(',');
+  const accounts = await deps.auth.listAccounts();
+  let attempted = 0;
+  for (const account of accounts) {
+    if (attempted >= WORKER_BATCH) {
+      break;
+    }
+    const live = await deps.auth.getAccount(account.id);
+    if (live === undefined || live.name === null) {
+      continue;
+    }
+    if (reservedUrlsKey(cache, live.id) === urlsKey) {
+      continue;
+    }
+    const previous = cache.get(live.id);
+    const reservation: Kind10002Reservation = {
+      urlsKey,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(live.id) ?? 0),
+    };
+    cache.set(live.id, reservation);
+    try {
+      const pubkey = await deps.auth.getNostrPublicKey(live.id);
+      if (pubkey === undefined) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        continue;
+      }
+      attempted += 1;
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const wall = Math.floor(deps.now() / 1000);
+      reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
+      watermarks.set(live.id, reservation.createdAt);
+      const unsigned = buildKind10002Event(urls, reservation.createdAt);
+      const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
+      const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
+      if (!spaceOk || !publicOk) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        logEvent('nostr.relays.nack', { accountId: live.id });
+        continue;
+      }
+      logEvent('nostr.relays.ok', { accountId: live.id });
+    } catch {
+      if (cache.get(live.id) === reservation) {
+        cache.delete(live.id);
+      }
+      logEvent('nostr.relays.nack', { accountId: live.id });
     }
   }
 }
