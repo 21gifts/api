@@ -233,6 +233,29 @@ describe('passkey claim', () => {
     expect(result).toEqual({ ok: false, error: 'This profile already has a passkey' });
   });
 
+  it('uses a fallback display name when the provisioned account has no name', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'provisioned',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    const result = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const options = result.value.options as { user: { displayName: string } };
+    expect(options.user.displayName).toBe('21.gifts');
+  });
+
   it('begins claim with the existing account id and display name', async () => {
     const store = await provisionedStore();
     const result = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
