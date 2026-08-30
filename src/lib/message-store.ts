@@ -122,9 +122,10 @@ export interface MessageStore {
 
   /**
    * Published rows with a photo whose kind:1 content lacks the public photo URL.
-   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
-   * for fan-out — resetting them renews the sign lease and they never EVENT.
-   * Oldest `createdAt` then `id` first.
+   * Video rows (poster JPEG stored as `photo`) are excluded — their kind:1
+   * content has `/video.`, not `/photo.`. `sats = 0` only (zapped rows keep
+   * their event id). Pending rows are left for fan-out — resetting them renews
+   * the sign lease and they never EVENT. Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
    */
@@ -513,6 +514,7 @@ export class InMemoryMessageStore implements MessageStore {
         (row) =>
           row.eventId !== null &&
           row.hasPhoto &&
+          row.hasVideo !== true &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
@@ -928,6 +930,7 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND (video_content_type IS NULL OR video_content_type = '')
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'

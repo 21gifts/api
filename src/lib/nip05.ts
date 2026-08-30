@@ -71,13 +71,21 @@ export function allocateNip05Local(name: string, accountId: string, taken: Set<s
   if (!taken.has(base)) {
     return base;
   }
-  const suffix = accountId.replace(/-/g, '').slice(0, 8);
-  let candidate = `${base}-${suffix}`.slice(0, 32);
-  if (!taken.has(candidate)) {
-    return candidate;
+  const hex = accountId.replace(/-/g, '');
+  for (let n = 8; n <= hex.length; n += 1) {
+    const candidate = `${base}-${hex.slice(0, n)}`.slice(0, 32);
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
   }
-  candidate = `${base}-${accountId.replace(/-/g, '')}`.slice(0, 32);
-  return candidate;
+  let i = 2;
+  while (true) {
+    const candidate = `${base}-${String(i)}`.slice(0, 32);
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+    i += 1;
+  }
 }
 
 /**

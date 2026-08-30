@@ -46,13 +46,16 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, POST /messages/:id/invoice
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
+│   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
 │   │   └── contact.ts        # POST /contact (private in-app mailbox)
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
-│   │   ├── message.ts        # Forum text/photo validate + public JSON (hasPhoto; no bytes)
+│   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
+│   │   ├── video.ts          # Forum video magic-bytes, MEDIA_DIR, Range parse, disk stream
+│   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore

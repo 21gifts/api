@@ -569,9 +569,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo (JSON) or one video (multipart `video` + optional JPEG `poster`) when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` streams stored files with `Accept-Ranges` / 206 / 416; `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 photo/video missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits `accountId` and media bytes (missing author → `role` `"basis"` on list).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -912,15 +912,15 @@
 
 ## Function: buildKind0Content
 
-- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, optional `lud16`).
-- **Inputs:** name, lightningAddress or null.
-- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `lud16` only when address set.
+- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, `about: '21.gifts'`, optional `lud16`, optional `nip05`).
+- **Inputs:** name, lightningAddress or null, optional nip05 or null.
+- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `about` is always `21.gifts`; `lud16` only when address set; `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
 
-- **Purpose:** Unsigned replaceable kind:0.
-- **Inputs:** name, lightningAddress, unix created_at.
+- **Purpose:** Unsigned replaceable kind:0, including optional `nip05`.
+- **Inputs:** name, lightningAddress, unix created_at, optional nip05.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishProfiles`.
 
@@ -1066,7 +1066,7 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick. Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture`) and NIP-65 kind:10002 relay lists. Kind:1 photo posts include the public image URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
 - **Inputs:** worker deps.

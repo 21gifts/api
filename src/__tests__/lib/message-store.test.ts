@@ -461,6 +461,27 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
   });
 
+  it('does not re-queue a published video poster as a missing photo', async () => {
+    const store = new InMemoryMessageStore();
+    const jpeg: ForumPhoto = {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+    };
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create(
+      { ...EARLY, id: 'clip', text: 'clip', hasPhoto: true, hasVideo: true },
+      jpeg,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await store.updateSignedEvent('clip', 'ab'.repeat(32), {
+      content: 'clip\nhttp://127.0.0.1:3000/messages/clip/video.mp4',
+    });
+    await store.updatePublishState('clip', 'published', 'space');
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).not.toContain('clip');
+    expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('clip');
+  });
+
   it('listSignedMissingHashtags finds unpaid notes missing Damus hashtags', async () => {
     const store = new InMemoryMessageStore();
     const jpeg: ForumPhoto = {

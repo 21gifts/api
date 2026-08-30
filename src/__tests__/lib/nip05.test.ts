@@ -42,6 +42,18 @@ describe('nip05', () => {
     expect(allocateNip05Local('Ada', '11111111-1111-1111-1111-111111111111', taken)).toContain(
       'ada-',
     );
+    const hex = '11111111111111111111111111111111';
+    const exhausted = new Set<string>(['ada']);
+    for (let n = 8; n <= hex.length; n += 1) {
+      exhausted.add(`ada-${hex.slice(0, n)}`.slice(0, 32));
+    }
+    expect(allocateNip05Local('Ada', '11111111-1111-1111-1111-111111111111', exhausted)).toBe(
+      'ada-2',
+    );
+    exhausted.add('ada-2');
+    expect(allocateNip05Local('Ada', '11111111-1111-1111-1111-111111111111', exhausted)).toBe(
+      'ada-3',
+    );
   });
 
   it('builds nostr.json names and relays', async () => {
