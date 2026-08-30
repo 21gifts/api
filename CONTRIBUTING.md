@@ -75,7 +75,7 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, BTC-USD rates, KEK, db_change
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, push, BTC-USD rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book

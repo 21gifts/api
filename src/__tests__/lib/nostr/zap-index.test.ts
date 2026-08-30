@@ -1422,5 +1422,3 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
   });
 });
-
-});

@@ -153,33 +153,20 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
       await deps.store.markSent(row.id);
       continue;
     }
-    let anyOk = false;
     let anyFail = false;
-    let allGone = true;
     for (const sub of subs) {
       const result = await deps.sender.send(sub, row.payload);
       if (result.ok) {
-        anyOk = true;
-        allGone = false;
         continue;
       }
       if (result.reason === 'gone') {
         await deps.store.deleteSubscription(row.accountId, sub.endpoint);
         continue;
       }
-      if (result.reason === 'fail') {
-        anyFail = true;
-        allGone = false;
-      } else {
-        // not_configured should not happen after isConfigured gate
-        anyFail = true;
-        allGone = false;
-      }
+      anyFail = true;
     }
     if (anyFail) {
       await deps.store.markFailed(row.id);
-    } else if (anyOk || allGone || subs.length === 0) {
-      await deps.store.markSent(row.id);
     } else {
       await deps.store.markSent(row.id);
     }

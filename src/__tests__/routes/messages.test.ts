@@ -407,6 +407,39 @@ describe('POST /messages', () => {
     expect(claimed[0]?.type).toBe('forum');
   });
 
+  it('still returns 200 when forum push enqueue throws', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('enqueue failed');
+    };
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello living room' }),
+    });
+    expect(post.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'push.enqueue.failed')).toBe(true);
+  });
+
   it('includes the session account role on POST', async () => {
     const authStore = await namedStore('Ada');
     const account = await authStore.getAccount('acc');

@@ -51,6 +51,7 @@ export interface PushStore {
    * Insert or rebind a subscription by endpoint.
    *
    * @param row - Fully formed subscription.
+   * @returns The stored row (original `createdAt` on endpoint conflict).
    */
   upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord>;
 
@@ -175,6 +176,7 @@ export class InMemoryPushStore implements PushStore {
    * Insert or rebind by endpoint; keep original `createdAt` on conflict.
    *
    * @param row - Subscription to store.
+   * @returns A copy of the stored row.
    */
   upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord> {
     const existing = this.#subs.get(row.endpoint);
@@ -394,6 +396,7 @@ export class PostgresPushStore implements PushStore {
    * Insert or rebind by endpoint; do not overwrite `created_at` on conflict.
    *
    * @param row - Subscription to store.
+   * @returns The stored row from `RETURNING` (original `created_at` on conflict).
    */
   async upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord> {
     const rows = await this.#sql.query<{
