@@ -951,7 +951,6 @@ Success → **Response** `200`:
 
 `enqueued` is `0` when the account has no subscription.
 
-
 ### `GET /gifts`
 
 Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.
