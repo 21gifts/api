@@ -38,7 +38,7 @@ api/
 │   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
-│   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id (DEBUG_TOKEN)
+│   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id role or unlink (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; GET /debug/zap-ingests (DEBUG_TOKEN)
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
@@ -88,6 +88,7 @@ api/
 │   │   ├── nostr/            # Custodial nsec, kind:0 profile + kind:1 note worker, NIP-57 zap, write-set relays
 │   │   └── auth/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
+│   │       ├── account-setup.ts # Next owner setup step (name, Lightning Address, rules)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
@@ -142,6 +143,7 @@ api/
 │       │   ├── push-worker.test.ts
 │       │   └── auth/
 │       │       ├── account-json.test.ts
+│       │       ├── account-setup.test.ts
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
@@ -184,7 +186,7 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI for GET /debug/accounts and PATCH /debug/accounts/:id
+│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   └── functions.spec.ts     # Playwright Function: <Name> tests against the booted process

@@ -226,9 +226,9 @@
 
 ## Function: debugRoutes
 
-- **Purpose:** Operator listing, provisioning, and role assignment for registered accounts.
+- **Purpose:** Operator listing, provisioning, role assignment, and Lightning Address unlink for registered accounts.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
+- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role. Never logs the token or the previous address.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -791,6 +791,13 @@
 - **Returns / side effects:** `{ ok: true, value: { challengeId, options } }` or `{ ok: false, error }` (`This profile could not be found.` / `This profile already has a passkey`). Persists a register challenge bound to the existing account id.
 - **Used by:** `POST /auth/passkey/register/begin` when the body includes a string `viewKey`.
 
+## Function: accountSetup
+
+- **Purpose:** Next owner setup step from stored account fields. The api is the source of truth; clients only route.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `'name'` when name is null/blank, else `'lightning-address'` when Lightning Address is null/blank, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
+- **Used by:** `serializeOwnerAccount`.
+
 ## Function: serializeAccount
 
 - **Purpose:** Project an account to the nine-field dump without `viewKey` (no Nostr fields).
@@ -800,9 +807,9 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, so the owner can copy the capability URL. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, and passkey finish — never by the debug listing.
+- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey` and `setup`, so the owner can copy the capability URL and the client can route onboarding. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, and passkey finish — never by the debug listing.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `OwnerAccountResponse`. No I/O.
+- **Returns / side effects:** `OwnerAccountResponse` (eleven fields including `setup`). No I/O.
 - **Used by:** `meRoutes`, `authRoutes`.
 
 ## Function: serializeViewProfile
