@@ -116,6 +116,30 @@ test('POST /contact without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /conversations without bearer is 401', async ({ request }) => {
+  const res = await request.get('/conversations');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /conversations without bearer is 401', async ({ request }) => {
+  const res = await request.post('/conversations', {
+    data: { forumMessageId: '00000000-0000-0000-0000-000000000001' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('GET /conversations/:id without bearer is 401', async ({ request }) => {
+  const res = await request.get('/conversations/:id');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /conversations/:id without bearer is 401', async ({ request }) => {
+  const res = await request.post('/conversations/:id', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /messages with a photo without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: {

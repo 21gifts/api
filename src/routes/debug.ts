@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
-import { serializeAccount } from '@/lib/auth/account-json';
+import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
 import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
@@ -17,7 +17,7 @@ import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id`
- * (set role and/or unlink Lightning Address).
+ * (set role, unlink Lightning Address, and/or the official platform flag).
  */
 
 /** Collaborators the debug routes need. */
@@ -30,13 +30,17 @@ export interface DebugRouteDeps {
   fetchImpl: FetchFn;
 }
 
-/** Body schema for operator role assignment and Lightning Address unlink. */
+/** Body schema for operator role, Lightning Address unlink, and platform flag. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'founder']).optional(),
     lightningAddress: z.null().optional(),
+    platform: z.boolean().optional(),
   })
-  .refine((body) => body.role !== undefined || body.lightningAddress === null);
+  .refine(
+    (body) =>
+      body.role !== undefined || body.lightningAddress === null || body.platform !== undefined,
+  );
 
 /** One row in the operator provision body. */
 const provisionAccountRow = z.object({
@@ -81,7 +85,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
     .get('/', async (c) => {
       const accounts = await deps.store.listAccounts();
       logEvent('debug.accounts.listed', { count: accounts.length });
-      return c.json({ accounts: accounts.map(serializeAccount) }, 200);
+      return c.json({ accounts: accounts.map(serializeDebugAccount) }, 200);
     })
     .post('/', async (c) => {
       const parsed = provisionBody.safeParse(await c.req.json().catch(() => null));
@@ -191,7 +195,10 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
-          { error: 'Expected a JSON body with a "role" string and/or lightningAddress null' },
+          {
+            error:
+              'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+          },
           400,
         );
       }
@@ -207,6 +214,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         updated.lightningAddress = null;
         updated.lightningAddressVerified = false;
       }
+      if (parsed.data.platform !== undefined) {
+        updated.isPlatform = parsed.data.platform;
+      }
       await deps.store.updateAccount(updated);
       if (parsed.data.lightningAddress === null) {
         await deps.store.deleteVerification(updated.id);
@@ -215,6 +225,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.role !== undefined) {
         logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
       }
-      return c.json(serializeAccount(updated), 200);
+      if (parsed.data.platform !== undefined) {
+        logEvent('debug.accounts.platform_set', {
+          accountId: updated.id,
+          platform: updated.isPlatform === true,
+        });
+      }
+      return c.json(serializeDebugAccount(updated), 200);
     });
 }

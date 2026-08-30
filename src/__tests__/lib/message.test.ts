@@ -54,7 +54,10 @@ describe('normalizeForumText', () => {
 
   it('rejects text longer than the inbound reply cap', () => {
     expect(
-      normalizeForumText('A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1), MESSAGE_INBOUND_REPLY_MAX_LENGTH),
+      normalizeForumText(
+        'A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1),
+        MESSAGE_INBOUND_REPLY_MAX_LENGTH,
+      ),
     ).toBeNull();
   });
 

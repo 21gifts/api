@@ -51,6 +51,11 @@ export interface Account {
   createdAt: number;
   /** Epoch ms when the account first agreed to the living-room rules, or null. */
   rulesAgreedAt: number | null;
+  /**
+   * True when this is the official 21.gifts platform account. At most one
+   * stored account may be true. Default false. Omitted on member `GET /me`.
+   */
+  isPlatform?: boolean;
 }
 
 /**
@@ -258,6 +263,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
+    if (account.isPlatform === true) {
+      this.#clearPlatformExcept(account.id);
+    }
     this.#accounts.set(account.id, account);
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -278,6 +286,9 @@ export class InMemoryAuthStore implements AuthStore {
     }
     if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
+    }
+    if (account.isPlatform === true) {
+      this.#clearPlatformExcept(account.id);
     }
     const previous = this.#accounts.get(account.id);
     if (
@@ -501,6 +512,15 @@ export class InMemoryAuthStore implements AuthStore {
     for (const [id, challenge] of this.#passkeyChallenges) {
       if (now - challenge.createdAt > CHALLENGE_TTL_MS) {
         this.#passkeyChallenges.delete(id);
+      }
+    }
+  }
+
+  /** Ensure at most one `isPlatform` account remains. */
+  #clearPlatformExcept(accountId: string): void {
+    for (const other of this.#accounts.values()) {
+      if (other.id !== accountId && other.isPlatform === true) {
+        other.isPlatform = false;
       }
     }
   }

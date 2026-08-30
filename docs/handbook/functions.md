@@ -119,12 +119,19 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/contact.sql`.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migrateConversationSchema
+
+- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` tables and unique indexes). `db_change` attach runs later and covers the new public tables.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL matching `docs/schema/conversation.sql`.
+- **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
+
 ## Function: migratePushSchema
 
 - **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints`, supporting indexes, then `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
-- **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
+- **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
 
 ## Function: migrateDbChangeSchema
 
@@ -166,6 +173,13 @@
 - **Purpose:** Durable `ContactStore` over Postgres (`contact` table). `listLatest` is newest-first with a limit; `create` inserts the row.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ContactRow`. Errors propagate to the route (503).
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: PostgresConversationStore
+
+- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, append messages, claim unsigned/unpublished wraps, unique `event_id`.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
@@ -378,6 +392,13 @@
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `contactStore`.
 
+## Function: InMemoryConversationStore
+
+- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database.
+- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `listVisible` is newest `lastMessageAt` then `id` DESC.
+- **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `eventId` append returns the existing row. No I/O.
+- **Used by:** `createApp` default `conversationStore`.
+
 ## Function: InMemoryLnAddressCache
 
 - **Purpose:** TTL cache for successful LUD-16 metadata resolves.
@@ -576,9 +597,16 @@
 
 ## Function: contactRoutes
 
-- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name.
-- **Inputs:** `ContactRouteDeps`: contact `store`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name. Also opens/appends the member→platform conversation thread (working inbox).
+- **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account; 503 Contact is unavailable on store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Used by:** `createApp`.
+
+## Function: conversationRoutes
+
+- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec.
+- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public JSON omits `accountId`, event ids, and npubs (Damus-only `name` may be a truncated npub).
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -615,6 +643,55 @@
 - **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, and `role` (`AccountRole`).
 - **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType, role }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `accountId` omitted; never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
+
+## Function: serializeConversation
+
+- **Purpose:** Project a stored thread to its public list JSON shape.
+- **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
+- **Returns / side effects:** `{ id, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
+- **Used by:** `conversationRoutes`.
+
+## Function: serializeConversationMessage
+
+- **Purpose:** Project a stored conversation message to its public JSON shape.
+- **Inputs:** `ConversationMessageRow`.
+- **Returns / side effects:** `{ id, name, text, createdAt }`. Omits account ids and event ids. No I/O.
+- **Used by:** `conversationRoutes`.
+
+## Function: unsignedConversationDefaults
+
+- **Purpose:** Unsigned/pending defaults for a locally persisted conversation message.
+- **Inputs:** none.
+- **Returns / side effects:** `{ eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
+- **Used by:** `contactRoutes`, `conversationRoutes`.
+
+## Function: wrapNip17
+
+- **Purpose:** Wrap plaintext as a NIP-17 kind:1059 gift wrap (rumor kind:14) using `nostr-tools`.
+- **Inputs:** sender 32-byte secret, recipient hex pubkey, text.
+- **Returns / side effects:** Signed kind:1059 event. Never logs the secret.
+- **Used by:** Nostr worker outbound DMs.
+
+## Function: unwrapNip17
+
+- **Purpose:** Unwrap a NIP-17 kind:1059 wrap to sender pubkey + plaintext.
+- **Inputs:** wrap event, recipient 32-byte secret.
+- **Returns / side effects:** `{ senderPubkey, text }` or `null` on failure / non-kind-14 rumor. Never logs the secret.
+- **Used by:** Nostr worker inbound DMs.
+
+## Function: encryptKind4
+
+- **Purpose:** NIP-04 encrypt plaintext for a legacy kind:4 DM.
+- **Inputs:** sender secret, recipient hex pubkey, text.
+- **Returns / side effects:** Ciphertext string. Never logs the secret.
+- **Used by:** Tests; inbound path uses `decryptKind4`.
+
+## Function: decryptKind4
+
+- **Purpose:** NIP-04 decrypt kind:4 content.
+- **Inputs:** recipient secret, sender hex pubkey, ciphertext.
+- **Returns / side effects:** Plaintext or `null` on failure. Never logs the secret.
+- **Used by:** Nostr worker inbound kind:4 DMs.
 
 ## Function: serializeContact
 
@@ -800,10 +877,17 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the nine-field dump without `viewKey` (no Nostr fields).
+- **Purpose:** Project an account to the nine-field dump without `viewKey` or `isPlatform` (no Nostr fields).
 - **Inputs:** `Account`.
 - **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
-- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id` only (not `/me`).
+- **Used by:** `serializeOwnerAccount` (member `/me`) and `serializeDebugAccount`.
+
+## Function: serializeDebugAccount
+
+- **Purpose:** Operator account JSON: the nine public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
+- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
 
 ## Function: serializeOwnerAccount
 

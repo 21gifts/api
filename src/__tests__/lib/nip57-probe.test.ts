@@ -35,10 +35,7 @@ function zapCapableFetch(callbackBody: unknown = { pr: PR }): FetchFn {
   };
 }
 
-async function withNip57(
-  value: boolean,
-  run: () => Promise<unknown>,
-): Promise<void> {
+async function withNip57(value: boolean, run: () => Promise<unknown>): Promise<void> {
   const bolt11 = await import('@/lib/bolt11');
   const spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(value);
   try {

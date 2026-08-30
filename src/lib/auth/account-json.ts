@@ -83,6 +83,27 @@ export function serializeAccount(account: Account): AccountResponse {
   };
 }
 
+/** Operator JSON shape: the nine public fields plus `isPlatform`. */
+export interface DebugAccountResponse extends AccountResponse {
+  /** True when this is the official platform account. */
+  isPlatform: boolean;
+}
+
+/**
+ * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
+ *
+ * Includes `isPlatform`. Never used by member `GET /me`.
+ *
+ * @param account - Stored account.
+ * @returns Debug fields including `isPlatform`.
+ */
+export function serializeDebugAccount(account: Account): DebugAccountResponse {
+  return {
+    ...serializeAccount(account),
+    isPlatform: account.isPlatform === true,
+  };
+}
+
 /**
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *

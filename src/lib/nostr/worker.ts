@@ -1,5 +1,7 @@
-import { verifyEvent } from 'nostr-tools/pure';
-import type { AuthStore } from '@/lib/auth/store';
+import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
+import type { Account, AuthStore } from '@/lib/auth/store';
+import type { ConversationThread } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
@@ -10,6 +12,7 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
+import { decryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import {
   buildKind0Event,
   buildKind0Content,
@@ -21,7 +24,7 @@ import {
 } from '@/lib/nostr/event';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
 import { forumVideoUrl } from '@/lib/video';
-import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
@@ -75,6 +78,8 @@ export interface NostrWorkerDeps {
   pushStore?: PushStore;
   /** Optional signature check for inbound kind:1 replies (tests inject). */
   verifyKind1?: (event: NostrEventFrame) => boolean;
+  /** Optional private-message store (skip DMs when omitted). */
+  conversations?: ConversationStore;
 }
 
 type Kind0Reservation = {
@@ -137,7 +142,8 @@ function reservedContent(
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
  * when publish is off. Each tick also REQs kind:1 replies (`#e` = our note
  * event ids) and persists inbound Damus/member replies (even when publish is
- * off). Does not ingest private messages.
+ * off). When a conversation store is present, also signs/publishes NIP-17
+ * wraps and REQs inbound kind:1059 / kind:4 to member and platform pubkeys.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
@@ -146,6 +152,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
+  await signConversationBatch(deps, nowMs);
   await resignPhotoKind1(deps);
   await resignVideoKind1(deps);
   await resignHashtagKind1(deps);
@@ -153,6 +160,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     await publishProfiles(deps, writeSet);
     await publishRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
+    await publishConversationBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
   await indexOpenZapReceipts({
@@ -167,6 +175,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
   await indexInboundForumReplies(deps, urls);
+  await indexInboundDirectMessages(deps, urls);
 }
 
 /**
@@ -218,10 +227,7 @@ function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
  * @param noteEventIds - Top-level published note event ids.
  * @returns Matching note event id, or null.
  */
-function pickParentNoteEventId(
-  tags: string[][],
-  noteEventIds: ReadonlySet<string>,
-): string | null {
+function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<string>): string | null {
   let replyMatch: string | null = null;
   let rootMatch: string | null = null;
   let firstMatch: string | null = null;
@@ -280,11 +286,7 @@ async function indexInboundForumReplies(
 
   for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
     const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
-    const events = await deps.querier.query(
-      { kinds: [1], '#e': chunk },
-      urls,
-      RELAY_TIMEOUT_MS,
-    );
+    const events = await deps.querier.query({ kinds: [1], '#e': chunk }, urls, RELAY_TIMEOUT_MS);
     for (const event of events) {
       if (event.kind !== 1) {
         continue;
@@ -694,6 +696,262 @@ async function publishBatch(
       }
     } catch {
       logEvent('nostr.publish.nack', { messageId: row.id });
+    }
+  }
+}
+
+function asNostrEvent(event: NostrEventFrame): NostrEvent | null {
+  if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
+    return null;
+  }
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content ?? '',
+    sig: event.sig,
+  };
+}
+
+async function accountsByPubkey(auth: AuthStore): Promise<Map<string, Account>> {
+  const map = new Map<string, Account>();
+  const accounts = await auth.listAccounts();
+  for (const account of accounts) {
+    const pubkey = await auth.getNostrPublicKey(account.id);
+    if (pubkey === undefined || pubkey === '') {
+      continue;
+    }
+    map.set(pubkey.toLowerCase(), account);
+  }
+  return map;
+}
+
+async function recipientPubkeyFor(
+  thread: ConversationThread,
+  senderAccountId: string,
+  auth: AuthStore,
+): Promise<string | null> {
+  if (thread.kind === 'member_damus') {
+    return thread.counterpartPubkey;
+  }
+  const otherId = thread.accountA === senderAccountId ? thread.accountB : thread.accountA;
+  if (otherId === null) {
+    return null;
+  }
+  const pubkey = await auth.getNostrPublicKey(otherId);
+  return pubkey === undefined || pubkey === '' ? null : pubkey.toLowerCase();
+}
+
+async function withAccountSecret<T>(
+  deps: NostrWorkerDeps,
+  accountId: string,
+  fn: (secret: Uint8Array) => Promise<T> | T,
+): Promise<T | null> {
+  const ciphertext = await deps.auth.getNostrSecret(accountId);
+  if (ciphertext === undefined) {
+    return null;
+  }
+  const secret = await decryptNostrSecret(ciphertext, deps.kek, accountId);
+  try {
+    return await fn(secret);
+  } finally {
+    zeroizeSecret(secret);
+  }
+}
+
+async function signConversationBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined) {
+    return;
+  }
+  const rows = await store.claimUnsigned(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  for (const row of rows) {
+    if (row.senderAccountId === null) {
+      continue;
+    }
+    const thread = await store.getById(row.conversationId);
+    if (thread === undefined) {
+      continue;
+    }
+    try {
+      await ensureAccountNostrKey(deps.auth, row.senderAccountId, deps.kek);
+      const recipient = await recipientPubkeyFor(thread, row.senderAccountId, deps.auth);
+      if (recipient === null) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'recipient_pubkey' });
+        continue;
+      }
+      const wrap = await withAccountSecret(deps, row.senderAccountId, (secret) =>
+        wrapNip17(secret, recipient, row.text),
+      );
+      if (wrap === null) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'secret' });
+        continue;
+      }
+      const stored = await store.updateSignedEvent(
+        row.id,
+        wrap.id,
+        wrap as unknown as Record<string, unknown>,
+      );
+      if (!stored) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'event_id' });
+      }
+    } catch {
+      logEvent('nostr.dm.sign.failed', { messageId: row.id });
+    }
+  }
+}
+
+async function publishConversationBatch(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+  nowMs: number,
+): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined) {
+    return;
+  }
+  const rows = await store.claimUnpublished(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  const urls = writeRelayUrls(writeSet);
+  for (const row of rows) {
+    if (row.nostrEvent === null) {
+      continue;
+    }
+    try {
+      const acks = await deps.publisher.publish(row.nostrEvent, urls, RELAY_TIMEOUT_MS);
+      const space = spaceAcked(acks, writeSet.spaceUrl);
+      if (!space) {
+        logEvent('nostr.dm.publish.nack', { messageId: row.id, relay: 'space' });
+        continue;
+      }
+      if (!writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl)) {
+        await store.updatePublishState(row.id, 'published');
+        logEvent('nostr.dm.publish.ok', { messageId: row.id });
+      } else {
+        await store.updatePublishState(row.id, 'pending');
+        logEvent('nostr.dm.publish.ok', { messageId: row.id, parked: 1 });
+      }
+    } catch {
+      logEvent('nostr.dm.publish.nack', { messageId: row.id });
+    }
+  }
+}
+
+async function indexInboundDirectMessages(
+  deps: NostrWorkerDeps,
+  urls: readonly string[],
+): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined || urls.length === 0) {
+    return;
+  }
+  const byPubkey = await accountsByPubkey(deps.auth);
+  const ourPubkeys = [...byPubkey.keys()];
+  if (ourPubkeys.length === 0) {
+    return;
+  }
+  const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  for (let i = 0; i < ourPubkeys.length; i += REPLY_QUERY_CHUNK) {
+    const chunk = ourPubkeys.slice(i, i + REPLY_QUERY_CHUNK);
+    const events = await deps.querier.query(
+      { kinds: [4, 1059], '#p': chunk },
+      urls,
+      RELAY_TIMEOUT_MS,
+    );
+    for (const event of events) {
+      if (event.kind !== 4 && event.kind !== 1059) {
+        continue;
+      }
+      if (typeof event.id !== 'string' || event.id === '') {
+        continue;
+      }
+      if (!verify(event)) {
+        continue;
+      }
+      const existing = await store.getMessageByEventId(event.id);
+      if (existing !== undefined) {
+        continue;
+      }
+      const signed = asNostrEvent(event);
+      if (signed === null) {
+        continue;
+      }
+      const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
+      let ingested = false;
+      for (const tag of pTags) {
+        const recipientPubkey = (tag[1] ?? '').toLowerCase();
+        const recipient = byPubkey.get(recipientPubkey);
+        if (recipient === undefined || ingested) {
+          continue;
+        }
+        try {
+          const plain = await withAccountSecret(deps, recipient.id, (secret) => {
+            if (event.kind === 1059) {
+              return unwrapNip17(signed, secret);
+            }
+            const text = decryptKind4(secret, event.pubkey, event.content ?? '');
+            if (text === null) {
+              return null;
+            }
+            return { senderPubkey: event.pubkey.toLowerCase(), text };
+          });
+          if (plain === null) {
+            continue;
+          }
+          const text = normalizeForumText(plain.text, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+          if (text === null || text === '') {
+            continue;
+          }
+          const senderPubkey = plain.senderPubkey.toLowerCase();
+          if (senderPubkey === recipientPubkey) {
+            continue;
+          }
+          const sender = byPubkey.get(senderPubkey);
+          const createdAt =
+            typeof event.created_at === 'number'
+              ? new Date(event.created_at * 1000)
+              : new Date(deps.now());
+          let thread: ConversationThread;
+          if (sender !== undefined) {
+            if (sender.isPlatform === true || recipient.isPlatform === true) {
+              const member = sender.isPlatform === true ? recipient : sender;
+              const platform = sender.isPlatform === true ? sender : recipient;
+              thread = await store.openMemberPlatform(member.id, platform.id, createdAt);
+            } else {
+              thread = await store.openMemberMember(sender.id, recipient.id, createdAt);
+            }
+          } else {
+            thread = await store.openMemberDamus(recipient.id, senderPubkey, createdAt);
+          }
+          const liveName = sender?.name?.trim() ?? '';
+          const senderName = liveName !== '' ? liveName : truncatePubkeyDisplay(senderPubkey);
+          await store.appendMessage({
+            id: crypto.randomUUID(),
+            conversationId: thread.id,
+            text,
+            createdAt,
+            senderAccountId: sender?.id ?? null,
+            senderPubkey,
+            name: senderName,
+            eventId: event.id,
+            nostrPublishState: 'published',
+            nostrEvent: {
+              id: event.id,
+              pubkey: event.pubkey,
+              kind: event.kind,
+              tags: event.tags,
+              created_at: event.created_at,
+              content: event.content ?? '',
+              sig: event.sig ?? '',
+            },
+            claimedUntil: null,
+          });
+          ingested = true;
+        } catch {
+          logEvent('nostr.dm.inbound.failed', { eventId: event.id });
+        }
+      }
     }
   }
 }

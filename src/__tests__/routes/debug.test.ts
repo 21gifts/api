@@ -78,7 +78,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -90,6 +93,7 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]?.id).toBe('acc');
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
     expect(body.accounts[0]).not.toHaveProperty('viewKey');
+    expect(body.accounts[0]).toHaveProperty('isPlatform');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
@@ -144,7 +148,8 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
@@ -164,7 +169,8 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
@@ -217,7 +223,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -233,6 +242,51 @@ describe('debugRoutes', () => {
         (e) => e['event'] === 'debug.accounts.role_set' && e['role'] === 'founder',
       ),
     ).toBe(true);
+    expect(body).toHaveProperty('isPlatform');
+  });
+
+  it('PATCH sets the platform flag and clears any other platform account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'old',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Old',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; isPlatform: boolean };
+    expect(body.id).toBe('acc');
+    expect(body.isPlatform).toBe(true);
+    expect((await store.getAccount('acc'))?.isPlatform).toBe(true);
+    expect((await store.getAccount('old'))?.isPlatform).toBe(false);
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {
@@ -341,7 +395,8 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
@@ -439,7 +494,10 @@ describe('debugRoutes', () => {
 
   it('POST returns 400 without persisting earlier rows when one address fails normalisation', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -456,7 +514,10 @@ describe('debugRoutes', () => {
 
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -498,7 +559,10 @@ describe('debugRoutes', () => {
 
   it('POST updates name idempotently for the same address ignoring case', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const first = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -555,7 +619,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -661,7 +728,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -709,7 +779,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -777,7 +850,10 @@ describe('debugRoutes', () => {
       }
     }
     const store = new NullCreatedStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -823,7 +899,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },

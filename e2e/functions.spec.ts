@@ -1071,3 +1071,55 @@ test('Function: writeForumVideo — POST /messages without bearer is 401', async
   });
   expect(res.status()).toBe(401);
 });
+test('Function: serializeConversation — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: serializeConversationMessage — GET /conversations/:id without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations/:id')).status()).toBe(401);
+});
+test('Function: unsignedConversationDefaults — POST /conversations/:id without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/conversations/:id', { data: { text: 'hi' } })).status()).toBe(401);
+});
+test('Function: conversationRoutes — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: InMemoryConversationStore — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: PostgresConversationStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateConversationSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: wrapNip17 — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: unwrapNip17 — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encryptKind4 — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decryptKind4 — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/accounts')).status()).toBe(401);
+});

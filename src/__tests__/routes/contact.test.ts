@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore, type ContactStore } from '@/lib/contact-store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { MESSAGE_MAX_LENGTH } from '@/lib/message';
 import { contactRoutes } from '@/routes/contact';
 
@@ -29,8 +30,9 @@ const LINKING_KEY = `02${'a'.repeat(64)}`;
 function mount(
   authStore: InMemoryAuthStore,
   store: ContactStore = new InMemoryContactStore(),
+  conversationStore = new InMemoryConversationStore(),
 ): Hono {
-  return new Hono().route('/contact', contactRoutes({ store, authStore, now }));
+  return new Hono().route('/contact', contactRoutes({ store, authStore, conversationStore, now }));
 }
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
@@ -60,6 +62,24 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
     throw new Error('expected account');
   }
   await store.updateAccount({ ...existing, name });
+  return store;
+}
+
+async function namedStoreWithPlatform(name: string): Promise<InMemoryAuthStore> {
+  const store = await namedStore(name);
+  await store.createAccount({
+    id: 'plat',
+    linkingKey: null,
+    role: 'founder',
+    name: '21.gifts',
+    lightningAddress: null,
+    lightningAddressVerified: false,
+    forumLawsDismissed: false,
+    viewKey: 'b'.repeat(64),
+    createdAt: 2,
+    rulesAgreedAt: null,
+    isPlatform: true,
+  });
   return store;
 }
 
@@ -102,7 +122,12 @@ describe('POST /contact', () => {
   });
 
   it('posts a contact and returns the public object', async () => {
-    const app = mount(await namedStore('Ada'));
+    const conversations = new InMemoryConversationStore();
+    const app = mount(
+      await namedStoreWithPlatform('Ada'),
+      new InMemoryContactStore(),
+      conversations,
+    );
     const post = await app.request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -121,6 +146,10 @@ describe('POST /contact', () => {
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.accountId).toBeUndefined();
     expect(created.id.length).toBeGreaterThan(8);
+    const threads = await conversations.listVisible('acc', false, 'plat', 10);
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.kind).toBe('member_platform');
+    expect((await conversations.listMessages(threads[0]!.id, 10))[0]?.text).toBe('hello world');
   });
 
   it('rejects posting without a name', async () => {
@@ -207,8 +236,18 @@ describe('POST /contact', () => {
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
   });
 
-  it('accepts a newline in text', async () => {
+  it('returns 503 when no platform account is configured', async () => {
     const res = await mount(await namedStore('Ada')).request('/contact', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Platform account is not configured' });
+  });
+
+  it('accepts a newline in text', async () => {
+    const res = await mount(await namedStoreWithPlatform('Ada')).request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hello\nworld' }),
@@ -225,7 +264,7 @@ describe('POST /contact', () => {
         throw new Error('boom');
       },
     };
-    const res = await mount(await namedStore('Ada'), throwing).request('/contact', {
+    const res = await mount(await namedStoreWithPlatform('Ada'), throwing).request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),

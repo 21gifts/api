@@ -48,7 +48,8 @@ api/
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
-│   │   └── contact.ts        # POST /contact (private in-app mailbox)
+│   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
+│   │   └── conversations.ts  # GET/POST /conversations, GET/POST /conversations/:id
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
@@ -59,6 +60,8 @@ api/
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
+│   │   ├── conversation.ts   # PN public JSON (no accountId / eventId / npub)
+│   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap payloads
 │   │   ├── push-store.ts     # PushStore port, memory + Postgres, PUSH_SCHEMA_SQL
@@ -78,14 +81,14 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, push, BTC-USD rates, KEK, db_change
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, push, BTC-USD rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
 │   │   ├── db-change.ts      # append-only `db_change` change log migrate
 │   │   ├── gift.ts           # GiftRow + buildGiftStats + SQL row mapper
 │   │   ├── gift-store.ts     # GiftStore port, InMemoryGiftStore, QueryGiftStore
-│   │   ├── nostr/            # Custodial nsec, kind:0 profile + kind:1 note worker, NIP-57 zap, write-set relays
+│   │   ├── nostr/            # Custodial nsec, kind:0/1/10002 worker, NIP-17/kind:4 DMs, NIP-57 zap, write-set relays
 │   │   └── auth/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── account-setup.ts # Next owner setup step (name, Lightning Address, rules)
@@ -133,9 +136,11 @@ api/
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── message-store.test.ts
-│       │   ├── nostr/            # kek, keys, publish, worker, relays, zap, event, sign, rate-limit
+│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
+│       │   ├── conversation.test.ts
+│       │   ├── conversation-store.test.ts
 │       │   ├── push.test.ts
 │       │   ├── push-config.test.ts
 │       │   ├── push-store.test.ts
@@ -167,6 +172,7 @@ api/
 │           ├── messages.test.ts
 │           ├── well-known.test.ts
 │           ├── contact.test.ts
+│           ├── conversations.test.ts
 │           ├── debug-contacts.test.ts
 │           ├── debug-payments.test.ts
 │           ├── push.test.ts
@@ -181,6 +187,7 @@ api/
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── message.sql           # forum `message` plus `message_invoice` and `nostr_zap_ingest`
 │   ├── contact.sql           # private contact mailbox table for POST /contact
+│   ├── conversation.sql      # PN threads + messages (member/platform/Damus)
 │   ├── push.sql              # push_subscription + push_outbox
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
@@ -379,7 +386,7 @@ Currently:
 | ---------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, `push_subscription`, `push_outbox`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages`, `GET /messages/:id/photo`, and `GET /messages/:id/video.*` (MIME in Postgres, bytes under `MEDIA_DIR`) use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum, contact, and push stores, empty gift stats, empty day lists, and a no-op gift recorder. |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, `conversation` / `conversation_message`, `push_subscription`, `push_outbox`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages`, `GET /messages/:id/photo`, and `GET /messages/:id/video.*` (MIME in Postgres, bytes under `MEDIA_DIR`) use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET/POST /conversations` use `PostgresConversationStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum, contact, conversation, and push stores, empty gift stats, empty day lists, and a no-op gift recorder. |
 | `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `POST /debug/accounts`, `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`, `GET /debug/zap-ingests`, and `POST /debug/push-ping`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |

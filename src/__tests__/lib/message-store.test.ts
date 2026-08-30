@@ -839,9 +839,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/event_id/);
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
-    expect(sql.queries[0]?.text).toMatch(
-      /ORDER BY created_at DESC, id DESC\s+LIMIT \$1/,
-    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     expect(sql.queries[0]?.params).toEqual([50]);
     expect(listed[0]?.id).toBe('m1');

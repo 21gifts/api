@@ -4,6 +4,8 @@ import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { serializeContact, type ContactRow } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';
+import { unsignedConversationDefaults } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { normalizeForumText } from '@/lib/message';
 import { bearerToken } from '@/routes/me';
@@ -20,6 +22,8 @@ export interface ContactRouteDeps {
   store: ContactStore;
   /** Shared auth persistence port. */
   authStore: AuthStore;
+  /** Private messaging store (member→platform thread). */
+  conversationStore: ConversationStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
 }
@@ -44,7 +48,7 @@ const textBody = z.object({ text: z.string() });
  *
  * Mounted at `/contact` so the public path is `POST /contact`.
  *
- * @param deps - Contact store, auth store, and clock.
+ * @param deps - Contact store, conversation store, auth store, and clock.
  * @returns A Hono app with `POST /` only.
  */
 export function contactRoutes(deps: ContactRouteDeps): Hono {
@@ -66,14 +70,35 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     if (text === null || text === '') {
       return c.json({ error: 'Text must be 1–500 characters' }, 400);
     }
+    const createdAt = new Date(deps.now());
     const row: ContactRow = {
       id: crypto.randomUUID(),
       accountId: account.id,
       name: account.name.trim(),
       text,
-      createdAt: new Date(deps.now()),
+      createdAt,
     };
     try {
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (platform === undefined) {
+        return c.json({ error: 'Platform account is not configured' }, 503);
+      }
+      const thread = await deps.conversationStore.openMemberPlatform(
+        account.id,
+        platform.id,
+        createdAt,
+      );
+      await deps.conversationStore.appendMessage({
+        id: crypto.randomUUID(),
+        conversationId: thread.id,
+        text,
+        createdAt,
+        senderAccountId: account.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(account.id)) ?? null,
+        name: row.name,
+        ...unsignedConversationDefaults(),
+      });
       const created = await deps.store.create(row);
       return c.json(serializeContact(created), 200);
     } catch {

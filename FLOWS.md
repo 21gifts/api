@@ -159,8 +159,11 @@ notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign; forum `te
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
 
-Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
-not sketch a DM inbox as if it ships in v1.
+Private messaging ships as one PN channel: `GET/POST /conversations` plus
+member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
+inbound; outbound wraps with the sender nsec (platform nsec for staff on
+official threads). Forum replies stay on `/messages` and are not mixed
+with PNs.
 
 ---
 
@@ -169,9 +172,11 @@ not sketch a DM inbox as if it ships in v1.
 Private mailbox so members can write to 21.gifts without a published email.
 Signed-in members POST `{ text }` to `POST /contact` (name snapshot as
 forum messages; `normalizeForumText` plus a required 1–500 character body —
-forum photo-only empty text does not apply). Operators read the mailbox via
-`GET /debug/contacts` (`DEBUG_TOKEN`). No public list, no email delivery, no
-DMs, no Nostr fan-out. Do not invent `/events`.
+forum photo-only empty text does not apply). The same text is appended to
+the member→platform conversation thread (`GET /conversations`). No platform
+account → 503 `Platform account is not configured`. Operators still read
+the legacy mailbox via `GET /debug/contacts` (`DEBUG_TOKEN` must not read
+member PNs). No public list, no email delivery. Do not invent `/events`.
 
 ---
 

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (forum replies via `parent_id` + `replyCount` / `GET /messages/:id/replies`; public `GET /messages/:id`; NIP-57 mint probe `probeNip57Mint` / `buildZapProbeRequest` before linking Lightning Address; `lnurlResponse` on invoice attempts; inbound Damus/member kind:1 reply indexing each worker tick; pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID; Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision with mint probe; passkey `viewKey` claim; `GET /debug/invoices` + `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; NIP-92 `imeta` photo URLs; forum roles; private `POST /contact`; zap invoices; SQL boot requires `NOSTR_NSEC_KEK`; gift stats BTC + historical USD; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (PN channel `GET/POST /conversations` + member→platform `POST /contact` thread; `Account.isPlatform` unique; inbound NIP-17/kind:4 and outbound wraps; forum replies via `parent_id` + `replyCount` / `GET /messages/:id/replies`; public `GET /messages/:id`; NIP-57 mint probe `probeNip57Mint` / `buildZapProbeRequest` before linking Lightning Address; `lnurlResponse` on invoice attempts; inbound Damus/member kind:1 reply indexing each worker tick; pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID; Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision with mint probe; passkey `viewKey` claim; `GET /debug/invoices` + `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; NIP-92 `imeta` photo URLs; forum roles; private `POST /contact`; zap invoices; SQL boot requires `NOSTR_NSEC_KEK`; gift stats BTC + historical USD; `GET /gifts?day=`).
 
 ---
 
@@ -1432,8 +1432,18 @@ allowed; other C0 and DEL rejected), then contact still requires trimmed
 length **1–500**. Forum photo-only empty text is not accepted here. The
 **200** body is the public contact object itself (not wrapped). No
 `accountId` in the member-facing JSON. Contacts are **never** listed
-publicly — operators read them via `GET /debug/contacts`. No email, no DMs,
-no Nostr fan-out.
+publicly — operators still read the mailbox via `GET /debug/contacts`
+(`DEBUG_TOKEN` must not read member PNs). The same text is also appended
+to the member→platform conversation thread so it is readable via
+`GET /conversations`. When no platform account (`isPlatform`) exists →
+**Response** `503`:
+
+```json
+{ "error": "Platform account is not configured" }
+```
+
+No email. Outbound Nostr fan-out is the conversation worker (NIP-17 wrap),
+not this HTTP handler.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1476,6 +1486,93 @@ Success → **Response** `200`:
   "createdAt": "2026-08-29T12:00:00.000Z"
 }
 ```
+
+### `GET /conversations`
+
+Bearer session required. Nothing public. Lists threads the session may see:
+own member↔member / member↔Damus / member↔platform threads, plus (when
+`role` is `founder` or `moderator`) every platform thread. Newest
+`lastMessageAt` first. Cap 200. Member JSON never includes `accountId`,
+event ids, or npubs; Damus-only counterpart `name` may be a truncated npub.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Conversations are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "conversations": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "lastText": "Hello",
+      "lastAt": "2026-08-29T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /conversations`
+
+Bearer session required. Open or return the thread with a forum note's
+author (`21gifts` account or Damus pubkey). Body:
+
+```json
+{ "forumMessageId": "<uuid>" }
+```
+
+Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
+the session account → **400** `{ "error": "Cannot message yourself" }`.
+
+Success → **Response** `200` (same public conversation object as list rows).
+
+### `GET /conversations/:id`
+
+Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
+**404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
+missing, or the session may not see it.
+
+Success → **Response** `200`:
+
+```json
+{
+  "messages": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "text": "Hello",
+      "createdAt": "2026-08-29T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /conversations/:id`
+
+Bearer session required. Body `{ "text": "…" }` 1–500 via
+`normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
+platform thread persist as the platform account; the worker signs with the
+platform nsec. Relay failure does not block local persist.
+
+Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
+**400** `{ "error": "Set a name before posting" }` when the sending member
+has no display name.
+
+Success → **Response** `200` (one public conversation message).
+
+`PATCH /debug/accounts/:id` may set `{ "platform": true|false }` (unique:
+at most one `isPlatform` account). `GET /debug/accounts` includes
+`isPlatform`. Member `GET /me` does not.
 
 ---
 
