@@ -279,7 +279,7 @@ describe('PostgresPushStore', () => {
         payload: '{}',
         status: 'weird',
         attempts: 1,
-        claimed_until: new Date('2026-08-03T00:01:00.000Z'),
+        claimed_until: null,
         created_at: new Date('2026-08-01T00:00:00.000Z'),
       },
     ];
@@ -287,5 +287,27 @@ describe('PostgresPushStore', () => {
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.status).toBe('pending');
     expect(claimed[0]?.claimedUntil).toBeNull();
+  });
+
+  it('maps a Date claimed_until from Postgres without wrapping twice', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    const until = new Date('2026-08-03T00:01:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'o3',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'msg',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: until,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+      },
+    ];
+    const claimed = await store.claimPending(1, 1, 1000);
+    expect(claimed[0]?.claimedUntil).toBeInstanceOf(Date);
+    expect(claimed[0]?.claimedUntil?.toISOString()).toBe(until.toISOString());
   });
 });
