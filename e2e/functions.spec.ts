@@ -347,11 +347,11 @@ test('Function: detectImageContentType — POST /messages with a photo without b
   expect(res.status()).toBe(401);
 });
 
-test('Function: messagesRoutes — GET /messages/:id/photo without bearer is 401', async ({
+test('Function: messagesRoutes — GET /messages/:id/photo without bearer is 404', async ({
   request,
 }) => {
   const res = await request.get('/messages/:id/photo');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
 test('Function: serializeMessage — GET /messages without bearer is 401', async ({ request }) => {
@@ -745,6 +745,9 @@ test('Function: kind1Tags — default boot has no DATABASE_URL', async ({ reques
 test('Function: buildKind1Event — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: forumPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: buildKind0Content — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -772,6 +775,12 @@ test('Function: resolveRelayPublic — default boot has no DATABASE_URL', async 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: resolveWriteSet — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: writeRelayUrls — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolvePublicApiBase — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: resolveZapRelays — default boot has no DATABASE_URL', async ({ request }) => {

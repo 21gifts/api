@@ -25,8 +25,9 @@ import { bearerToken } from '@/routes/me';
 
 /**
  * `/messages` — signed-in member forum: list every message, post text and/or
- * one photo when the account has a display name, fetch photo bytes by id, and
- * pay a published note. Shares the {@link AuthStore} with `/auth` and `/me`.
+ * one photo when the account has a display name, serve photo bytes publicly
+ * for Nostr clients, and pay a published note. Shares the {@link AuthStore}
+ * with `/auth` and `/me`.
  */
 
 /** Collaborators the `/messages` routes need. */
@@ -169,10 +170,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
     })
     .get('/:id/photo', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Photo not found' }, 404);
@@ -186,7 +183,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           status: 200,
           headers: {
             'Content-Type': photo.contentType,
-            'Cache-Control': 'private',
+            'Cache-Control': 'public, max-age=86400',
           },
         });
       } catch {

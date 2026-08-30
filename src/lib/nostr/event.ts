@@ -5,7 +5,7 @@
  * top-level notes for discovery-feed virality.
  */
 
-/** Frozen kind:1 tags, in this order. */
+/** Frozen kind:1 tags, in this order. Extra `imeta` rows may follow. */
 export const KIND1_TAGS: readonly [
   readonly ['t', 'bitcoin'],
   readonly ['t', '21gifts'],
@@ -15,6 +15,28 @@ export const KIND1_TAGS: readonly [
   ['t', '21gifts'],
   ['r', 'https://21.gifts'],
 ] as const;
+
+/** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
+export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
+
+/** Optional NIP-92 image attached to a kind:1. */
+export interface Kind1Photo {
+  /** Absolute HTTPS URL clients fetch. */
+  url: string;
+  /** Stored MIME type. */
+  mime: 'image/jpeg' | 'image/png' | 'image/webp';
+}
+
+/**
+ * Absolute photo URL for a forum message.
+ *
+ * @param apiBase - Public API origin (no trailing slash).
+ * @param messageId - Message id.
+ * @returns `GET /messages/:id/photo` URL.
+ */
+export function forumPhotoUrl(apiBase: string, messageId: string): string {
+  return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo`;
+}
 
 /** Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}). */
 export function kind1Tags(): string[][] {
@@ -38,15 +60,26 @@ export interface UnsignedKind1 {
  *
  * Content is plaintext (no name prefix). Tags are frozen — no `e`/`p`/`q`.
  *
- * @param content - Already-normalised forum text.
+ * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
+ * @param photo - Optional public image (URL in content + NIP-92 `imeta`).
  * @returns Unsigned event fields for `finalizeEvent`.
  */
-export function buildKind1Event(content: string, createdAtUnix: number): UnsignedKind1 {
+export function buildKind1Event(
+  content: string,
+  createdAtUnix: number,
+  photo?: Kind1Photo,
+): UnsignedKind1 {
+  const tags = kind1Tags();
+  let body = content;
+  if (photo !== undefined) {
+    body = content === '' ? photo.url : `${content}\n${photo.url}`;
+    tags.push(['imeta', `url ${photo.url}`, `m ${photo.mime}`]);
+  }
   return {
     kind: 1,
-    content,
-    tags: kind1Tags(),
+    content: body,
+    tags,
     created_at: createdAtUnix,
   };
 }
@@ -59,6 +92,8 @@ export interface Kind0ProfileContent {
   display_name: string;
   /** Fixed site URL. */
   website: string;
+  /** 21.gifts icon so Damus shows a branded avatar. */
+  picture: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
 }
@@ -66,8 +101,8 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. Do not set `nip05`
- * or `bot` in v1.
+ * Omit `lud16` when the account has no Lightning Address. Always set `picture`
+ * to {@link KIND0_PICTURE_URL}. Do not set `nip05` or `bot` in v1.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
@@ -78,6 +113,7 @@ export function buildKind0Content(name: string, lightningAddress: string | null)
     name,
     display_name: name,
     website: 'https://21.gifts',
+    picture: KIND0_PICTURE_URL,
   };
   if (lightningAddress !== null) {
     body.lud16 = lightningAddress;

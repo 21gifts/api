@@ -314,8 +314,348 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       display_name: 'Ada',
       website: 'https://21.gifts',
+      picture: 'https://21.gifts/apple-touch-icon.png',
     });
+    expect(kinds).toContain(10002);
     expect(kinds).toContain(1);
+  });
+
+  it('publishes kind:10002 with the write-set relays', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const relays = publisher.calls.find((call) => call.event['kind'] === 10002);
+    expect(relays?.event['tags']).toEqual([
+      ['r', 'wss://relay.nostr.space'],
+      ['r', 'wss://relay.damus.io'],
+    ]);
+    expect(relays?.urls).toEqual(['wss://relay.nostr.space', 'wss://relay.damus.io']);
+  });
+
+  it('republishes kind:10002 when the write-set grows', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const space = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const both = {
+      ...space,
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: space,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env: both,
+      }),
+    );
+    const lists = publisher.calls.filter((call) => call.event['kind'] === 10002);
+    expect(lists).toHaveLength(2);
+    expect(lists[0]?.event['tags']).toEqual([['r', 'wss://relay.nostr.space']]);
+    expect(lists[1]?.event['tags']).toEqual([
+      ['r', 'wss://relay.nostr.space'],
+      ['r', 'wss://relay.damus.io'],
+    ]);
+    expect(Number(lists[1]?.event['created_at'])).toBeGreaterThan(
+      Number(lists[0]?.event['created_at']),
+    );
+  });
+
+  it('embeds a public photo URL and imeta on kind:1', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-pic',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'pic',
+        createdAt: new Date('2026-08-28T00:02:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const notes = publisher.calls
+      .filter((call) => call.event['kind'] === 1)
+      .map((call) => String(call.event['content']));
+    expect(notes).toContain('pic\nhttps://dev-api.21.gifts/messages/m-pic/photo');
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-pic/photo'),
+    );
+    expect(note?.event['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+      ['imeta', 'url https://dev-api.21.gifts/messages/m-pic/photo', 'm image/jpeg'],
+    ]);
+  });
+
+  it('re-signs published photo posts that lack the photo URL', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-photo',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:03:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/png', bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+    );
+    await messages.updateSignedEvent('m-photo', 'ab'.repeat(32), {
+      kind: 1,
+      content: '',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-photo', 'published', 'space');
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const row = await messages.getById('m-photo');
+    expect(row?.eventId).not.toBe('ab'.repeat(32));
+    expect(String(row?.nostrEvent?.['content'])).toContain('/messages/m-photo/photo');
+  });
+
+  it('does not reset published photo posts when PUBLIC_BASE_URL is unset', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-nophoto-url',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:04:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/png', bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+    );
+    await messages.updateSignedEvent('m-nophoto-url', 'ab'.repeat(32), {
+      kind: 1,
+      content: '',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-nophoto-url', 'published', 'space');
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    const row = await messages.getById('m-nophoto-url');
+    expect(row?.eventId).toBe('ab'.repeat(32));
+    expect(row?.nostrPublishState).toBe('published');
+  });
+
+  it('does not publish a claimed photo snapshot that lacks the photo URL', async () => {
+    const { auth, messages } = await seed();
+    const jpeg: { contentType: 'image/jpeg'; bytes: Uint8Array } = {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+    };
+    await messages.create(
+      {
+        id: 'm-stale',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:05:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      jpeg,
+    );
+    await messages.updateSignedEvent('m-stale', 'ab'.repeat(32), {
+      kind: 1,
+      content: '',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.create(
+      {
+        id: 'm-bad-content',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:06:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      jpeg,
+    );
+    await messages.updateSignedEvent('m-bad-content', 'cd'.repeat(32), {
+      kind: 1,
+      content: 1,
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    messages.listSignedMissingPhoto = async () => [];
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: {
+          NOSTR_PUBLISH: '1',
+          NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+          PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+        },
+      }),
+    );
+    const kind1 = publisher.calls.filter((call) => call.event['kind'] === 1);
+    expect(kind1.map((call) => call.event['id'])).not.toContain('ab'.repeat(32));
+    expect(kind1.map((call) => call.event['id'])).not.toContain('cd'.repeat(32));
+    expect((await messages.getById('m-stale'))?.eventId).toBeNull();
+    expect((await messages.getById('m-bad-content'))?.eventId).toBeNull();
+    expect((await messages.getById('m-stale'))?.nostrPublishState).toBe('pending');
+  });
+
+  it('publishes URL-less photo notes when PUBLIC_BASE_URL is unset', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-plain-photo',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:07:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const row = await messages.getById('m-plain-photo');
+    expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(row?.nostrEvent?.['content']).toBe('');
+    expect(row?.nostrPublishState).toBe('published');
+    expect(
+      publisher.calls.some(
+        (call) =>
+          call.event['kind'] === 1 &&
+          call.event['content'] === '' &&
+          call.event['id'] === row?.eventId,
+      ),
+    ).toBe(true);
   });
 
   it('includes lud16 on kind:0 when the account has a Lightning Address', async () => {
@@ -346,7 +686,12 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     const profile = publisher.calls.find((call) => call.event['kind'] === 0);
-    expect(JSON.parse(String(profile?.event['content'])).lud16).toBe('ada@walletofsatoshi.com');
+    const profileJson = JSON.parse(String(profile?.event['content'])) as {
+      lud16: string;
+      picture: string;
+    };
+    expect(profileJson.lud16).toBe('ada@walletofsatoshi.com');
+    expect(profileJson.picture).toBe('https://21.gifts/apple-touch-icon.png');
   });
 
   it('publishes a name that changed after listAccounts', async () => {

@@ -7,7 +7,9 @@ import {
   resolveRelayPublic,
   resolveRelaySpace,
   resolveWriteSet,
+  resolvePublicApiBase,
   resolveZapRelays,
+  writeRelayUrls,
 } from '@/lib/nostr/relays';
 
 describe('relays', () => {
@@ -81,6 +83,38 @@ describe('relays', () => {
       resolveZapRelays({
         NOSTR_RELAY_SPACE: 'wss://space',
         NOSTR_RELAY_PUBLIC: 'wss://space, wss://a',
+      }),
+    ).toEqual(['wss://space', 'wss://a']);
+  });
+
+  it('maps site PUBLIC_BASE_URL to the API origin', () => {
+    expect(resolvePublicApiBase({})).toBe('');
+    expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'https://21.gifts/' })).toBe(
+      'https://api.21.gifts',
+    );
+    expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'https://dev.21.gifts' })).toBe(
+      'https://dev-api.21.gifts',
+    );
+    expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'http://127.0.0.1:3000' })).toBe(
+      'http://127.0.0.1:3000',
+    );
+  });
+
+  it('lists write URLs from the write set', () => {
+    expect(
+      writeRelayUrls({
+        spaceUrl: 'wss://space',
+        publicUrls: ['wss://a'],
+        publishEnabled: true,
+        publicEnabled: false,
+      }),
+    ).toEqual(['wss://space']);
+    expect(
+      writeRelayUrls({
+        spaceUrl: 'wss://space',
+        publicUrls: ['wss://a'],
+        publishEnabled: true,
+        publicEnabled: true,
       }),
     ).toEqual(['wss://space', 'wss://a']);
   });

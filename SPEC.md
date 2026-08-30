@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-29 (forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; `GET /messages/:id/photo`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -77,7 +77,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history           |
 | GET    | `/messages`                                  | Bearer                   | List public forum thread                    |
 | POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum     |
-| GET    | `/messages/:id/photo`                        | Bearer                   | Fetch forum message photo bytes             |
+| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes             |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                         |
 | POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`      |
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)            |
@@ -1113,15 +1113,10 @@ limiter still counts. LNURL/zap failure →
 
 ### `GET /messages/:id/photo`
 
-Fetch the optional photo bytes for one forum message. Bearer session
-required. Missing message, message-without-photo, and a non-UUID `id` are
-the same **404** (Postgres would otherwise throw on `uuid` and become 503).
-
-Missing/invalid/expired bearer → **Response** `401`:
-
-```json
-{ "error": "Unauthorized" }
-```
+Fetch the optional photo bytes for one forum message. **No bearer** — Damus
+loads this URL from kind:1 `imeta`. Missing message, message-without-photo,
+and a non-UUID `id` are the same **404** (Postgres would otherwise throw on
+`uuid` and become 503).
 
 No photo for `id` → **Response** `404`:
 
@@ -1137,7 +1132,7 @@ Store failure → **Response** `503`:
 
 Success → **Response** `200`: raw image body, `Content-Type` one of
 `image/jpeg` / `image/png` / `image/webp` (from stored magic-derived type),
-`Cache-Control: private`. Not JSON.
+`Cache-Control: public, max-age=86400`. Not JSON.
 
 ### `POST /contact`
 

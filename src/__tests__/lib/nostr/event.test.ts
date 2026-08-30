@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  KIND0_PICTURE_URL,
   buildKind0Content,
   buildKind0Event,
   buildKind1Event,
   buildKind10002Event,
+  forumPhotoUrl,
   kind1Tags,
 } from '@/lib/nostr/event';
 
@@ -19,6 +21,27 @@ describe('kind1', () => {
     ]);
     expect(kind1Tags()).not.toBe(event.tags);
   });
+
+  it('appends the photo URL and imeta when a photo is set', () => {
+    const event = buildKind1Event('hello', 1, {
+      url: 'http://127.0.0.1:3000/messages/m1/photo',
+      mime: 'image/jpeg',
+    });
+    expect(event.content).toBe('hello\nhttp://127.0.0.1:3000/messages/m1/photo');
+    expect(event.tags.at(-1)).toEqual([
+      'imeta',
+      'url http://127.0.0.1:3000/messages/m1/photo',
+      'm image/jpeg',
+    ]);
+  });
+
+  it('uses the photo URL as content when text is empty', () => {
+    const event = buildKind1Event('', 1, {
+      url: 'http://127.0.0.1:3000/messages/m1/photo',
+      mime: 'image/png',
+    });
+    expect(event.content).toBe('http://127.0.0.1:3000/messages/m1/photo');
+  });
 });
 
 describe('kind0', () => {
@@ -27,7 +50,11 @@ describe('kind0', () => {
       name: 'Ada',
       display_name: 'Ada',
       website: 'https://21.gifts',
+      picture: KIND0_PICTURE_URL,
     });
+    expect(forumPhotoUrl('https://api.21.gifts/', 'm1')).toBe(
+      'https://api.21.gifts/messages/m1/photo',
+    );
     expect(buildKind0Event('Ada', null, 1).tags).toEqual([]);
   });
 

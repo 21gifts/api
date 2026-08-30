@@ -230,6 +230,83 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
   });
 
+  it('listSignedMissingPhoto and resetSignedEvent re-queue photo posts', async () => {
+    const store = new InMemoryMessageStore();
+    const jpeg: ForumPhoto = {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+    };
+    await store.create({ ...EARLY, text: '', hasPhoto: true }, jpeg);
+    await store.updateSignedEvent('a', 'ab'.repeat(32), { content: '' });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create(
+      {
+        ...EARLY,
+        id: 'n',
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        hasPhoto: true,
+        eventId: '11'.repeat(32),
+        nostrEvent: null,
+      },
+      jpeg,
+    );
+    await store.create(
+      {
+        ...EARLY,
+        id: 'z',
+        createdAt: new Date('2026-09-01T00:00:00.000Z'),
+        hasPhoto: true,
+        eventId: '22'.repeat(32),
+        nostrEvent: { content: 1 },
+      },
+      jpeg,
+    );
+    const tiedAt = new Date('2026-08-15T00:00:00.000Z');
+    await store.create(
+      {
+        ...EARLY,
+        id: 'q',
+        createdAt: tiedAt,
+        hasPhoto: true,
+        eventId: '33'.repeat(32),
+        nostrEvent: { content: '' },
+      },
+      jpeg,
+    );
+    await store.create(
+      {
+        ...EARLY,
+        id: 'p',
+        createdAt: tiedAt,
+        hasPhoto: true,
+        eventId: '44'.repeat(32),
+        nostrEvent: { content: '' },
+      },
+      jpeg,
+    );
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
+      'n',
+      'a',
+      'p',
+      'q',
+      'z',
+    ]);
+    await store.resetSignedEvent('a', 'ab'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBeNull();
+    expect((await store.getById('a'))?.nostrPublishState).toBe('pending');
+    await store.updateSignedEvent('a', 'cd'.repeat(32), {
+      content: 'http://127.0.0.1:3000/messages/a/photo',
+    });
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
+      'n',
+      'p',
+      'q',
+      'z',
+    ]);
+    await store.resetSignedEvent('a', 'ff'.repeat(32));
+    expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
+  });
+
   it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
     const store = new InMemoryMessageStore();
     await store.create(LATE);
@@ -596,6 +673,32 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
+  });
+
+  it('listSignedMissingPhoto and resetSignedEvent hit Postgres', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '',
+        created_at: new Date(0),
+        has_photo: true,
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const missing = await store.listSignedMissingPhoto(4);
+    expect(missing[0]?.id).toBe('m1');
+    const listSql = sql.queries.at(-1)?.text ?? '';
+    expect(listSql).toMatch(/photo IS NOT NULL/);
+    expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo/);
+    await store.resetSignedEvent('m1', 'ab'.repeat(32));
+    expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
+    expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
   });
 
   it('propagates getPhoto query errors', async () => {

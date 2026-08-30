@@ -89,7 +89,9 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     claimUnsigned: boom,
     claimUnpublished: boom,
     listPendingSigned: boom,
+    listSignedMissingPhoto: boom,
     clearSignedEvent: boom,
+    resetSignedEvent: boom,
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
@@ -479,7 +481,7 @@ describe('POST /messages', () => {
     const photo = await app.request(`/messages/${created.id}/photo`, { headers: AUTH });
     expect(photo.status).toBe(200);
     expect(photo.headers.get('content-type')).toBe('image/jpeg');
-    expect(photo.headers.get('cache-control')).toBe('private');
+    expect(photo.headers.get('cache-control')).toBe('public, max-age=86400');
     expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 
@@ -1050,18 +1052,40 @@ describe('POST /messages/:id/invoice', () => {
 });
 
 describe('GET /messages/:id/photo', () => {
-  it('returns 401 without an Authorization header', async () => {
+  it('returns 404 without an Authorization header when no photo exists', async () => {
     const res = await mount(new InMemoryAuthStore()).request(
       '/messages/00000000-0000-0000-0000-000000000000/photo',
     );
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns bytes without a bearer when the photo exists', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const res = await mount(await seededStore(), store).request(
+      '/messages/00000000-0000-4000-8000-000000000001/photo',
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 
   it('returns 404 when the photo is missing', async () => {
     const res = await mount(await seededStore()).request(
       '/messages/00000000-0000-0000-0000-000000000000/photo',
-      { headers: AUTH },
     );
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Photo not found' });
@@ -1073,7 +1097,6 @@ describe('GET /messages/:id/photo', () => {
     });
     const res = await mount(await seededStore(), throwingStore({ getPhoto })).request(
       '/messages/not-a-uuid/photo',
-      { headers: AUTH },
     );
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Photo not found' });
@@ -1088,9 +1111,7 @@ describe('GET /messages/:id/photo', () => {
         listLatest: async () => [],
         create: async (row) => row,
       }),
-    ).request('/messages/00000000-0000-0000-0000-000000000000/photo', {
-      headers: AUTH,
-    });
+    ).request('/messages/00000000-0000-0000-0000-000000000000/photo');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(true);

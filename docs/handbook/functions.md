@@ -149,7 +149,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows; `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns signed rows with a photo whose kind:1 content lacks `/messages/:id/photo` (any publish state, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto`. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -240,7 +240,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish, `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (signed + photo, kind:1 content lacks `/messages/:id/photo`, oldest-first, any publish state), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats); `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
 - **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
 - **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -436,9 +436,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes; `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -742,18 +742,25 @@
 - **Returns / side effects:** `[["t","bitcoin"],["t","21gifts"],["r","https://21.gifts"]]`.
 - **Used by:** `buildKind1Event`.
 
+## Function: forumPhotoUrl
+
+- **Purpose:** Absolute `GET /messages/:id/photo` URL for kind:1 content and `imeta`.
+- **Inputs:** API origin, message id.
+- **Returns / side effects:** URL string.
+- **Used by:** Worker sign path.
+
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned top-level kind:1 for a forum line.
-- **Inputs:** content, unix created_at.
+- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional photo appends the public image URL to content and a NIP-92 `imeta` tag.
+- **Inputs:** content, unix created_at, optional `{ url, mime }`.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker sign path.
 
 ## Function: buildKind0Content
 
-- **Purpose:** Kind:0 JSON without extra whitespace.
+- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, optional `lud16`).
 - **Inputs:** name, lightningAddress or null.
-- **Returns / side effects:** JSON string; `lud16` only when address set.
+- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `lud16` only when address set.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
@@ -768,7 +775,7 @@
 - **Purpose:** Unsigned NIP-65 relay list.
 - **Inputs:** relay URLs, unix created_at.
 - **Returns / side effects:** Unsigned fields.
-- **Used by:** Profile publish.
+- **Used by:** Worker `publishRelayLists`.
 
 ## Function: signEventForAccount
 
@@ -810,7 +817,21 @@
 - **Purpose:** Combine flags + URLs for one worker tick.
 - **Inputs:** env slice.
 - **Returns / side effects:** `{ spaceUrl, publicUrls, publishEnabled, publicEnabled }`.
-- **Used by:** Worker publish (`runNostrWorkerTick` / `publishProfiles` / `publishBatch`).
+- **Used by:** Worker publish (`runNostrWorkerTick` / `publishProfiles` / `publishRelayLists` / `publishBatch`).
+
+## Function: writeRelayUrls
+
+- **Purpose:** Space URL plus public URLs when public write is on.
+- **Inputs:** resolved write set.
+- **Returns / side effects:** URL list for EVENT fan-out.
+- **Used by:** Worker publish.
+
+## Function: resolvePublicApiBase
+
+- **Purpose:** HTTP origin for kind:1 photo URLs. Maps `https://21.gifts` → `https://api.21.gifts` and `https://dev.21.gifts` → `https://dev-api.21.gifts`; otherwise the trimmed `PUBLIC_BASE_URL`.
+- **Inputs:** env slice.
+- **Returns / side effects:** Origin without trailing slash, or empty.
+- **Used by:** Worker sign path.
 
 ## Function: resolveZapRelays
 
@@ -891,11 +912,11 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. When publishing, also fans out kind:0 profiles with the account `name` from the database to the space relay, and to the public list when `NOSTR_PUBLISH_PUBLIC=1`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed. Signed photo posts missing the public photo URL are reset and re-signed only when `PUBLIC_BASE_URL` is set; an empty API base leaves them alone and still EVENT's the URL-less note. A publish snapshot whose photo note still lacks that URL is reset and skipped only when the API base is set. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture`) and NIP-65 kind:10002 relay lists. Kind:1 photo posts include the public image URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
 - **Inputs:** worker deps.
-- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack`. Event-id collision retries once with `created_at + 1`.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
 
 ## Function: startNostrWorker

@@ -149,10 +149,10 @@
 
 ## Endpoint: GET /messages/:id/photo
 
-- **Purpose:** Bearer required. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: private`). List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
-- **Used by:** App forum photo display.
-- **Auth:** `Authorization: Bearer` session.
+- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`) so Nostr clients can load NIP-92 `imeta` URLs. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
+- **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Used by:** App forum photo display; Damus/Primal via kind:1 photo URLs.
+- **Auth:** none.
 
 ## Endpoint: POST /messages
 
