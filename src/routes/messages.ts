@@ -272,6 +272,7 @@ async function serveForumVideo(
 
 /**
  * `POST /messages` as multipart (`video` file + optional `poster` + `text`).
+ * The caller applies `postLimiter` (429 + `Retry-After: 10`) before invoking this helper.
  *
  * @param deps - Store and clock.
  * @param c - Request.

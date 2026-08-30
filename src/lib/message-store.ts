@@ -4,6 +4,8 @@
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. List queries never select the `photo` bytea column —
  * only `(photo IS NOT NULL) AS has_photo`. Bytes are loaded via {@link MessageStore.getPhoto}.
+ * `video_content_type` (MIME) lives in Postgres; video bytes live on disk under
+ * `MEDIA_DIR`, not as bytea.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -64,7 +66,8 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 export interface MessageStore {
   /**
    * Newest messages first (`createdAt` desc, then `id` desc), capped at
-   * `limit`. Rows include `hasPhoto` but never photo bytes.
+   * `limit`. Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but
+   * never photo or video bytes.
    *
    * @param limit - Maximum rows to return.
    * @returns Message rows (caller-owned copies).
@@ -393,7 +396,8 @@ export class InMemoryMessageStore implements MessageStore {
    *
    * @param limit - Maximum rows.
    * @returns A new array of row copies; mutating it does not change the store.
-   * Listed objects never expose photo bytes.
+   * Listed objects include `hasVideo` / `videoContentType` but never expose
+   * photo or video bytes (video lives on disk under `MEDIA_DIR`).
    */
   listLatest(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
@@ -792,7 +796,9 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first list from `message`, capped at `limit`.
-   * Selects `(photo IS NOT NULL) AS has_photo` — never the `photo` bytea column.
+   * Selects `(photo IS NOT NULL) AS has_photo` and `video_content_type`
+   * (`hasVideo` / `videoContentType`) — never the `photo` bytea column; video
+   * bytes live on disk under `MEDIA_DIR`, not as bytea.
    *
    * @param limit - Maximum rows (`$1`).
    * @returns Mapped rows.

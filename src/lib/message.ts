@@ -7,7 +7,7 @@ import type { ForumVideoContentType } from '@/lib/video';
  * Text is free-form encouragement (not unique). Over-long or disallowed
  * control-character input is rejected so a bad value cannot be stored and
  * re-served on every list response. Empty trimmed text is allowed when a
- * photo is attached. Newlines (`\n`, `\r`) are allowed; other C0 controls
+ * photo is attached or `hasVideo`. Newlines (`\n`, `\r`) are allowed; other C0 controls
  * and DEL are not. Photos are JPEG/PNG/WebP only, capped at 1 MiB.
  */
 
@@ -45,7 +45,7 @@ export interface MessageRow {
   accountId: string;
   /** Display name snapshotted at post time. */
   name: string;
-  /** Message body (already normalised; may be empty when `hasPhoto`). */
+  /** Message body (already normalised; may be empty when `hasPhoto` or `hasVideo`). */
   text: string;
   /** Creation instant. */
   createdAt: Date;
@@ -79,7 +79,7 @@ export interface PublicMessage {
   id: string;
   /** Author display name at post time. */
   name: string;
-  /** Message body (may be empty when `hasPhoto` is true). */
+  /** Message body (may be empty when `hasPhoto` or `hasVideo` is true). */
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
@@ -89,7 +89,7 @@ export interface PublicMessage {
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
-  /** True when a video can be fetched via GET `/messages/:id/video.mp4`. */
+  /** True when a video can be fetched via GET `/messages/:id/video.mp4|.webm|.mov`. */
   hasVideo: boolean;
   /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
   videoContentType: ForumVideoContentType | null;
@@ -103,7 +103,7 @@ export interface PublicMessage {
 /**
  * Trim and validate forum message text.
  *
- * Empty / whitespace-only input becomes `''` (valid for photo-only posts).
+ * Empty / whitespace-only input becomes `''` (valid for photo-only or video-only posts).
  * Over-long text and disallowed controls still reject.
  *
  * @param raw - User input.

@@ -107,7 +107,7 @@
 
 ## Function: migrateMessageSchema
 
-- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases, then `message_invoice` and `nostr_zap_ingest` without FKs plus their `created_at`/`message_id` and `receipt_id` indexes).
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`/`video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases, then `message_invoice` and `nostr_zap_ingest` without FKs plus their `created_at`/`message_id` and `receipt_id` indexes).
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -590,7 +590,7 @@
 
 ## Function: normalizeForumText
 
-- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
+- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
 - **Used by:** `POST /messages`, `POST /contact`.

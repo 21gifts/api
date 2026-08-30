@@ -25,7 +25,7 @@ export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
 /** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 
-/** Optional NIP-92 image attached to a kind:1. */
+/** Optional NIP-92 media (image or video) attached to a kind:1. */
 export interface Kind1Photo {
   /** Absolute HTTPS URL clients fetch. */
   url: string;
