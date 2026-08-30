@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
-import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -287,8 +287,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
-      /* v8 ignore start -- zod already requires positive int; cap is extra */
-      if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
+      if (amountMsat > GIFT_INVOICE_MAX_MSAT) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
@@ -309,7 +308,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
-      /* v8 ignore stop */
       const row = await deps.store.getById(messageIdParam);
       if (row === undefined) {
         await persistInvoiceAttempt(

@@ -82,17 +82,27 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (!gate.ok) {
         return c.json(gate.body, gate.status);
       }
-      const invoices = await deps.store.listInvoiceAttempts(DEBUG_LIST_LIMIT);
-      logEvent('debug.invoices.listed', { count: invoices.length });
-      return c.json({ invoices: invoices.map(serializeInvoice) }, 200);
+      try {
+        const invoices = await deps.store.listInvoiceAttempts(DEBUG_LIST_LIMIT);
+        logEvent('debug.invoices.listed', { count: invoices.length });
+        return c.json({ invoices: invoices.map(serializeInvoice) }, 200);
+      } catch {
+        logEvent('debug.invoices.list_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     })
     .get('/zap-ingests', async (c) => {
       const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
       if (!gate.ok) {
         return c.json(gate.body, gate.status);
       }
-      const ingests = await deps.store.listZapIngests(DEBUG_LIST_LIMIT);
-      logEvent('debug.zap_ingests.listed', { count: ingests.length });
-      return c.json({ ingests: ingests.map(serializeIngest) }, 200);
+      try {
+        const ingests = await deps.store.listZapIngests(DEBUG_LIST_LIMIT);
+        logEvent('debug.zap_ingests.listed', { count: ingests.length });
+        return c.json({ ingests: ingests.map(serializeIngest) }, 200);
+      } catch {
+        logEvent('debug.zap_ingests.list_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     });
 }

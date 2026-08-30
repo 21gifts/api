@@ -770,6 +770,12 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
 Success → **Response** `200`:
 
 ```json
@@ -826,6 +832,12 @@ Missing or non-matching bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
 ```
 
 Success → **Response** `200`:
@@ -1241,7 +1253,7 @@ Success → **Response** `200`:
 ### `POST /messages/:id/invoice`
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
-Body `{ "sats": <int ≥ 1> }`. The api signs a NIP-57 zap request with the
+Body `{ "sats": <int 1..10_000_000> }`. The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address.
 It does **not** increment `sats` (that happens when a validated kind:9735
 receipt is indexed). After auth, every attempt with a valid UUID is persisted
@@ -1257,7 +1269,7 @@ Success → **Response** `200`:
 ```
 
 Missing Bearer → **401** `{ "error": "Unauthorized" }`.
-Malformed body → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
+Malformed body or `sats` above 10 million → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a Lightning Address, or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).

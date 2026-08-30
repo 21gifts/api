@@ -153,4 +153,29 @@ describe('debugPaymentsRoutes', () => {
     expect(JSON.stringify(body)).not.toMatch(/nsec/i);
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.zap_ingests.listed')).toBe(true);
   });
+
+  it('returns 503 when listing invoices or ingests throws', async () => {
+    const boom = async (): Promise<never> => {
+      throw new Error('list boom');
+    };
+    const store = {
+      listInvoiceAttempts: boom,
+      listZapIngests: boom,
+    } as unknown as InMemoryMessageStore;
+    const app = mount(store, 'secret');
+    const invoices = await app.request('/debug/invoices', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(invoices.status).toBe(503);
+    expect(await invoices.json()).toEqual({ error: 'Messages are unavailable' });
+    const ingests = await app.request('/debug/zap-ingests', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(ingests.status).toBe(503);
+    expect(await ingests.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.invoices.list_failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.zap_ingests.list_failed')).toBe(
+      true,
+    );
+  });
 });
