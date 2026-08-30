@@ -905,8 +905,8 @@
 
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional photo appends the public image URL to content and a NIP-92 `imeta` tag. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified).
-- **Inputs:** content, unix created_at, optional `{ url, mime }`.
+- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag; video may add `imeta` `image` from `posterUrl`. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified).
+- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl? }`.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker sign path.
 
