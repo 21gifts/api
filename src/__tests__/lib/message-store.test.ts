@@ -353,6 +353,7 @@ describe('InMemoryMessageStore', () => {
       eventId: '11'.repeat(32),
       nostrEvent: null,
     });
+    await store.updatePublishState('n', 'published', 'space');
     await store.create({
       ...EARLY,
       id: 'z',
@@ -360,6 +361,7 @@ describe('InMemoryMessageStore', () => {
       eventId: '22'.repeat(32),
       nostrEvent: { content: 1 },
     });
+    await store.updatePublishState('z', 'published', 'space');
     const tiedAt = new Date('2026-08-15T00:00:00.000Z');
     await store.create({
       ...EARLY,
@@ -369,6 +371,7 @@ describe('InMemoryMessageStore', () => {
       eventId: '33'.repeat(32),
       nostrEvent: { content: 'only bitcoin\n\n#bitcoin' },
     });
+    await store.updatePublishState('q', 'published', 'space');
     await store.create({
       ...EARLY,
       id: 'p',
@@ -377,6 +380,7 @@ describe('InMemoryMessageStore', () => {
       eventId: '44'.repeat(32),
       nostrEvent: { content: 'only 21gifts\n\n#21gifts' },
     });
+    await store.updatePublishState('p', 'published', 'space');
     await store.create(
       {
         ...EARLY,
@@ -391,6 +395,13 @@ describe('InMemoryMessageStore', () => {
       },
       jpeg,
     );
+    await store.create({
+      ...EARLY,
+      id: 'pend',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      eventId: '66'.repeat(32),
+      nostrEvent: { content: 'pending without hashtags' },
+    });
     expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
@@ -923,6 +934,7 @@ describe('PostgresMessageStore', () => {
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/sats = 0/);
+    expect(listSql).toMatch(/nostr_publish_state = 'published'/);
     expect(listSql).toMatch(/jsonb_typeof\(nostr_event->'content'\) IS DISTINCT FROM 'string'/);
     expect(listSql).toMatch(/NOT LIKE '%#21gifts%'/);
     expect(listSql).toMatch(/NOT LIKE '%#bitcoin%'/);

@@ -249,6 +249,54 @@ describe('runNostrWorkerTick', () => {
     });
     await messages.updatePublishState('m-hashtag-zapped', 'published', 'space');
     await messages.addSats('m-hashtag-zapped', 21);
+    const tick = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    await runNostrWorkerTick(tick);
+    expect((await messages.getById('m-hashtag'))?.eventId).toBeNull();
+    await runNostrWorkerTick(tick);
+    const unpaid = await messages.getById('m-hashtag');
+    expect(unpaid?.eventId).not.toBe('ab'.repeat(32));
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#bitcoin');
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#21gifts');
+    expect(String(unpaid?.nostrEvent?.['content'])).toContain('ohne foto funktioniert es');
+    const zapped = await messages.getById('m-hashtag-zapped');
+    expect(zapped?.eventId).toBe('cd'.repeat(32));
+    expect(zapped?.nostrEvent?.['content']).toBe('ohne foto funktioniert es');
+    expect(zapped?.sats).toBe(21);
+  });
+
+  it('signs a new post before resetting published notes that lack Damus hashtags', async () => {
+    const { auth, messages } = await seed();
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    for (let i = 0; i < 20; i += 1) {
+      const id = `old-${String(i).padStart(2, '0')}`;
+      await messages.create({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: `old ${i}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      });
+      await messages.updateSignedEvent(id, id.padEnd(64, 'a'), {
+        kind: 1,
+        content: `old ${i}`,
+        tags,
+        created_at: 1,
+      });
+      await messages.updatePublishState(id, 'published', 'space');
+    }
     await runNostrWorkerTick(
       deps({
         messages,
@@ -259,15 +307,39 @@ describe('runNostrWorkerTick', () => {
         env: {},
       }),
     );
-    const unpaid = await messages.getById('m-hashtag');
-    expect(unpaid?.eventId).not.toBe('ab'.repeat(32));
-    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#bitcoin');
-    expect(String(unpaid?.nostrEvent?.['content'])).toContain('#21gifts');
-    expect(String(unpaid?.nostrEvent?.['content'])).toContain('ohne foto funktioniert es');
-    const zapped = await messages.getById('m-hashtag-zapped');
-    expect(zapped?.eventId).toBe('cd'.repeat(32));
-    expect(zapped?.nostrEvent?.['content']).toBe('ohne foto funktioniert es');
-    expect(zapped?.sats).toBe(21);
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect((await messages.getById('old-00'))?.eventId).toBeNull();
+  });
+
+  it('EVENTs pending notes that lack Damus hashtags instead of resetting them', async () => {
+    const { auth, messages } = await seed();
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    const eventId = 'ab'.repeat(32);
+    await messages.updateSignedEvent('m1', eventId, {
+      kind: 1,
+      content: 'Das ist ein hashtag test v2',
+      tags,
+      created_at: 1,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    expect((await messages.getById('m1'))?.eventId).toBe(eventId);
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+    expect(publisher.calls.some((call) => call.event['kind'] === 1)).toBe(true);
   });
 
   it('re-signs pending rows whose stored event has no tag array', async () => {
