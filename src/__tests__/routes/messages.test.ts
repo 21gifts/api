@@ -1341,6 +1341,135 @@ describe('POST /messages/:id/invoice', () => {
       true,
     );
   });
+
+  it('persists sign_failed when signing throws', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const signMod = await import('@/lib/nostr/sign');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const spy = vi.spyOn(signMod, 'signEventForAccount').mockRejectedValue(new Error('sign boom'));
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(503);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts[0]?.result).toBe('sign_failed');
+      expect(attempts[0]?.httpStatus).toBe(503);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('persists ok path with null zapRequest when the signed event is not an object', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const signMod = await import('@/lib/nostr/sign');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const spy = vi
+      .spyOn(signMod, 'signEventForAccount')
+      .mockResolvedValue(
+        null as unknown as Awaited<ReturnType<typeof signMod.signEventForAccount>>,
+      );
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 100000000000,
+            allowsNostr: true,
+            nostrPubkey: 'be1d89794bf92de5dd64c1e60f6a2c70c140abac9932418fee30c5c637fe9479',
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), { status: 200 });
+    };
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/ffffffff-ffff-4fff-8fff-ffffffffffff/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts[0]?.result).toBe('ok');
+      expect(attempts[0]?.zapRequest).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('GET /messages/:id/photo', () => {

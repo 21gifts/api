@@ -1261,4 +1261,35 @@ describe('indexOpenZapReceipts', () => {
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
   });
+
+  it('records ingest error with null receiptPubkey when pubkey is not a string', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({ store, auth, accountId: 'acc-pubkey-type' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-bad-pubkey',
+        pubkey: 1 as unknown as string,
+        kind: 9735,
+        tags: [['e', NOTE_EVENT_ID]],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      verifyReceipt: () => {
+        throw new Error('verify boom');
+      },
+    });
+    const rows = await store.listZapIngests(10);
+    expect(rows.some((row) => row.receiptId === 'r-bad-pubkey' && row.receiptPubkey === null)).toBe(
+      true,
+    );
+  });
 });

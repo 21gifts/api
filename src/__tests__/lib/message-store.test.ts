@@ -888,6 +888,40 @@ describe('PostgresMessageStore', () => {
         description_hash: null,
         is_nip57_invoice: null,
       },
+      {
+        id: 'inv-4',
+        created_at: new Date('2026-08-25T12:00:00.000Z'),
+        message_id: 'm4',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 0,
+        lightning_address: null,
+        zap_request: null,
+        result: 'not_found',
+        http_status: 404,
+        pr: null,
+        payment_hash: null,
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: false,
+      },
+      {
+        id: 'inv-5',
+        created_at: new Date('2026-08-24T12:00:00.000Z'),
+        message_id: 'm5',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 0,
+        lightning_address: null,
+        zap_request: '[1,2]',
+        result: 'bad_body',
+        http_status: 400,
+        pr: null,
+        payment_hash: null,
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: false,
+      },
     ];
     const store = new PostgresMessageStore(sql);
     const listed = await store.listInvoiceAttempts(50);
@@ -902,6 +936,8 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.zapRequest).toEqual({ kind: 9734, content: 'x' });
     expect(listed[1]?.isNip57Invoice).toBe(false);
     expect(listed[2]?.zapRequest).toBeNull();
+    expect(listed[3]?.zapRequest).toBeNull();
+    expect(listed[4]?.zapRequest).toBeNull();
   });
 
   it('recordZapIngest inserts into nostr_zap_ingest', async () => {
@@ -952,6 +988,30 @@ describe('PostgresMessageStore', () => {
         receipt_pubkey: null,
         receipt: 'not-json',
       },
+      {
+        id: 'zi-3',
+        created_at: new Date('2026-08-26T12:00:00.000Z'),
+        receipt_id: 'r3',
+        note_event_id: null,
+        message_id: null,
+        outcome: 'rejected',
+        reason: 'error',
+        amount_sats: null,
+        receipt_pubkey: null,
+        receipt: null,
+      },
+      {
+        id: 'zi-4',
+        created_at: new Date('2026-08-25T12:00:00.000Z'),
+        receipt_id: 'r4',
+        note_event_id: null,
+        message_id: null,
+        outcome: 'rejected',
+        reason: 'error',
+        amount_sats: null,
+        receipt_pubkey: null,
+        receipt: '[1]',
+      },
     ];
     const store = new PostgresMessageStore(sql);
     const listed = await store.listZapIngests(10);
@@ -963,5 +1023,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.outcome).toBe('rejected');
     expect(listed[1]?.amountSats).toBeNull();
     expect(listed[1]?.receipt).toEqual({});
+    expect(listed[2]?.receipt).toEqual({});
+    expect(listed[3]?.receipt).toEqual({});
   });
 });
