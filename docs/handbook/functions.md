@@ -250,14 +250,14 @@
 - **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
 - **Inputs:** BOLT11 string; optional decoder inject for tests.
 - **Returns / side effects:** `InspectedBolt11` or `null` when malformed / zero-amount.
-- **Used by:** `POST /messages/:id/invoice` when persisting an ok attempt.
+- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting ok / `not_zap` attempts.
 
 ## Function: isNip57Invoice
 
 - **Purpose:** True when `descriptionHash` equals `sha256(utf8(zapRequestJson))`.
 - **Inputs:** description hash (or null) and zap request JSON string (or null).
 - **Returns / side effects:** boolean.
-- **Used by:** `POST /messages/:id/invoice` when persisting an ok attempt.
+- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`).
 
 ## Function: resolveVapidConfig
 
@@ -569,9 +569,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `POST /:id/invoice` issues a NIP-57 zap BOLT11 (invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 + persist `not_zap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / unpaid note; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / unpaid note / non-NIP-57 invoice; 404 photo missing; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/live `role` and omits `accountId` and photo bytes (missing author → `role` `"basis"` on list).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes

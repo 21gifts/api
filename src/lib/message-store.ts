@@ -180,6 +180,7 @@ export interface MessageStore {
 export type MessageInvoiceResult =
   | 'ok'
   | 'noZap'
+  | 'not_zap'
   | 'unreachable'
   | 'no_event'
   | 'no_author'

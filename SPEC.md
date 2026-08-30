@@ -807,11 +807,13 @@ Success → **Response** `200`:
 ```
 
 Rows are newest-first, capped at **200**. Never includes nsec. `result` is one
-of `ok`, `noZap`, `unreachable`, `no_event`, `no_author`, `no_key`,
+of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`, `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
 true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
 sent as LNURL `nostr=`. Failure rows have `pr` null and `isNip57Invoice`
-false. When `DATABASE_URL` is unset the in-memory store starts empty.
+false, except `not_zap` which stores the rejected BOLT11 (`pr` set,
+`isNip57Invoice` false). When `DATABASE_URL` is unset the in-memory store
+starts empty.
 
 Environment:
 
@@ -1335,8 +1337,13 @@ Success → **Response** `200`:
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
 Body `{ "sats": <int 1..10_000_000> }`. The api signs a NIP-57 zap request with the
-**payer** key and returns a BOLT11 invoice for the **author** Lightning Address.
-It does **not** increment `sats` (that happens when a validated kind:9735
+**payer** key and returns a BOLT11 invoice for the **author** Lightning Address
+**only** when the minted invoice's `description_hash` equals SHA-256 of the
+zap-request JSON (`isNip57Invoice`). LNURL success with a non-NIP-57 invoice
+(plaintext description, missing/mismatched `description_hash`, or malformed
+BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
+`{ "error": "Could not start the Bitcoin payment" }` with **no** `pr` in the
+body. It does **not** increment `sats` (that happens when a validated kind:9735
 receipt is indexed). After auth, every attempt with a valid UUID is persisted
 best-effort to `message_invoice` (result, HTTP status, `pr`, description vs
 `description_hash`, `isNip57Invoice`). Store failures log
@@ -1357,7 +1364,7 @@ Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
 checked only after auth, amount, payable, and KEK checks succeed, so early
 400/404/401/503 do not consume quota. LNURL/zap or sign failure after the
-limiter still counts. LNURL/zap failure →
+limiter still counts. LNURL/zap failure (including non-NIP-57 invoice) →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
 
