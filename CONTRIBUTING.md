@@ -319,7 +319,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   still match a live `account.view_key`, then recreates it. Rows whose key no
   longer matches a live account are left unchanged.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
-  `nonce`, `view_key`, `endpoint`, `p256dh`, and `auth` are SHA-256 hex of the column text. All other columns, including
+  `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, and `delivered_endpoints` are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
 - Compare OLD vs NEW **before** redaction

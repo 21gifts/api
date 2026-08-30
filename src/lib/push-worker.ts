@@ -57,6 +57,7 @@ export async function enqueueForumPushes(
       attempts: 0,
       claimedUntil: null,
       createdAt,
+      deliveredEndpoints: [],
     };
     await store.enqueue(row);
   }
@@ -90,6 +91,7 @@ export async function enqueueZapPush(
     attempts: 0,
     claimedUntil: null,
     createdAt: new Date(nowMs),
+    deliveredEndpoints: [],
   };
   await store.enqueue(row);
 }
@@ -121,6 +123,7 @@ export async function enqueueDebugPush(
     attempts: 0,
     claimedUntil: null,
     createdAt: new Date(nowMs),
+    deliveredEndpoints: [],
   };
   await store.enqueue(row);
   return 1;
@@ -138,6 +141,8 @@ export interface PushWorkerDeps {
 
 /**
  * Claim a batch and deliver each row to every subscription for its account.
+ * Skips endpoints already recorded on the outbox row so retries do not
+ * re-send a payload that succeeded on a previous tick.
  *
  * @param deps - Store, sender, clock.
  */
@@ -153,10 +158,17 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
       await deps.store.markSent(row.id);
       continue;
     }
+    const delivered = new Set(row.deliveredEndpoints);
+    const newlyDelivered: string[] = [];
     let anyFail = false;
     for (const sub of subs) {
+      if (delivered.has(sub.endpoint)) {
+        continue;
+      }
       const result = await deps.sender.send(sub, row.payload);
       if (result.ok) {
+        newlyDelivered.push(sub.endpoint);
+        delivered.add(sub.endpoint);
         continue;
       }
       if (result.reason === 'gone') {
@@ -164,6 +176,9 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
         continue;
       }
       anyFail = true;
+    }
+    if (newlyDelivered.length > 0) {
+      await deps.store.recordDelivered(row.id, newlyDelivered);
     }
     if (anyFail) {
       await deps.store.markFailed(row.id);
