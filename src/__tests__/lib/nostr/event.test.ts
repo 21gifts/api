@@ -64,6 +64,19 @@ describe('kind1', () => {
     expect(kind1ContentWithHashtags('hello #21Gifts')).toBe('hello #21Gifts\n\n#bitcoin');
     expect(kind1HasHashtag('note #Bitcoin here', 'bitcoin')).toBe(true);
   });
+
+  it('does not treat #bitcoiners or #21giftshop as the Damus tokens', () => {
+    expect(kind1HasHashtag('hello #bitcoiners', 'bitcoin')).toBe(false);
+    expect(kind1HasHashtag('shop #21giftshop', '21gifts')).toBe(false);
+    expect(kind1ContentWithHashtags('hello #bitcoiners')).toBe(
+      'hello #bitcoiners\n\n#bitcoin #21gifts',
+    );
+    expect(kind1ContentWithHashtags('shop #21giftshop')).toBe(
+      'shop #21giftshop\n\n#bitcoin #21gifts',
+    );
+    expect(kind1HasHashtag('#bitcoin.', 'bitcoin')).toBe(true);
+    expect(kind1HasHashtag('#21gifts', '21gifts')).toBe(true);
+  });
 });
 
 describe('kind0', () => {
