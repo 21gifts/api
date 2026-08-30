@@ -781,6 +781,109 @@ describe('runNostrWorkerTick', () => {
     expect(row?.nostrPublishState).toBe('published');
   });
 
+  it('re-signs published video posts that lack the video URL', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-video',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:04:30.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await messages.updateSignedEvent('m-video', 'ab'.repeat(32), {
+      kind: 1,
+      content: '#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-video', 'published', 'space');
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const row = await messages.getById('m-video');
+    expect(row?.eventId).not.toBe('ab'.repeat(32));
+    expect(String(row?.nostrEvent?.['content'])).toContain('/messages/m-video/video.mp4');
+  });
+
+  it('does not reset published video posts when PUBLIC_BASE_URL is unset', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-novideo-url',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:04:45.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await messages.updateSignedEvent('m-novideo-url', 'ab'.repeat(32), {
+      kind: 1,
+      content: '#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-novideo-url', 'published', 'space');
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    const row = await messages.getById('m-novideo-url');
+    expect(row?.eventId).toBe('ab'.repeat(32));
+    expect(row?.nostrPublishState).toBe('published');
+  });
+
   it('does not reset a zapped photo post that lacks the photo URL', async () => {
     const { auth, messages } = await seed();
     await messages.create(
@@ -855,6 +958,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingVideo = async () => [];
     messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(
@@ -953,6 +1057,7 @@ describe('runNostrWorkerTick', () => {
     });
     await messages.addSats('m-zap-pending', 7);
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingVideo = async () => [];
     messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(

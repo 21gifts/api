@@ -34,10 +34,21 @@ import {
   forumVideoExt,
   parseBytesRange,
   resolveMediaDir,
+  streamForumVideo,
   videoFilePath,
   type ForumVideo,
 } from '@/lib/video';
-import { readFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
+
+/** True when `err` is a Node errno with `code === 'ENOENT'`. */
+function isPathNotFound(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as NodeJS.ErrnoException).code === 'ENOENT'
+  );
+}
 
 /** Placeholder author id when the message/author is unknown at persist time. */
 const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
@@ -185,13 +196,17 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
 }
 
 /**
- * Public video bytes with Range support so Damus can seek.
+ * Stream public video bytes with Range support so Damus can seek.
+ *
+ * Reads metadata via `stat` and streams with {@link streamForumVideo} (never
+ * loads the whole file into RAM). Missing / empty / non-file paths are 404;
+ * unsatisfiable ranges are 416; other I/O is 503.
  *
  * @param deps - Message store.
  * @param c - Request (Range header).
  * @param id - Message id.
  * @param ext - Path extension (`mp4` / `webm` / `mov`).
- * @returns 200, 206, 404, or 503.
+ * @returns 200, 206, 404, 416, or 503.
  */
 async function serveForumVideo(
   deps: MessagesRouteDeps,
@@ -212,11 +227,18 @@ async function serveForumVideo(
       return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     const path = videoFilePath(resolveMediaDir(), id, mime);
-    const bytes = await readFile(path);
-    const size = bytes.byteLength;
-    /* v8 ignore next 3 -- empty file after a crashed write */
-    if (size === 0) {
-      return Response.json({ error: 'Video not found' }, { status: 404 });
+    let size: number;
+    try {
+      const fileStat = await stat(path);
+      if (!fileStat.isFile() || fileStat.size === 0) {
+        return Response.json({ error: 'Video not found' }, { status: 404 });
+      }
+      size = fileStat.size;
+    } catch (err) {
+      if (isPathNotFound(err)) {
+        return Response.json({ error: 'Video not found' }, { status: 404 });
+      }
+      throw err;
     }
     const range = parseBytesRange(c.req.header('range') ?? undefined, size);
     const headers: Record<string, string> = {
@@ -226,14 +248,20 @@ async function serveForumVideo(
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': `inline; filename="video.${ext}"`,
     };
-    if (range === null) {
-      headers['Content-Length'] = String(size);
-      return new Response(bytes, { status: 200, headers });
+    if (range.type === 'unsatisfiable') {
+      headers['Content-Range'] = `bytes */${size}`;
+      return new Response(null, { status: 416, headers });
     }
-    const sliced = bytes.subarray(range.start, range.end + 1);
-    headers['Content-Length'] = String(sliced.byteLength);
+    if (range.type === 'full') {
+      headers['Content-Length'] = String(size);
+      return new Response(streamForumVideo(path, 0, size - 1), { status: 200, headers });
+    }
+    headers['Content-Length'] = String(range.end - range.start + 1);
     headers['Content-Range'] = `bytes ${range.start}-${range.end}/${size}`;
-    return new Response(sliced, { status: 206, headers });
+    return new Response(streamForumVideo(path, range.start, range.end), {
+      status: 206,
+      headers,
+    });
   } catch {
     logEvent('messages.video.failed');
     return Response.json({ error: 'Messages are unavailable' }, { status: 503 });

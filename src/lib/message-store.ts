@@ -26,6 +26,14 @@ function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: 
   return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo.`);
 }
 
+function kind1MissingVideoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/video.`);
+}
+
 function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
   if (event === null) {
     return true;
@@ -121,6 +129,16 @@ export interface MessageStore {
    * @param limit - Max rows.
    */
   listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Published rows with a video whose kind:1 content lacks the public video URL.
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingVideo(limit: number): Promise<MessageRow[]>;
 
   /**
    * Published rows whose kind:1 content lacks a `#21gifts` or `#bitcoin` token
@@ -498,6 +516,27 @@ export class InMemoryMessageStore implements MessageStore {
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  listSignedMissingVideo(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.hasVideo === true &&
+          row.videoContentType !== null &&
+          row.videoContentType !== undefined &&
+          row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
+          kind1MissingVideoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -892,6 +931,23 @@ export class PostgresMessageStore implements MessageStore {
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listSignedMissingVideo(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL AND video_content_type IS NOT NULL AND sats = 0
+         AND nostr_publish_state = 'published'
+         AND (
+           nostr_event IS NULL
+           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/video.%'
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,

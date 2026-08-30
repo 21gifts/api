@@ -7,6 +7,8 @@ import {
   parseBytesRange,
   removeForumVideo,
   resolveMediaDir,
+  streamForumVideo,
+  videoFilePath,
   writeForumVideo,
 } from '@/lib/video';
 
@@ -46,18 +48,20 @@ describe('video', () => {
   });
 
   it('parses byte ranges', () => {
-    expect(parseBytesRange(undefined, 100)).toBeNull();
-    expect(parseBytesRange('bytes=0-9', 100)).toEqual({ start: 0, end: 9 });
-    expect(parseBytesRange('bytes=50-', 100)).toEqual({ start: 50, end: 99 });
-    expect(parseBytesRange('bytes=-10', 100)).toEqual({ start: 90, end: 99 });
-    expect(parseBytesRange('bytes=80-70', 100)).toBeNull();
-    expect(parseBytesRange('bytes=', 100)).toBeNull();
-    expect(parseBytesRange('bytes=-', 100)).toBeNull();
-    expect(parseBytesRange('bytes=-0', 100)).toBeNull();
-    expect(parseBytesRange('bytes=abc-1', 100)).toBeNull();
-    expect(parseBytesRange('bytes=0-9', 0)).toBeNull();
-    expect(parseBytesRange('nope', 100)).toBeNull();
-    expect(parseBytesRange('  ', 100)).toBeNull();
+    expect(parseBytesRange(undefined, 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=0-9', 100)).toEqual({ type: 'partial', start: 0, end: 9 });
+    expect(parseBytesRange('bytes=50-', 100)).toEqual({ type: 'partial', start: 50, end: 99 });
+    expect(parseBytesRange('bytes=-10', 100)).toEqual({ type: 'partial', start: 90, end: 99 });
+    expect(parseBytesRange('bytes=80-70', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=-', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=-0', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=abc-1', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=0-9', 0)).toEqual({ type: 'full' });
+    expect(parseBytesRange('nope', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('  ', 100)).toEqual({ type: 'full' });
+    expect(parseBytesRange('bytes=100-', 100)).toEqual({ type: 'unsatisfiable' });
+    expect(parseBytesRange('bytes=200-300', 100)).toEqual({ type: 'unsatisfiable' });
   });
 
   it('falls back to a temp media dir', () => {
@@ -72,6 +76,16 @@ describe('video', () => {
       return;
     }
     await writeForumVideo('vid-1', video);
+    const stream = streamForumVideo(
+      videoFilePath(resolveMediaDir(), 'vid-1', 'video/mp4'),
+      0,
+      video.bytes.byteLength - 1,
+    );
+    const reader = stream.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(first.value?.byteLength).toBeGreaterThan(0);
+    await reader.cancel();
     await removeForumVideo('vid-1', 'video/mp4');
     await removeForumVideo('missing', 'video/mp4');
   });

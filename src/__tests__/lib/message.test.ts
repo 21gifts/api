@@ -74,6 +74,7 @@ describe('serializeMessage', () => {
       payable: true,
       hasPhoto: false,
       hasVideo: false,
+      videoContentType: null,
       role: 'moderator',
     });
     expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');
@@ -90,6 +91,23 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
     };
     expect(serializeMessage(row, false, 'basis').hasPhoto).toBe(true);
+  });
+
+  it('includes hasVideo and videoContentType', () => {
+    const row: MessageRow = {
+      id: 'msg-3',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'clip',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      ...unsignedNostrDefaults(),
+    };
+    const publicMsg = serializeMessage(row, false, 'basis');
+    expect(publicMsg.hasVideo).toBe(true);
+    expect(publicMsg.videoContentType).toBe('video/mp4');
   });
 });
 

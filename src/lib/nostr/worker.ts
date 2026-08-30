@@ -130,6 +130,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   await resignPhotoKind1(deps);
+  await resignVideoKind1(deps);
   await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
@@ -173,6 +174,13 @@ async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
     return;
   }
   await resetPublishedBatch(deps, await deps.messages.listSignedMissingPhoto(WORKER_BATCH));
+}
+
+async function resignVideoKind1(deps: NostrWorkerDeps): Promise<void> {
+  if (resolvePublicApiBase(deps.env) === '') {
+    return;
+  }
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingVideo(WORKER_BATCH));
 }
 
 async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {

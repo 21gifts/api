@@ -40,4 +40,26 @@ describe('GET /.well-known/nostr.json', () => {
     const res = await app.request('/.well-known/nostr.json');
     expect(res.status).toBe(503);
   });
+
+  it('keeps CORS * when Origin is a foreign site', async () => {
+    const app = createApp({ authStore: new InMemoryAuthStore() });
+    const res = await app.request('/.well-known/nostr.json', {
+      headers: { Origin: 'https://example.com' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('answers OPTIONS preflight with CORS *', async () => {
+    const app = createApp({ authStore: new InMemoryAuthStore() });
+    const res = await app.request('/.well-known/nostr.json', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://example.com',
+        'Access-Control-Request-Method': 'GET',
+      },
+    });
+    expect([200, 204]).toContain(res.status);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
 });

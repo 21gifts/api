@@ -178,18 +178,32 @@ export function createApp(deps: AppDeps = {}): Hono {
   const app = new Hono();
 
   app.use('*', requestLog());
+  // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this
+  // before the restrictive allowlist cors so `*` is applied last on the way out
+  // (Hono middleware registered first wraps later middleware).
+  app.use(
+    '/.well-known/*',
+    cors({
+      origin: '*',
+      allowMethods: ['GET', 'OPTIONS'],
+      maxAge: 86400,
+    }),
+  );
   // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
   // CORS covers the apex, transitional app.* aliases, and localhost.
   // Bearer sessions are headers (no cookies), credentials off.
-  app.use(
-    '*',
-    cors({
+  app.use('*', async (c, next) => {
+    if (c.req.path.startsWith('/.well-known')) {
+      await next();
+      return;
+    }
+    return cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Authorization', 'Content-Type'],
       maxAge: 86400,
-    }),
-  );
+    })(c, next);
+  });
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));

@@ -156,7 +156,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns published rows with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid rows whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes; `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns published rows with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, `created_at ASC, id ASC`); `listSignedMissingVideo` returns published rows with `video_content_type` set whose kind:1 content lacks `/messages/:id/video.` (`sats = 0`, pending excluded, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid rows whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto` / invoice and ingest rows. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503) except invoice/ingest persist failures which are caught by callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -366,7 +366,7 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches and `sats` is 0), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts`, `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded), `listSignedMissingVideo` (published + video MIME, kind:1 content lacks `/messages/:id/video.`, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches and `sats` is 0), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts`, `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
 - **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
 - **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. No I/O.
 - **Used by:** `createApp` default `messageStore`.
@@ -611,9 +611,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, and live author role.
-- **Inputs:** `MessageRow` (includes `accountId`; never photo bytes), `payable` boolean, and `role` (`AccountRole`).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, role }` with ISO-8601 `createdAt`; `accountId` omitted; never photo bytes. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, and live author role.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, and `role` (`AccountRole`).
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType, role }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `accountId` omitted; never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: serializeContact
@@ -1187,9 +1187,9 @@
 
 ## Function: parseBytesRange
 
-- **Purpose:** Parse `bytes=start-end` for 206 responses.
+- **Purpose:** Parse `bytes=start-end` for 200 / 206 / 416 responses (RFC 7233).
 - **Inputs:** header, file size.
-- **Returns / side effects:** `{start,end}` or null (full body).
+- **Returns / side effects:** `{ type: 'full' }` | `{ type: 'partial'; start; end }` | `{ type: 'unsatisfiable' }`.
 - **Used by:** `GET /messages/:id/video.*`.
 
 ## Function: removeForumVideo
@@ -1205,6 +1205,13 @@
 - **Inputs:** env.
 - **Returns / side effects:** directory path.
 - **Used by:** video read/write.
+
+## Function: streamForumVideo
+
+- **Purpose:** Inclusive byte-range file stream for `GET /messages/:id/video.*` without loading the file into RAM.
+- **Inputs:** absolute path, inclusive start, inclusive end.
+- **Returns / side effects:** `ReadableStream<Uint8Array>` as the HTTP body.
+- **Used by:** `serveForumVideo`.
 
 ## Function: videoFilePath
 

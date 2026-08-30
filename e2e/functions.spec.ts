@@ -996,6 +996,9 @@ test('Function: parseBytesRange — default boot has no DATABASE_URL', async ({ 
 test('Function: removeForumVideo — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: streamForumVideo — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: resolveMediaDir — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

@@ -9,22 +9,22 @@
 
 ## Endpoint: GET /messages/:id/video.mp4
 
-- **Purpose:** Public MP4 bytes with `Accept-Ranges` / HTTP 206 so Damus can seek. `Access-Control-Allow-Origin: *`.
-- **Errors:** 404 `{ error: 'Video not found' }`; 503 `{ error: 'Messages are unavailable' }`.
+- **Purpose:** Public MP4 bytes streamed from disk with `Accept-Ranges` / HTTP 206 so Damus can seek. `Access-Control-Allow-Origin: *`.
+- **Errors:** 404 `{ error: 'Video not found' }`; 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
 - **Used by:** Damus/Primal kind:1 video URLs.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.webm
 
 - **Purpose:** Same as `video.mp4` for WebM posts.
-- **Errors:** Same 404 / 503.
+- **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.mov
 
 - **Purpose:** Same as `video.mp4` for QuickTime posts.
-- **Errors:** Same 404 / 503.
+- **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal.
 - **Auth:** none.
 

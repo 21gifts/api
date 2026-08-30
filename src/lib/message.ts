@@ -91,6 +91,8 @@ export interface PublicMessage {
   hasPhoto: boolean;
   /** True when a video can be fetched via GET `/messages/:id/video.mp4`. */
   hasVideo: boolean;
+  /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
+  videoContentType: ForumVideoContentType | null;
   /**
    * Author's live `account.role` (not a snapshot). Always present; `"basis"`
    * when the author account is missing.
@@ -133,8 +135,9 @@ export function normalizeForumText(raw: string): string | null {
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole} (or `'basis'` if missing).
- * @returns Public fields (`sats`, `payable`, `hasPhoto`, `role`; no `accountId`);
- * `createdAt` ISO-8601. Never includes photo bytes.
+ * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
+ * `videoContentType`, `role`; no `accountId`); `createdAt` ISO-8601. Never
+ * includes photo or video bytes.
  */
 export function serializeMessage(
   row: MessageRow,
@@ -150,6 +153,7 @@ export function serializeMessage(
     payable,
     hasPhoto: row.hasPhoto,
     hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
     role,
   };
 }
