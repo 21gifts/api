@@ -153,8 +153,7 @@ test('GET /messages/:id/video.mov without bearer is 404', async ({ request }) =>
   const res = await request.get('/messages/:id/video.mov');
   expect(res.status()).toBe(404);
 });
-test('GET /well-known/nostr.json is 200', async ({ request }) => {
-  expect((await request.get('/well-known/nostr.json')).status()).toBeGreaterThanOrEqual(200);
+test('GET /.well-known/nostr.json is 200', async ({ request }) => {
   const res = await request.get('/.well-known/nostr.json');
   expect(res.status()).toBe(200);
 });

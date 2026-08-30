@@ -107,15 +107,16 @@ function reservedContent(
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
- * signed. Then published unpaid rows missing a photo URL (`PUBLIC_BASE_URL`
- * set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick.
- * Pending rows EVENT as-is — resetting them first renews the 60s sign lease
- * and they never reach a relay. Zapped rows (`sats !== 0`) keep their event
- * id so receipts still resolve. An empty API base skips photo-URL resign so
- * it cannot un-publish and loop. When publishing, also fans out a replaceable
- * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
- * kind:10002 relay list. Kind:1 photo posts include the public image URL
- * and an `imeta` tag. Kind:0
+ * signed. Then published unpaid rows missing a photo URL or a video URL
+ * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset
+ * for the next tick. Pending rows EVENT as-is — resetting them first renews
+ * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
+ * keep their event id so receipts still resolve. An empty API base skips
+ * photo- and video-URL resign so it cannot un-publish and loop. When
+ * publishing, also fans out a replaceable kind:0 profile (`name` /
+ * `display_name` / `picture`, optional `nip05`) and a NIP-65 kind:10002
+ * relay list. Kind:1 photo and video posts include the public media URL and
+ * an `imeta` tag (video may add poster `image`). Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
