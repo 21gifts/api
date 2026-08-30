@@ -14,7 +14,24 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
+import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+
+function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo.`);
+}
+
+function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || kind1ContentWithHashtags(content) !== content;
+}
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
   if (event === null) {
@@ -94,6 +111,36 @@ export interface MessageStore {
    */
   clearSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
+  /**
+   * Published rows with a photo whose kind:1 content lacks the public photo URL.
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Published rows whose kind:1 content lacks `#21gifts` or `#bitcoin` (case-insensitive).
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first. Includes `nostrEvent === null` and
+   * non-string content.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingHashtags(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Clear the signed event and park the row `pending` so it is signed again.
+   * No-op unless `eventId` still matches `expectedEventId` and `sats` is 0.
+   *
+   * @param id - Message id.
+   * @param expectedEventId - Event id observed when the row was listed.
+   */
+  resetSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
+
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
     id: string,
@@ -117,6 +164,65 @@ export interface MessageStore {
    *   duplicate receipt id (no second add).
    */
   recordZapReceipt(receiptEventId: string, messageId: string, sats: number): Promise<boolean>;
+
+  /** Append one POST /messages/:id/invoice attempt (success or failure). */
+  recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void>;
+
+  /** Newest invoice attempts first, capped at `limit`. */
+  listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
+
+  /** Append one kind:9735 ingest decision (indexed or rejected). */
+  recordZapIngest(row: ZapIngestRow): Promise<void>;
+
+  /** Newest zap ingest rows first, capped at `limit`. */
+  listZapIngests(limit: number): Promise<ZapIngestRow[]>;
+}
+
+/** Outcome of POST /messages/:id/invoice after auth. */
+export type MessageInvoiceResult =
+  | 'ok'
+  | 'noZap'
+  | 'not_zap'
+  | 'unreachable'
+  | 'no_event'
+  | 'no_author'
+  | 'no_key'
+  | 'sign_failed'
+  | 'rate_limited'
+  | 'bad_body'
+  | 'not_found';
+
+/** One persisted invoice attempt for operator debug. */
+export interface MessageInvoiceAttempt {
+  id: string;
+  createdAt: Date;
+  messageId: string;
+  payerAccountId: string;
+  authorAccountId: string;
+  amountSats: number;
+  lightningAddress: string | null;
+  zapRequest: Record<string, unknown> | null;
+  result: MessageInvoiceResult;
+  httpStatus: number;
+  pr: string | null;
+  paymentHash: string | null;
+  description: string | null;
+  descriptionHash: string | null;
+  isNip57Invoice: boolean;
+}
+
+/** One persisted kind:9735 ingest decision for operator debug. */
+export interface ZapIngestRow {
+  id: string;
+  createdAt: Date;
+  receiptId: string;
+  noteEventId: string | null;
+  messageId: string | null;
+  outcome: 'indexed' | 'rejected';
+  reason: string | null;
+  amountSats: number | null;
+  receiptPubkey: string | null;
+  receipt: Record<string, unknown>;
 }
 
 /** Idempotent DDL for the forum table (matches `docs/schema/message.sql`). */
@@ -147,6 +253,43 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   message_id uuid NOT NULL REFERENCES message (id),
   sats bigint NOT NULL
 )`,
+  `CREATE TABLE IF NOT EXISTS message_invoice (
+  id uuid PRIMARY KEY,
+  created_at timestamptz NOT NULL,
+  message_id uuid NOT NULL,
+  payer_account_id uuid NOT NULL,
+  author_account_id uuid NOT NULL,
+  amount_sats bigint NOT NULL,
+  lightning_address text,
+  zap_request jsonb,
+  result text NOT NULL,
+  http_status integer NOT NULL,
+  pr text,
+  payment_hash text,
+  description text,
+  description_hash text,
+  is_nip57_invoice boolean NOT NULL DEFAULT false
+)`,
+  `CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
+  ON message_invoice (created_at DESC, id DESC)`,
+  `CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
+  ON message_invoice (message_id, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS nostr_zap_ingest (
+  id uuid PRIMARY KEY,
+  created_at timestamptz NOT NULL,
+  receipt_id text NOT NULL,
+  note_event_id text,
+  message_id uuid,
+  outcome text NOT NULL,
+  reason text,
+  amount_sats bigint,
+  receipt_pubkey text,
+  receipt jsonb NOT NULL
+)`,
+  `CREATE INDEX IF NOT EXISTS nostr_zap_ingest_receipt_id_idx
+  ON nostr_zap_ingest (receipt_id)`,
+  `CREATE INDEX IF NOT EXISTS nostr_zap_ingest_created_at_idx
+  ON nostr_zap_ingest (created_at DESC, id DESC)`,
 ];
 
 /**
@@ -176,6 +319,24 @@ function copyRow(row: MessageRow): MessageRow {
   };
 }
 
+/** Copy an invoice attempt so callers cannot mutate store internals. */
+function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
+  return {
+    ...row,
+    createdAt: new Date(row.createdAt.getTime()),
+    zapRequest: row.zapRequest === null ? null : { ...row.zapRequest },
+  };
+}
+
+/** Copy a zap ingest row so callers cannot mutate store internals. */
+function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
+  return {
+    ...row,
+    createdAt: new Date(row.createdAt.getTime()),
+    receipt: { ...row.receipt },
+  };
+}
+
 /**
  * Process-local {@link MessageStore}. Used in tests and when no database URL
  * is configured — the process still boots. Photos live in a private map, not
@@ -185,6 +346,8 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
   readonly #receiptIds = new Set<string>();
   readonly #photos = new Map<string, ForumPhoto>();
+  readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
+  readonly #zapIngests: ZapIngestRow[] = [];
 
   /**
    * @param seed - Optional seed rows; copied into private storage. Seeded rows
@@ -306,6 +469,55 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
+  listSignedMissingPhoto(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.hasPhoto &&
+          row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
+          kind1MissingPhotoUrl(row.nostrEvent, row.id),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
+          kind1MissingHashtags(row.nostrEvent),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
+      row.eventId = null;
+      row.nostrEvent = null;
+      row.claimedUntil = null;
+      row.nostrPublishState = 'pending';
+      row.nostrPublishEpoch = null;
+    }
+    return Promise.resolve();
+  }
+
   updateSignedEvent(
     id: string,
     eventId: string,
@@ -351,6 +563,38 @@ export class InMemoryMessageStore implements MessageStore {
     this.#receiptIds.add(receiptEventId);
     await this.addSats(messageId, sats);
     return true;
+  }
+
+  recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void> {
+    this.#invoiceAttempts.push(copyInvoiceAttempt(row));
+    return Promise.resolve();
+  }
+
+  listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
+    const sorted = [...this.#invoiceAttempts].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyInvoiceAttempt(row)));
+  }
+
+  recordZapIngest(row: ZapIngestRow): Promise<void> {
+    this.#zapIngests.push(copyZapIngest(row));
+    return Promise.resolve();
+  }
+
+  listZapIngests(limit: number): Promise<ZapIngestRow[]> {
+    const sorted = [...this.#zapIngests].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
   }
 
   #claim(
@@ -598,6 +842,51 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
+  async listSignedMissingPhoto(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+         AND nostr_publish_state = 'published'
+         AND (
+           nostr_event IS NULL
+           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL AND sats = 0
+         AND nostr_publish_state = 'published'
+         AND (
+           nostr_event IS NULL
+           OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
+           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#21gifts%'
+           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#bitcoin%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
+         nostr_publish_state = 'pending', nostr_publish_epoch = NULL
+       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0`,
+      [id, expectedEventId],
+    );
+  }
+
   async updateSignedEvent(
     id: string,
     eventId: string,
@@ -651,6 +940,83 @@ export class PostgresMessageStore implements MessageStore {
     return inserted[0] !== undefined;
   }
 
+  async recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO message_invoice (
+         id, created_at, message_id, payer_account_id, author_account_id,
+         amount_sats, lightning_address, zap_request, result, http_status,
+         pr, payment_hash, description, description_hash, is_nip57_invoice
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15
+       )`,
+      [
+        row.id,
+        row.createdAt,
+        row.messageId,
+        row.payerAccountId,
+        row.authorAccountId,
+        row.amountSats,
+        row.lightningAddress,
+        row.zapRequest === null ? null : JSON.stringify(row.zapRequest),
+        row.result,
+        row.httpStatus,
+        row.pr,
+        row.paymentHash,
+        row.description,
+        row.descriptionHash,
+        row.isNip57Invoice,
+      ],
+    );
+  }
+
+  async listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice
+       FROM message_invoice
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapInvoiceAttemptRow(row));
+  }
+
+  async recordZapIngest(row: ZapIngestRow): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO nostr_zap_ingest (
+         id, created_at, receipt_id, note_event_id, message_id,
+         outcome, reason, amount_sats, receipt_pubkey, receipt
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb
+       )`,
+      [
+        row.id,
+        row.createdAt,
+        row.receiptId,
+        row.noteEventId,
+        row.messageId,
+        row.outcome,
+        row.reason,
+        row.amountSats,
+        row.receiptPubkey,
+        JSON.stringify(row.receipt),
+      ],
+    );
+  }
+
+  async listZapIngests(limit: number): Promise<ZapIngestRow[]> {
+    const rows = await this.#sql.query<ZapIngestSqlRow>(
+      `SELECT id, created_at, receipt_id, note_event_id, message_id,
+              outcome, reason, amount_sats, receipt_pubkey, receipt
+       FROM nostr_zap_ingest
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapZapIngestRow(row));
+  }
+
   /**
    * Load photo bytes for a message id.
    *
@@ -674,4 +1040,97 @@ export class PostgresMessageStore implements MessageStore {
       bytes: toUint8Array(row.photo),
     };
   }
+}
+
+/** SQL row shape for `message_invoice`. */
+interface MessageInvoiceSqlRow {
+  id: string;
+  created_at: Date | string;
+  message_id: string;
+  payer_account_id: string;
+  author_account_id: string;
+  amount_sats: string | number;
+  lightning_address: string | null;
+  zap_request: Record<string, unknown> | string | null;
+  result: string;
+  http_status: number;
+  pr: string | null;
+  payment_hash: string | null;
+  description: string | null;
+  description_hash: string | null;
+  is_nip57_invoice: boolean | number | string | null;
+}
+
+/** SQL row shape for `nostr_zap_ingest`. */
+interface ZapIngestSqlRow {
+  id: string;
+  created_at: Date | string;
+  receipt_id: string;
+  note_event_id: string | null;
+  message_id: string | null;
+  outcome: string;
+  reason: string | null;
+  amount_sats: string | number | null;
+  receipt_pubkey: string | null;
+  receipt: Record<string, unknown> | string;
+}
+
+/** Parse jsonb that may arrive as object or JSON string. */
+function parseJsonObject(
+  value: Record<string, unknown> | string | null | undefined,
+): Record<string, unknown> | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+  return { ...value };
+}
+
+/** Map a `message_invoice` SQL row. */
+function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt {
+  const result = row.result as MessageInvoiceResult;
+  return {
+    id: row.id,
+    createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    messageId: row.message_id,
+    payerAccountId: row.payer_account_id,
+    authorAccountId: row.author_account_id,
+    amountSats: Number(row.amount_sats),
+    lightningAddress: row.lightning_address,
+    zapRequest: parseJsonObject(row.zap_request),
+    result,
+    httpStatus: row.http_status,
+    pr: row.pr,
+    paymentHash: row.payment_hash,
+    description: row.description,
+    descriptionHash: row.description_hash,
+    isNip57Invoice: Boolean(row.is_nip57_invoice),
+  };
+}
+
+/** Map a `nostr_zap_ingest` SQL row. */
+function mapZapIngestRow(row: ZapIngestSqlRow): ZapIngestRow {
+  const receipt = parseJsonObject(row.receipt) ?? {};
+  return {
+    id: row.id,
+    createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    receiptId: row.receipt_id,
+    noteEventId: row.note_event_id,
+    messageId: row.message_id,
+    outcome: row.outcome === 'indexed' ? 'indexed' : 'rejected',
+    reason: row.reason,
+    amountSats: row.amount_sats === null ? null : Number(row.amount_sats),
+    receiptPubkey: row.receipt_pubkey,
+    receipt,
+  };
 }

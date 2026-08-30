@@ -620,6 +620,198 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
   });
 
+  it('finds an account by lightningAddress with mixed case and whitespace', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect((await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id).toBe(
+      'acc',
+    );
+    expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
+  });
+
+  it('updateAccountNameByLightningAddress changes only name', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'nameless',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Skip',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: true,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 9_000,
+    });
+    const named = await store.updateAccountNameByLightningAddress(
+      '  Guest@WalletOfSatoshi.com  ',
+      'Ada Lovelace',
+    );
+    expect(named).toMatchObject({
+      id: 'acc',
+      name: 'Ada Lovelace',
+      role: 'moderator',
+      rulesAgreedAt: 9_000,
+      viewKey: 'a'.repeat(64),
+      lightningAddressVerified: true,
+      forumLawsDismissed: true,
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.name).toBe('Ada Lovelace');
+    expect(stored?.role).toBe('moderator');
+    expect(stored?.rulesAgreedAt).toBe(9_000);
+    expect(
+      await store.updateAccountNameByLightningAddress('missing@example.com', 'X'),
+    ).toBeUndefined();
+  });
+
+  it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'a',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      viewKey: 'a'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'b',
+      name: 'Bob',
+      lightningAddress: '  Guest@WalletOfSatoshi.com  ',
+      viewKey: 'b'.repeat(64),
+    });
+    expect(await store.getAccount('b')).toBeUndefined();
+    await store.createAccount({
+      ...base,
+      id: 'c',
+      name: 'Cara',
+      lightningAddress: 'cara@walletofsatoshi.com',
+      viewKey: 'c'.repeat(64),
+    });
+    await store.updateAccount({
+      ...base,
+      id: 'c',
+      name: 'Cara',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      viewKey: 'c'.repeat(64),
+    });
+    expect((await store.getAccount('c'))?.lightningAddress).toBe('cara@walletofsatoshi.com');
+  });
+
+  it('skips null lightningAddress rows when looking up by address', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.getAccountByLightningAddress('null@example.com')).toBeUndefined();
+  });
+
+  it('reports whether an account has a passkey credential', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.accountHasPasskey('acc')).toBe(false);
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(await store.accountHasPasskey('acc')).toBe(true);
+  });
+
+  it('refuses a second passkey credential for the same account', async () => {
+    const store = new InMemoryAuthStore();
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createPasskeyCredential(first)).toBe(true);
+    expect(
+      await store.createPasskeyCredential({
+        ...first,
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+      }),
+    ).toBe(false);
+  });
+
+  it('refuses a second first-passkey for the same account', async () => {
+    const store = new InMemoryAuthStore();
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createFirstPasskeyCredential(first)).toBe(true);
+    expect(
+      await store.createFirstPasskeyCredential({
+        ...first,
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+      }),
+    ).toBe(false);
+  });
+
   it('ignores a second createAccount with the same viewKey', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = 'e'.repeat(64);

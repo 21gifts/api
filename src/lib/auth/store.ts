@@ -122,12 +122,22 @@ export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
   /**
-   * Overwrite a stored account. A `viewKey` or non-null `linkingKey` owned
-   * by another id is refused (in-memory no-op; Postgres `linkingKey` via
-   * `UPDATE` matching no row, `viewKey` via swallowed `view_key`
+   * Overwrite a stored account. A `viewKey`, non-null `linkingKey`, or
+   * `lightningAddress` (`lower(trim)`) owned by another id is refused
+   * (in-memory no-op; Postgres via `UPDATE` matching no row or swallowed
    * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
+  /**
+   * Set only `name` on the account that owns this Lightning Address
+   * (`lower(trim)` match). Other columns stay unchanged.
+   *
+   * @returns The updated account, or `undefined` when no row matches.
+   */
+  updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
@@ -135,6 +145,17 @@ export interface AuthStore {
    * Used by the public capability URL; never mints a session.
    */
   getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
+  /**
+   * Look up an account by Lightning Address (`lower(trim)` match). Rows with a
+   * null `lightningAddress` are skipped. At most one row matches (unique index
+   * in Postgres; in-memory create/update refuse a taken address).
+   */
+  getAccountByLightningAddress(address: string): Promise<Account | undefined>;
+  /**
+   * Whether the account already has at least one passkey credential.
+   * Used to refuse a second claim on a provisioned profile.
+   */
+  accountHasPasskey(accountId: string): Promise<boolean>;
   /**
    * Drop an account row. Used to roll back `finishPasskeyRegistration` when
    * the credential insert loses a duplicate-id race.
@@ -166,9 +187,15 @@ export interface AuthStore {
   updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean>;
   /**
    * Persist a verified passkey credential. Returns false when the id is
-   * already stored so two adapters reject duplicates the same way.
+   * already stored or this account already has a credential so two adapters
+   * reject duplicates the same way.
    */
   createPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
+  /**
+   * Persist the account's first passkey. Returns false when this account
+   * already has a credential or the credential id is taken.
+   */
+  createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
   /**
@@ -228,6 +255,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
       return;
     }
+    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
+      return;
+    }
     this.#accounts.set(account.id, account);
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -246,6 +276,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
       return;
     }
+    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
+      return;
+    }
     const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
@@ -262,6 +295,23 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
+  }
+
+  async updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined> {
+    const needle = lightningAddress.trim().toLowerCase();
+    for (const account of this.#accounts.values()) {
+      if (account.lightningAddress === null) {
+        continue;
+      }
+      if (account.lightningAddress.trim().toLowerCase() === needle) {
+        account.name = name;
+        return account;
+      }
+    }
+    return undefined;
   }
 
   async deleteAccount(id: string): Promise<void> {
@@ -284,6 +334,44 @@ export class InMemoryAuthStore implements AuthStore {
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
     const id = this.#accountsByViewKey.get(viewKey);
     return id === undefined ? undefined : this.#accounts.get(id);
+  }
+
+  #lightningAddressTaken(address: string | null, accountId: string): boolean {
+    if (address === null) {
+      return false;
+    }
+    const needle = address.trim().toLowerCase();
+    for (const other of this.#accounts.values()) {
+      if (other.id === accountId || other.lightningAddress === null) {
+        continue;
+      }
+      if (other.lightningAddress.trim().toLowerCase() === needle) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
+    const needle = address.trim().toLowerCase();
+    for (const account of this.#accounts.values()) {
+      if (account.lightningAddress === null) {
+        continue;
+      }
+      if (account.lightningAddress.trim().toLowerCase() === needle) {
+        return account;
+      }
+    }
+    return undefined;
+  }
+
+  async accountHasPasskey(accountId: string): Promise<boolean> {
+    for (const credential of this.#passkeyCredentials.values()) {
+      if (credential.accountId === accountId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async listAccounts(): Promise<Account[]> {
@@ -333,8 +421,22 @@ export class InMemoryAuthStore implements AuthStore {
     if (this.#passkeyCredentials.has(credential.credentialId)) {
       return false;
     }
+    for (const stored of this.#passkeyCredentials.values()) {
+      if (stored.accountId === credential.accountId) {
+        return false;
+      }
+    }
     this.#passkeyCredentials.set(credential.credentialId, credential);
     return true;
+  }
+
+  async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    for (const stored of this.#passkeyCredentials.values()) {
+      if (stored.accountId === credential.accountId) {
+        return false;
+      }
+    }
+    return this.createPasskeyCredential(credential);
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {

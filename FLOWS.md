@@ -1,13 +1,13 @@
 # 21.gifts — Core UI Flows
 
 > Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
-> plus the shipped in-app contact mailbox (journey 6).
+> plus the shipped in-app contact mailbox (journey 6) and Web Push (journey 7).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-08-29.
+**Status**: living document. Last revised 2026-08-30.
 
 ---
 
@@ -35,7 +35,8 @@ clears the token; a transient failure does not.
 
 **Passkey (first login, HTTP shipped)**
 
-1. App calls `POST /auth/passkey/register/begin` (new account) or
+1. App calls `POST /auth/passkey/register/begin` (new account, or
+   `{ "viewKey" }` to claim a provisioned profile) or
    `POST /auth/passkey/authenticate/begin` (returning).
 2. Browser runs `navigator.credentials.create` / `get` with the returned
    `options` (no WebAuthn library in the app).
@@ -150,11 +151,12 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
 the public thread is listed via `GET /messages` (newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
-— never photo bytes). Bytes are `GET /messages/:id/photo`. The shipped UI
+— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
-notes; the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
+notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign; forum `text` unchanged; pending notes EVENT before any hashtag/photo re-sign so the sign lease cannot starve fan-out);
+the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
 
 Private donor↔receiver DMs (NIP-17) are **out of v1** (CONCEPT deferred). Do
@@ -173,7 +175,30 @@ DMs, no Nostr fan-out. Do not invent `/events`.
 
 ---
 
-## Out of these six journeys
+## 7. Notifications — **Shipped**
+
+Transactional Web Push for signed-in members. The app is installable
+(Web App Manifest + service worker). After login the profile card has an
+icon-only bell: enable asks the OS permission, then `POST /me/push-subscriptions`.
+Disable `DELETE`s the endpoint. `GET /push/vapid-public` is Bearer.
+
+On iPhone Safari the site must be on the Home Screen before the OS will
+deliver pushes; the app shows that hint. Android and desktop Chrome do
+not need the icon.
+
+The api enqueues (does not send inline):
+
+- a **forum** payload when someone else posts (`tag: forum`)
+- a **zap** payload when a zap receipt is newly indexed onto the author's note
+
+The worker sends when VAPID is configured. Open focused tabs skip a second
+banner (service worker). Do not invent preference HTTP in v1.
+
+HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/debug/push-ping`.
+
+---
+
+## Out of these seven journeys
 
 Explicitly not journeys in this file:
 

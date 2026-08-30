@@ -21,6 +21,13 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/accounts
+
+- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). Creates a new `basis` row with a fresh `viewKey`, or updates **only** `name` when the address already exists (`lower(trim)` match; other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body, C0/DEL names, or non-LUD-16 addresses (no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name.
+- **Used by:** Operator provisioning before passkey claim.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: PATCH /debug/accounts/:id
 
 - **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /debug/accounts`: eight fields via `serializeAccount`; no `viewKey`). Does not patch name or Lightning Address.
@@ -33,6 +40,48 @@
 - **Purpose:** Operator listing of private in-app contacts newest-first (cap 200), including `accountId`, name snapshot, text, and ISO `createdAt`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Contact is unavailable' }` if the store throws (`contact.list.failed`).
 - **Used by:** Operators reading the private mailbox.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/invoices
+
+- **Purpose:** Operator listing of forum `POST /messages/:id/invoice` attempts newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, and `isNip57Invoice`. ISO `createdAt`. Never includes nsec. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
+- **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/zap-ingests
+
+- **Purpose:** Operator listing of kind:9735 ingest decisions newest-first (cap 200): `outcome` (`indexed` \| `rejected`), `reason`, receipt id, note/message ids, amount, and the receipt event frame. ISO `createdAt`. Never includes nsec.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.zap_ingests.list_failed`).
+- **Used by:** Operators debugging zap receipt indexing.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /push/vapid-public
+
+- **Purpose:** Bearer session. Returns `{ publicKey }` (URL-safe base64 VAPID public) so the app can subscribe.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 503 `{ error: 'Push is not configured' }` when VAPID keys are missing.
+- **Used by:** App `fetchVapidPublicKey` / enable-notifications.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: POST /me/push-subscriptions
+
+- **Purpose:** Bearer session. Upserts `{ endpoint, keys: { p256dh, auth } }` for the account. Rebinds the endpoint if another account owned it.
+- **Errors:** 401 Unauthorized; 503 Push is not configured; 400 `{ error: 'Invalid subscription' }`.
+- **Used by:** App `postPushSubscription`.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: DELETE /me/push-subscriptions
+
+- **Purpose:** Bearer session. Body `{ endpoint }` removes that device for the account.
+- **Errors:** 401 Unauthorized; 503 Push is not configured; 400 Invalid subscription; 404 `{ error: 'Not found' }`.
+- **Used by:** App `deletePushSubscription`.
+- **Auth:** `Authorization: Bearer` member session.
+
+## Endpoint: POST /debug/push-ping
+
+- **Purpose:** Operator enqueue of a test notification for `{ accountId }`. Returns `{ enqueued }` (`0` or `1`).
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 503 Push is not configured; 400 expected accountId; 404 Not found.
+- **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /auth/passkey/authenticate/begin
@@ -51,16 +100,16 @@
 
 ## Endpoint: POST /auth/passkey/register/begin
 
-- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Does not persist the account yet.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
-- **Used by:** App passkey account creation.
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential.
+- **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account, issues `{ token, account }`. Requires `Origin`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
-- **Used by:** App passkey account creation.
+- **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
 
 ## Endpoint: GET /favicon.ico
@@ -149,10 +198,38 @@
 
 ## Endpoint: GET /messages/:id/photo
 
-- **Purpose:** Bearer required. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: private`). List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
-- **Used by:** App forum photo display.
-- **Auth:** `Authorization: Bearer` session.
+- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
+- **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Used by:** App forum photo display; Damus/Primal via kind:1 photo URLs.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.jpg
+
+- **Purpose:** Same public bytes as `GET /messages/:id/photo`. Kind:1 and `imeta` use this path so Damus embeds the image instead of a website card.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus, Primal, njump via kind:1 photo URLs.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.jpeg
+
+- **Purpose:** Alias of `GET /messages/:id/photo.jpg`.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Clients that request `.jpeg`.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.png
+
+- **Purpose:** Same handler as `GET /messages/:id/photo` when the stored type is PNG. Kind:1 URLs use `.png` for PNG posts.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus/Primal for PNG forum photos.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/photo.webp
+
+- **Purpose:** Same handler as `GET /messages/:id/photo` when the stored type is WebP. Kind:1 URLs use `.webp` for WebP posts.
+- **Errors:** Same 404 / 503 as `GET /messages/:id/photo`.
+- **Used by:** Damus/Primal for WebP forum photos.
+- **Auth:** none.
 
 ## Endpoint: POST /messages
 
@@ -163,8 +240,8 @@
 
 ## Endpoint: POST /messages/:id/invoice
 
-- **Purpose:** Bearer required. Body `{ sats }` (positive integer). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns a BOLT11 `{ pr, amountSats }` via the author's LNURL-pay. The invoice rate limit is applied only after auth, amount, payable, and KEK checks.
-- **Errors:** 401 Unauthorized; 400 bad body / note not yet payable; 404 Not found; 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
+- **Purpose:** Bearer required. `:id` is a UUID. Body `{ sats }` (integer 1..10_000_000). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns `{ pr, amountSats }` only when the minted BOLT11 is a NIP-57 `description_hash` invoice (`isNip57Invoice`); otherwise persists `not_zap` (with rejected `pr` for debug) and responds 400 `The author's wallet cannot receive this Bitcoin payment` without `pr` in the body. Same author's-wallet 400 for LNURL `noZap`; other LNURL transport failures (`unreachable`) keep `Could not start the Bitcoin payment`. After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks (NIP-57 reject still counts, same as other LNURL failures).
+- **Errors:** 401 Unauthorized; 400 bad body / This message cannot be paid yet / The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found (unknown id or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
@@ -185,7 +262,7 @@
 ## Endpoint: POST /me/lightning-address
 
 - **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged); 409 Lightning Address is already in use (another account owns it, including a unique-index race).
 - **Used by:** App `setLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 

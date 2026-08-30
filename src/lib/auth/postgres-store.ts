@@ -150,6 +150,21 @@ export class PostgresAuthStore implements AuthStore {
     }
   }
 
+  async updateAccountNameByLightningAddress(
+    lightningAddress: string,
+    name: string,
+  ): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `UPDATE account
+       SET name = $2
+       WHERE lower(trim(lightning_address)) = lower(trim($1))
+       RETURNING id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at`,
+      [lightningAddress, name],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
@@ -168,6 +183,24 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
+       FROM account WHERE lower(trim(lightning_address)) = lower(trim($1))`,
+      [address],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async accountHasPasskey(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      'SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1',
+      [accountId],
+    );
+    return rows[0] !== undefined;
   }
 
   async deleteAccount(id: string): Promise<void> {
@@ -278,20 +311,54 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async createPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
-    const rows = await this.#sql.query<{ credential_id: string }>(
-      `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-       VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))
-       ON CONFLICT (credential_id) DO NOTHING
-       RETURNING credential_id`,
-      [
-        credential.credentialId,
-        credential.publicKey,
-        credential.signCount,
-        credential.accountId,
-        credential.createdAt,
-      ],
-    );
-    return rows[0] !== undefined;
+    try {
+      const rows = await this.#sql.query<{ credential_id: string }>(
+        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))
+         ON CONFLICT (credential_id) DO NOTHING
+         RETURNING credential_id`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ credential_id: string }>(
+        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+         WHERE NOT EXISTS (
+           SELECT 1 FROM passkey_credential WHERE account_id = $4
+         )
+         ON CONFLICT (credential_id) DO NOTHING
+         RETURNING credential_id`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {

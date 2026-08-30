@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { decodeBolt11 } from '@/lib/bolt11';
+import { decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 
 const HASH = 'aa'.repeat(32);
+const DESC_HASH = 'bb'.repeat(32);
 
 describe('decodeBolt11', () => {
   it('reads payment hash and amount from sections', () => {
@@ -86,5 +88,79 @@ describe('decodeBolt11', () => {
     expect(decoded).not.toBeNull();
     expect(decoded?.amountMsat).toBe(250_000_000);
     expect(decoded?.paymentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('inspectBolt11', () => {
+  it('reads description_hash invoices with description null', () => {
+    const inspected = inspectBolt11('lnbc1', () => ({
+      sections: [
+        { name: 'payment_hash', value: HASH },
+        { name: 'amount', value: '21000' },
+        { name: 'description_hash', value: DESC_HASH.toUpperCase() },
+        { name: 'expiry', value: 600 },
+      ],
+    }));
+    expect(inspected).toEqual({
+      paymentHash: HASH,
+      amountMsat: 21000,
+      description: null,
+      descriptionHash: DESC_HASH,
+      expirySeconds: 600,
+    });
+  });
+
+  it('reads plaintext description invoices with descriptionHash null', () => {
+    const description = JSON.stringify({ kind: 9734, content: 'zap' });
+    const inspected = inspectBolt11('lnbc1', () => ({
+      sections: [
+        { name: 'payment_hash', value: HASH },
+        { name: 'amount', value: 21000 },
+        { name: 'description', value: description },
+      ],
+    }));
+    expect(inspected).toEqual({
+      paymentHash: HASH,
+      amountMsat: 21000,
+      description,
+      descriptionHash: null,
+      expirySeconds: null,
+    });
+  });
+
+  it('returns null for a bad payment request', () => {
+    expect(inspectBolt11('not-an-invoice')).toBeNull();
+    expect(
+      inspectBolt11('lnbc1', () => {
+        throw new Error('bad');
+      }),
+    ).toBeNull();
+    expect(
+      inspectBolt11('lnbc1', () => ({
+        sections: [{ name: 'amount', value: '1000' }],
+      })),
+    ).toBeNull();
+  });
+
+  it('ignores a non-hex description_hash', () => {
+    const inspected = inspectBolt11('lnbc1', () => ({
+      sections: [
+        { name: 'payment_hash', value: HASH },
+        { name: 'amount', value: '1000' },
+        { name: 'description_hash', value: 'zz' },
+      ],
+    }));
+    expect(inspected?.descriptionHash).toBeNull();
+  });
+});
+
+describe('isNip57Invoice', () => {
+  it('is true only when sha256(zap json) matches the description hash', () => {
+    const zapJson = JSON.stringify({ kind: 9734, content: 'pay' });
+    const hash = createHash('sha256').update(zapJson, 'utf8').digest('hex');
+    expect(isNip57Invoice(hash, zapJson)).toBe(true);
+    expect(isNip57Invoice(hash, JSON.stringify({ kind: 9734, content: 'other' }))).toBe(false);
+    expect(isNip57Invoice(null, zapJson)).toBe(false);
+    expect(isNip57Invoice(hash, null)).toBe(false);
   });
 });

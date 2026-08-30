@@ -31,7 +31,7 @@ describe('signEventForAccount', () => {
     );
     expect(signed.id).toMatch(/^[0-9a-f]{64}$/);
     expect(signed.kind).toBe(1);
-    expect(signed.content).toBe('hi');
+    expect(signed.content).toBe('hi\n\n#bitcoin #21gifts');
   });
 
   it('throws when the account has no secret', async () => {

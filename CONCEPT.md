@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-29.
+**Status**: draft, in active iteration. Last revised 2026-08-30.
 
 ---
 
@@ -75,6 +75,11 @@ Founder.
   leftover `account.linking_key` values are historical and cannot log in.
 - WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts`). Missing
   RP ID → passkey routes 500; the process still boots.
+- **Operator provision / viewKey claim (2026-08-30):** `POST /debug/accounts`
+  can create accounts with name + Lightning Address and no passkey. The
+  public `viewKey` URL is the invite. `POST /auth/passkey/register/begin`
+  with `{ "viewKey" }` binds a passkey to that row (name and address stay);
+  living-room rules agreement remains a later `/me` step.
 
 ### Donor upgrade (custodial, v1 only)
 
@@ -236,13 +241,13 @@ below applies to v1 for the surfaces v1 ships — profile metadata, campaign
 post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
 scope. The client-side-signing flow beneath it is target state.)
 
-| UI surface                            | NOSTR primitive                                                                              |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                                   |
-| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                                          |
-| Public comment / encouragement        | top-level `kind:1` (frozen `t=bitcoin` / `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`) |
-| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                                    |
-| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                                |
+| UI surface                            | NOSTR primitive                                                                                                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                                                                                                                                                          |
+| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                                                                                                                                                                 |
+| Public comment / encouragement        | top-level `kind:1` (frozen `t=bitcoin` / `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`; Damus-visible `#bitcoin #21gifts` in kind:1 **content**; pending fan-out is not reset to stamp hashtags or photo URLs) |
+| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                                                                                                                                                           |
+| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                                                                                                                                                       |
 
 **Flow** — the app does not talk to NOSTR relays directly. It talks to the
 backend API, which acts as the user's edge to the network:
@@ -680,6 +685,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-08-29 | Public member forum UX is a messenger-group thread (oldest top, newest bottom above the composer). `GET /messages` remains the latest-200 window newest-first; clients reverse for display.                                                                                                                                                                                                                                                                        |
 | 2026-08-29 | Zap ingest and invoice `relays` always include the public list (space plus Damus / Primal / nos.lol); kind:1 public write stays gated on `NOSTR_PUBLISH_PUBLIC`.                                                                                                                                                                                                                                                                                                   |
 | 2026-08-29 | Zap-receipt sats UPDATE qualifies `message.sats` so Postgres can apply it.                                                                                                                                                                                                                                                                                                                                                                                         |
+| 2026-08-30 | Web Push is self-hosted VAPID in this api (no third-party push SDK). Missing `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` → process still boots; push HTTP 503. Subscriptions bind to `account.id`. Outbox worker sends. Events: forum posts notify every other subscribed account (collapse tag `forum`); a newly indexed zap notifies the note author. iOS v1 is Home Screen (A2HS). Payloads are English `{ type, title, body, url, tag }`.                         |
 
 ---
 

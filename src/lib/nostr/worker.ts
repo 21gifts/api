@@ -1,14 +1,28 @@
 import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
-import { buildKind0Event, buildKind0Content, buildKind1Event } from '@/lib/nostr/event';
+import {
+  buildKind0Event,
+  buildKind0Content,
+  buildKind1Event,
+  buildKind10002Event,
+  forumPhotoUrl,
+} from '@/lib/nostr/event';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
-import { resolveWriteSet, resolveZapRelays, type ResolvedWriteSet } from '@/lib/nostr/relays';
+import {
+  resolvePublicApiBase,
+  resolveWriteSet,
+  resolveZapRelays,
+  writeRelayUrls,
+  type ResolvedWriteSet,
+} from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
+import type { PushStore } from '@/lib/push-store';
 
 /** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
@@ -42,6 +56,8 @@ export interface NostrWorkerDeps {
   now: () => number;
   /** Env slice for write-set flags. */
   env: Record<string, string | undefined>;
+  /** Optional push store for zap enqueue after a newly indexed receipt. */
+  pushStore?: PushStore;
 }
 
 type Kind0Reservation = {
@@ -87,10 +103,16 @@ function reservedContent(
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
- * `t=bitcoin` is dropped and re-signed before fan-out. When publishing, also
- * fans out a replaceable kind:0 profile (`name` / `display_name` from the
- * account row) to the space relay, and to the public list when
- * `NOSTR_PUBLISH_PUBLIC=1`, so Damus/Primal show the forum name. Kind:0
+ * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
+ * signed. Then published unpaid rows missing a photo URL (`PUBLIC_BASE_URL`
+ * set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick.
+ * Pending rows EVENT as-is — resetting them first renews the 60s sign lease
+ * and they never reach a relay. Zapped rows (`sats !== 0`) keep their event
+ * id so receipts still resolve. An empty API base skips photo-URL resign so
+ * it cannot un-publish and loop. When publishing, also fans out a replaceable
+ * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
+ * kind:10002 relay list. Kind:1 photo posts include the public image URL
+ * and an `imeta` tag. Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
@@ -104,8 +126,11 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
+  await resignPhotoKind1(deps);
+  await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
+    await publishRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
@@ -118,6 +143,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     now: deps.now,
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
+    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
 }
 
@@ -131,6 +157,23 @@ async function resignLegacyKind1Tags(deps: NostrWorkerDeps): Promise<void> {
       await deps.messages.clearSignedEvent(row.id, row.eventId);
     }
   }
+}
+
+async function resetPublishedBatch(deps: NostrWorkerDeps, rows: MessageRow[]): Promise<void> {
+  for (const row of rows) {
+    await deps.messages.resetSignedEvent(row.id, row.eventId);
+  }
+}
+
+async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
+  if (resolvePublicApiBase(deps.env) === '') {
+    return;
+  }
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingPhoto(WORKER_BATCH));
+}
+
+async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingHashtags(WORKER_BATCH));
 }
 
 function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -159,8 +202,24 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       await ensureAccountNostrKey(deps.auth, row.accountId, deps.kek);
       let createdAt = Math.floor(row.createdAt.getTime() / 1000);
       let stored = false;
+      const apiBase = resolvePublicApiBase(deps.env);
+      let photo: { url: string; mime: 'image/jpeg' | 'image/png' | 'image/webp' } | undefined;
+      if (apiBase !== '') {
+        const storedPhoto = await deps.messages.getPhoto(row.id);
+        if (storedPhoto !== null) {
+          photo = {
+            url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
+            mime: storedPhoto.contentType,
+          };
+        } else if (row.hasPhoto) {
+          logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
+        }
+      }
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
-        const unsigned = buildKind1Event(row.text, createdAt);
+        const unsigned =
+          photo === undefined
+            ? buildKind1Event(row.text, createdAt)
+            : buildKind1Event(row.text, createdAt, photo);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,
@@ -184,9 +243,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
   const cache = profileCacheFor(deps.auth);
   const watermarks = profileWatermarkFor(deps.auth);
-  const urls = writeSet.publicEnabled
-    ? [writeSet.spaceUrl, ...writeSet.publicUrls]
-    : [writeSet.spaceUrl];
+  const urls = writeRelayUrls(writeSet);
   const accounts = await deps.auth.listAccounts();
   let attempted = 0;
   for (const account of accounts) {
@@ -251,15 +308,106 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
   }
 }
 
+const relayListCaches = new WeakMap<AuthStore, Map<string, Kind0Reservation>>();
+const relayListWatermarks = new WeakMap<AuthStore, Map<string, number>>();
+
+function relayListCacheFor(auth: AuthStore): Map<string, Kind0Reservation> {
+  const existing = relayListCaches.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, Kind0Reservation>();
+  relayListCaches.set(auth, created);
+  return created;
+}
+
+function relayListWatermarkFor(auth: AuthStore): Map<string, number> {
+  const existing = relayListWatermarks.get(auth);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, number>();
+  relayListWatermarks.set(auth, created);
+  return created;
+}
+
+async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
+  const cache = relayListCacheFor(deps.auth);
+  const watermarks = relayListWatermarkFor(deps.auth);
+  const urls = writeRelayUrls(writeSet);
+  const content = urls.join('\n');
+  const accounts = await deps.auth.listAccounts();
+  let attempted = 0;
+  for (const account of accounts) {
+    if (attempted >= WORKER_BATCH) {
+      break;
+    }
+    const live = await deps.auth.getAccount(account.id);
+    if (live === undefined || live.name === null) {
+      continue;
+    }
+    if (reservedContent(cache, live.id) === content) {
+      continue;
+    }
+    const previous = cache.get(live.id);
+    const reservation: Kind0Reservation = {
+      content,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(live.id) ?? 0),
+    };
+    cache.set(live.id, reservation);
+    try {
+      const pubkey = await deps.auth.getNostrPublicKey(live.id);
+      if (pubkey === undefined) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        continue;
+      }
+      attempted += 1;
+      /* v8 ignore next 3 -- overlapping tick replaced the reservation */
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const wall = Math.floor(deps.now() / 1000);
+      reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
+      watermarks.set(live.id, reservation.createdAt);
+      const unsigned = buildKind10002Event(urls, reservation.createdAt);
+      const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
+      /* v8 ignore next 3 -- overlapping tick replaced the reservation */
+      if (cache.get(live.id) !== reservation) {
+        continue;
+      }
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      const spaceOk = spaceAcked(acks, writeSet.spaceUrl);
+      const publicOk = !writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl);
+      if (!spaceOk || !publicOk) {
+        if (cache.get(live.id) === reservation) {
+          cache.delete(live.id);
+        }
+        logEvent('nostr.relays.nack', { accountId: live.id });
+        continue;
+      }
+      logEvent('nostr.relays.ok', { accountId: live.id });
+    } catch {
+      if (cache.get(live.id) === reservation) {
+        cache.delete(live.id);
+      }
+      logEvent('nostr.relays.nack', { accountId: live.id });
+    }
+  }
+}
+
 async function publishBatch(
   deps: NostrWorkerDeps,
   writeSet: ResolvedWriteSet,
   nowMs: number,
 ): Promise<void> {
   const rows = await deps.messages.claimUnpublished(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
-  const urls = writeSet.publicEnabled
-    ? [writeSet.spaceUrl, ...writeSet.publicUrls]
-    : [writeSet.spaceUrl];
+  const urls = writeRelayUrls(writeSet);
   for (const row of rows) {
     /* v8 ignore next 3 -- signed rows always store nostrEvent */
     if (row.nostrEvent === null) {

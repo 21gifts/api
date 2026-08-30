@@ -116,14 +116,30 @@ test('POST /messages with a photo without bearer is 401', async ({ request }) =>
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
-test('GET /messages/:id/photo without bearer is 401', async ({ request }) => {
+test('GET /messages/:id/photo without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/photo');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
-test('GET /messages/:id/photo UUID path without bearer is 401', async ({ request }) => {
+test('GET /messages/:id/photo UUID path without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.jpg UUID path without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.jpg');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.jpeg without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.jpeg');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.png without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.png');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo.webp without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo.webp');
+  expect(res.status()).toBe(404);
 });
 
 test('POST /me/name without bearer is 401', async ({ request }) => {
@@ -172,6 +188,27 @@ test('POST /me/lightning-address/verification/confirm without bearer is 401', as
 test('GET /debug/accounts without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/accounts');
   expect(res.status()).toBe(401);
+});
+
+test('POST /debug/accounts without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/accounts with the e2e token provisions a guest', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    accounts: Array<{ name: string; lightningAddress: string; viewKey: string; created: boolean }>;
+  };
+  expect(body.accounts).toHaveLength(1);
+  expect(body.accounts[0]?.name).toBe('Ada');
+  expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
 });
 
 test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
@@ -287,6 +324,34 @@ test('POST /invoices unconfigured is 503', async ({ request }) => {
 test('POST /invoices/proof unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices/proof', {
     data: { id: 'x', preimage: '11'.repeat(32) },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('GET /push/vapid-public without bearer is 401', async ({ request }) => {
+  const res = await request.get('/push/vapid-public');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/push-subscriptions without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/push-subscriptions');
+  expect(res.status()).toBe(401);
+});
+
+test('DELETE /me/push-subscriptions without bearer is 401', async ({ request }) => {
+  const res = await request.delete('/me/push-subscriptions');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/push-ping without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/push-ping');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ request }) => {
+  const res = await request.post('/debug/push-ping', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accountId: '00000000-0000-0000-0000-000000000001' },
   });
   expect(res.status()).toBe(503);
 });

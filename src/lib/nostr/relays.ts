@@ -122,3 +122,33 @@ export function resolveZapRelays(env: Record<string, string | undefined>): strin
   }
   return urls;
 }
+
+/**
+ * URLs the worker writes kind:0 / kind:1 / kind:10002 to this tick.
+ *
+ * @param writeSet - Resolved flags and relays.
+ * @returns Space, plus public URLs when public write is on.
+ */
+export function writeRelayUrls(writeSet: ResolvedWriteSet): string[] {
+  return writeSet.publicEnabled ? [writeSet.spaceUrl, ...writeSet.publicUrls] : [writeSet.spaceUrl];
+}
+
+/**
+ * Public HTTP origin for photo URLs in kind:1.
+ *
+ * Maps the site `PUBLIC_BASE_URL` to the API host. Tests that point
+ * `PUBLIC_BASE_URL` at the API itself keep that origin.
+ *
+ * @param env - Environment slice.
+ * @returns Origin without a trailing slash, or empty when unset.
+ */
+export function resolvePublicApiBase(env: Record<string, string | undefined>): string {
+  const raw = (env['PUBLIC_BASE_URL'] ?? '').trim().replace(/\/$/, '');
+  if (raw === 'https://21.gifts') {
+    return 'https://api.21.gifts';
+  }
+  if (raw === 'https://dev.21.gifts') {
+    return 'https://dev-api.21.gifts';
+  }
+  return raw;
+}
