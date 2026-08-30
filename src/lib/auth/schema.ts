@@ -64,4 +64,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `UPDATE account SET view_key = replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '') WHERE view_key IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_view_key_uidx ON account (view_key) WHERE view_key IS NOT NULL`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS rules_agreed_at timestamptz`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx
+    ON account (lower(trim(lightning_address))) WHERE lightning_address IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential (account_id)`,
 ];

@@ -51,6 +51,12 @@ export function credentialIdFrom(credential: unknown): string | null {
   return typeof id === 'string' && id !== '' ? id : null;
 }
 
+/** Stable 404 copy when a claim view key is missing or malformed. */
+const CLAIM_NOT_FOUND = 'This profile could not be found.';
+
+/** Stable 409 copy when a provisioned profile already has a passkey. */
+const CLAIM_ALREADY_HAS_PASSKEY = 'This profile already has a passkey';
+
 /**
  * Start passkey registration: mint a pending account id and creation options.
  *
@@ -90,17 +96,67 @@ export async function startPasskeyRegistration(
 }
 
 /**
+ * Start passkey claim: bind a passkey to an operator-provisioned account
+ * identified by its durable view key. Does not mint a new account id.
+ *
+ * @param store - Auth persistence port.
+ * @param ceremony - WebAuthn collaborator.
+ * @param config - RP ID, name, and allowed origins.
+ * @param now - Current time in epoch milliseconds.
+ * @param viewKey - Capability secret from the invite link (64 lowercase hex).
+ * @returns Creation options, or a stable 404/409 error string.
+ */
+export async function startPasskeyClaim(
+  store: AuthStore,
+  ceremony: PasskeyCeremony,
+  config: WebAuthnRuntimeConfig,
+  now: number,
+  viewKey: string,
+): Promise<{ ok: true; value: PasskeyBeginResult } | { ok: false; error: string }> {
+  if (!/^[0-9a-f]{64}$/.test(viewKey)) {
+    return { ok: false, error: CLAIM_NOT_FOUND };
+  }
+  const account = await store.getAccountByViewKey(viewKey);
+  if (account === undefined) {
+    return { ok: false, error: CLAIM_NOT_FOUND };
+  }
+  if (await store.accountHasPasskey(account.id)) {
+    return { ok: false, error: CLAIM_ALREADY_HAS_PASSKEY };
+  }
+  const generated = await ceremony.generateRegistrationOptions({
+    rpName: config.rpName,
+    rpID: config.rpId,
+    userID: new TextEncoder().encode(account.id),
+    userName: account.id,
+    userDisplayName: account.name ?? '21.gifts',
+  });
+  const challengeId = randomHex(32);
+  await store.createPasskeyChallenge({
+    id: challengeId,
+    type: 'register',
+    challenge: generated.challenge,
+    accountId: account.id,
+    consumed: false,
+    createdAt: now,
+  });
+  return { ok: true, value: { challengeId, options: generated.options } };
+}
+
+/**
  * Complete passkey registration: verify attestation, persist the account and
- * credential, issue a session. When `nostr` is set, generates a custodial
- * nsec for the new account (rolls the account back if keygen fails). A
- * duplicate credential id rolls the new account back via `deleteAccount`.
+ * credential, issue a session. When claiming a provisioned account, binds the
+ * credential without creating or deleting the row. When creating a new account,
+ * optional `nostr` mints a custodial nsec (rolls the account back if keygen
+ * fails) and a duplicate credential id rolls the new account back via
+ * `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
  * @param config - RP ID, name, and allowed origins.
  * @param now - Current time in epoch milliseconds.
  * @param origin - Request `Origin` header (must match `expectedOrigins`).
- * @param challengeId - Id returned by {@link startPasskeyRegistration}.
+ * @param challengeId - Id returned by {@link startPasskeyRegistration} or
+ *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
  * @returns Session + account, or a 400 error string.
@@ -142,6 +198,31 @@ export async function finishPasskeyRegistration(
   }
   if ((await store.getPasskeyCredential(verified.credentialId)) !== undefined) {
     return { ok: false, error: 'Invalid passkey' };
+  }
+  const existing = await store.getAccount(accountId);
+  if (existing !== undefined) {
+    if (await store.accountHasPasskey(accountId)) {
+      return { ok: false, error: 'Invalid passkey' };
+    }
+    const stored = await store.createFirstPasskeyCredential({
+      credentialId: verified.credentialId,
+      publicKey: verified.publicKey,
+      signCount: verified.signCount,
+      accountId,
+      createdAt: now,
+    });
+    if (!stored) {
+      return { ok: false, error: 'Invalid passkey' };
+    }
+    if (nostr !== undefined) {
+      try {
+        await ensureAccountNostrKey(store, existing.id, nostr.kek, nostr.keygen);
+      } catch {
+        logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
+      }
+    }
+    const issued = await issueSession(store, now, existing);
+    return { ok: true, value: issued };
   }
   const account: Account = {
     id: accountId,

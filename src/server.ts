@@ -69,9 +69,9 @@ export interface AppDeps {
   readBrand?: BrandReader;
   /**
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
-   * blank → `GET /debug/accounts`, `PATCH /debug/accounts/:id`,
-   * `GET /debug/contacts`, `GET /debug/invoices`, and
-   * `GET /debug/zap-ingests` return 503.
+   * blank → `GET /debug/accounts`, `POST /debug/accounts`,
+   * `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`,
+   * and `GET /debug/zap-ingests` return 503.
    */
   debugToken?: string;
   /**

@@ -195,6 +195,16 @@ test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
+test('Function: debugRoutes — POST /debug/accounts with the e2e token is 200', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+  });
+  expect(res.status()).toBe(200);
+});
+
 test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', async ({
   request,
 }) => {
@@ -509,6 +519,15 @@ test('Function: parseCoinbaseCandles — default boot has no DATABASE_URL', asyn
 test('Function: resolveCandlesUrl — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
+});
+
+test('Function: startPasskeyClaim — POST begin with an unknown viewKey is 404', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/register/begin', {
+    data: { viewKey: 'a'.repeat(64) },
+  });
+  expect(res.status()).toBe(404);
 });
 
 test('Function: startPasskeyRegistration — POST begin returns a challenge', async ({ request }) => {

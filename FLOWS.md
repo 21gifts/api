@@ -35,7 +35,8 @@ clears the token; a transient failure does not.
 
 **Passkey (first login, HTTP shipped)**
 
-1. App calls `POST /auth/passkey/register/begin` (new account) or
+1. App calls `POST /auth/passkey/register/begin` (new account, or
+   `{ "viewKey" }` to claim a provisioned profile) or
    `POST /auth/passkey/authenticate/begin` (returning).
 2. Browser runs `navigator.credentials.create` / `get` with the returned
    `options` (no WebAuthn library in the app).

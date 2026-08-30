@@ -174,6 +174,27 @@ test('GET /debug/accounts without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /debug/accounts without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/accounts with the e2e token provisions a guest', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    accounts: Array<{ name: string; lightningAddress: string; viewKey: string; created: boolean }>;
+  };
+  expect(body.accounts).toHaveLength(1);
+  expect(body.accounts[0]?.name).toBe('Ada');
+  expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
+});
+
 test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },

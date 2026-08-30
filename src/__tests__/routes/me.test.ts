@@ -451,6 +451,63 @@ describe('POST /me/lightning-address', () => {
     ).toBe(true);
   });
 
+  it('returns 409 when the Lightning Address belongs to another account', async () => {
+    const store = await seededStore();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('returns 409 when updateAccount silently refuses a taken address', async () => {
+    class SilentStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress(): Promise<undefined> {
+        return undefined;
+      }
+      override async updateAccount(): Promise<void> {
+        return;
+      }
+    }
+    const store = new SilentStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
   it('clears a pending verification when linking', async () => {
     const store = await seededStore({ lightningAddress: ADDRESS });
     await store.putVerification({

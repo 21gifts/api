@@ -170,15 +170,15 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. Maintains an O(1) `viewKey` index; `getAccountByViewKey` looks it up. `createAccount` is a no-op when `viewKey` is already stored (or a non-null `linkingKey` already exists). `updateAccount` reindexes `viewKey` when it changes and refuses a `viewKey` owned by another id (same as `linkingKey`). `deleteAccount` drops the row and its linking-key and viewKey indexes. `listAccounts` returns every account oldest-first.
-- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists or when `viewKey` is already stored. `updateAccount` refuses a `linkingKey` owned by another account and keeps the viewKey index consistent. `deleteAccount` drops the row and its linking-key and viewKey indexes. `createPasskeyCredential` returns false on duplicate id. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. Maintains an O(1) `viewKey` index; `getAccountByViewKey` looks it up. `getAccountByLightningAddress` scans for a `lower(trim)` match and skips null addresses. `accountHasPasskey` is true when any credential maps to the account id. `createAccount` is a no-op when `viewKey` is already stored, a non-null `linkingKey` already exists, or `lightningAddress` (`lower(trim)`) belongs to another id. `updateAccount` reindexes `viewKey` when it changes and refuses a `viewKey`, non-null `linkingKey`, or `lightningAddress` owned by another id. `deleteAccount` drops the row and its linking-key and viewKey indexes. `listAccounts` returns every account oldest-first.
+- **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists, when `viewKey` is already stored, or when `lightningAddress` (`lower(trim)`) is taken. `updateAccount` refuses a `linkingKey` / `viewKey` / `lightningAddress` owned by another account and keeps the viewKey index consistent. `deleteAccount` drops the row and its linking-key and viewKey indexes. `createPasskeyCredential` returns false when this account already has a credential or the id is taken. `createFirstPasskeyCredential` returns false when this account already has a credential or the id is taken. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug/view routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, custodial Nostr key columns, and the `view_key` column. `getAccountByViewKey` is `WHERE view_key = $1`. `mapAccount` skips null `view_key` (`getAccount` / `getAccountByViewKey` return undefined; `listAccounts` omits those rows). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `createAccount` INSERT unique_violation `23505` is a no-op. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`.
-- **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore` including `getAccountByViewKey`.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, custodial Nostr key columns, and the `view_key` column. `getAccountByViewKey` is `WHERE view_key = $1`. `getAccountByLightningAddress` is `WHERE lower(trim(lightning_address)) = lower(trim($1))` (null addresses do not match). `accountHasPasskey` is `SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1`. `mapAccount` skips null `view_key` (`getAccount` / `getAccountByViewKey` / `getAccountByLightningAddress` return undefined; `listAccounts` omits those rows). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `createPasskeyCredential` also returns false on unique_violation `23505` for `passkey_credential_account_uidx` (one credential per account). `createFirstPasskeyCredential` inserts only when the account has no credential (`WHERE NOT EXISTS` plus unique `account_id`); unique_violation is false. `createAccount` INSERT unique_violation `23505` is a no-op. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`. Unique index on `lower(trim(lightning_address))` where the address is not null.
+- **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore` including `getAccountByViewKey`, `getAccountByLightningAddress`, and `accountHasPasskey`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
 
@@ -186,7 +186,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -219,9 +219,9 @@
 
 ## Function: debugRoutes
 
-- **Purpose:** Operator listing of registered accounts and role assignment.
+- **Purpose:** Operator listing, provisioning, and role assignment for registered accounts.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app (`GET /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` logs `debug.accounts.listed` with count. PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
+- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address; upserts by Lightning Address and returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -380,9 +380,9 @@
 
 ## Function: authRoutes
 
-- **Purpose:** Hono sub-app for passkey register and authenticate. Passes optional `nostrKek` / `nostrKeygen` into finish so new logins get a custodial nsec.
+- **Purpose:** Hono sub-app for passkey register and authenticate. Register begin accepts an optional `{ viewKey }` to claim a provisioned account; empty begin still mints a pending new account. Passes optional `nostrKek` / `nostrKeygen` into finish so new logins get a custodial nsec.
 - **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony, optional `nostrKek` and `nostrKeygen`.
-- **Returns / side effects:** Hono app mounted at `/auth`.
+- **Returns / side effects:** Hono app mounted at `/auth`. Begin with viewKey maps claim errors to 404/409; unwraps `{ challengeId, options }` on success.
 - **Used by:** `createApp`.
 
 ## Function: bearerToken
@@ -443,7 +443,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check, verification).
+- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check, verification). `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
 - **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
 - **Returns / side effects:** Hono at `/me`.
 - **Used by:** `createApp`.
@@ -625,9 +625,9 @@
 
 ## Function: finishPasskeyRegistration
 
-- **Purpose:** Verifies an attestation, creates a `linkingKey: null` account plus credential, issues a session. Optional `nostr` mints a custodial nsec (rollback on keygen failure).
+- **Purpose:** Verifies an attestation and issues a session. When the challenge account id already exists (claim path), binds the credential to that provisioned row without `createAccount` and never `deleteAccount` on failure. When the account is new, creates a `linkingKey: null` account plus credential; optional `nostr` mints a custodial nsec (rollback on keygen failure) and a duplicate credential id rolls the new account back.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. A duplicate credential id rolls the new account back.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. Claim-path credential race → `{ ok: false, error: 'Invalid passkey' }` with the provisioned account left intact. Nostr keygen failure on claim is best-effort (same as authenticate): session still issues.
 - **Used by:** `POST /auth/passkey/register/finish`.
 
 ## Function: issueSession
@@ -667,10 +667,17 @@
 
 ## Function: startPasskeyRegistration
 
-- **Purpose:** Mints WebAuthn creation options and a pending account UUID (row created only on finish).
+- **Purpose:** Mints WebAuthn creation options and a pending account UUID (row created only on finish). Display name is always `21.gifts`.
 - **Inputs:** store, ceremony, config, now.
 - **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
-- **Used by:** `POST /auth/passkey/register/begin`.
+- **Used by:** `POST /auth/passkey/register/begin` when the body has no string `viewKey`.
+
+## Function: startPasskeyClaim
+
+- **Purpose:** Mints WebAuthn creation options for an existing operator-provisioned account identified by `viewKey`. Uses the stored account id and `account.name` (or `21.gifts` when null) as the WebAuthn user entity.
+- **Inputs:** store, ceremony, config, now, viewKey.
+- **Returns / side effects:** `{ ok: true, value: { challengeId, options } }` or `{ ok: false, error }` (`This profile could not be found.` / `This profile already has a passkey`). Persists a register challenge bound to the existing account id.
+- **Used by:** `POST /auth/passkey/register/begin` when the body includes a string `viewKey`.
 
 ## Function: serializeAccount
 

@@ -9,9 +9,13 @@ class MockSql implements SqlClient {
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
   executeError: unknown | undefined;
+  queryError: unknown | undefined;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
+    if (this.queryError !== undefined) {
+      throw this.queryError;
+    }
     return this.nextRows as T[];
   }
 
@@ -179,6 +183,41 @@ describe('PostgresAuthStore', () => {
     expect(
       await new PostgresAuthStore(new MockSql()).getAccountByViewKey(VIEW_KEY),
     ).toBeUndefined();
+  });
+
+  it('looks up an account by lightning_address with lower(trim) SQL', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' },
+    ];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ']);
+    expect(found?.id).toBe('acc');
+    expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('returns undefined when lightning_address lookup has no rows', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(
+        'missing@example.com',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('accountHasPasskey queries passkey_credential by account_id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasPasskey('acc')).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM passkey_credential/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasPasskey('acc')).toBe(true);
   });
 
   it('skips rows with a null view_key', async () => {
@@ -513,6 +552,27 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    sql.queryError = new Error('disk full');
+    await expect(
+      store.createPasskeyCredential({
+        credentialId: 'cred-3',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).rejects.toThrow(/disk full/);
+    sql.queryError = undefined;
     sql.nextRows = [
       {
         credential_id: 'cred',
@@ -555,6 +615,62 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
+  });
+
+  it('inserts a first passkey only when the account has none', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ credential_id: 'cred' }];
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
+    sql.nextRows = [];
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential treats a unique_violation as false', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = new Error('disk full');
+    await expect(
+      store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).rejects.toThrow(/disk full/);
   });
 
   it('returns undefined for a missing passkey credential', async () => {

@@ -195,4 +195,354 @@ describe('debugRoutes', () => {
       ),
     ).toBe(true);
   });
+
+  it('POST returns 503 when debug is not configured', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
+  it('POST returns 401 without a matching bearer', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST returns 400 for an invalid body', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with an "accounts" array',
+    });
+  });
+
+  it('POST returns 400 when name or Lightning Address fail normalisation', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+    );
+    const badName = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada\u0001', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(badName.status).toBe(400);
+    expect(await badName.json()).toEqual({
+      error: 'Expected a JSON body with an "accounts" array',
+    });
+    const badAddr = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'a@b' }],
+      }),
+    });
+    expect(badAddr.status).toBe(400);
+    expect(await badAddr.json()).toEqual({
+      error: 'Expected a JSON body with an "accounts" array',
+    });
+  });
+
+  it('POST returns 400 without persisting earlier rows when one address fails normalisation', async () => {
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          { name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' },
+          { name: 'Bob', lightningAddress: 'a@b' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+  });
+
+  it('POST provisions a new account without a passkey', async () => {
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{
+        name: string;
+        lightningAddress: string;
+        viewKey: string;
+        created: boolean;
+      }>;
+    };
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0]?.created).toBe(true);
+    expect(body.accounts[0]?.name).toBe('Ada');
+    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+    expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
+    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+    expect(stored).toMatchObject({
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      rulesAgreedAt: null,
+      viewKey: body.accounts[0]?.viewKey,
+    });
+    expect(await store.accountHasPasskey(stored!.id)).toBe(false);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'debug.accounts.provisioned' && e['created'] === 1 && e['updated'] === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('POST updates name idempotently for the same address ignoring case', async () => {
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const first = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    const firstBody = (await first.json()) as {
+      accounts: Array<{ viewKey: string; created: boolean }>;
+    };
+    const second = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada Lovelace', lightningAddress: 'Guest@WalletOfSatoshi.com' }],
+      }),
+    });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as {
+      accounts: Array<{ name: string; viewKey: string; created: boolean }>;
+    };
+    expect(secondBody.accounts[0]?.created).toBe(false);
+    expect(secondBody.accounts[0]?.viewKey).toBe(firstBody.accounts[0]?.viewKey);
+    expect(secondBody.accounts[0]?.name).toBe('Ada Lovelace');
+    expect((await store.getAccountByLightningAddress('guest@walletofsatoshi.com'))?.name).toBe(
+      'Ada Lovelace',
+    );
+    const listed = await app.request('/debug/accounts', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    const listBody = (await listed.json()) as {
+      accounts: Array<Record<string, unknown>>;
+    };
+    expect(listBody.accounts[0]).not.toHaveProperty('viewKey');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'debug.accounts.provisioned' && e['created'] === 0 && e['updated'] === 1,
+      ),
+    ).toBe(true);
+  });
+
+  it('POST returns 500 when create does not persist the address', async () => {
+    class HollowStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress(): Promise<undefined> {
+        return undefined;
+      }
+      override async createAccount(): Promise<void> {
+        return;
+      }
+    }
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new HollowStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it('POST applies the name when create loses a race to an existing address', async () => {
+    class RaceStore extends InMemoryAuthStore {
+      #lookups = 0;
+      override async getAccountByLightningAddress(address: string) {
+        this.#lookups += 1;
+        if (this.#lookups === 1) {
+          return undefined;
+        }
+        return super.getAccountByLightningAddress(address);
+      }
+    }
+    const store = new RaceStore();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Old',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{ name: string; created: boolean; viewKey: string }>;
+    };
+    expect(body.accounts[0]?.created).toBe(false);
+    expect(body.accounts[0]?.name).toBe('Ada');
+    expect(body.accounts[0]?.viewKey).toBe('c'.repeat(64));
+    expect((await store.getAccount('existing'))?.name).toBe('Ada');
+  });
+
+  it('POST falls back to the request address when the stored row has none', async () => {
+    class NullAddressStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress() {
+        return {
+          id: 'existing',
+          linkingKey: null,
+          role: 'basis' as const,
+          name: 'Old',
+          lightningAddress: null,
+          lightningAddressVerified: false,
+          forumLawsDismissed: false,
+          viewKey: 'c'.repeat(64),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        };
+      }
+    }
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{ lightningAddress: string; created: boolean }>;
+    };
+    expect(body.accounts[0]?.created).toBe(false);
+    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('POST falls back to the request name and address when create returns null fields', async () => {
+    class NullCreatedStore extends InMemoryAuthStore {
+      override async getAccountByLightningAddress(address: string) {
+        const acc = await super.getAccountByLightningAddress(address);
+        if (acc === undefined) {
+          return undefined;
+        }
+        return { ...acc, name: null, lightningAddress: null };
+      }
+    }
+    const store = new NullCreatedStore();
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{ name: string; lightningAddress: string; created: boolean }>;
+    };
+    expect(body.accounts[0]?.created).toBe(true);
+    expect(body.accounts[0]?.name).toBe('Ada');
+    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('POST falls back to the request address when a create race returns a nameless row', async () => {
+    class RaceNullAddressStore extends InMemoryAuthStore {
+      #lookups = 0;
+      override async getAccountByLightningAddress(address: string) {
+        this.#lookups += 1;
+        if (this.#lookups === 1) {
+          return undefined;
+        }
+        const acc = await super.getAccountByLightningAddress(address);
+        return acc === undefined ? undefined : { ...acc, lightningAddress: null };
+      }
+    }
+    const store = new RaceNullAddressStore();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Old',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{ lightningAddress: string; created: boolean }>;
+    };
+    expect(body.accounts[0]?.created).toBe(false);
+    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
 });

@@ -98,6 +98,93 @@ describe('auth routes', () => {
       expect(body.options.challenge).toBe('test-challenge');
     });
 
+    it('issues claim options for a provisioned viewKey', async () => {
+      const store = new InMemoryAuthStore();
+      const viewKey = 'a'.repeat(64);
+      await store.createAccount({
+        id: 'provisioned',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        lightningAddress: 'guest@walletofsatoshi.com',
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        challengeId: string;
+        options: { user: { displayName: string; name: string } };
+        ok?: unknown;
+        value?: unknown;
+      };
+      expect(body.challengeId).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.options.user.displayName).toBe('Ada');
+      expect(body.options.user.name).toBe('provisioned');
+      expect(body).not.toHaveProperty('ok');
+      expect(body).not.toHaveProperty('value');
+    });
+
+    it('returns 404 when begin viewKey is unknown', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey: 'b'.repeat(64) }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'This profile could not be found.' });
+    });
+
+    it('returns 409 when begin viewKey already has a passkey', async () => {
+      const store = new InMemoryAuthStore();
+      const viewKey = 'c'.repeat(64);
+      await store.createAccount({
+        id: 'provisioned',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        lightningAddress: 'guest@walletofsatoshi.com',
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await store.createPasskeyCredential({
+        credentialId: 'cred-1',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'provisioned',
+        createdAt: 1,
+      });
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'This profile already has a passkey' });
+    });
+
+    it('returns 400 when begin viewKey is not a string', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey: 12 }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an optional "viewKey" string',
+      });
+    });
+
     it('rejects a missing finish body', async () => {
       const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/register/finish', {
         method: 'POST',

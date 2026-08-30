@@ -5,6 +5,7 @@ import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
   startPasskeyAuthentication,
+  startPasskeyClaim,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccount } from '@/lib/auth/account-json';
@@ -55,6 +56,25 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       const config = webAuthnConfig(deps);
       if (config === null) {
         return c.json({ error: 'Server auth is not configured' }, 500);
+      }
+      const body = await c.req.json().catch(() => null);
+      if (body !== null && typeof body === 'object' && !Array.isArray(body) && 'viewKey' in body) {
+        const viewKey = (body as { viewKey: unknown }).viewKey;
+        if (typeof viewKey !== 'string') {
+          return c.json({ error: 'Expected a JSON body with an optional "viewKey" string' }, 400);
+        }
+        const claimed = await startPasskeyClaim(
+          deps.store,
+          deps.passkeyCeremony,
+          config,
+          deps.now(),
+          viewKey,
+        );
+        if (!claimed.ok) {
+          const status = claimed.error === 'This profile already has a passkey' ? 409 : 404;
+          return c.json({ error: claimed.error }, status);
+        }
+        return c.json(claimed.value, 200);
       }
       const started = await startPasskeyRegistration(
         deps.store,

@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-29.
+**Status**: draft, in active iteration. Last revised 2026-08-30.
 
 ---
 
@@ -75,6 +75,11 @@ Founder.
   leftover `account.linking_key` values are historical and cannot log in.
 - WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts`). Missing
   RP ID → passkey routes 500; the process still boots.
+- **Operator provision / viewKey claim (2026-08-30):** `POST /debug/accounts`
+  can create accounts with name + Lightning Address and no passkey. The
+  public `viewKey` URL is the invite. `POST /auth/passkey/register/begin`
+  with `{ "viewKey" }` binds a passkey to that row (name and address stay);
+  living-room rules agreement remains a later `/me` step.
 
 ### Donor upgrade (custodial, v1 only)
 
