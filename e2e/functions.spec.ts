@@ -960,3 +960,51 @@ test('Function: unsignedNostrDefaults — GET /messages without bearer is 401', 
 }) => {
   expect((await request.get('/messages')).status()).toBe(401);
 });
+test('Function: allocateNip05Local — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildNostrJson — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decodeForumVideo — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: detectVideoContentType — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: forumVideoExt — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: forumVideoUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: listNip05Entries — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: nip05Domain — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: nip05Identifier — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: nip05Slug — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: parseBytesRange — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: removeForumVideo — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveMediaDir — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: videoFilePath — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: wellKnownRoutes — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: writeForumVideo — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

@@ -73,6 +73,7 @@ describe('serializeMessage', () => {
       sats: 0,
       payable: true,
       hasPhoto: false,
+      hasVideo: false,
       role: 'moderator',
     });
     expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');

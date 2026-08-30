@@ -141,6 +141,23 @@ test('GET /messages/:id/photo.webp without bearer is 404', async ({ request }) =
   const res = await request.get('/messages/:id/photo.webp');
   expect(res.status()).toBe(404);
 });
+test('GET /messages/:id/video.mp4 without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/video.mp4');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/video.webm without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/video.webm');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/video.mov without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/video.mov');
+  expect(res.status()).toBe(404);
+});
+test('GET /well-known/nostr.json is 200', async ({ request }) => {
+  expect((await request.get('/well-known/nostr.json')).status()).toBeGreaterThanOrEqual(200);
+  const res = await request.get('/.well-known/nostr.json');
+  expect(res.status()).toBe(200);
+});
 
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {

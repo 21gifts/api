@@ -453,6 +453,7 @@ describe('runNostrWorkerTick', () => {
       display_name: 'Ada',
       website: 'https://21.gifts',
       picture: 'https://21.gifts/apple-touch-icon.png',
+      about: '21.gifts',
     });
     expect(kinds).toContain(10002);
     expect(kinds).toContain(1);
@@ -581,6 +582,110 @@ describe('runNostrWorkerTick', () => {
       ['r', 'https://21.gifts'],
       ['imeta', 'url https://dev-api.21.gifts/messages/m-pic/photo.jpg', 'm image/jpeg'],
     ]);
+  });
+
+  it('embeds a public video URL and poster imeta on kind:1', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date('2026-08-28T00:02:30.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-vid/video'),
+    );
+    expect(String(note?.event['content'])).toContain(
+      'https://dev-api.21.gifts/messages/m-vid/video.mp4',
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        [
+          'imeta',
+          'url https://dev-api.21.gifts/messages/m-vid/video.mp4',
+          'm video/mp4',
+          'image https://dev-api.21.gifts/messages/m-vid/photo.jpg',
+        ],
+      ]),
+    );
+  });
+
+  it('embeds a video URL without a poster when none is stored', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid2',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip2',
+        createdAt: new Date('2026-08-28T00:02:31.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-vid2/video'),
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        ['imeta', 'url https://dev-api.21.gifts/messages/m-vid2/video.mp4', 'm video/mp4'],
+      ]),
+    );
   });
 
   it('re-signs published photo posts that lack the photo URL', async () => {

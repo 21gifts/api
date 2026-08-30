@@ -1114,3 +1114,115 @@
 - **Inputs:** none.
 - **Returns / side effects:** Column defaults including `sats: 0`.
 - **Used by:** `POST /messages`, stores.
+
+## Function: allocateNip05Local
+
+- **Purpose:** Unique NIP-05 local-part; first slug wins, collisions append account-id hex.
+- **Inputs:** name, account id, taken set.
+- **Returns / side effects:** local-part string.
+- **Used by:** `nip05Identifier`, `listNip05Entries`.
+
+## Function: buildNostrJson
+
+- **Purpose:** NIP-05 `names` + `relays` map for `GET /.well-known/nostr.json`.
+- **Inputs:** auth store, env, optional name filter.
+- **Returns / side effects:** JSON body.
+- **Used by:** `wellKnownRoutes`.
+
+## Function: decodeForumVideo
+
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap).
+- **Inputs:** raw bytes.
+- **Returns / side effects:** `{ contentType, bytes }` or null.
+- **Used by:** `POST /messages` multipart.
+
+## Function: detectVideoContentType
+
+- **Purpose:** `ftyp` / WebM magic → MIME.
+- **Inputs:** bytes.
+- **Returns / side effects:** MIME or null.
+- **Used by:** `decodeForumVideo`.
+
+## Function: forumVideoExt
+
+- **Purpose:** Damus path extension for a video MIME.
+- **Inputs:** MIME.
+- **Returns / side effects:** `mp4` / `webm` / `mov`.
+- **Used by:** public video URLs.
+
+## Function: forumVideoUrl
+
+- **Purpose:** Absolute `GET /messages/:id/video.mp4` (or `.webm` / `.mov`) URL.
+- **Inputs:** API origin, message id, MIME.
+- **Returns / side effects:** URL string.
+- **Used by:** Worker sign path.
+
+## Function: listNip05Entries
+
+- **Purpose:** Named accounts with pubkeys, oldest first, unique locals.
+- **Inputs:** auth store.
+- **Returns / side effects:** `Nip05Entry[]`.
+- **Used by:** `buildNostrJson`.
+
+## Function: nip05Domain
+
+- **Purpose:** Hostname from `PUBLIC_BASE_URL`; null for loopback/IP.
+- **Inputs:** env.
+- **Returns / side effects:** hostname or null.
+- **Used by:** kind:0 `nip05`.
+
+## Function: nip05Identifier
+
+- **Purpose:** `local@domain` for one account matching `nostr.json`.
+- **Inputs:** account, named accounts oldest-first, domain.
+- **Returns / side effects:** identifier string.
+- **Used by:** Worker kind:0.
+
+## Function: nip05Slug
+
+- **Purpose:** Display name → `a-z0-9-` local-part (`user` if empty).
+- **Inputs:** name.
+- **Returns / side effects:** slug.
+- **Used by:** `allocateNip05Local`.
+
+## Function: parseBytesRange
+
+- **Purpose:** Parse `bytes=start-end` for 206 responses.
+- **Inputs:** header, file size.
+- **Returns / side effects:** `{start,end}` or null (full body).
+- **Used by:** `GET /messages/:id/video.*`.
+
+## Function: removeForumVideo
+
+- **Purpose:** Best-effort unlink of a stored video file.
+- **Inputs:** message id, MIME, env.
+- **Returns / side effects:** void.
+- **Used by:** tests; create rollback.
+
+## Function: resolveMediaDir
+
+- **Purpose:** `MEDIA_DIR` or process temp `21gifts-media`.
+- **Inputs:** env.
+- **Returns / side effects:** directory path.
+- **Used by:** video read/write.
+
+## Function: videoFilePath
+
+- **Purpose:** `{dir}/{id}.{ext}` on disk.
+- **Inputs:** dir, id, MIME.
+- **Returns / side effects:** path.
+- **Used by:** write/read/serve.
+
+## Function: wellKnownRoutes
+
+- **Purpose:** Hono `GET /nostr.json` (CORS `*`).
+- **Inputs:** auth store, env.
+- **Returns / side effects:** Hono app mounted at `/.well-known`.
+- **Used by:** `createApp`.
+
+## Function: writeForumVideo
+
+- **Purpose:** Persist video bytes under `MEDIA_DIR`.
+- **Inputs:** message id, video, env.
+- **Returns / side effects:** mkdir + writeFile.
+- **Used by:** `MessageStore.create`.

@@ -15,6 +15,7 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
@@ -194,6 +195,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
+  app.route('/.well-known', wellKnownRoutes({ auth: store }));
   app.route(
     '/auth',
     authRoutes({

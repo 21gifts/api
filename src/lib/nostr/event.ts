@@ -29,8 +29,10 @@ export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 export interface Kind1Photo {
   /** Absolute HTTPS URL clients fetch. */
   url: string;
-  /** Stored MIME type. */
-  mime: 'image/jpeg' | 'image/png' | 'image/webp';
+  /** Stored MIME type (image or video). */
+  mime: 'image/jpeg' | 'image/png' | 'image/webp' | 'video/mp4' | 'video/webm' | 'video/quicktime';
+  /** Optional poster image URL (video `imeta` `image` field). */
+  posterUrl?: string;
 }
 
 /**
@@ -157,7 +159,11 @@ export function buildKind1Event(
   let body = content;
   if (photo !== undefined) {
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
-    tags.push(['imeta', `url ${photo.url}`, `m ${photo.mime}`]);
+    const imeta = ['imeta', `url ${photo.url}`, `m ${photo.mime}`];
+    if (photo.posterUrl !== undefined && photo.posterUrl !== '') {
+      imeta.push(`image ${photo.posterUrl}`);
+    }
+    tags.push(imeta);
   }
   body = kind1ContentWithHashtags(body);
   return {
@@ -180,27 +186,41 @@ export interface Kind0ProfileContent {
   picture: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
+  /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
+  nip05?: string;
+  /** Short bio. */
+  about?: string;
 }
 
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
  * Omit `lud16` when the account has no Lightning Address. Always set `picture`
- * to {@link KIND0_PICTURE_URL}. Do not set `nip05` or `bot` in v1.
+ * to {@link KIND0_PICTURE_URL} and `about` to `21.gifts`. Set `nip05` when a
+ * public host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
+ * @param nip05 - NIP-05 identifier, or `null`.
  * @returns JSON string for the kind:0 `content` field.
  */
-export function buildKind0Content(name: string, lightningAddress: string | null): string {
+export function buildKind0Content(
+  name: string,
+  lightningAddress: string | null,
+  nip05: string | null = null,
+): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
     website: 'https://21.gifts',
     picture: KIND0_PICTURE_URL,
+    about: '21.gifts',
   };
   if (lightningAddress !== null) {
     body.lud16 = lightningAddress;
+  }
+  if (nip05 !== null && nip05 !== '') {
+    body.nip05 = nip05;
   }
   return JSON.stringify(body);
 }
@@ -223,16 +243,18 @@ export interface UnsignedKind0 {
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
+ * @param nip05 - NIP-05 identifier, or `null`.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
   name: string,
   lightningAddress: string | null,
   createdAtUnix: number,
+  nip05: string | null = null,
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress),
+    content: buildKind0Content(name, lightningAddress, nip05),
     tags: [],
     created_at: createdAtUnix,
   };

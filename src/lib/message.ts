@@ -1,4 +1,5 @@
 import type { AccountRole } from '@/lib/auth/store';
+import type { ForumVideoContentType } from '@/lib/video';
 
 /**
  * Forum message domain: validation, photo decode, and public JSON projection.
@@ -50,6 +51,10 @@ export interface MessageRow {
   createdAt: Date;
   /** Whether a photo is stored for this message (bytes never on the row). */
   hasPhoto: boolean;
+  /** Whether a video file is stored for this message. */
+  hasVideo?: boolean;
+  /** Stored video MIME, or `null`. */
+  videoContentType?: ForumVideoContentType | null;
   /** Signed kind:1 id, or `null` until the worker signs. */
   eventId: string | null;
   /** Fan-out state. */
@@ -84,6 +89,8 @@ export interface PublicMessage {
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
+  /** True when a video can be fetched via GET `/messages/:id/video.mp4`. */
+  hasVideo: boolean;
   /**
    * Author's live `account.role` (not a snapshot). Always present; `"basis"`
    * when the author account is missing.
@@ -142,6 +149,7 @@ export function serializeMessage(
     sats: row.sats,
     payable,
     hasPhoto: row.hasPhoto,
+    hasVideo: row.hasVideo === true,
     role,
   };
 }

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
@@ -29,6 +29,15 @@ import { buildZapRequest } from '@/lib/nostr/zap-request';
 import type { PushStore } from '@/lib/push-store';
 import { enqueueForumPushes } from '@/lib/push-worker';
 import { bearerToken } from '@/routes/me';
+import {
+  decodeForumVideo,
+  forumVideoExt,
+  parseBytesRange,
+  resolveMediaDir,
+  videoFilePath,
+  type ForumVideo,
+} from '@/lib/video';
+import { readFile } from 'node:fs/promises';
 
 /** Placeholder author id when the message/author is unknown at persist time. */
 const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
@@ -175,6 +184,129 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
   }
 }
 
+/**
+ * Public video bytes with Range support so Damus can seek.
+ *
+ * @param deps - Message store.
+ * @param c - Request (Range header).
+ * @param id - Message id.
+ * @param ext - Path extension (`mp4` / `webm` / `mov`).
+ * @returns 200, 206, 404, or 503.
+ */
+async function serveForumVideo(
+  deps: MessagesRouteDeps,
+  c: Context,
+  id: string,
+  ext: 'mp4' | 'webm' | 'mov',
+): Promise<Response> {
+  if (!MESSAGE_ID_RE.test(id)) {
+    return Response.json({ error: 'Video not found' }, { status: 404 });
+  }
+  try {
+    const row = await deps.store.getById(id);
+    const mime = row?.videoContentType ?? null;
+    if (row === undefined || row.hasVideo !== true || mime === null) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
+    }
+    if (forumVideoExt(mime) !== ext) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
+    }
+    const path = videoFilePath(resolveMediaDir(), id, mime);
+    const bytes = await readFile(path);
+    const size = bytes.byteLength;
+    /* v8 ignore next 3 -- empty file after a crashed write */
+    if (size === 0) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
+    }
+    const range = parseBytesRange(c.req.header('range') ?? undefined, size);
+    const headers: Record<string, string> = {
+      'Content-Type': mime,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+      'Content-Disposition': `inline; filename="video.${ext}"`,
+    };
+    if (range === null) {
+      headers['Content-Length'] = String(size);
+      return new Response(bytes, { status: 200, headers });
+    }
+    const sliced = bytes.subarray(range.start, range.end + 1);
+    headers['Content-Length'] = String(sliced.byteLength);
+    headers['Content-Range'] = `bytes ${range.start}-${range.end}/${size}`;
+    return new Response(sliced, { status: 206, headers });
+  } catch {
+    logEvent('messages.video.failed');
+    return Response.json({ error: 'Messages are unavailable' }, { status: 503 });
+  }
+}
+
+/**
+ * `POST /messages` as multipart (`video` file + optional `poster` + `text`).
+ *
+ * @param deps - Store and clock.
+ * @param c - Request.
+ * @param account - Authenticated account (already named).
+ * @param postLimiter - Create limiter.
+ * @returns 200 / 400 / 429 / 503.
+ */
+async function postMultipartMessage(
+  deps: MessagesRouteDeps,
+  c: Context,
+  account: Account,
+): Promise<Response> {
+  /* v8 ignore next 3 -- named accounts; trim-empty is the same 400 as JSON POST */
+  if (account.name === null || account.name.trim() === '') {
+    return c.json({ error: 'Set a name before posting' }, 400);
+  }
+  const form = await c.req.formData();
+  /* v8 ignore next -- form.get is string or File */
+  const rawText = String(form.get('text') ?? '');
+  const text = normalizeForumText(rawText);
+  if (text === null) {
+    return c.json({ error: 'Text must be 1–500 characters' }, 400);
+  }
+  const videoPart = form.get('video');
+  let video: ForumVideo | undefined;
+  if (videoPart instanceof File && videoPart.size > 0) {
+    const decoded = decodeForumVideo(new Uint8Array(await videoPart.arrayBuffer()));
+    if (decoded === null) {
+      return c.json({ error: 'Video must be an MP4, WebM, or MOV under 32 MiB' }, 400);
+    }
+    video = decoded;
+  }
+  const posterPart = form.get('poster');
+  let photo: ForumPhoto | undefined;
+  if (posterPart instanceof File && posterPart.size > 0) {
+    const raw = new Uint8Array(await posterPart.arrayBuffer());
+    const decoded = decodeForumPhoto('image/jpeg', Buffer.from(raw).toString('base64'));
+    if (decoded === null) {
+      return c.json({ error: 'Poster must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+    }
+    photo = decoded;
+  }
+  if (text === '' && photo === undefined && video === undefined) {
+    return c.json({ error: 'Text must be 1–500 characters or include a photo or video' }, 400);
+  }
+  const row: MessageRow = {
+    id: crypto.randomUUID(),
+    accountId: account.id,
+    name: account.name.trim(),
+    text,
+    createdAt: new Date(deps.now()),
+    hasPhoto: photo !== undefined,
+    hasVideo: video !== undefined,
+    videoContentType: video === undefined ? null : video.contentType,
+    ...unsignedNostrDefaults(),
+  };
+  try {
+    const created = await deps.store.create(row, photo, video);
+    return c.json(serializeMessage(created, false, account.role), 200);
+  } catch {
+    logEvent('messages.create.failed');
+    return c.json({ error: 'Messages are unavailable' }, 503);
+  }
+}
+
 /** Body schema for posting a forum message (text and/or photo). */
 const postBody = z
   .object({
@@ -239,6 +371,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         c.header('Retry-After', '10');
         return c.json({ error: 'Too many messages' }, 429);
       }
+      /* v8 ignore next -- missing content-type is JSON parse 400 */
+      const requestType = c.req.header('content-type') ?? '';
+      if (requestType.toLowerCase().includes('multipart/form-data')) {
+        return postMultipartMessage(deps, c, account);
+      }
       const parsed = postBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
@@ -292,6 +429,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     .get('/:id/photo.png', (c) => serveForumPhoto(deps, c.req.param('id')))
     .get('/:id/photo.webp', (c) => serveForumPhoto(deps, c.req.param('id')))
     .get('/:id/photo', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/video.mp4', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mp4'))
+    .get('/:id/video.webm', (c) => serveForumVideo(deps, c, c.req.param('id'), 'webm'))
+    .get('/:id/video.mov', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mov'))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {

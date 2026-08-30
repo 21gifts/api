@@ -612,6 +612,7 @@ describe('PostgresMessageStore', () => {
         text: 'hi',
         created_at: new Date('2026-08-28T12:00:00.000Z'),
         has_photo: true,
+        video_content_type: 'video/mp4',
       },
       {
         id: 'm2',
@@ -620,6 +621,7 @@ describe('PostgresMessageStore', () => {
         text: 'yo',
         created_at: '2026-08-27T12:00:00.000Z',
         has_photo: false,
+        video_content_type: '',
       },
     ];
     const store = new PostgresMessageStore(sql);
@@ -633,9 +635,11 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual([50]);
     expect(listed[0]?.id).toBe('m1');
     expect(listed[0]?.hasPhoto).toBe(true);
+    expect(listed[0]?.hasVideo).toBe(true);
     expect(listed[0]?.sats).toBe(0);
     expect(listed[1]?.id).toBe('m2');
     expect(listed[1]?.hasPhoto).toBe(false);
+    expect(listed[1]?.hasVideo).toBe(false);
   });
 
   it('create binds seven params with null photo', async () => {
@@ -652,7 +656,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(id, account_id, name, text, photo, photo_content_type, created_at, nostr_publish_state, sats\)/,
+      /INSERT INTO message \(id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -662,9 +666,11 @@ describe('PostgresMessageStore', () => {
       'hello',
       null,
       null,
+      null,
       row.createdAt,
     ]);
-    expect(created).toEqual(row);
+    expect(created.id).toBe(row.id);
+    expect(created.hasVideo).toBe(false);
     expect(created).not.toBe(row);
   });
 
@@ -683,6 +689,25 @@ describe('PostgresMessageStore', () => {
     await store.create(row, JPEG);
     expect(sql.executes[0]?.params[4]).toEqual(JPEG.bytes);
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
+  });
+
+  it('create writes video bytes then binds video_content_type', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const row: MessageRow = {
+      id: 'm-vid-pg',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'clip',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const created = await store.create(row, undefined, { contentType: 'video/mp4', bytes: mp4 });
+    expect(created.hasVideo).toBe(true);
+    expect(sql.executes[0]?.params[6]).toBe('video/mp4');
   });
 
   it('create binds text together with photo bytes', async () => {

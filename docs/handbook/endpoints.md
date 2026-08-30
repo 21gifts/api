@@ -7,6 +7,34 @@
 - **Used by:** `unlinkLightningAddress` in the app.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /messages/:id/video.mp4
+
+- **Purpose:** Public MP4 bytes with `Accept-Ranges` / HTTP 206 so Damus can seek. `Access-Control-Allow-Origin: *`.
+- **Errors:** 404 `{ error: 'Video not found' }`; 503 `{ error: 'Messages are unavailable' }`.
+- **Used by:** Damus/Primal kind:1 video URLs.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/video.webm
+
+- **Purpose:** Same as `video.mp4` for WebM posts.
+- **Errors:** Same 404 / 503.
+- **Used by:** Damus/Primal.
+- **Auth:** none.
+
+## Endpoint: GET /messages/:id/video.mov
+
+- **Purpose:** Same as `video.mp4` for QuickTime posts.
+- **Errors:** Same 404 / 503.
+- **Used by:** Damus/Primal.
+- **Auth:** none.
+
+## Endpoint: GET /well-known/nostr.json
+
+- **Purpose:** NIP-05 directory `{ names, relays }`. CORS `*`. Optional `?name=`.
+- **Errors:** 503 `{ error: 'Directory is unavailable' }`.
+- **Used by:** Damus verification; app proxies this from the site apex.
+- **Auth:** none.
+
 ## Endpoint: GET /apple-touch-icon.png
 
 - **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.

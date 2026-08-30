@@ -16,6 +16,7 @@ import {
 } from '@/lib/message';
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import { writeForumVideo, type ForumVideo, type ForumVideoContentType } from '@/lib/video';
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
   if (event === null) {
@@ -64,7 +65,7 @@ export interface MessageStore {
    * @param photo - Optional decoded photo (copied into storage).
    * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo`.
    */
-  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow>;
+  create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow>;
 
   /**
    * Load photo bytes for a message id.
@@ -248,6 +249,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_first_attempt_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_epoch text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_attempts integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS video_content_type text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS message_event_id_uidx ON message (event_id) WHERE event_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   event_id text PRIMARY KEY,
@@ -315,6 +317,8 @@ function copyRow(row: MessageRow): MessageRow {
   return {
     ...row,
     hasPhoto: row.hasPhoto === true,
+    hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
   };
@@ -377,6 +381,8 @@ export class InMemoryMessageStore implements MessageStore {
       sorted.slice(0, limit).map((row) => {
         const copy = copyRow(row);
         copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
         return copy;
       }),
     );
@@ -389,18 +395,24 @@ export class InMemoryMessageStore implements MessageStore {
    * @param photo - Optional photo (bytes copied).
    * @returns A copy of the stored row with `hasPhoto` from `photo`.
    */
-  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
+    const hasVideo = video !== undefined;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
       hasPhoto,
+      hasVideo,
+      videoContentType: video === undefined ? null : video.contentType,
     });
+    if (video !== undefined) {
+      await writeForumVideo(stored.id, video);
+    }
     this.#rows.push(stored);
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }
-    return Promise.resolve(copyRow(stored));
+    return copyRow(stored);
   }
 
   /**
@@ -637,6 +649,7 @@ interface MessageSqlRow {
   text: string;
   created_at: Date | string;
   has_photo: boolean | number | string | null;
+  video_content_type?: string | null;
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
@@ -662,6 +675,13 @@ interface MessagePhotoSqlRow {
 
 const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
+function parseVideoContentType(value: string | null | undefined): ForumVideoContentType | null {
+  if (value === 'video/mp4' || value === 'video/webm' || value === 'video/quicktime') {
+    return value;
+  }
+  return null;
+}
+
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
@@ -673,6 +693,11 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     hasPhoto: Boolean(row.has_photo),
+    hasVideo:
+      row.video_content_type !== null &&
+      row.video_content_type !== undefined &&
+      row.video_content_type !== '',
+    videoContentType: parseVideoContentType(row.video_content_type),
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed'
@@ -698,6 +723,7 @@ function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
 /** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
 const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               (photo IS NOT NULL) AS has_photo,
+              video_content_type,
               event_id, nostr_publish_state, sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`;
 
@@ -737,16 +763,22 @@ export class PostgresMessageStore implements MessageStore {
    * @param photo - Optional decoded photo.
    * @returns The stored row after a successful insert (a copy).
    */
-  async create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
+    const hasVideo = video !== undefined;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
       hasPhoto,
+      hasVideo,
+      videoContentType: video === undefined ? null : video.contentType,
     });
+    if (video !== undefined) {
+      await writeForumVideo(stored.id, video);
+    }
     await this.#sql.execute(
-      `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, created_at, nostr_publish_state, sats)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',0)`,
+      `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',0)`,
       [
         stored.id,
         stored.accountId,
@@ -754,6 +786,7 @@ export class PostgresMessageStore implements MessageStore {
         stored.text,
         photo === undefined ? null : photo.bytes,
         photo === undefined ? null : photo.contentType,
+        stored.videoContentType,
         stored.createdAt,
       ],
     );
