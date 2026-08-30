@@ -189,18 +189,30 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       // Linking a (new) address resets any prior verified state; proof of control
       // is a separate step. Any in-flight verification is dropped with the link.
+      const owner = await deps.store.getAccountByLightningAddress(address);
+      if (owner !== undefined && owner.id !== current.id) {
+        return c.json({ error: 'Lightning Address is already in use' }, 409);
+      }
       const updated: Account = {
         ...current,
         lightningAddress: address,
         lightningAddressVerified: false,
       };
       await deps.store.updateAccount(updated);
+      const stored = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (stored === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if ((stored.lightningAddress ?? '').trim().toLowerCase() !== address.trim().toLowerCase()) {
+        return c.json({ error: 'Lightning Address is already in use' }, 409);
+      }
       await deps.store.deleteVerification(current.id);
       logEvent('account.lightning_address.linked', {
         accountId: account.id,
         address,
       });
-      return c.json(serializeOwnerAccount(updated), 200);
+      return c.json(serializeOwnerAccount(stored), 200);
     })
     .delete('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

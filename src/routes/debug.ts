@@ -118,15 +118,23 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         const didCreate = stored.viewKey === viewKey;
         if (didCreate) {
           created += 1;
+          results.push({
+            name: stored.name ?? row.name,
+            lightningAddress: stored.lightningAddress ?? row.lightningAddress,
+            viewKey: stored.viewKey,
+            created: true,
+          });
         } else {
+          const next = { ...stored, name: row.name };
+          await deps.store.updateAccount(next);
           updated += 1;
+          results.push({
+            name: row.name,
+            lightningAddress: stored.lightningAddress ?? row.lightningAddress,
+            viewKey: stored.viewKey,
+            created: false,
+          });
         }
-        results.push({
-          name: stored.name ?? row.name,
-          lightningAddress: stored.lightningAddress ?? row.lightningAddress,
-          viewKey: stored.viewKey,
-          created: didCreate,
-        });
       }
       logEvent('debug.accounts.provisioned', { created, updated });
       return c.json({ accounts: results }, 200);

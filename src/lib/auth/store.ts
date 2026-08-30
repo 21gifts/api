@@ -243,6 +243,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
       return;
     }
+    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
+      return;
+    }
     this.#accounts.set(account.id, account);
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -259,6 +262,9 @@ export class InMemoryAuthStore implements AuthStore {
     }
     const viewKeyOwnerId = this.#accountsByViewKey.get(account.viewKey);
     if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
+      return;
+    }
+    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
     const previous = this.#accounts.get(account.id);
@@ -299,6 +305,22 @@ export class InMemoryAuthStore implements AuthStore {
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
     const id = this.#accountsByViewKey.get(viewKey);
     return id === undefined ? undefined : this.#accounts.get(id);
+  }
+
+  #lightningAddressTaken(address: string | null, accountId: string): boolean {
+    if (address === null) {
+      return false;
+    }
+    const needle = address.trim().toLowerCase();
+    for (const other of this.#accounts.values()) {
+      if (other.id === accountId || other.lightningAddress === null) {
+        continue;
+      }
+      if (other.lightningAddress.trim().toLowerCase() === needle) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async getAccountByLightningAddress(address: string): Promise<Account | undefined> {

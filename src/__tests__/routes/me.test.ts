@@ -451,6 +451,29 @@ describe('POST /me/lightning-address', () => {
     ).toBe(true);
   });
 
+  it('returns 409 when the Lightning Address belongs to another account', async () => {
+    const store = await seededStore();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(409);
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
   it('clears a pending verification when linking', async () => {
     const store = await seededStore({ lightningAddress: ADDRESS });
     await store.putVerification({

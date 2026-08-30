@@ -188,8 +188,10 @@ describe('PostgresAuthStore', () => {
     ];
     const store = new PostgresAuthStore(sql);
     const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
-    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(lightning_address\) = lower\(\$1\)/);
-    expect(sql.queries[0]?.params).toEqual(['Guest@WalletOfSatoshi.com']);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ']);
     expect(found?.id).toBe('acc');
     expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
   });

@@ -640,6 +640,48 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
   });
 
+  it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'a',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      viewKey: 'a'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'b',
+      name: 'Bob',
+      lightningAddress: '  Guest@WalletOfSatoshi.com  ',
+      viewKey: 'b'.repeat(64),
+    });
+    expect(await store.getAccount('b')).toBeUndefined();
+    await store.createAccount({
+      ...base,
+      id: 'c',
+      name: 'Cara',
+      lightningAddress: 'cara@walletofsatoshi.com',
+      viewKey: 'c'.repeat(64),
+    });
+    await store.updateAccount({
+      ...base,
+      id: 'c',
+      name: 'Cara',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      viewKey: 'c'.repeat(64),
+    });
+    expect((await store.getAccount('c'))?.lightningAddress).toBe('cara@walletofsatoshi.com');
+  });
+
   it('skips null lightningAddress rows when looking up by address', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

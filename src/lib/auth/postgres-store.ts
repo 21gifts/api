@@ -173,8 +173,8 @@ export class PostgresAuthStore implements AuthStore {
   async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
-       FROM account WHERE lower(lightning_address) = lower($1)`,
-      [address.trim()],
+       FROM account WHERE lower(trim(lightning_address)) = lower(trim($1))`,
+      [address],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
