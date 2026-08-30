@@ -581,7 +581,7 @@ describe('runNostrWorkerTick', () => {
     expect(row?.sats).toBe(21);
   });
 
-  it('does not publish a claimed photo snapshot that lacks the photo URL', async () => {
+  it('publishes a pending photo snapshot even without the photo URL', async () => {
     const { auth, messages } = await seed();
     const jpeg: { contentType: 'image/jpeg'; bytes: Uint8Array } = {
       contentType: 'image/jpeg',
@@ -592,7 +592,7 @@ describe('runNostrWorkerTick', () => {
         id: 'm-stale',
         accountId: 'acc',
         name: 'Ada',
-        text: '',
+        text: 'hallo',
         createdAt: new Date('2026-08-28T00:05:00.000Z'),
         hasPhoto: true,
         ...unsignedNostrDefaults(),
@@ -601,28 +601,8 @@ describe('runNostrWorkerTick', () => {
     );
     await messages.updateSignedEvent('m-stale', 'ab'.repeat(32), {
       kind: 1,
-      content: '',
-      tags: [
-        ['t', 'bitcoin'],
-        ['t', '21gifts'],
-        ['r', 'https://21.gifts'],
-      ],
-    });
-    await messages.create(
-      {
-        id: 'm-bad-content',
-        accountId: 'acc',
-        name: 'Ada',
-        text: '',
-        createdAt: new Date('2026-08-28T00:06:00.000Z'),
-        hasPhoto: true,
-        ...unsignedNostrDefaults(),
-      },
-      jpeg,
-    );
-    await messages.updateSignedEvent('m-bad-content', 'cd'.repeat(32), {
-      kind: 1,
-      content: 1,
+      id: 'ab'.repeat(32),
+      content: 'hallo',
       tags: [
         ['t', 'bitcoin'],
         ['t', '21gifts'],
@@ -645,12 +625,60 @@ describe('runNostrWorkerTick', () => {
         },
       }),
     );
-    const kind1 = publisher.calls.filter((call) => call.event['kind'] === 1);
-    expect(kind1.map((call) => call.event['id'])).not.toContain('ab'.repeat(32));
-    expect(kind1.map((call) => call.event['id'])).not.toContain('cd'.repeat(32));
-    expect((await messages.getById('m-stale'))?.eventId).toBeNull();
-    expect((await messages.getById('m-bad-content'))?.eventId).toBeNull();
-    expect((await messages.getById('m-stale'))?.nostrPublishState).toBe('pending');
+    expect(
+      publisher.calls.some(
+        (call) => call.event['kind'] === 1 && call.event['id'] === 'ab'.repeat(32),
+      ),
+    ).toBe(true);
+    expect((await messages.getById('m-stale'))?.eventId).toBe('ab'.repeat(32));
+    expect((await messages.getById('m-stale'))?.nostrPublishState).toBe('published');
+  });
+
+  it('signs a photo note without a URL when getPhoto returns null', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-missing-bytes',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hallo',
+        createdAt: new Date('2026-08-28T00:10:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    messages.getPhoto = async () => null;
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const row = await messages.getById('m-missing-bytes');
+    expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(row?.nostrEvent?.['content']).toBe('hallo');
+    expect(row?.nostrPublishState).toBe('published');
   });
 
   it('publishes a zapped URL-less photo snapshot instead of resetting it', async () => {

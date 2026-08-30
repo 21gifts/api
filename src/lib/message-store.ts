@@ -103,8 +103,9 @@ export interface MessageStore {
   clearSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
   /**
-   * Signed rows with a photo whose kind:1 content lacks the public photo URL.
-   * Any publish state, `sats = 0` only (zapped rows keep their event id).
+   * Published rows with a photo whose kind:1 content lacks the public photo URL.
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
@@ -454,6 +455,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.eventId !== null &&
           row.hasPhoto &&
           row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
@@ -806,6 +808,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
        WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+         AND nostr_publish_state = 'published'
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo%'
