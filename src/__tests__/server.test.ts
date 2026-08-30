@@ -1,5 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
+
+function b64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/u, '');
+}
+
+const VAPID_PUBLIC_BYTES = new Uint8Array(65);
+VAPID_PUBLIC_BYTES[0] = 4;
+const VAPID_PUBLIC_KEY = b64url(VAPID_PUBLIC_BYTES);
+const VAPID_PRIVATE_KEY = b64url(new Uint8Array(32).fill(1));
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -66,6 +80,47 @@ describe('createApp', () => {
   it('returns 503 on /debug/accounts when debugToken is blank', async () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/accounts');
+    expect(res.status).toBe(503);
+  });
+
+  it('reads VAPID public key from the environment when createApp omits it', async () => {
+    process.env['VAPID_PUBLIC_KEY'] = VAPID_PUBLIC_KEY;
+    process.env['VAPID_PRIVATE_KEY'] = VAPID_PRIVATE_KEY;
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: Date.now() });
+    const app = createApp({ authStore: store });
+    const res = await app.request('/push/vapid-public', {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ publicKey: VAPID_PUBLIC_KEY });
+    delete process.env['VAPID_PUBLIC_KEY'];
+    delete process.env['VAPID_PRIVATE_KEY'];
+  });
+
+  it('returns 401 on GET /push/vapid-public without a session', async () => {
+    delete process.env['VAPID_PUBLIC_KEY'];
+    delete process.env['VAPID_PRIVATE_KEY'];
+    const app = createApp();
+    const res = await app.request('/push/vapid-public');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 on POST /debug/push-ping when debugToken is blank', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/push-ping', { method: 'POST' });
     expect(res.status).toBe(503);
   });
 

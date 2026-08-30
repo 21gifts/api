@@ -442,6 +442,75 @@ test('Function: migrateContactSchema — default boot has no DATABASE_URL', asyn
   expect(res.status()).toBe(200);
 });
 
+test('Function: migratePushSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemoryPushStore — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: PostgresPushStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveVapidConfig — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: UnconfiguredPushSender — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: WebPushSender — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: parsePushSubscription — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
+test('Function: buildForumPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
+test('Function: buildZapPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
+test('Function: enqueueForumPushes — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: enqueueZapPush — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: enqueueDebugPush — POST /debug/push-ping without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/debug/push-ping')).status()).toBe(401);
+});
+test('Function: runPushWorkerTick — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: startPushWorker — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: pushRoutes — GET /push/vapid-public without bearer is 401', async ({ request }) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
+test('Function: debugPushRoutes — POST /debug/push-ping without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/debug/push-ping')).status()).toBe(401);
+});
+
 test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

@@ -18,6 +18,8 @@ import { messagesRoutes } from '@/routes/messages';
 import { contactRoutes } from '@/routes/contact';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import { pushRoutes } from '@/routes/push';
+import { debugPushRoutes } from '@/routes/debug-push';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
@@ -27,6 +29,8 @@ import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
+import { resolveVapidConfig } from '@/lib/push-config';
+import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -118,6 +122,17 @@ export interface AppDeps {
    * {@link PostgresContactStore} when `DATABASE_URL` is set.
    */
   contactStore?: ContactStore;
+  /**
+   * Web Push subscriptions and outbox (default: empty
+   * {@link InMemoryPushStore}). Boot injects
+   * {@link PostgresPushStore} when `DATABASE_URL` is set.
+   */
+  pushStore?: PushStore;
+  /**
+   * Public VAPID key when both keys resolve (default:
+   * `resolveVapidConfig(process.env)?.publicKey`). Missing → push HTTP 503.
+   */
+  vapidPublicKey?: string;
 }
 
 /**
@@ -127,12 +142,13 @@ export interface AppDeps {
  * via Hono's `app.request()` helper without binding to a TCP port. Every
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
- * public `GET /view/:viewKey` alongside `/me` and the rest of the surface.
+ * public `GET /view/:viewKey` alongside `/me`, Web Push subscription routes,
+ * and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, contact store, nostrKek, WebAuthn RP, spend
- *   token, and gift invoice store.
+ *   gift recorder, BTC-USD rates, message store, contact store, push store,
+ *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -149,6 +165,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const pushStore = deps.pushStore ?? new InMemoryPushStore();
+  const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
@@ -173,6 +191,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
 
   app.route('/', brandRoutes({ read: readBrand }));
+  app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route(
@@ -196,6 +215,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
+  app.route(
+    '/debug/push-ping',
+    debugPushRoutes({
+      authStore: store,
+      pushStore,
+      now,
+      debugToken,
+      vapidPublicKey,
+    }),
+  );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route(
@@ -205,6 +234,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      pushStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );

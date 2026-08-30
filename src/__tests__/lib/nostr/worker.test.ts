@@ -10,6 +10,7 @@ import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
+import { InMemoryPushStore } from '@/lib/push-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -87,6 +88,7 @@ describe('runNostrWorkerTick', () => {
         publisher: new RecordingPublisher(),
         now: () => 1_700_000_000_000,
         env: {},
+        pushStore: new InMemoryPushStore(),
       }),
     );
     const row = await messages.getById('m1');

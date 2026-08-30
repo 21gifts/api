@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (kind:1 content includes Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (Web Push VAPID: `GET /push/vapid-public`, `POST`/`DELETE /me/push-subscriptions`, `POST /debug/push-ping`; kind:1 content includes Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -87,6 +87,10 @@ Public base URLs used in examples:
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                    |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)             |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)               |
+| GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                     |
+| POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                           |
+| DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                           |
+| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                         |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                    |
 | GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                         |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                        |
@@ -870,6 +874,82 @@ Environment:
 | -------------- | ----------------------------------------------------------------- |
 | `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.  |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
+### `GET /push/vapid-public`
+
+Bearer session. Returns the VAPID **public** key the browser needs for
+`pushManager.subscribe`. Missing VAPID env → **503** after session check
+(the process still boots). No cookies.
+
+No/invalid session → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+VAPID not configured → **Response** `503`:
+
+```json
+{ "error": "Push is not configured" }
+```
+
+Success → **Response** `200`:
+
+```json
+{ "publicKey": "<url-safe-base64>" }
+```
+
+### `POST /me/push-subscriptions`
+
+Bearer session. Upserts a browser PushSubscription for the account
+(`endpoint` unique; rebinds if another account held it).
+
+No/invalid session → **401** `{ "error": "Unauthorized" }`.
+VAPID not configured → **503** `{ "error": "Push is not configured" }`.
+Invalid body (`endpoint` not an https URL, or missing `keys.p256dh` /
+`keys.auth`) → **400** `{ "error": "Invalid subscription" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "endpoint": "https://push.example/device", "createdAt": "2026-08-30T12:00:00.000Z" }
+```
+
+### `DELETE /me/push-subscriptions`
+
+Bearer session. Body `{ "endpoint": "https://…" }`. Removes that device
+for this account only.
+
+No/invalid session → **401**. VAPID not configured → **503**. Missing or
+blank `endpoint` → **400** `{ "error": "Invalid subscription" }`. Unknown
+endpoint for this account → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true }
+```
+
+### `POST /debug/push-ping`
+
+Operator enqueue of a test notification. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+JSON body `{ "accountId": "<uuid>" }`. Enqueues at most one outbox row
+when the account has a stored subscription.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+VAPID not configured → **503** `{ "error": "Push is not configured" }`.
+Missing `accountId` → **400** `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+Unknown account → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "enqueued": 1 }
+```
+
+`enqueued` is `0` when the account has no subscription.
 
 ### `GET /gifts`
 
