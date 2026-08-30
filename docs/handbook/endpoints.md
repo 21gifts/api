@@ -261,8 +261,8 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data } }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG `poster`. Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
+- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data } }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer.
 - **Auth:** `Authorization: Bearer` session.
 

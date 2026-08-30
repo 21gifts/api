@@ -276,8 +276,7 @@ async function serveForumVideo(
  * @param deps - Store and clock.
  * @param c - Request.
  * @param account - Authenticated account (already named).
- * @param postLimiter - Create limiter.
- * @returns 200 / 400 / 429 / 503.
+ * @returns 200 / 400 / 503.
  */
 async function postMultipartMessage(
   deps: MessagesRouteDeps,
