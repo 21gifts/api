@@ -122,9 +122,9 @@ export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
   /**
-   * Overwrite a stored account. A `viewKey` or non-null `linkingKey` owned
-   * by another id is refused (in-memory no-op; Postgres `linkingKey` via
-   * `UPDATE` matching no row, `viewKey` via swallowed `view_key`
+   * Overwrite a stored account. A `viewKey`, non-null `linkingKey`, or
+   * `lightningAddress` (`lower(trim)`) owned by another id is refused
+   * (in-memory no-op; Postgres via `UPDATE` matching no row or swallowed
    * unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
@@ -137,7 +137,8 @@ export interface AuthStore {
   getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
   /**
    * Look up an account by Lightning Address (`lower(trim)` match). Rows with a
-   * null `lightningAddress` are skipped. First match wins; no uniqueness.
+   * null `lightningAddress` are skipped. At most one row matches (unique index
+   * in Postgres; in-memory create/update refuse a taken address).
    */
   getAccountByLightningAddress(address: string): Promise<Account | undefined>;
   /**

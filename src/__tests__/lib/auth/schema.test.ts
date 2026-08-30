@@ -32,5 +32,11 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS rules_agreed_at timestamptz/i,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential \(account_id\)/i,
+    );
   });
 });

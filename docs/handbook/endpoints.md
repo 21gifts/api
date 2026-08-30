@@ -206,7 +206,7 @@
 ## Endpoint: POST /me/lightning-address
 
 - **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged); 409 Lightning Address is already in use (another account owns it, including a unique-index race).
 - **Used by:** App `setLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
