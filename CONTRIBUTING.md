@@ -157,7 +157,7 @@ api/
 ├── docs/schema/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
-│   ├── message.sql           # public forum message table for GET/POST /messages, GET /messages/:id/photo
+│   ├── message.sql           # forum `message` plus `message_invoice` and `nostr_zap_ingest`
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
