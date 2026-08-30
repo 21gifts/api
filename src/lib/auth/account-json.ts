@@ -29,7 +29,7 @@ export interface AccountResponse {
 
 /**
  * Owner-facing account JSON: the nine public fields plus the durable
- * view-key capability secret.
+ * view-key capability secret and the next `setup` step.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */

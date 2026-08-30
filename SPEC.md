@@ -229,12 +229,13 @@ ID).
     "forumLawsDismissed": false,
     "viewKey": "<64-hex>",
     "createdAt": 0,
-    "rulesAgreedAt": null
+    "rulesAgreedAt": null,
+    "setup": "name"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey` and `setup`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
