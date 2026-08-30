@@ -88,6 +88,7 @@ api/
 │   │   ├── nostr/            # Custodial nsec, kind:0 profile + kind:1 note worker, NIP-57 zap, write-set relays
 │   │   └── auth/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
+│   │       ├── account-setup.ts # Next owner setup step (name, Lightning Address, rules)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
@@ -142,6 +143,7 @@ api/
 │       │   ├── push-worker.test.ts
 │       │   └── auth/
 │       │       ├── account-json.test.ts
+│       │       ├── account-setup.test.ts
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
