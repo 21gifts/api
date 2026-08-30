@@ -282,19 +282,19 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type                          | Meaning                                                                                       |
-| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------- |
-| `id`                       | string                        | Opaque account id                                                                             |
-| `linkingKey`               | string \| null                | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                       |
-| `role`                     | string                        | `basis`, `verified`, `moderator`, or `founder`                                                |
-| `name`                     | string \| null                | Display name, or `null` until set                                                             |
-| `lightningAddress`         | string \| null                | Linked LUD-16 address, or `null`                                                              |
-| `lightningAddressVerified` | boolean                       | Proof-of-control flag (`true` only after confirm)                                             |
-| `forumLawsDismissed`       | boolean                       | `true` after the welcome-forum living-room laws hint was dismissed                            |
-| `viewKey`                  | string                        | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
-| `createdAt`                | number                        | Creation time (epoch ms)                                                                      |
-| `rulesAgreedAt`            | number \| null                | Epoch ms of first living-room rules agreement, or `null`                                      |
-| `setup`                    | string \| null                | Next owner step: `name`, `lightning-address`, `rules`, or `null` when complete. Computed here; clients must not invent a parallel sequence. |
+| Field                      | Type           | Meaning                                                                                                                                     |
+| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                                                                                           |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                     |
+| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                              |
+| `name`                     | string \| null | Display name, or `null` until set                                                                                                           |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                            |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                           |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                          |
+| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                               |
+| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                    |
+| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                    |
+| `setup`                    | string \| null | Next owner step: `name`, `lightning-address`, `rules`, or `null` when complete. Computed here; clients must not invent a parallel sequence. |
 
 ### `GET /view/:viewKey`
 
