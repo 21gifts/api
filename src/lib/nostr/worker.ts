@@ -9,7 +9,10 @@ import {
   buildKind1Event,
   buildKind10002Event,
   forumPhotoUrl,
+  type Kind1Photo,
 } from '@/lib/nostr/event';
+import { nip05Domain, nip05Identifier } from '@/lib/nip05';
+import { forumVideoUrl } from '@/lib/video';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -104,15 +107,16 @@ function reservedContent(
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
- * signed. Then published unpaid rows missing a photo URL (`PUBLIC_BASE_URL`
- * set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick.
- * Pending rows EVENT as-is — resetting them first renews the 60s sign lease
- * and they never reach a relay. Zapped rows (`sats !== 0`) keep their event
- * id so receipts still resolve. An empty API base skips photo-URL resign so
- * it cannot un-publish and loop. When publishing, also fans out a replaceable
- * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
- * kind:10002 relay list. Kind:1 photo posts include the public image URL
- * and an `imeta` tag. Kind:0
+ * signed. Then published unpaid rows missing a photo URL or a video URL
+ * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset
+ * for the next tick. Pending rows EVENT as-is — resetting them first renews
+ * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
+ * keep their event id so receipts still resolve. An empty API base skips
+ * photo- and video-URL resign so it cannot un-publish and loop. When
+ * publishing, also fans out a replaceable kind:0 profile (`name` /
+ * `display_name` / `picture`, optional `nip05`) and a NIP-65 kind:10002
+ * relay list. Kind:1 photo and video posts include the public media URL and
+ * an `imeta` tag (video may add poster `image`). Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
@@ -127,6 +131,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   await resignPhotoKind1(deps);
+  await resignVideoKind1(deps);
   await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
@@ -172,6 +177,13 @@ async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
   await resetPublishedBatch(deps, await deps.messages.listSignedMissingPhoto(WORKER_BATCH));
 }
 
+async function resignVideoKind1(deps: NostrWorkerDeps): Promise<void> {
+  if (resolvePublicApiBase(deps.env) === '') {
+    return;
+  }
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingVideo(WORKER_BATCH));
+}
+
 async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
   await resetPublishedBatch(deps, await deps.messages.listSignedMissingHashtags(WORKER_BATCH));
 }
@@ -203,10 +215,19 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       let createdAt = Math.floor(row.createdAt.getTime() / 1000);
       let stored = false;
       const apiBase = resolvePublicApiBase(deps.env);
-      let photo: { url: string; mime: 'image/jpeg' | 'image/png' | 'image/webp' } | undefined;
+      let photo: Kind1Photo | undefined;
       if (apiBase !== '') {
         const storedPhoto = await deps.messages.getPhoto(row.id);
-        if (storedPhoto !== null) {
+        const videoMime = row.videoContentType;
+        if (videoMime !== null && videoMime !== undefined && row.hasVideo === true) {
+          photo = {
+            url: forumVideoUrl(apiBase, row.id, videoMime),
+            mime: videoMime,
+            ...(storedPhoto !== null
+              ? { posterUrl: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType) }
+              : {}),
+          };
+        } else if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
@@ -245,6 +266,8 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
   const watermarks = profileWatermarkFor(deps.auth);
   const urls = writeRelayUrls(writeSet);
   const accounts = await deps.auth.listAccounts();
+  const named = accounts.filter((row) => row.name !== null && row.name.trim() !== '');
+  const domain = nip05Domain(deps.env);
   let attempted = 0;
   for (const account of accounts) {
     if (attempted >= WORKER_BATCH) {
@@ -254,7 +277,9 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     if (live === undefined || live.name === null) {
       continue;
     }
-    const content = buildKind0Content(live.name, live.lightningAddress);
+    const namedForLive = named.map((row) => (row.id === live.id ? live : row));
+    const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
+    const content = buildKind0Content(live.name, live.lightningAddress, nip05);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -279,7 +304,12 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       const wall = Math.floor(deps.now() / 1000);
       reservation.createdAt = Math.max(wall, reservation.createdAt + 1);
       watermarks.set(live.id, reservation.createdAt);
-      const unsigned = buildKind0Event(live.name, live.lightningAddress, reservation.createdAt);
+      const unsigned = buildKind0Event(
+        live.name,
+        live.lightningAddress,
+        reservation.createdAt,
+        nip05,
+      );
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {
         continue;

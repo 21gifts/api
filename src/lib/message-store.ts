@@ -4,6 +4,8 @@
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. List queries never select the `photo` bytea column —
  * only `(photo IS NOT NULL) AS has_photo`. Bytes are loaded via {@link MessageStore.getPhoto}.
+ * `video_content_type` (MIME) lives in Postgres; video bytes live on disk under
+ * `MEDIA_DIR`, not as bytea.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -16,6 +18,12 @@ import {
 } from '@/lib/message';
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import {
+  removeForumVideo,
+  writeForumVideo,
+  type ForumVideo,
+  type ForumVideoContentType,
+} from '@/lib/video';
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
   if (event === null) {
@@ -23,6 +31,14 @@ function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: 
   }
   const content = event['content'];
   return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo.`);
+}
+
+function kind1MissingVideoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/video.`);
 }
 
 function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
@@ -50,7 +66,8 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 export interface MessageStore {
   /**
    * Newest messages first (`createdAt` desc, then `id` desc), capped at
-   * `limit`. Rows include `hasPhoto` but never photo bytes.
+   * `limit`. Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but
+   * never photo or video bytes.
    *
    * @param limit - Maximum rows to return.
    * @returns Message rows (caller-owned copies).
@@ -58,13 +75,15 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageRow[]>;
 
   /**
-   * Persist a new message row and optional photo.
+   * Persist a new message row and optional photo and video.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
-   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo`.
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo` and
+   *   `hasVideo` / `videoContentType` from `video`.
    */
-  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow>;
+  create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow>;
 
   /**
    * Load photo bytes for a message id.
@@ -113,13 +132,24 @@ export interface MessageStore {
 
   /**
    * Published rows with a photo whose kind:1 content lacks the public photo URL.
+   * Video rows (poster JPEG stored as `photo`) are excluded — their kind:1
+   * content has `/video.`, not `/photo.`. `sats = 0` only (zapped rows keep
+   * their event id). Pending rows are left for fan-out — resetting them renews
+   * the sign lease and they never EVENT. Oldest `createdAt` then `id` first.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Published rows with a video whose kind:1 content lacks the public video URL.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
    */
-  listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+  listSignedMissingVideo(limit: number): Promise<MessageRow[]>;
 
   /**
    * Published rows whose kind:1 content lacks a `#21gifts` or `#bitcoin` token
@@ -248,6 +278,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_first_attempt_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_epoch text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_attempts integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS video_content_type text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS message_event_id_uidx ON message (event_id) WHERE event_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   event_id text PRIMARY KEY,
@@ -315,6 +346,8 @@ function copyRow(row: MessageRow): MessageRow {
   return {
     ...row,
     hasPhoto: row.hasPhoto === true,
+    hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
   };
@@ -363,7 +396,8 @@ export class InMemoryMessageStore implements MessageStore {
    *
    * @param limit - Maximum rows.
    * @returns A new array of row copies; mutating it does not change the store.
-   * Listed objects never expose photo bytes.
+   * Listed objects include `hasVideo` / `videoContentType` but never expose
+   * photo or video bytes (video lives on disk under `MEDIA_DIR`).
    */
   listLatest(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
@@ -377,30 +411,40 @@ export class InMemoryMessageStore implements MessageStore {
       sorted.slice(0, limit).map((row) => {
         const copy = copyRow(row);
         copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
         return copy;
       }),
     );
   }
 
   /**
-   * Append a copy of `row` and optional photo; return a copy.
+   * Append a copy of `row` and optional photo and video; return a copy.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
-   * @returns A copy of the stored row with `hasPhoto` from `photo`.
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns A copy of the stored row with `hasPhoto` from `photo` and
+   *   `hasVideo` / `videoContentType` from `video`.
    */
-  create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
+    const hasVideo = video !== undefined;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
       hasPhoto,
+      hasVideo,
+      videoContentType: video === undefined ? null : video.contentType,
     });
+    if (video !== undefined) {
+      await writeForumVideo(stored.id, video);
+    }
     this.#rows.push(stored);
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }
-    return Promise.resolve(copyRow(stored));
+    return copyRow(stored);
   }
 
   /**
@@ -483,9 +527,31 @@ export class InMemoryMessageStore implements MessageStore {
         (row) =>
           row.eventId !== null &&
           row.hasPhoto &&
+          row.hasVideo !== true &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  listSignedMissingVideo(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.hasVideo === true &&
+          row.videoContentType !== null &&
+          row.videoContentType !== undefined &&
+          row.sats === 0 &&
+          row.nostrPublishState === 'published' &&
+          kind1MissingVideoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -637,6 +703,7 @@ interface MessageSqlRow {
   text: string;
   created_at: Date | string;
   has_photo: boolean | number | string | null;
+  video_content_type?: string | null;
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
@@ -662,6 +729,13 @@ interface MessagePhotoSqlRow {
 
 const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
+function parseVideoContentType(value: string | null | undefined): ForumVideoContentType | null {
+  if (value === 'video/mp4' || value === 'video/webm' || value === 'video/quicktime') {
+    return value;
+  }
+  return null;
+}
+
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
@@ -673,6 +747,11 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     hasPhoto: Boolean(row.has_photo),
+    hasVideo:
+      row.video_content_type !== null &&
+      row.video_content_type !== undefined &&
+      row.video_content_type !== '',
+    videoContentType: parseVideoContentType(row.video_content_type),
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed'
@@ -698,6 +777,7 @@ function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
 /** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
 const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               (photo IS NOT NULL) AS has_photo,
+              video_content_type,
               event_id, nostr_publish_state, sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`;
 
@@ -716,7 +796,9 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first list from `message`, capped at `limit`.
-   * Selects `(photo IS NOT NULL) AS has_photo` — never the `photo` bytea column.
+   * Selects `(photo IS NOT NULL) AS has_photo` and `video_content_type`
+   * (`hasVideo` / `videoContentType`) — never the `photo` bytea column; video
+   * bytes live on disk under `MEDIA_DIR`, not as bytea.
    *
    * @param limit - Maximum rows (`$1`).
    * @returns Mapped rows.
@@ -731,32 +813,49 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Insert `row` (and optional photo) into `message` and return it.
+   * Insert `row` (and optional photo and video) into `message` and return it.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
-   * @returns The stored row after a successful insert (a copy).
+   * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @returns The stored row after a successful insert (a copy) with `hasPhoto`
+   *   from `photo` and `hasVideo` / `videoContentType` from `video`. INSERT
+   *   failure unlinks the video (`removeForumVideo`).
    */
-  async create(row: MessageRow, photo?: ForumPhoto): Promise<MessageRow> {
+  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
+    const hasVideo = video !== undefined;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
       hasPhoto,
+      hasVideo,
+      videoContentType: video === undefined ? null : video.contentType,
     });
-    await this.#sql.execute(
-      `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, created_at, nostr_publish_state, sats)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',0)`,
-      [
-        stored.id,
-        stored.accountId,
-        stored.name,
-        stored.text,
-        photo === undefined ? null : photo.bytes,
-        photo === undefined ? null : photo.contentType,
-        stored.createdAt,
-      ],
-    );
+    if (video !== undefined) {
+      await writeForumVideo(stored.id, video);
+    }
+    try {
+      await this.#sql.execute(
+        `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',0)`,
+        [
+          stored.id,
+          stored.accountId,
+          stored.name,
+          stored.text,
+          photo === undefined ? null : photo.bytes,
+          photo === undefined ? null : photo.contentType,
+          stored.videoContentType,
+          stored.createdAt,
+        ],
+      );
+    } catch (err) {
+      if (video !== undefined) {
+        await removeForumVideo(stored.id, video.contentType);
+      }
+      throw err;
+    }
     return stored;
   }
 
@@ -856,9 +955,29 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND (video_content_type IS NULL OR video_content_type = '')
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo.%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async listSignedMissingVideo(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL
+         AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
+         AND sats = 0
+         AND nostr_publish_state = 'published'
+         AND (
+           nostr_event IS NULL
+           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/video.%'
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,

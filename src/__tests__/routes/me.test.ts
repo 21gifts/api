@@ -143,6 +143,7 @@ describe('GET /me', () => {
       lightningAddressVerified: boolean;
       viewKey: string;
       rulesAgreedAt: number | null;
+      setup: 'name' | 'lightning-address' | 'rules' | null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -151,6 +152,7 @@ describe('GET /me', () => {
     expect(body.lightningAddressVerified).toBe(false);
     expect(body.viewKey).toBe(VIEW_KEY);
     expect(body.rulesAgreedAt).toBeNull();
+    expect(body.setup).toBe('name');
   });
 });
 
@@ -688,6 +690,8 @@ describe('DELETE /me/lightning-address', () => {
 
   it('unlinks the address and clears pending verification', async () => {
     const store = await seededStore({ lightningAddress: ADDRESS });
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, name: 'Ada' });
     await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -699,8 +703,12 @@ describe('DELETE /me/lightning-address', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { lightningAddress: string | null };
+    const body = (await res.json()) as {
+      lightningAddress: string | null;
+      setup: 'name' | 'lightning-address' | 'rules' | null;
+    };
     expect(body.lightningAddress).toBeNull();
+    expect(body.setup).toBe('lightning-address');
     expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
     expect(await store.getVerification('acc')).toBeUndefined();
     expect(

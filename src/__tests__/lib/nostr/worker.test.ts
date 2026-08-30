@@ -453,6 +453,7 @@ describe('runNostrWorkerTick', () => {
       display_name: 'Ada',
       website: 'https://21.gifts',
       picture: 'https://21.gifts/apple-touch-icon.png',
+      about: '21.gifts',
     });
     expect(kinds).toContain(10002);
     expect(kinds).toContain(1);
@@ -583,6 +584,110 @@ describe('runNostrWorkerTick', () => {
     ]);
   });
 
+  it('embeds a public video URL and poster imeta on kind:1', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date('2026-08-28T00:02:30.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-vid/video'),
+    );
+    expect(String(note?.event['content'])).toContain(
+      'https://dev-api.21.gifts/messages/m-vid/video.mp4',
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        [
+          'imeta',
+          'url https://dev-api.21.gifts/messages/m-vid/video.mp4',
+          'm video/mp4',
+          'image https://dev-api.21.gifts/messages/m-vid/photo.jpg',
+        ],
+      ]),
+    );
+  });
+
+  it('embeds a video URL without a poster when none is stored', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid2',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip2',
+        createdAt: new Date('2026-08-28T00:02:31.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-vid2/video'),
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        ['imeta', 'url https://dev-api.21.gifts/messages/m-vid2/video.mp4', 'm video/mp4'],
+      ]),
+    );
+  });
+
   it('re-signs published photo posts that lack the photo URL', async () => {
     const { auth, messages } = await seed();
     await messages.create(
@@ -676,6 +781,109 @@ describe('runNostrWorkerTick', () => {
     expect(row?.nostrPublishState).toBe('published');
   });
 
+  it('re-signs published video posts that lack the video URL', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-video',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:04:30.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await messages.updateSignedEvent('m-video', 'ab'.repeat(32), {
+      kind: 1,
+      content: '#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-video', 'published', 'space');
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const row = await messages.getById('m-video');
+    expect(row?.eventId).not.toBe('ab'.repeat(32));
+    expect(String(row?.nostrEvent?.['content'])).toContain('/messages/m-video/video.mp4');
+  });
+
+  it('does not reset published video posts when PUBLIC_BASE_URL is unset', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-novideo-url',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:04:45.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await messages.updateSignedEvent('m-novideo-url', 'ab'.repeat(32), {
+      kind: 1,
+      content: '#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-novideo-url', 'published', 'space');
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+    );
+    const row = await messages.getById('m-novideo-url');
+    expect(row?.eventId).toBe('ab'.repeat(32));
+    expect(row?.nostrPublishState).toBe('published');
+  });
+
   it('does not reset a zapped photo post that lacks the photo URL', async () => {
     const { auth, messages } = await seed();
     await messages.create(
@@ -750,6 +958,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingVideo = async () => [];
     messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(
@@ -848,6 +1057,7 @@ describe('runNostrWorkerTick', () => {
     });
     await messages.addSats('m-zap-pending', 7);
     messages.listSignedMissingPhoto = async () => [];
+    messages.listSignedMissingVideo = async () => [];
     messages.listSignedMissingHashtags = async () => [];
     const publisher = new RecordingPublisher();
     await runNostrWorkerTick(
@@ -976,11 +1186,20 @@ describe('runNostrWorkerTick', () => {
         kek: KEK,
         publisher,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+        env: {
+          NOSTR_PUBLISH: '1',
+          NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+          PUBLIC_BASE_URL: 'https://dev.21.gifts',
+        },
       }),
     );
     const profile = publisher.calls.find((call) => call.event['kind'] === 0);
-    expect(JSON.parse(String(profile?.event['content'])).name).toBe('Anton');
+    const content = JSON.parse(String(profile?.event['content'])) as {
+      name: string;
+      nip05: string;
+    };
+    expect(content.name).toBe('Anton');
+    expect(content.nip05).toBe('anton@dev.21.gifts');
   });
 
   it('publishes kind:0 to public relays when NOSTR_PUBLISH_PUBLIC=1', async () => {

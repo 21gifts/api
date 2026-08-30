@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
@@ -6,6 +9,7 @@ import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -102,6 +106,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     claimUnpublished: boom,
     listPendingSigned: boom,
     listSignedMissingPhoto: boom,
+    listSignedMissingVideo: boom,
     listSignedMissingHashtags: boom,
     clearSignedEvent: boom,
     resetSignedEvent: boom,
@@ -1623,6 +1628,7 @@ describe('POST /messages/:id/invoice', () => {
       claimUnpublished: (...args) => base.claimUnpublished(...args),
       listPendingSigned: (limit) => base.listPendingSigned(limit),
       listSignedMissingPhoto: (limit) => base.listSignedMissingPhoto(limit),
+      listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       clearSignedEvent: (...args) => base.clearSignedEvent(...args),
       resetSignedEvent: (...args) => base.resetSignedEvent(...args),
@@ -1939,5 +1945,401 @@ describe('GET /messages/:id/photo', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(true);
+  });
+});
+
+describe('forum video', () => {
+  const mp4 = (): Uint8Array => {
+    const bytes = new Uint8Array(32);
+    bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    return bytes;
+  };
+
+  it('accepts multipart video and serves Range', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    form.set('poster', new File([JPEG_BYTES], 'poster.jpg', { type: 'image/jpeg' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as {
+      id: string;
+      hasVideo: boolean;
+      hasPhoto: boolean;
+      videoContentType: string | null;
+    };
+    expect(created.hasVideo).toBe(true);
+    expect(created.hasPhoto).toBe(true);
+    expect(created.videoContentType).toBe('video/mp4');
+    const full = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('Accept-Ranges')).toBe('bytes');
+    expect(full.headers.get('Content-Type')).toBe('video/mp4');
+    const ranged = await app.request(`/messages/${created.id}/video.mp4`, {
+      headers: { Range: 'bytes=0-3' },
+    });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get('Content-Range')?.startsWith('bytes 0-3/')).toBe(true);
+    expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(mp4().subarray(0, 4));
+    expect((await app.request(`/messages/${created.id}/video.webm`)).status).toBe(404);
+    expect((await app.request('/messages/not-a-uuid/video.mp4')).status).toBe(404);
+  });
+
+  it('rejects an oversized poster part before decoding', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    form.set('poster', new File([new Uint8Array(1_048_577)], 'poster.jpg', { type: 'image/jpeg' }));
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('still returns 200 when video push enqueue throws', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('enqueue failed');
+    };
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'push.enqueue.failed')).toBe(true);
+  });
+
+  it('enqueues a forum push for other subscribed accounts after a video post', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/author',
+      accountId: 'acc',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const claimed = await pushStore.claimPending(20, now() + 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('other');
+    expect(claimed[0]?.type).toBe('forum');
+  });
+
+  it('rejects an oversized video part before decoding', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    const file = new File([new Uint8Array(32 * 1024 * 1024 + 1)], 'clip.mp4', {
+      type: 'video/mp4',
+    });
+    form.set('video', file);
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects overlong multipart text', async () => {
+    const form = new FormData();
+    form.set('text', 'a'.repeat(501));
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects empty multipart', async () => {
+    const empty = new FormData();
+    empty.set('text', '   ');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: empty,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('ignores an empty poster part', async () => {
+    const form = new FormData();
+    form.set('text', 'hello');
+    form.set('poster', new File([], 'p.jpg', { type: 'image/jpeg' }));
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { hasPhoto: boolean }).hasPhoto).toBe(false);
+  });
+
+  it('rejects a bad poster', async () => {
+    const badPoster = new FormData();
+    badPoster.set('text', 'x');
+    badPoster.set(
+      'poster',
+      new File([new Uint8Array([1, 2, 3])], 'x.bin', { type: 'application/octet-stream' }),
+    );
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: badPoster,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects multipart when the account has no name', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    const res = await mount(await seededStore()).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 503 when video create throws', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await mount(await namedStore('Ada'), throwingStore()).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 404 when no video is stored', async () => {
+    const res = await mount(await namedStore('Ada')).request(
+      '/messages/00000000-0000-4000-8000-000000000001/video.mp4',
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('ignores an empty video part and posts text', async () => {
+    const form = new FormData();
+    form.set('text', 'hello');
+    form.set('video', new File([], 'empty.mp4', { type: 'video/mp4' }));
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { hasVideo: boolean }).hasVideo).toBe(false);
+  });
+
+  it('rejects a non-video multipart file', async () => {
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set(
+      'video',
+      new File([new Uint8Array([1, 2, 3, 4])], 'x.bin', { type: 'application/octet-stream' }),
+    );
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 503 when video GET cannot read the row', async () => {
+    const res = await mount(await namedStore('Ada'), throwingStore()).request(
+      '/messages/00000000-0000-4000-8000-000000000001/video.mp4',
+    );
+    expect(res.status).toBe(503);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(true);
+  });
+
+  it('returns 416 for an unsatisfiable Range', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    const size = mp4().byteLength;
+    const ranged = await app.request(`/messages/${created.id}/video.mp4`, {
+      headers: { Range: `bytes=${size}-` },
+    });
+    expect(ranged.status).toBe(416);
+    expect(ranged.headers.get('Content-Range')).toBe(`bytes */${size}`);
+    expect(ranged.headers.get('Accept-Ranges')).toBe('bytes');
+    expect(ranged.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('returns 404 when the video file is missing without logging 503', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    await removeForumVideo(created.id, 'video/mp4');
+    warn.mockClear();
+    const missing = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Video not found' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(false);
+  });
+
+  it('returns 404 for an empty video file without logging 503', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    await writeFile(videoFilePath(resolveMediaDir(), created.id, 'video/mp4'), new Uint8Array());
+    warn.mockClear();
+    const empty = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(empty.status).toBe(404);
+    expect(await empty.json()).toEqual({ error: 'Video not found' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(false);
+  });
+
+  it('returns 404 when the video path is not a file', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    await removeForumVideo(created.id, 'video/mp4');
+    await mkdir(videoFilePath(resolveMediaDir(), created.id, 'video/mp4'));
+    warn.mockClear();
+    const notFile = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(notFile.status).toBe(404);
+    expect(await notFile.json()).toEqual({ error: 'Video not found' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(false);
+  });
+
+  it('returns 503 when video file stat fails for a non-ENOENT reason', async () => {
+    const prev = process.env['MEDIA_DIR'];
+    const dir = join(tmpdir(), `21gifts-video-eacces-${Date.now()}`);
+    process.env['MEDIA_DIR'] = dir;
+    try {
+      const auth = await namedStore('Ada');
+      const store = new InMemoryMessageStore();
+      const app = mount(auth, store);
+      const form = new FormData();
+      form.set('text', 'clip');
+      form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      });
+      expect(res.status).toBe(200);
+      const created = (await res.json()) as { id: string };
+      await chmod(dir, 0o000);
+      warn.mockClear();
+      try {
+        const denied = await app.request(`/messages/${created.id}/video.mp4`);
+        expect(denied.status).toBe(503);
+        expect(await denied.json()).toEqual({ error: 'Messages are unavailable' });
+        expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(true);
+      } finally {
+        await chmod(dir, 0o755);
+      }
+    } finally {
+      if (prev === undefined) {
+        delete process.env['MEDIA_DIR'];
+      } else {
+        process.env['MEDIA_DIR'] = prev;
+      }
+    }
   });
 });

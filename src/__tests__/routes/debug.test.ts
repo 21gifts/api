@@ -117,7 +117,7 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string',
+      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
     });
   });
 
@@ -133,7 +133,7 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string',
+      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
     });
   });
 
@@ -194,6 +194,116 @@ describe('debugRoutes', () => {
         (e) => e['event'] === 'debug.accounts.role_set' && e['role'] === 'founder',
       ),
     ).toBe(true);
+  });
+
+  it('PATCH clears the Lightning Address and verification flag', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 2,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ lightningAddress: null }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      lightningAddress: string | null;
+      lightningAddressVerified: boolean;
+    };
+    expect(body.lightningAddress).toBeNull();
+    expect(body.lightningAddressVerified).toBe(false);
+    const stored = await store.getAccount('acc');
+    expect(stored?.lightningAddress).toBeNull();
+    expect(stored?.lightningAddressVerified).toBe(false);
+    expect(stored?.name).toBe('Ada');
+    expect(await store.getVerification('acc')).toBeUndefined();
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.lightning_address.cleared'),
+    ).toBe(true);
+  });
+
+  it('PATCH unlink drops in-flight address verification', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 2,
+    });
+    await store.putVerification({
+      accountId: 'acc',
+      address: 'ada@walletofsatoshi.com',
+      nonce: 'a'.repeat(32),
+      createdAt: 1,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ lightningAddress: null }),
+    });
+    expect(res.status).toBe(200);
+    expect(await store.getVerification('acc')).toBeUndefined();
+  });
+
+  it('PATCH can set role and unlink in one body', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 2,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'moderator', lightningAddress: null }),
+    });
+    expect(res.status).toBe(200);
+    const stored = await store.getAccount('acc');
+    expect(stored?.role).toBe('moderator');
+    expect(stored?.lightningAddress).toBeNull();
+    expect(stored?.lightningAddressVerified).toBe(false);
+  });
+
+  it('PATCH returns 400 when lightningAddress is not null', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ lightningAddress: 'ada@walletofsatoshi.com' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+    });
   });
 
   it('POST returns 503 when debug is not configured', async () => {
