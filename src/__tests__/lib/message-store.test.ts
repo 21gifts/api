@@ -834,6 +834,30 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[14]).toBe(true);
   });
 
+  it('recordInvoiceAttempt binds null zap_request when the attempt has none', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageInvoiceAttempt = {
+      id: 'inv-null',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'not_found',
+      httpStatus: 404,
+      pr: null,
+      paymentHash: null,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: false,
+    };
+    await store.recordInvoiceAttempt(row);
+    expect(sql.executes[0]?.params[7]).toBeNull();
+  });
+
   it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
     const sql = new MockSql();
     sql.nextRows = [

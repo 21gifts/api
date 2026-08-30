@@ -287,7 +287,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
-      /* v8 ignore next 3 -- zod already requires positive int; cap is extra */
+      /* v8 ignore start -- zod already requires positive int; cap is extra */
       if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
         await persistInvoiceAttempt(
           deps.store,
@@ -309,6 +309,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
+      /* v8 ignore stop */
       const row = await deps.store.getById(messageIdParam);
       if (row === undefined) {
         await persistInvoiceAttempt(
@@ -375,7 +376,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
-      /* v8 ignore next 3 -- payable notes have keys after the worker */
+      /* v8 ignore start -- payable notes have keys after the worker */
       if (recipientPubkey === undefined) {
         await persistInvoiceAttempt(
           deps.store,
@@ -397,6 +398,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
+      /* v8 ignore stop */
       const kek = deps.nostrKek;
       if (kek === undefined) {
         await persistInvoiceAttempt(

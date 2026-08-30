@@ -279,6 +279,7 @@ export async function indexOpenZapReceipts(args: {
               outcome: 'rejected',
               reason: 'error',
               amountSats: null,
+              /* v8 ignore next -- ingestOneReceipt returns unless pubkey is a string */
               receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
               receipt: receiptFrame(event),
             }),
