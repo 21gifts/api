@@ -55,42 +55,42 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                                             |
-| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                                            |
-| GET    | `/info`                                      | none                     | Service identity                                                    |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                                |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                            |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                                       |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                                     |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                                   |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                                      |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                                     |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                                             |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                     |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                            |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                              |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                  |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve                               |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                                      |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                              |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                   |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                                            |
-| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum                             |
-| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                     |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                 |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                              |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                                    |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                            |
-| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)         |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`)                         |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                            |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)                     |
-| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                       |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                            |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                                 |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                                |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                    |
+| Method | Path                                         | Auth                     | Purpose                                                     |
+| ------ | -------------------------------------------- | ------------------------ | ----------------------------------------------------------- |
+| GET    | `/healthz`                                   | none                     | Liveness                                                    |
+| GET    | `/info`                                      | none                     | Service identity                                            |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                        |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                    |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                               |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                             |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                           |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                              |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                             |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                                     |
+| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                             |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                    |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                      |
+| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                          |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve                       |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                              |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                      |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                           |
+| GET    | `/messages`                                  | Bearer                   | List public forum thread                                    |
+| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum                     |
+| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                             |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                         |
+| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                      |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                            |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                    |
+| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`) |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`)                 |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                    |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)             |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)               |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                    |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                         |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                        |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                            |
 
 ### `GET /healthz`
 
@@ -181,7 +181,8 @@ Otherwise **Response** `200`:
 
 `options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
 `userVerification` required, attestation `none`). `user.id` is the pending
-account UUID encoded as UTF-8. The process still boots without
+account UUID encoded as UTF-8 (the provisioned account when claiming by
+`viewKey`). The process still boots without
 `WEBAUTHN_RP_ID` — only these routes fail closed.
 
 ### `POST /auth/passkey/register/finish`
