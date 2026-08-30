@@ -195,6 +195,14 @@ describe('InMemoryMessageStore', () => {
     await store.create(LATE);
     const one = await store.claimUnsigned(1, 2_000_000, 60_000);
     expect(one).toHaveLength(1);
+    const atExpiry = await store.claimUnsigned(10, 2_000_000 + 60_000, 60_000);
+    expect(atExpiry).toHaveLength(1);
+  });
+
+  it('claimUnsigned skips published rows even when eventId is null', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, nostrPublishState: 'published' });
+    expect(await store.claimUnsigned(10, 1_000, 60_000)).toEqual([]);
   });
 
   it('getByEventId returns the row for a stored eventId and undefined when missing', async () => {
@@ -402,11 +410,20 @@ describe('InMemoryMessageStore', () => {
       eventId: '66'.repeat(32),
       nostrEvent: { content: 'pending without hashtags' },
     });
+    await store.create({
+      ...EARLY,
+      id: 'prefix',
+      createdAt: new Date('2026-08-16T00:00:00.000Z'),
+      eventId: '77'.repeat(32),
+      nostrEvent: { content: 'hello #bitcoiners' },
+    });
+    await store.updatePublishState('prefix', 'published', 'space');
     expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
       'p',
       'q',
+      'prefix',
       'z',
     ]);
     expect((await store.listSignedMissingHashtags(2)).map((row) => row.id)).toEqual(['n', 'a']);
@@ -416,6 +433,7 @@ describe('InMemoryMessageStore', () => {
       'a',
       'p',
       'q',
+      'prefix',
     ]);
     await store.resetSignedEvent('a', 'ab'.repeat(32));
     expect((await store.getById('a'))?.eventId).toBeNull();
@@ -427,6 +445,7 @@ describe('InMemoryMessageStore', () => {
       'n',
       'p',
       'q',
+      'prefix',
     ]);
   });
 
@@ -764,6 +783,7 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [];
     expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
     expect(await store.claimUnpublished(5, 1_000, 60_000)).toEqual([]);
+    expect(sql.queries.some((q) => /claimed_until <= \$2/.test(q.text))).toBe(true);
     expect(await store.updateSignedEvent('m1', 'ee'.repeat(32), { id: 'x' })).toBe(false);
     await store.updatePublishState('m1', 'published', 'public');
     await store.addSats('m1', 7);
@@ -936,8 +956,8 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
     expect(listSql).toMatch(/jsonb_typeof\(nostr_event->'content'\) IS DISTINCT FROM 'string'/);
-    expect(listSql).toMatch(/NOT LIKE '%#21gifts%'/);
-    expect(listSql).toMatch(/NOT LIKE '%#bitcoin%'/);
+    expect(listSql).toMatch(/#21gifts\(\[^a-z0-9_\]\|\$\)/);
+    expect(listSql).toMatch(/#bitcoin\(\[^a-z0-9_\]\|\$\)/);
     expect(listSql).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
   });
 

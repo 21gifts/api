@@ -74,13 +74,31 @@ export function kind1Tags(): string[][] {
 }
 
 /**
- * True when `content` already contains `#name` as a hashtag (case-insensitive).
+ * True when `content` already contains `#name` as a hashtag token
+ * (case-insensitive). The next character must not be `[A-Za-z0-9_]`, so
+ * `#bitcoiners` is not `#bitcoin`. The `#` prefix distinguishes `#21gifts`
+ * from `https://21.gifts`.
  *
  * @param content - Kind:1 content body.
  * @param name - Hashtag name without `#` (e.g. `bitcoin`).
+ * @returns True when content contains the requested hashtag token; otherwise false.
  */
 export function kind1HasHashtag(content: string, name: string): boolean {
-  return content.toLowerCase().includes(`#${name.toLowerCase()}`);
+  const needle = `#${name.toLowerCase()}`;
+  const lower = content.toLowerCase();
+  let from = 0;
+  while (from < lower.length) {
+    const index = lower.indexOf(needle, from);
+    if (index === -1) {
+      return false;
+    }
+    const after = lower[index + needle.length];
+    if (after === undefined || !/[a-z0-9_]/.test(after)) {
+      return true;
+    }
+    from = index + 1;
+  }
+  return false;
 }
 
 /**
@@ -92,7 +110,7 @@ export function kind1HasHashtag(content: string, name: string): boolean {
  * Already-present tags (any case, e.g. `#21Gifts`) are not duplicated; only missing ones are appended, still in KIND1_CONTENT_HASHTAGS order.
  *
  * @param content - Forum text and optional photo URL already composed.
- * @returns Content with any missing hashtags appended.
+ * @returns Content with any missing hashtag tokens appended (unchanged when both are already present).
  */
 export function kind1ContentWithHashtags(content: string): string {
   const missing = KIND1_CONTENT_HASHTAGS.filter((tag) => !kind1HasHashtag(content, tag.slice(1)));
@@ -121,8 +139,9 @@ export interface UnsignedKind1 {
 /**
  * Build an unsigned top-level kind:1 for a forum message.
  *
- * Content is plaintext (no name prefix) plus Damus-visible `#bitcoin` /
- * `#21gifts`. Tags are frozen — no `e`/`p`/`q`.
+ * Content is plaintext (no name prefix). `kind1ContentWithHashtags` ensures
+ * Damus-visible `#bitcoin` / `#21gifts` tokens (appends only missing ones).
+ * Tags are frozen — no `e`/`p`/`q`.
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.

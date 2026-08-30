@@ -424,7 +424,14 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
-    return Promise.resolve(this.#claim((row) => row.eventId === null, limit, nowMs, leaseMs));
+    return Promise.resolve(
+      this.#claim(
+        (row) => row.eventId === null && row.nostrPublishState === 'pending',
+        limit,
+        nowMs,
+        leaseMs,
+      ),
+    );
   }
 
   claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
@@ -779,7 +786,7 @@ export class PostgresMessageStore implements MessageStore {
        WHERE id IN (
          SELECT id FROM message
          WHERE event_id IS NULL AND nostr_publish_state = 'pending'
-           AND (claimed_until IS NULL OR claimed_until < $2)
+           AND (claimed_until IS NULL OR claimed_until <= $2)
          ORDER BY created_at ASC, id ASC
          LIMIT $3
          FOR UPDATE SKIP LOCKED
@@ -797,7 +804,7 @@ export class PostgresMessageStore implements MessageStore {
        WHERE id IN (
          SELECT id FROM message
          WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
-           AND (claimed_until IS NULL OR claimed_until < $2)
+           AND (claimed_until IS NULL OR claimed_until <= $2)
          ORDER BY created_at ASC, id ASC
          LIMIT $3
          FOR UPDATE SKIP LOCKED
@@ -868,8 +875,8 @@ export class PostgresMessageStore implements MessageStore {
          AND (
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
-           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#21gifts%'
-           OR LOWER(COALESCE(nostr_event->>'content', '')) NOT LIKE '%#bitcoin%'
+           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#21gifts([^a-z0-9_]|$)')
+           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,
