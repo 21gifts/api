@@ -1,11 +1,7 @@
 import { Hono } from 'hono';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
-import type {
-  MessageInvoiceAttempt,
-  MessageStore,
-  ZapIngestRow,
-} from '@/lib/message-store';
+import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 
 /**
  * Operator debug surface for forum invoice attempts and zap ingest rows.

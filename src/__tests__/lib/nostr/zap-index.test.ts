@@ -433,9 +433,7 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
     const ingests = await store.listZapIngests(10);
     expect(ingests).toHaveLength(2);
-    expect(ingests.every((row) => row.outcome === 'rejected' && row.reason === 'event')).toBe(
-      true,
-    );
+    expect(ingests.every((row) => row.outcome === 'rejected' && row.reason === 'event')).toBe(true);
   });
 
   it('does not increment sats for an unknown e-tag event id', async () => {
