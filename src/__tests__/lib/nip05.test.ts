@@ -36,6 +36,7 @@ describe('nip05', () => {
     expect(nip05Domain({ PUBLIC_BASE_URL: 'https://21.gifts' })).toBe('21.gifts');
     expect(nip05Domain({ PUBLIC_BASE_URL: 'https://dev.21.gifts/' })).toBe('dev.21.gifts');
     expect(nip05Domain({ PUBLIC_BASE_URL: 'http://127.0.0.1:3000' })).toBeNull();
+    expect(nip05Domain({ PUBLIC_BASE_URL: 'http://[::1]:3000' })).toBeNull();
     expect(nip05Domain({ PUBLIC_BASE_URL: 'not-a-url' })).toBeNull();
     expect(nip05Domain({})).toBeNull();
     const taken = new Set<string>(['ada', 'ada-11111111']);

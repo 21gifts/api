@@ -1186,11 +1186,20 @@ describe('runNostrWorkerTick', () => {
         kek: KEK,
         publisher,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+        env: {
+          NOSTR_PUBLISH: '1',
+          NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+          PUBLIC_BASE_URL: 'https://dev.21.gifts',
+        },
       }),
     );
     const profile = publisher.calls.find((call) => call.event['kind'] === 0);
-    expect(JSON.parse(String(profile?.event['content'])).name).toBe('Anton');
+    const content = JSON.parse(String(profile?.event['content'])) as {
+      name: string;
+      nip05: string;
+    };
+    expect(content.name).toBe('Anton');
+    expect(content.nip05).toBe('anton@dev.21.gifts');
   });
 
   it('publishes kind:0 to public relays when NOSTR_PUBLISH_PUBLIC=1', async () => {

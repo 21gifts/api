@@ -277,7 +277,8 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     if (live === undefined || live.name === null) {
       continue;
     }
-    const nip05 = domain === null ? null : nip05Identifier(live, named, domain);
+    const namedForLive = named.map((row) => (row.id === live.id ? live : row));
+    const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
     const content = buildKind0Content(live.name, live.lightningAddress, nip05);
     if (reservedContent(cache, live.id) === content) {
       continue;

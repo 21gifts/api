@@ -32,7 +32,13 @@ export function nip05Domain(env: Record<string, string | undefined>): string | n
   }
   try {
     const host = new URL(base).hostname.toLowerCase();
-    if (host === '' || host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    if (
+      host === '' ||
+      host === 'localhost' ||
+      /^\d+\.\d+\.\d+\.\d+$/.test(host) ||
+      host === '::1' ||
+      host.includes(':')
+    ) {
       return null;
     }
     return host;

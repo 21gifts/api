@@ -24,10 +24,23 @@ describe('video', () => {
     const mov = mp4Bytes();
     mov.set([0x71, 0x74, 0x20, 0x20], 8);
     expect(detectVideoContentType(mov)).toBe('video/quicktime');
-    expect(detectVideoContentType(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x00]))).toBe(
-      'video/webm',
-    );
+    expect(
+      detectVideoContentType(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x77, 0x65, 0x62, 0x6d])),
+    ).toBe('video/webm');
     expect(detectVideoContentType(new Uint8Array([1, 2, 3]))).toBeNull();
+  });
+
+  it('rejects non-video ISO-BMFF brands and bare EBML', () => {
+    const heic = mp4Bytes();
+    heic.set([0x6d, 0x69, 0x66, 0x31], 8);
+    expect(detectVideoContentType(heic)).toBeNull();
+    const avif = mp4Bytes();
+    avif.set([0x61, 0x76, 0x69, 0x66], 8);
+    expect(detectVideoContentType(avif)).toBeNull();
+    const m4a = mp4Bytes();
+    m4a.set([0x4d, 0x34, 0x41, 0x20], 8);
+    expect(detectVideoContentType(m4a)).toBeNull();
+    expect(detectVideoContentType(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x00]))).toBeNull();
   });
 
   it('rejects empty and oversize video', () => {

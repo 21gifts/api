@@ -15,6 +15,23 @@ export const MESSAGE_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
 /** Allowed stored video types. */
 export type ForumVideoContentType = 'video/mp4' | 'video/webm' | 'video/quicktime';
 
+/** ISO-BMFF major brands treated as MP4 (lowercased 4-byte brand). */
+const MP4_BRANDS = new Set([
+  'isom',
+  'iso2',
+  'iso3',
+  'iso4',
+  'iso5',
+  'iso6',
+  'mp41',
+  'mp42',
+  'mp71',
+  'avc1',
+  'avc3',
+  'dash',
+  'm4v ',
+]);
+
 /** Decoded forum video ready for disk. */
 export interface ForumVideo {
   /** MIME from magic bytes. */
@@ -104,7 +121,10 @@ export function detectVideoContentType(bytes: Uint8Array): ForumVideoContentType
     if (brand.startsWith('qt')) {
       return 'video/quicktime';
     }
-    return 'video/mp4';
+    if (MP4_BRANDS.has(brand.toLowerCase())) {
+      return 'video/mp4';
+    }
+    return null;
   }
   if (
     bytes.length >= 4 &&
@@ -113,7 +133,11 @@ export function detectVideoContentType(bytes: Uint8Array): ForumVideoContentType
     bytes[2] === 0xdf &&
     bytes[3] === 0xa3
   ) {
-    return 'video/webm';
+    const head = String.fromCharCode(...bytes.subarray(0, Math.min(256, bytes.length)));
+    if (head.toLowerCase().includes('webm')) {
+      return 'video/webm';
+    }
+    return null;
   }
   return null;
 }
