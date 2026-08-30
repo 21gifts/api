@@ -217,7 +217,6 @@ export async function finishPasskeyRegistration(
     if (nostr !== undefined) {
       try {
         await ensureAccountNostrKey(store, existing.id, nostr.kek, nostr.keygen);
-        /* v8 ignore next 3 -- lazy keygen failure must not block claim login */
       } catch {
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }

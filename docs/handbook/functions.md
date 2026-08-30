@@ -221,7 +221,7 @@
 
 - **Purpose:** Operator listing, provisioning, and role assignment for registered accounts.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body; upserts by Lightning Address and returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
+- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body; 500 `{ error: 'Could not save the account' }` when create does not persist the address; upserts by Lightning Address and returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; logs `debug.accounts.role_set` with account id and role. Never logs the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
