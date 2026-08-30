@@ -101,11 +101,12 @@ function reservedContent(
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Signed photo posts
  * whose kind:1 lacks the public photo URL are reset and re-signed when
- * `PUBLIC_BASE_URL` is set; otherwise they are left alone so an empty API
- * base cannot un-publish and loop. When publishing, also fans out a
- * replaceable kind:0 profile (`name` / `display_name` / `picture`) and a
- * NIP-65 kind:10002 relay list. Kind:1 photo posts include the public
- * image URL and an `imeta` tag. Kind:0
+ * `PUBLIC_BASE_URL` is set and `sats === 0`; zapped rows keep their event
+ * id so receipts still resolve. An empty API base leaves them alone so it
+ * cannot un-publish and loop. When publishing, also fans out a replaceable
+ * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
+ * kind:10002 relay list. Kind:1 photo posts include the public image URL
+ * and an `imeta` tag. Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
@@ -156,6 +157,9 @@ async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
   }
   const rows = await deps.messages.listSignedMissingPhoto(WORKER_BATCH);
   for (const row of rows) {
+    if (row.sats > 0) {
+      continue;
+    }
     await deps.messages.resetSignedEvent(row.id, row.eventId);
   }
 }
@@ -405,6 +409,7 @@ async function publishBatch(
     if (
       resolvePublicApiBase(deps.env) !== '' &&
       row.hasPhoto &&
+      row.sats === 0 &&
       (typeof photoContent !== 'string' || !photoContent.includes(`/messages/${row.id}/photo`))
     ) {
       await deps.messages.resetSignedEvent(row.id, row.eventId);

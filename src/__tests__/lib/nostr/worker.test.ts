@@ -536,6 +536,51 @@ describe('runNostrWorkerTick', () => {
     expect(row?.nostrPublishState).toBe('published');
   });
 
+  it('does not reset a zapped photo post that lacks the photo URL', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-zapped-photo',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:08:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/png', bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+    );
+    await messages.updateSignedEvent('m-zapped-photo', 'ab'.repeat(32), {
+      kind: 1,
+      content: '',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.updatePublishState('m-zapped-photo', 'published', 'space');
+    await messages.addSats('m-zapped-photo', 21);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {
+          NOSTR_PUBLISH: '1',
+          NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+          PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+        },
+      }),
+    );
+    const row = await messages.getById('m-zapped-photo');
+    expect(row?.eventId).toBe('ab'.repeat(32));
+    expect(row?.nostrPublishState).toBe('published');
+    expect(row?.sats).toBe(21);
+  });
+
   it('does not publish a claimed photo snapshot that lacks the photo URL', async () => {
     const { auth, messages } = await seed();
     const jpeg: { contentType: 'image/jpeg'; bytes: Uint8Array } = {
@@ -606,6 +651,55 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('m-stale'))?.eventId).toBeNull();
     expect((await messages.getById('m-bad-content'))?.eventId).toBeNull();
     expect((await messages.getById('m-stale'))?.nostrPublishState).toBe('pending');
+  });
+
+  it('publishes a zapped URL-less photo snapshot instead of resetting it', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-zap-pending',
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-28T00:09:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    await messages.updateSignedEvent('m-zap-pending', 'ab'.repeat(32), {
+      kind: 1,
+      id: 'ab'.repeat(32),
+      content: '',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+    });
+    await messages.addSats('m-zap-pending', 7);
+    messages.listSignedMissingPhoto = async () => [];
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: {
+          NOSTR_PUBLISH: '1',
+          NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+          PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+        },
+      }),
+    );
+    expect((await messages.getById('m-zap-pending'))?.eventId).toBe('ab'.repeat(32));
+    expect(
+      publisher.calls.some(
+        (call) => call.event['kind'] === 1 && call.event['id'] === 'ab'.repeat(32),
+      ),
+    ).toBe(true);
   });
 
   it('publishes URL-less photo notes when PUBLIC_BASE_URL is unset', async () => {
