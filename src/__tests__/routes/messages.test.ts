@@ -1098,31 +1098,44 @@ describe('POST /messages/:id/invoice', () => {
         headers: { 'content-type': 'application/json' },
       });
     };
-    const app = new Hono().route(
-      '/messages',
-      messagesRoutes({
-        store: messageStore,
-        authStore,
-        now,
-        nostrKek: kek,
-        fetchImpl,
-        postLimiter: new PostRateLimiter(),
-        invoiceLimiter: new InvoiceRateLimiter(),
-      }),
-    );
-    const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ sats: 21 }),
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 86400,
     });
-    expect(res.status).toBe(200);
-    const attempts = await messageStore.listInvoiceAttempts(10);
-    expect(attempts).toHaveLength(1);
-    expect(attempts[0]?.result).toBe('ok');
-    expect(attempts[0]?.pr).toBe('lnbc21n1test');
-    expect(attempts[0]?.httpStatus).toBe(200);
-    expect(attempts[0]?.isNip57Invoice).toBe(false);
-    expect(attempts[0]?.zapRequest).not.toBeNull();
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.result).toBe('ok');
+      expect(attempts[0]?.pr).toBe('lnbc21n1test');
+      expect(attempts[0]?.httpStatus).toBe(200);
+      expect(attempts[0]?.paymentHash).toBe('aa'.repeat(32));
+      expect(attempts[0]?.descriptionHash).toBe('bb'.repeat(32));
+      expect(attempts[0]?.zapRequest).not.toBeNull();
+    } finally {
+      inspectSpy.mockRestore();
+    }
   });
 
   it('persists noZap and unreachable with pr null and http 400', async () => {
