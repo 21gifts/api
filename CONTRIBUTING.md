@@ -287,8 +287,9 @@ that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, or a
 healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
 `DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
-`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`, and
-`NOSTR_RELAY_PUBLIC` to blank
+`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
+`NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and
+`VAPID_SUBJECT` to blank
 so those outcomes do not depend on the host environment.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching

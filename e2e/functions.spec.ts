@@ -491,10 +491,10 @@ test('Function: enqueueZapPush — GET /push/vapid-public without bearer is 401'
 }) => {
   expect((await request.get('/push/vapid-public')).status()).toBe(401);
 });
-test('Function: enqueueDebugPush — POST /debug/push-ping unconfigured is 503', async ({
+test('Function: enqueueDebugPush — POST /debug/push-ping without bearer is 401', async ({
   request,
 }) => {
-  expect((await request.post('/debug/push-ping')).status()).toBe(503);
+  expect((await request.post('/debug/push-ping')).status()).toBe(401);
 });
 test('Function: runPushWorkerTick — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
@@ -505,10 +505,10 @@ test('Function: startPushWorker — GET /healthz is ok', async ({ request }) => 
 test('Function: pushRoutes — GET /push/vapid-public without bearer is 401', async ({ request }) => {
   expect((await request.get('/push/vapid-public')).status()).toBe(401);
 });
-test('Function: debugPushRoutes — POST /debug/push-ping unconfigured is 503', async ({
+test('Function: debugPushRoutes — POST /debug/push-ping without bearer is 401', async ({
   request,
 }) => {
-  expect((await request.post('/debug/push-ping')).status()).toBe(503);
+  expect((await request.post('/debug/push-ping')).status()).toBe(401);
 });
 
 test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {

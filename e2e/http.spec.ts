@@ -343,7 +343,15 @@ test('DELETE /me/push-subscriptions without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
-test('POST /debug/push-ping unconfigured is 503', async ({ request }) => {
+test('POST /debug/push-ping without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/push-ping');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ request }) => {
+  const res = await request.post('/debug/push-ping', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accountId: '00000000-0000-0000-0000-000000000001' },
+  });
   expect(res.status()).toBe(503);
 });
