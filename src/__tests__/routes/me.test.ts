@@ -471,6 +471,7 @@ describe('POST /me/lightning-address', () => {
       body: JSON.stringify({ address: ADDRESS }),
     });
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
     expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
   });
 
@@ -503,6 +504,7 @@ describe('POST /me/lightning-address', () => {
       body: JSON.stringify({ address: ADDRESS }),
     });
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
     expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
   });
 

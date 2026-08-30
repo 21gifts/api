@@ -177,7 +177,8 @@ export interface AuthStore {
   updatePasskeyChallenge(challenge: PasskeyChallenge): Promise<boolean>;
   /**
    * Persist a verified passkey credential. Returns false when the id is
-   * already stored so two adapters reject duplicates the same way.
+   * already stored or this account already has a credential so two adapters
+   * reject duplicates the same way.
    */
   createPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /**
@@ -392,6 +393,11 @@ export class InMemoryAuthStore implements AuthStore {
   async createPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
     if (this.#passkeyCredentials.has(credential.credentialId)) {
       return false;
+    }
+    for (const stored of this.#passkeyCredentials.values()) {
+      if (stored.accountId === credential.accountId) {
+        return false;
+      }
     }
     this.#passkeyCredentials.set(credential.credentialId, credential);
     return true;

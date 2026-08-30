@@ -5,7 +5,9 @@ import { serializeAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
 import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { logEvent } from '@/lib/log';
+import { normalizeDisplayName } from '@/lib/name';
 
 /**
  * Operator debug surface for registered accounts.
@@ -76,6 +78,15 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
       }
+      const accounts: Array<{ name: string; lightningAddress: string }> = [];
+      for (const raw of parsed.data.accounts) {
+        const name = normalizeDisplayName(raw.name);
+        const lightningAddress = normalizeLightningAddress(raw.lightningAddress);
+        if (name === null || lightningAddress === null) {
+          return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
+        }
+        accounts.push({ name, lightningAddress });
+      }
       let created = 0;
       let updated = 0;
       const results: Array<{
@@ -84,7 +95,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         viewKey: string;
         created: boolean;
       }> = [];
-      for (const row of parsed.data.accounts) {
+      for (const row of accounts) {
         const found = await deps.store.getAccountByLightningAddress(row.lightningAddress);
         if (found !== undefined) {
           const next = { ...found, name: row.name };

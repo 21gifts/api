@@ -552,6 +552,27 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    sql.queryError = new Error('disk full');
+    await expect(
+      store.createPasskeyCredential({
+        credentialId: 'cred-3',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).rejects.toThrow(/disk full/);
+    sql.queryError = undefined;
     sql.nextRows = [
       {
         credential_id: 'cred',

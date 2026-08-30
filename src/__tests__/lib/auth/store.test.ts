@@ -726,6 +726,25 @@ describe('InMemoryAuthStore', () => {
     expect(await store.accountHasPasskey('acc')).toBe(true);
   });
 
+  it('refuses a second passkey credential for the same account', async () => {
+    const store = new InMemoryAuthStore();
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createPasskeyCredential(first)).toBe(true);
+    expect(
+      await store.createPasskeyCredential({
+        ...first,
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+      }),
+    ).toBe(false);
+  });
+
   it('refuses a second first-passkey for the same account', async () => {
     const store = new InMemoryAuthStore();
     const first = {

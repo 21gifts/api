@@ -631,7 +631,9 @@ passkey and `rulesAgreedAt` null. Same `DEBUG_TOKEN` bearer as GET.
 
 **Request** JSON `{ "accounts": [ { "name": string, "lightningAddress": string } ] }`
 (1–100 rows; name 1–80 after trim; address has exactly one `@` with both sides
-non-empty). Invalid body → **Response** `400`. Create that does not persist the
+non-empty). Invalid body, C0/DEL in a name, or an address that is not LUD-16
+→ **Response** `400` `{ "error": "Expected a JSON body with an \"accounts\" array" }`
+(no row is written). Create that does not persist the
 address → **Response** `500` `{ "error": "Could not save the account" }`.
 
 Success → **Response** `200`:
