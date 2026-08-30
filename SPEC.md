@@ -66,7 +66,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                           |
 | POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                              |
 | POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                             |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                                     |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` next onboarding step)                      |
 | GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                             |
 | POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                    |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                      |
@@ -83,7 +83,7 @@ Public base URLs used in examples:
 | GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                            |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                    |
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`) |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`)                 |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` and/or unlink Lightning Address         |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                    |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)             |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)               |
@@ -277,22 +277,24 @@ Missing or invalid bearer → **Response** `401`:
   "forumLawsDismissed": false,
   "viewKey": "<64-hex>",
   "createdAt": 0,
-  "rulesAgreedAt": null
+  "rulesAgreedAt": null,
+  "setup": "name"
 }
 ```
 
-| Field                      | Type           | Meaning                                                                                       |
-| -------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
-| `id`                       | string         | Opaque account id                                                                             |
-| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                       |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                |
-| `name`                     | string \| null | Display name, or `null` until set                                                             |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                              |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                             |
-| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                            |
-| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
-| `createdAt`                | number         | Creation time (epoch ms)                                                                      |
-| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                      |
+| Field                      | Type                          | Meaning                                                                                       |
+| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `id`                       | string                        | Opaque account id                                                                             |
+| `linkingKey`               | string \| null                | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                       |
+| `role`                     | string                        | `basis`, `verified`, `moderator`, or `founder`                                                |
+| `name`                     | string \| null                | Display name, or `null` until set                                                             |
+| `lightningAddress`         | string \| null                | Linked LUD-16 address, or `null`                                                              |
+| `lightningAddressVerified` | boolean                       | Proof-of-control flag (`true` only after confirm)                                             |
+| `forumLawsDismissed`       | boolean                       | `true` after the welcome-forum living-room laws hint was dismissed                            |
+| `viewKey`                  | string                        | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session. |
+| `createdAt`                | number                        | Creation time (epoch ms)                                                                      |
+| `rulesAgreedAt`            | number \| null                | Epoch ms of first living-room rules agreement, or `null`                                      |
+| `setup`                    | string \| null                | Next owner step: `name`, `lightning-address`, `rules`, or `null` when complete. Computed here; clients must not invent a parallel sequence. |
 
 ### `GET /view/:viewKey`
 
@@ -665,19 +667,24 @@ still omits `viewKey`.
 
 ### `PATCH /debug/accounts/:id`
 
-Operator assignment of the account's forum display role. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
-`GET /debug/accounts`). Body:
+Operator assignment of the account's forum display role and/or unlinking the
+Lightning Address. Authenticated with `Authorization: Bearer` matching
+`DEBUG_TOKEN` (same gate as `GET /debug/accounts`). Body is one or both of:
 
 ```json
-{ "role": "basis" }
+{ "role": "basis", "lightningAddress": null }
 ```
 
-`role` must be one of `basis`, `verified`, `moderator`, or `founder`. This
-path does not patch name or Lightning Address. `verified` is a human-identity
-badge (a moderator physically met the person); it is not
-`lightningAddressVerified`. New passkey accounts stay `basis` until an
-operator changes them here.
+`role` must be one of `basis`, `verified`, `moderator`, or `founder`.
+`lightningAddress` may only be JSON `null` (unlink). Setting a new address
+is not supported here (`POST /me/lightning-address` remains the live
+resolve path). Unlink resets `lightningAddressVerified` to `false` and
+drops any in-flight verification. `GET /me` then returns
+`setup: "lightning-address"` when a name is already stored, so any client
+that follows `setup` (or a missing `lightningAddress`) shows the address
+form. `verified` as a **role** is a human-identity badge (a moderator
+physically met the person); it is not `lightningAddressVerified`. New
+passkey accounts stay `basis` until an operator changes them here.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -691,10 +698,11 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role` string → **Response** `400`:
+Body is not JSON with a known `role` and/or `lightningAddress: null` →
+**Response** `400`:
 
 ```json
-{ "error": "Expected a JSON body with a \"role\" string" }
+{ "error": "Expected a JSON body with a \"role\" string and/or lightningAddress null" }
 ```
 
 Unknown account id → **Response** `404`:
@@ -703,9 +711,11 @@ Unknown account id → **Response** `404`:
 { "error": "Not found" }
 ```
 
-Success → **Response** `200` with the updated account JSON (same eight-field dump as
-`GET /debug/accounts`; no `viewKey`). The process logs
-`debug.accounts.role_set` with the account id and new role (never the token).
+Success → **Response** `200` with the updated account JSON (same nine-field dump as
+`GET /debug/accounts`; no `viewKey`). Role changes log
+`debug.accounts.role_set` with the account id and new role. Unlink logs
+`debug.accounts.lightning_address.cleared` with the account id (never the
+token or the previous address).
 
 ### `GET /debug/contacts`
 

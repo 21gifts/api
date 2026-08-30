@@ -811,6 +811,11 @@ test('Function: serializeAccount — GET /debug/accounts listing omits viewKey',
   }
 });
 
+test('Function: accountSetup — GET /me without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: serializeOwnerAccount — GET /me without bearer is 401', async ({ request }) => {
   const res = await request.get('/me');
   expect(res.status()).toBe(401);

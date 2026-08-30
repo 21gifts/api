@@ -53,8 +53,10 @@ describe('serializeOwnerAccount', () => {
       createdAt: 1,
       rulesAgreedAt: null,
       viewKey: 'a'.repeat(64),
+      setup: 'rules',
     });
     expect(json.viewKey).toBe(account.viewKey);
+    expect(json.setup).toBe('rules');
   });
 });
 

@@ -1,3 +1,4 @@
+import { accountSetup, type AccountSetup } from '@/lib/auth/account-setup';
 import type { Account } from '@/lib/auth/store';
 
 /**
@@ -33,6 +34,12 @@ export interface AccountResponse {
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
+  /**
+   * Next setup step the owner must complete (`name`, `lightning-address`,
+   * `rules`), or `null` when the signed-in app is allowed. Computed on the
+   * api; clients must not invent a parallel sequence.
+   */
+  setup: AccountSetup;
 }
 
 /**
@@ -81,12 +88,13 @@ export function serializeAccount(account: Account): AccountResponse {
  * by the operator debug listing.
  *
  * @param account - Stored account.
- * @returns Ten fields including `viewKey`.
+ * @returns Eleven fields including `viewKey` and `setup`.
  */
 export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
     viewKey: account.viewKey,
+    setup: accountSetup(account),
   };
 }
 

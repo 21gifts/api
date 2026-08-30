@@ -12,7 +12,8 @@ import { normalizeDisplayName } from '@/lib/name';
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
- * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id` (set role).
+ * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id`
+ * (set role and/or unlink Lightning Address).
  */
 
 /** Collaborators the debug routes need. */
@@ -23,10 +24,13 @@ export interface DebugRouteDeps {
   debugToken: string | undefined;
 }
 
-/** Body schema for operator role assignment. */
-const roleBody = z.object({
-  role: z.enum(['basis', 'verified', 'moderator', 'founder']),
-});
+/** Body schema for operator role assignment and Lightning Address unlink. */
+const patchBody = z
+  .object({
+    role: z.enum(['basis', 'verified', 'moderator', 'founder']).optional(),
+    lightningAddress: z.null().optional(),
+  })
+  .refine((body) => body.role !== undefined || body.lightningAddress === null);
 
 /** One row in the operator provision body. */
 const provisionAccountRow = z.object({
@@ -161,17 +165,33 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       return c.json({ accounts: results }, 200);
     })
     .patch('/:id', async (c) => {
-      const parsed = roleBody.safeParse(await c.req.json().catch(() => null));
+      const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "role" string' }, 400);
+        return c.json(
+          { error: 'Expected a JSON body with a "role" string and/or lightningAddress null' },
+          400,
+        );
       }
       const existing = await deps.store.getAccount(c.req.param('id'));
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const updated = { ...existing, role: parsed.data.role };
+      const updated = { ...existing };
+      if (parsed.data.role !== undefined) {
+        updated.role = parsed.data.role;
+      }
+      if (parsed.data.lightningAddress === null) {
+        updated.lightningAddress = null;
+        updated.lightningAddressVerified = false;
+      }
       await deps.store.updateAccount(updated);
-      logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
+      if (parsed.data.lightningAddress === null) {
+        await deps.store.deleteVerification(updated.id);
+        logEvent('debug.accounts.lightning_address.cleared', { accountId: updated.id });
+      }
+      if (parsed.data.role !== undefined) {
+        logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
+      }
       return c.json(serializeAccount(updated), 200);
     });
 }
