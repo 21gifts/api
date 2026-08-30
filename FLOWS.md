@@ -150,7 +150,7 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
 the public thread is listed via `GET /messages` (newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
-— never photo bytes). Bytes are `GET /messages/:id/photo`. The shipped UI
+— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1

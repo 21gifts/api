@@ -116,14 +116,14 @@ test('POST /messages with a photo without bearer is 401', async ({ request }) =>
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
-test('GET /messages/:id/photo without bearer is 401', async ({ request }) => {
+test('GET /messages/:id/photo without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/photo');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
-test('GET /messages/:id/photo UUID path without bearer is 401', async ({ request }) => {
+test('GET /messages/:id/photo UUID path without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
 test('POST /me/name without bearer is 401', async ({ request }) => {

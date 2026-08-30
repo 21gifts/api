@@ -16,6 +16,14 @@ import {
 } from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
+function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
+  if (event === null) {
+    return true;
+  }
+  const content = event['content'];
+  return typeof content !== 'string' || !content.includes(`/messages/${messageId}/photo`);
+}
+
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
   if (event === null) {
     return true;
@@ -93,6 +101,24 @@ export interface MessageStore {
    * @param expectedEventId - Event id observed when the row was listed.
    */
   clearSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
+
+  /**
+   * Signed rows with a photo whose kind:1 content lacks the public photo URL.
+   * Any publish state, `sats = 0` only (zapped rows keep their event id).
+   * Oldest `createdAt` then `id` first.
+   *
+   * @param limit - Max rows.
+   */
+  listSignedMissingPhoto(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Clear the signed event and park the row `pending` so it is signed again.
+   * No-op unless `eventId` still matches `expectedEventId` and `sats` is 0.
+   *
+   * @param id - Message id.
+   * @param expectedEventId - Event id observed when the row was listed.
+   */
+  resetSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
@@ -302,6 +328,36 @@ export class InMemoryMessageStore implements MessageStore {
       row.eventId = null;
       row.nostrEvent = null;
       row.claimedUntil = null;
+    }
+    return Promise.resolve();
+  }
+
+  listSignedMissingPhoto(limit: number): Promise<MessageRow[]> {
+    const rows = this.#rows
+      .filter(
+        (row) =>
+          row.eventId !== null &&
+          row.hasPhoto &&
+          row.sats === 0 &&
+          kind1MissingPhotoUrl(row.nostrEvent, row.id),
+      )
+      .sort((left, right) => {
+        const byTime = left.createdAt.getTime() - right.createdAt.getTime();
+        return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyRow(row));
+    return Promise.resolve(rows);
+  }
+
+  resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
+      row.eventId = null;
+      row.nostrEvent = null;
+      row.claimedUntil = null;
+      row.nostrPublishState = 'pending';
+      row.nostrPublishEpoch = null;
     }
     return Promise.resolve();
   }
@@ -594,6 +650,31 @@ export class PostgresMessageStore implements MessageStore {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
        WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2`,
+      [id, expectedEventId],
+    );
+  }
+
+  async listSignedMissingPhoto(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+         AND (
+           nostr_event IS NULL
+           OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo%'
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  async resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
+         nostr_publish_state = 'pending', nostr_publish_epoch = NULL
+       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0`,
       [id, expectedEventId],
     );
   }
