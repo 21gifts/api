@@ -98,13 +98,18 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       for (const row of accounts) {
         const found = await deps.store.getAccountByLightningAddress(row.lightningAddress);
         if (found !== undefined) {
-          const next = { ...found, name: row.name };
-          await deps.store.updateAccount(next);
+          const named = await deps.store.updateAccountNameByLightningAddress(
+            row.lightningAddress,
+            row.name,
+          );
+          if (named === undefined || named.name !== row.name) {
+            return c.json({ error: 'Could not save the account' }, 500);
+          }
           updated += 1;
           results.push({
-            name: row.name,
-            lightningAddress: found.lightningAddress ?? row.lightningAddress,
-            viewKey: found.viewKey,
+            name: named.name,
+            lightningAddress: named.lightningAddress ?? row.lightningAddress,
+            viewKey: named.viewKey,
             created: false,
           });
           continue;
@@ -136,13 +141,18 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             created: true,
           });
         } else {
-          const next = { ...stored, name: row.name };
-          await deps.store.updateAccount(next);
+          const named = await deps.store.updateAccountNameByLightningAddress(
+            row.lightningAddress,
+            row.name,
+          );
+          if (named === undefined || named.name !== row.name) {
+            return c.json({ error: 'Could not save the account' }, 500);
+          }
           updated += 1;
           results.push({
-            name: row.name,
-            lightningAddress: stored.lightningAddress ?? row.lightningAddress,
-            viewKey: stored.viewKey,
+            name: named.name,
+            lightningAddress: named.lightningAddress ?? row.lightningAddress,
+            viewKey: named.viewKey,
             created: false,
           });
         }

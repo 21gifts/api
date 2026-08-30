@@ -640,6 +640,54 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
   });
 
+  it('updateAccountNameByLightningAddress changes only name', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'nameless',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Skip',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: true,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 9_000,
+    });
+    const named = await store.updateAccountNameByLightningAddress(
+      '  Guest@WalletOfSatoshi.com  ',
+      'Ada Lovelace',
+    );
+    expect(named).toMatchObject({
+      id: 'acc',
+      name: 'Ada Lovelace',
+      role: 'moderator',
+      rulesAgreedAt: 9_000,
+      viewKey: 'a'.repeat(64),
+      lightningAddressVerified: true,
+      forumLawsDismissed: true,
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.name).toBe('Ada Lovelace');
+    expect(stored?.role).toBe('moderator');
+    expect(stored?.rulesAgreedAt).toBe(9_000);
+    expect(
+      await store.updateAccountNameByLightningAddress('missing@example.com', 'X'),
+    ).toBeUndefined();
+  });
+
   it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
     const store = new InMemoryAuthStore();
     const base = {
