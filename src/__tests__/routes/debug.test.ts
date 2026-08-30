@@ -303,7 +303,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 2,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -346,7 +349,10 @@ describe('debugRoutes', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -370,7 +376,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 2,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -386,7 +395,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 when lightningAddress is not null', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
