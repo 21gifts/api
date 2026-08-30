@@ -123,9 +123,10 @@ export interface MessageStore {
 
   /**
    * Published rows whose kind:1 content lacks `#21gifts` or `#bitcoin` (case-insensitive).
-   * `sats = 0` only. Pending rows are left for fan-out — resetting them
-   * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
-   * first. Includes `nostrEvent === null` and non-string content.
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first. Includes `nostrEvent === null` and
+   * non-string content.
    *
    * @param limit - Max rows.
    */

@@ -241,13 +241,13 @@ below applies to v1 for the surfaces v1 ships — profile metadata, campaign
 post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
 scope. The client-side-signing flow beneath it is target state.)
 
-| UI surface                            | NOSTR primitive                                                                                                                                       |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                                                                                            |
-| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                                                                                                   |
-| Public comment / encouragement        | top-level `kind:1` (frozen `t=bitcoin` / `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`; Damus-visible `#bitcoin #21gifts` in kind:1 **content**) |
-| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                                                                                             |
-| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                                                                                         |
+| UI surface                            | NOSTR primitive                                                                                                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile metadata (name, photo, story) | `kind:0` (NIP-01 metadata)                                                                                                                                                                                          |
+| Receiver profile / campaign post      | `kind:1` (text note), tagged with campaign metadata                                                                                                                                                                 |
+| Public comment / encouragement        | top-level `kind:1` (frozen `t=bitcoin` / `t=21gifts` / `r=https://21.gifts`; no `e`/`p`/`q`; Damus-visible `#bitcoin #21gifts` in kind:1 **content**; pending fan-out is not reset to stamp hashtags or photo URLs) |
+| Private message donor ↔ receiver      | `kind:14` (NIP-17 sealed DM, modern) or `kind:4` (legacy)                                                                                                                                                           |
+| Donation acknowledgement              | `kind:9735` Zap receipt (when NIP-57 enabled)                                                                                                                                                                       |
 
 **Flow** — the app does not talk to NOSTR relays directly. It talks to the
 backend API, which acts as the user's edge to the network:

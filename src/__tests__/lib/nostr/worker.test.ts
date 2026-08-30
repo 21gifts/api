@@ -271,6 +271,46 @@ describe('runNostrWorkerTick', () => {
     expect(zapped?.sats).toBe(21);
   });
 
+  it('signs a new post before resetting published notes that lack Damus hashtags', async () => {
+    const { auth, messages } = await seed();
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    for (let i = 0; i < 20; i += 1) {
+      const id = `old-${String(i).padStart(2, '0')}`;
+      await messages.create({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: `old ${i}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      });
+      await messages.updateSignedEvent(id, id.padEnd(64, 'a'), {
+        kind: 1,
+        content: `old ${i}`,
+        tags,
+        created_at: 1,
+      });
+      await messages.updatePublishState(id, 'published', 'space');
+    }
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect((await messages.getById('old-00'))?.eventId).toBeNull();
+  });
+
   it('EVENTs pending notes that lack Damus hashtags instead of resetting them', async () => {
     const { auth, messages } = await seed();
     const tags = [

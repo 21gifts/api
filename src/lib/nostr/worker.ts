@@ -1,5 +1,6 @@
 import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
 import {
@@ -102,18 +103,13 @@ function reservedContent(
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
  * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
- * `t=bitcoin` is dropped and re-signed before fan-out. Signed photo posts
- * whose kind:1 lacks the public photo URL are reset and re-signed when
- * they are already published, `PUBLIC_BASE_URL` is set, and `sats === 0`.
- * Pending rows are EVENT'd even without the URL — resetting them first
- * renews the sign lease and they never reach a relay. Zapped rows keep
- * their event id so receipts still resolve. An empty API base leaves
- * them alone so it cannot un-publish and loop. Published unpaid notes whose
- * kind:1 content lacks `#bitcoin` or `#21gifts` are reset after unsigned rows
- * are signed, then re-signed on the next tick; pending rows are EVENT'd as-is
- * so a reset cannot renew the sign lease. Zapped rows keep `eventId`. When
- * publishing,
- * also fans out a replaceable
+ * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
+ * signed. Then published unpaid rows missing a photo URL (`PUBLIC_BASE_URL`
+ * set) or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick.
+ * Pending rows EVENT as-is — resetting them first renews the 60s sign lease
+ * and they never reach a relay. Zapped rows (`sats !== 0`) keep their event
+ * id so receipts still resolve. An empty API base skips photo-URL resign so
+ * it cannot un-publish and loop. When publishing, also fans out a replaceable
  * kind:0 profile (`name` / `display_name` / `picture`) and a NIP-65
  * kind:10002 relay list. Kind:1 photo posts include the public image URL
  * and an `imeta` tag. Kind:0
@@ -129,8 +125,8 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
-  await resignPhotoKind1(deps);
   await signBatch(deps, nowMs);
+  await resignPhotoKind1(deps);
   await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
@@ -163,21 +159,21 @@ async function resignLegacyKind1Tags(deps: NostrWorkerDeps): Promise<void> {
   }
 }
 
-async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
-  if (resolvePublicApiBase(deps.env) === '') {
-    return;
-  }
-  const rows = await deps.messages.listSignedMissingPhoto(WORKER_BATCH);
+async function resetPublishedBatch(deps: NostrWorkerDeps, rows: MessageRow[]): Promise<void> {
   for (const row of rows) {
     await deps.messages.resetSignedEvent(row.id, row.eventId);
   }
 }
 
-async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
-  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH);
-  for (const row of rows) {
-    await deps.messages.resetSignedEvent(row.id, row.eventId);
+async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
+  if (resolvePublicApiBase(deps.env) === '') {
+    return;
   }
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingPhoto(WORKER_BATCH));
+}
+
+async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
+  await resetPublishedBatch(deps, await deps.messages.listSignedMissingHashtags(WORKER_BATCH));
 }
 
 function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
