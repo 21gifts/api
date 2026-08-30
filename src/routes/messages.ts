@@ -188,11 +188,12 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * Build the `/messages` route group.
  *
  * Mounted at `/messages` so the public paths are `GET /messages`,
- * `POST /messages`, `GET /messages/:id/photo` (and `.jpg` / `.png` / `.webp`),
- * and `POST /messages/:id/invoice`.
+ * `POST /messages`, `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` /
+ * `.webp`), and `POST /messages/:id/invoice`.
  *
  * @param deps - Message store, auth store, and clock.
- * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo`, and `POST /:id/invoice`.
+ * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
+ * `.jpeg` / `.png` / `.webp`, and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
