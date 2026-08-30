@@ -104,7 +104,8 @@ export interface MessageStore {
 
   /**
    * Signed rows with a photo whose kind:1 content lacks the public photo URL.
-   * Any publish state. Oldest `createdAt` then `id` first.
+   * Any publish state, `sats = 0` only (zapped rows keep their event id).
+   * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
    */
@@ -112,7 +113,7 @@ export interface MessageStore {
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
-   * No-op unless `eventId` still matches `expectedEventId`.
+   * No-op unless `eventId` still matches `expectedEventId` and `sats` is 0.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -335,7 +336,10 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
-          row.eventId !== null && row.hasPhoto && kind1MissingPhotoUrl(row.nostrEvent, row.id),
+          row.eventId !== null &&
+          row.hasPhoto &&
+          row.sats === 0 &&
+          kind1MissingPhotoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -348,7 +352,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row !== undefined && row.eventId === expectedEventId) {
+    if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
       row.eventId = null;
       row.nostrEvent = null;
       row.claimedUntil = null;
@@ -654,7 +658,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND photo IS NOT NULL
+       WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/photo%'
@@ -670,7 +674,7 @@ export class PostgresMessageStore implements MessageStore {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
          nostr_publish_state = 'pending', nostr_publish_epoch = NULL
-       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2`,
+       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0`,
       [id, expectedEventId],
     );
   }

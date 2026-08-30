@@ -157,9 +157,6 @@ async function resignPhotoKind1(deps: NostrWorkerDeps): Promise<void> {
   }
   const rows = await deps.messages.listSignedMissingPhoto(WORKER_BATCH);
   for (const row of rows) {
-    if (row.sats > 0) {
-      continue;
-    }
     await deps.messages.resetSignedEvent(row.id, row.eventId);
   }
 }

@@ -291,18 +291,22 @@ describe('InMemoryMessageStore', () => {
       'q',
       'z',
     ]);
+    await store.addSats('z', 21);
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
+      'n',
+      'a',
+      'p',
+      'q',
+    ]);
+    await store.resetSignedEvent('z', '22'.repeat(32));
+    expect((await store.getById('z'))?.eventId).toBe('22'.repeat(32));
     await store.resetSignedEvent('a', 'ab'.repeat(32));
     expect((await store.getById('a'))?.eventId).toBeNull();
     expect((await store.getById('a'))?.nostrPublishState).toBe('pending');
     await store.updateSignedEvent('a', 'cd'.repeat(32), {
       content: 'http://127.0.0.1:3000/messages/a/photo',
     });
-    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
-      'n',
-      'p',
-      'q',
-      'z',
-    ]);
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual(['n', 'p', 'q']);
     await store.resetSignedEvent('a', 'ff'.repeat(32));
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
   });
@@ -695,10 +699,12 @@ describe('PostgresMessageStore', () => {
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/photo IS NOT NULL/);
+    expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo/);
     await store.resetSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
+    expect(sql.executes.at(-1)?.text).toMatch(/sats = 0/);
   });
 
   it('propagates getPhoto query errors', async () => {
