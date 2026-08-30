@@ -312,6 +312,20 @@ async function ingestOneReceipt(
     return;
   }
   if (typeof event.pubkey !== 'string' || event.pubkey === '') {
+    logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId: null,
+        messageId: null,
+        outcome: 'rejected',
+        reason: 'pubkey',
+        amountSats: null,
+        receiptPubkey: null,
+        receipt: receiptFrame(event),
+      }),
+    );
     return;
   }
 

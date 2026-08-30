@@ -745,7 +745,7 @@ describe('POST /messages/:id/invoice', () => {
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
-    const res = await app.request('/messages/m1/invoice', {
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ sats: 1.5 }),

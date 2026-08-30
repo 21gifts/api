@@ -1288,8 +1288,9 @@ describe('indexOpenZapReceipts', () => {
       },
     });
     const rows = await store.listZapIngests(10);
-    expect(rows.some((row) => row.receiptId === 'r-bad-pubkey' && row.receiptPubkey === null)).toBe(
-      true,
-    );
+    const row = rows.find((item) => item.receiptId === 'r-bad-pubkey');
+    expect(row?.outcome).toBe('rejected');
+    expect(row?.reason).toBe('pubkey');
+    expect(row?.receiptPubkey).toBeNull();
   });
 });
