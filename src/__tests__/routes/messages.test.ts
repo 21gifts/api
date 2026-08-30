@@ -1333,7 +1333,9 @@ describe('POST /messages/:id/invoice', () => {
       });
       expect(res.status).toBe(400);
       const body = (await res.json()) as Record<string, unknown>;
-      expect(body).toEqual({ error: 'Could not start the Bitcoin payment' });
+      expect(body).toEqual({
+        error: "The author's wallet cannot receive this Bitcoin payment",
+      });
       expect(body).not.toHaveProperty('pr');
       const attempts = await messageStore.listInvoiceAttempts(10);
       expect(attempts).toHaveLength(1);
@@ -1412,7 +1414,11 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Could not start the Bitcoin payment' });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+    expect(body).not.toHaveProperty('pr');
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]?.result).toBe('not_zap');
@@ -1484,6 +1490,9 @@ describe('POST /messages/:id/invoice', () => {
       },
     );
     expect(noZapRes.status).toBe(400);
+    expect(await noZapRes.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
     expect((await messageStore.listInvoiceAttempts(1))[0]?.result).toBe('noZap');
     expect((await messageStore.listInvoiceAttempts(1))[0]?.pr).toBeNull();
     expect((await messageStore.listInvoiceAttempts(1))[0]?.httpStatus).toBe(400);
@@ -1510,6 +1519,9 @@ describe('POST /messages/:id/invoice', () => {
       },
     );
     expect(unreachableRes.status).toBe(400);
+    expect(await unreachableRes.json()).toEqual({
+      error: 'Could not start the Bitcoin payment',
+    });
     const attempts = await messageStore.listInvoiceAttempts(2);
     expect(attempts.some((row) => row.result === 'unreachable')).toBe(true);
     expect(attempts.find((row) => row.result === 'unreachable')?.pr).toBeNull();
