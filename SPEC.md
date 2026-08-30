@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-30 (`GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
 
 ---
 
@@ -55,39 +55,41 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                     |
-| ------ | -------------------------------------------- | ------------------------ | ------------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                    |
-| GET    | `/info`                                      | none                     | Service identity                            |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                        |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                    |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)               |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options             |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session           |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options              |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session             |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                     |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key             |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                    |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws      |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement          |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve       |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                              |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment      |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history           |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                    |
-| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum     |
-| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes             |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                         |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`      |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)            |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)    |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`) |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)    |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)    |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics         |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)        |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof            |
+| Method | Path                                         | Auth                     | Purpose                                         |
+| ------ | -------------------------------------------- | ------------------------ | ----------------------------------------------- |
+| GET    | `/healthz`                                   | none                     | Liveness                                        |
+| GET    | `/info`                                      | none                     | Service identity                                |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                            |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                        |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                   |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                 |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session               |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                  |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                 |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account                                         |
+| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                 |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                        |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws          |
+| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement              |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve           |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                  |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment          |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history               |
+| GET    | `/messages`                                  | Bearer                   | List public forum thread                        |
+| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum         |
+| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                 |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                             |
+| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`          |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)        |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `account.role` (`DEBUG_TOKEN`)     |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)        |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`) |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)   |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)        |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics             |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)            |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                |
 
 ### `GET /healthz`
 
@@ -707,6 +709,113 @@ Environment:
 | `DATABASE_URL` | When set, contacts are stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.      |
 
+### `GET /debug/invoices`
+
+Operator listing of forum `POST /messages/:id/invoice` attempts. Authenticated
+with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "invoices": [
+    {
+      "id": "<uuid>",
+      "createdAt": "2026-08-30T12:00:00.000Z",
+      "messageId": "<uuid>",
+      "payerAccountId": "<uuid>",
+      "authorAccountId": "<uuid>",
+      "amountSats": 21,
+      "lightningAddress": "user@walletofsatoshi.com",
+      "zapRequest": { "kind": 9734 },
+      "result": "ok",
+      "httpStatus": 200,
+      "pr": "lnbc21n1...",
+      "paymentHash": "<64-hex>",
+      "description": null,
+      "descriptionHash": "<64-hex>",
+      "isNip57Invoice": true
+    }
+  ]
+}
+```
+
+Rows are newest-first, capped at **200**. Never includes nsec. `result` is one
+of `ok`, `noZap`, `unreachable`, `no_event`, `no_author`, `no_key`,
+`sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
+true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
+sent as LNURL `nostr=`. Failure rows have `pr` null and `isNip57Invoice`
+false. When `DATABASE_URL` is unset the in-memory store starts empty.
+
+Environment:
+
+| Variable       | Meaning                                                           |
+| -------------- | ----------------------------------------------------------------- |
+| `DATABASE_URL` | When set, attempts are stored in Postgres `message_invoice`.      |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
+### `GET /debug/zap-ingests`
+
+Operator listing of kind:9735 ingest decisions (`indexed` or `rejected`).
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not
+an end-user session.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "ingests": [
+    {
+      "id": "<uuid>",
+      "createdAt": "2026-08-30T12:00:00.000Z",
+      "receiptId": "<64-hex>",
+      "noteEventId": "<64-hex>",
+      "messageId": "<uuid>",
+      "outcome": "indexed",
+      "reason": null,
+      "amountSats": 21,
+      "receiptPubkey": "<64-hex>",
+      "receipt": { "id": "<64-hex>", "kind": 9735 }
+    }
+  ]
+}
+```
+
+Rows are newest-first, capped at **200**. Never includes nsec. When
+`DATABASE_URL` is unset the in-memory store starts empty.
+
+Environment:
+
+| Variable       | Meaning                                                           |
+| -------------- | ----------------------------------------------------------------- |
+| `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.  |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
 ### `GET /gifts`
 
 Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.
@@ -1088,10 +1197,15 @@ Success → **Response** `200`:
 
 ### `POST /messages/:id/invoice`
 
-Signed-in pay-on-note. Bearer session required. Body `{ "sats": <int ≥ 1> }`.
-The api signs a NIP-57 zap request with the **payer** key and returns a BOLT11
-invoice for the **author** Lightning Address. It does **not** increment
-`sats` (that happens when a validated kind:9735 receipt is indexed).
+Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
+Body `{ "sats": <int ≥ 1> }`. The api signs a NIP-57 zap request with the
+**payer** key and returns a BOLT11 invoice for the **author** Lightning Address.
+It does **not** increment `sats` (that happens when a validated kind:9735
+receipt is indexed). After auth, every attempt with a valid UUID is persisted
+best-effort to `message_invoice` (result, HTTP status, `pr`, description vs
+`description_hash`, `isNip57Invoice`). Store failures log
+`message.invoice.record_failed` and do not change the HTTP response. A
+non-UUID `:id` is **404** without a persist row.
 
 Success → **Response** `200`:
 

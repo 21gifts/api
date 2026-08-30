@@ -96,6 +96,10 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     updatePublishState: boom,
     addSats: boom,
     recordZapReceipt: boom,
+    recordInvoiceAttempt: boom,
+    listInvoiceAttempts: boom,
+    recordZapIngest: boom,
+    listZapIngests: boom,
     ...overrides,
   };
 }
@@ -741,7 +745,7 @@ describe('POST /messages/:id/invoice', () => {
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
-    const res = await app.request('/messages/m1/invoice', {
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ sats: 1.5 }),
@@ -1048,6 +1052,462 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(404);
+  });
+
+  it('persists an ok invoice attempt with pr and isNip57Invoice from inspect', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 86400,
+    });
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.result).toBe('ok');
+      expect(attempts[0]?.pr).toBe('lnbc21n1test');
+      expect(attempts[0]?.httpStatus).toBe(200);
+      expect(attempts[0]?.paymentHash).toBe('aa'.repeat(32));
+      expect(attempts[0]?.descriptionHash).toBe('bb'.repeat(32));
+      expect(attempts[0]?.zapRequest).not.toBeNull();
+    } finally {
+      inspectSpy.mockRestore();
+    }
+  });
+
+  it('persists noZap and unreachable with pr null and http 400', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const noZapFetch = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 500 });
+    };
+    const appNoZap = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl: noZapFetch,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const noZapRes = await appNoZap.request(
+      '/messages/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(noZapRes.status).toBe(400);
+    expect((await messageStore.listInvoiceAttempts(1))[0]?.result).toBe('noZap');
+    expect((await messageStore.listInvoiceAttempts(1))[0]?.pr).toBeNull();
+    expect((await messageStore.listInvoiceAttempts(1))[0]?.httpStatus).toBe(400);
+
+    const unreachableFetch = async (): Promise<Response> => new Response('{}', { status: 500 });
+    const appUnreachable = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl: unreachableFetch,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const unreachableRes = await appUnreachable.request(
+      '/messages/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(unreachableRes.status).toBe(400);
+    const attempts = await messageStore.listInvoiceAttempts(2);
+    expect(attempts.some((row) => row.result === 'unreachable')).toBe(true);
+    expect(attempts.find((row) => row.result === 'unreachable')?.pr).toBeNull();
+  });
+
+  it('returns 404 for a non-uuid invoice id without persisting', async () => {
+    const kek = new Uint8Array(32).fill(2);
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/not-a-uuid/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(404);
+    expect(await messageStore.listInvoiceAttempts(10)).toHaveLength(0);
+  });
+
+  it('persists no_event when the note has no eventId', async () => {
+    const kek = new Uint8Array(32).fill(2);
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/cccccccc-cccc-4ccc-8ccc-cccccccccccc/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_event');
+    expect(attempts[0]?.httpStatus).toBe(400);
+  });
+
+  it('still returns 200 when recordInvoiceAttempt throws after LNURL ok', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const store: MessageStore = {
+      listLatest: (limit) => base.listLatest(limit),
+      create: (row, photo) => base.create(row, photo),
+      getPhoto: (id) => base.getPhoto(id),
+      getById: (id) => base.getById(id),
+      getByEventId: (id) => base.getByEventId(id),
+      claimUnsigned: (...args) => base.claimUnsigned(...args),
+      claimUnpublished: (...args) => base.claimUnpublished(...args),
+      listPendingSigned: (limit) => base.listPendingSigned(limit),
+      listSignedMissingPhoto: (limit) => base.listSignedMissingPhoto(limit),
+      clearSignedEvent: (...args) => base.clearSignedEvent(...args),
+      resetSignedEvent: (...args) => base.resetSignedEvent(...args),
+      updateSignedEvent: (...args) => base.updateSignedEvent(...args),
+      updatePublishState: (...args) => base.updatePublishState(...args),
+      addSats: (...args) => base.addSats(...args),
+      recordZapReceipt: (...args) => base.recordZapReceipt(...args),
+      recordInvoiceAttempt: async () => {
+        throw new Error('persist boom');
+      },
+      listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      recordZapIngest: (row) => base.recordZapIngest(row),
+      listZapIngests: (limit) => base.listZapIngests(limit),
+    };
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/dddddddd-dddd-4ddd-8ddd-dddddddddddd/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'message.invoice.record_failed')).toBe(
+      true,
+    );
+  });
+
+  it('persists sign_failed when signing throws', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const signMod = await import('@/lib/nostr/sign');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const spy = vi.spyOn(signMod, 'signEventForAccount').mockRejectedValue(new Error('sign boom'));
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(503);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts[0]?.result).toBe('sign_failed');
+      expect(attempts[0]?.httpStatus).toBe(503);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('persists ok path with null zapRequest when the signed event is not an object', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const signMod = await import('@/lib/nostr/sign');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const spy = vi
+      .spyOn(signMod, 'signEventForAccount')
+      .mockResolvedValue(
+        null as unknown as Awaited<ReturnType<typeof signMod.signEventForAccount>>,
+      );
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 100000000000,
+            allowsNostr: true,
+            nostrPubkey: 'be1d89794bf92de5dd64c1e60f6a2c70c140abac9932418fee30c5c637fe9479',
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), { status: 200 });
+    };
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      const res = await app.request('/messages/ffffffff-ffff-4fff-8fff-ffffffffffff/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      expect(res.status).toBe(200);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts[0]?.result).toBe('ok');
+      expect(attempts[0]?.zapRequest).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

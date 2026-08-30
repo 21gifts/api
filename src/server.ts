@@ -17,6 +17,7 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
 import { contactRoutes } from '@/routes/contact';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
+import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
@@ -68,8 +69,9 @@ export interface AppDeps {
   readBrand?: BrandReader;
   /**
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
-   * blank → `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and
-   * `GET /debug/contacts` return 503.
+   * blank → `GET /debug/accounts`, `PATCH /debug/accounts/:id`,
+   * `GET /debug/contacts`, `GET /debug/invoices`, and
+   * `GET /debug/zap-ingests` return 503.
    */
   debugToken?: string;
   /**
@@ -193,6 +195,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/accounts', debugRoutes({ store, debugToken }));
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
+  app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route(
