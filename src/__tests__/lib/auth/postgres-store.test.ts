@@ -181,6 +181,37 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
+  it('looks up an account by lightning_address with lower(trim) SQL', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' }];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
+    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(lightning_address\) = lower\(\$1\)/);
+    expect(sql.queries[0]?.params).toEqual(['Guest@WalletOfSatoshi.com']);
+    expect(found?.id).toBe('acc');
+    expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('returns undefined when lightning_address lookup has no rows', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(
+        'missing@example.com',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('accountHasPasskey queries passkey_credential by account_id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasPasskey('acc')).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM passkey_credential/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasPasskey('acc')).toBe(true);
+  });
+
   it('skips rows with a null view_key', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null }];
@@ -551,6 +582,32 @@ describe('PostgresAuthStore', () => {
         credentialId: 'cred',
         publicKey: key,
         signCount: 5,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('inserts a first passkey only when the account has none', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ credential_id: 'cred' }];
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
+    sql.nextRows = [];
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
         accountId: 'acc',
         createdAt: 1,
       }),

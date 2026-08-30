@@ -21,6 +21,13 @@
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/accounts
+
+- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). Creates a new `basis` row with a fresh `viewKey`, or updates `name` when the address already exists (`lower(trim)` match). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body.
+- **Used by:** Operator provisioning before passkey claim.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: PATCH /debug/accounts/:id
 
 - **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`). Body `{ "role": "<AccountRole>" }`. Returns the updated account JSON (same shape as `GET /debug/accounts`: eight fields via `serializeAccount`; no `viewKey`). Does not patch name or Lightning Address.
@@ -65,16 +72,16 @@
 
 ## Endpoint: POST /auth/passkey/register/begin
 
-- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Does not persist the account yet.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
-- **Used by:** App passkey account creation.
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential.
+- **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account, issues `{ token, account }`. Requires `Origin`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
-- **Used by:** App passkey account creation.
+- **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
 
 ## Endpoint: GET /favicon.ico

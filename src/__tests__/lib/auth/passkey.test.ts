@@ -7,6 +7,7 @@ import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
   startPasskeyAuthentication,
+  startPasskeyClaim,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
@@ -174,6 +175,162 @@ describe('passkey registration', () => {
     const pending = await store.getPasskeyChallenge(begin.challengeId);
     expect(pending?.accountId).toEqual(expect.any(String));
     expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
+  });
+});
+
+describe('passkey claim', () => {
+  const VIEW_KEY = 'a'.repeat(64);
+
+  async function provisionedStore(): Promise<InMemoryAuthStore> {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'provisioned',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    return store;
+  }
+
+  it('returns not-found for a malformed viewKey', async () => {
+    const result = await startPasskeyClaim(
+      new InMemoryAuthStore(),
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      'not-a-key',
+    );
+    expect(result).toEqual({ ok: false, error: 'This profile could not be found.' });
+  });
+
+  it('returns not-found for an unknown viewKey', async () => {
+    const result = await startPasskeyClaim(
+      new InMemoryAuthStore(),
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      'b'.repeat(64),
+    );
+    expect(result).toEqual({ ok: false, error: 'This profile could not be found.' });
+  });
+
+  it('refuses claim begin when the account already has a passkey', async () => {
+    const store = await provisionedStore();
+    await store.createPasskeyCredential({
+      credentialId: 'cred-existing',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'provisioned',
+      createdAt: T0,
+    });
+    const result = await startPasskeyClaim(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      VIEW_KEY,
+    );
+    expect(result).toEqual({ ok: false, error: 'This profile already has a passkey' });
+  });
+
+  it('begins claim with the existing account id and display name', async () => {
+    const store = await provisionedStore();
+    const result = await startPasskeyClaim(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      VIEW_KEY,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const options = result.value.options as {
+      user: { id: string; name: string; displayName: string };
+    };
+    expect(options.user.id).toBe('provisioned');
+    expect(options.user.name).toBe('provisioned');
+    expect(options.user.displayName).toBe('Ada');
+    expect((await store.getPasskeyChallenge(result.value.challengeId))?.accountId).toBe(
+      'provisioned',
+    );
+  });
+
+  it('finish after claim keeps name, lightningAddress, viewKey, and id', async () => {
+    const store = await provisionedStore();
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(finish.value.account).toMatchObject({
+      id: 'provisioned',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      viewKey: VIEW_KEY,
+    });
+    expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
+  });
+
+  it('does not delete a provisioned account when credential insert races', async () => {
+    class DupStore extends InMemoryAuthStore {
+      override async createFirstPasskeyCredential(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new DupStore();
+    await store.createAccount({
+      id: 'provisioned',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+    expect(await store.getAccount('provisioned')).toMatchObject({
+      id: 'provisioned',
+      name: 'Ada',
+      viewKey: VIEW_KEY,
+    });
   });
 });
 

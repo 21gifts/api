@@ -620,6 +620,89 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
   });
 
+  it('finds an account by lightningAddress with mixed case and whitespace', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(
+      (await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id,
+    ).toBe('acc');
+    expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
+  });
+
+  it('skips null lightningAddress rows when looking up by address', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.getAccountByLightningAddress('null@example.com')).toBeUndefined();
+  });
+
+  it('reports whether an account has a passkey credential', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.accountHasPasskey('acc')).toBe(false);
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(await store.accountHasPasskey('acc')).toBe(true);
+  });
+
+  it('refuses a second first-passkey for the same account', async () => {
+    const store = new InMemoryAuthStore();
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createFirstPasskeyCredential(first)).toBe(true);
+    expect(
+      await store.createFirstPasskeyCredential({
+        ...first,
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+      }),
+    ).toBe(false);
+  });
+
   it('ignores a second createAccount with the same viewKey', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = 'e'.repeat(64);

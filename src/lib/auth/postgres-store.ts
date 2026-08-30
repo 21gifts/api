@@ -170,6 +170,24 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapAccount(row);
   }
 
+  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at
+       FROM account WHERE lower(lightning_address) = lower($1)`,
+      [address.trim()],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async accountHasPasskey(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      'SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1',
+      [accountId],
+    );
+    return rows[0] !== undefined;
+  }
+
   async deleteAccount(id: string): Promise<void> {
     await this.#sql.execute('DELETE FROM account WHERE id = $1', [id]);
   }
@@ -281,6 +299,26 @@ export class PostgresAuthStore implements AuthStore {
     const rows = await this.#sql.query<{ credential_id: string }>(
       `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
        VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))
+       ON CONFLICT (credential_id) DO NOTHING
+       RETURNING credential_id`,
+      [
+        credential.credentialId,
+        credential.publicKey,
+        credential.signCount,
+        credential.accountId,
+        credential.createdAt,
+      ],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const rows = await this.#sql.query<{ credential_id: string }>(
+      `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+       SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM passkey_credential WHERE account_id = $4
+       )
        ON CONFLICT (credential_id) DO NOTHING
        RETURNING credential_id`,
       [

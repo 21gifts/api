@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { serializeAccount } from '@/lib/auth/account-json';
+import { randomHex } from '@/lib/auth/hex';
 import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
@@ -9,7 +10,7 @@ import { logEvent } from '@/lib/log';
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
- * Exposes `GET /` (list) and `PATCH /:id` (set role).
+ * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id` (set role).
  */
 
 /** Collaborators the debug routes need. */
@@ -23,6 +24,23 @@ export interface DebugRouteDeps {
 /** Body schema for operator role assignment. */
 const roleBody = z.object({
   role: z.enum(['basis', 'verified', 'moderator', 'founder']),
+});
+
+/** One row in the operator provision body. */
+const provisionAccountRow = z.object({
+  name: z.string().trim().min(1).max(80),
+  lightningAddress: z
+    .string()
+    .trim()
+    .refine((value) => {
+      const at = value.indexOf('@');
+      return at > 0 && at === value.lastIndexOf('@') && at < value.length - 1;
+    }),
+});
+
+/** Body schema for operator account provisioning. */
+const provisionBody = z.object({
+  accounts: z.array(provisionAccountRow).min(1).max(100),
 });
 
 /** Shared 503/401 gate for every `/debug/accounts` method. */
@@ -43,7 +61,7 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
  * Build the `/debug/accounts` route group.
  *
  * @param deps - Shared store and optional debug token.
- * @returns A Hono app exposing `GET /` and `PATCH /:id`.
+ * @returns A Hono app exposing `GET /`, `POST /`, and `PATCH /:id`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
@@ -52,6 +70,57 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const accounts = await deps.store.listAccounts();
       logEvent('debug.accounts.listed', { count: accounts.length });
       return c.json({ accounts: accounts.map(serializeAccount) }, 200);
+    })
+    .post('/', async (c) => {
+      const parsed = provisionBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
+      }
+      let created = 0;
+      let updated = 0;
+      const results: Array<{
+        name: string;
+        lightningAddress: string;
+        viewKey: string;
+        created: boolean;
+      }> = [];
+      for (const row of parsed.data.accounts) {
+        const found = await deps.store.getAccountByLightningAddress(row.lightningAddress);
+        if (found !== undefined) {
+          const next = { ...found, name: row.name };
+          await deps.store.updateAccount(next);
+          updated += 1;
+          results.push({
+            name: row.name,
+            lightningAddress: found.lightningAddress ?? row.lightningAddress,
+            viewKey: found.viewKey,
+            created: false,
+          });
+          continue;
+        }
+        const viewKey = randomHex(32);
+        await deps.store.createAccount({
+          id: crypto.randomUUID(),
+          linkingKey: null,
+          role: 'basis',
+          name: row.name,
+          lightningAddress: row.lightningAddress,
+          lightningAddressVerified: false,
+          forumLawsDismissed: false,
+          viewKey,
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+        created += 1;
+        results.push({
+          name: row.name,
+          lightningAddress: row.lightningAddress,
+          viewKey,
+          created: true,
+        });
+      }
+      logEvent('debug.accounts.provisioned', { created, updated });
+      return c.json({ accounts: results }, 200);
     })
     .patch('/:id', async (c) => {
       const parsed = roleBody.safeParse(await c.req.json().catch(() => null));
