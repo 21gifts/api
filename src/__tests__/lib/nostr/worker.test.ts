@@ -2200,21 +2200,9 @@ describe('runNostrWorkerTick', () => {
 
   it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
-    await auth.createAccount({
-      id: 'ghost',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ghost',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      viewKey: 'e'.repeat(64),
-      createdAt: 5,
-      rulesAgreedAt: null,
-    });
     const parent = {
       id: 'parent-damus',
-      accountId: 'ghost' as string | null,
+      accountId: null as string | null,
       name: 'aabbccdd…8899',
       text: 'note',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
