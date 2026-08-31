@@ -288,7 +288,6 @@ async function indexInboundForumReplies(
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
   for (const account of accounts) {
     const pubkey = await deps.auth.getNostrPublicKey(account.id);
-    /* v8 ignore next 3 -- missing and empty pubkey are the same skip */
     if (pubkey === undefined || pubkey === '') {
       continue;
     }
@@ -312,7 +311,6 @@ async function indexInboundForumReplies(
         continue;
       }
       const existing = await deps.messages.getByEventId(event.id);
-      /* v8 ignore next 3 -- duplicate event id */
       if (existing !== undefined) {
         continue;
       }
@@ -327,7 +325,6 @@ async function indexInboundForumReplies(
       const rawContent = event.content ?? '';
       const rawSig = event.sig ?? '';
       const text = normalizeForumText(rawContent, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
-      /* v8 ignore next 3 -- empty after normalize */
       if (text === null || text === '') {
         continue;
       }
@@ -337,7 +334,6 @@ async function indexInboundForumReplies(
       if (matched !== undefined) {
         accountId = matched.id;
         const accountName = matched.name?.trim() ?? '';
-        /* v8 ignore next -- named inbound authors use the account name */
         name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
       } else {
         name = truncatePubkeyDisplay(event.pubkey);
