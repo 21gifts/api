@@ -553,6 +553,34 @@ describe('debugRoutes', () => {
     expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
   });
 
+  it('POST skips the mint probe when NIP57_PROBE is 0', async () => {
+    const previous = process.env['NIP57_PROBE'];
+    process.env['NIP57_PROBE'] = '0';
+    try {
+      const store = new InMemoryAuthStore();
+      const app = new Hono().route(
+        '/debug/accounts',
+        debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      );
+      const res = await app.request('/debug/accounts', {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+      expect(stored?.name).toBe('Ada');
+    } finally {
+      if (previous === undefined) {
+        delete process.env['NIP57_PROBE'];
+      } else {
+        process.env['NIP57_PROBE'] = previous;
+      }
+    }
+  });
+
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
     const app = new Hono().route(

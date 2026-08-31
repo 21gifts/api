@@ -467,7 +467,6 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           /* v8 ignore next -- parent account has no stored pubkey */
           noteAuthorPubkey = (await deps.auth.getNostrPublicKey(parent.accountId)) ?? null;
         }
-        /* v8 ignore next 4 -- parent has no author pubkey; test skipped */
         if (noteAuthorPubkey === null) {
           logEvent('nostr.sign.failed', { messageId: row.id, reason: 'parent_pubkey' });
           continue;

@@ -2198,7 +2198,7 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('reply-wait'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it.skip('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
+  it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
     const parent = {
       id: 'parent-damus',
