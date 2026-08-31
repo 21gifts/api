@@ -2200,9 +2200,21 @@ describe('runNostrWorkerTick', () => {
 
   it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'ghost',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ghost',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'e'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
     const parent = {
       id: 'parent-damus',
-      accountId: null as string | null,
+      accountId: 'ghost' as string | null,
       name: 'aabbccdd…8899',
       text: 'note',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
@@ -3749,7 +3761,21 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'nameless',
+      linkingKey: null,
+      role: 'basis',
+      name: '   ',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'nameless', KEK);
     const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const namelessPubkey = (await auth.getNostrPublicKey('nameless')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -3778,17 +3804,28 @@ describe('runNostrWorkerTick', () => {
         created_at: 1_700_000_001,
         sig: '99'.repeat(32),
       },
+      {
+        id: '66'.repeat(32),
+        pubkey: namelessPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'nameless member',
+        created_at: 1_700_000_002,
+        sig: '55'.repeat(32),
+      },
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
     const replies = await messages.listReplies('m1');
     expect(replies.map((row) => row.text).sort()).toEqual([
       'damus reply',
       'member reply',
+      'nameless member',
       'root reply',
     ]);
     expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
     expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
+    expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
   });
 
   it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
