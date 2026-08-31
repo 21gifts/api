@@ -444,7 +444,7 @@ describe('requestZapInvoice', () => {
     expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
   });
 
-  it('returns unreachable with lnurlResponse null when the callback HTTP fails', async () => {
+  it('returns unreachable with callback JSON when the callback HTTP fails', async () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
@@ -463,6 +463,6 @@ describe('requestZapInvoice', () => {
       zapRequestJson: '{}',
       fetchImpl,
     });
-    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: {} });
   });
 });
