@@ -671,7 +671,9 @@ Environment:
 Operator provision of accounts by display name and Lightning Address, with no
 passkey and `rulesAgreedAt` null. Same `DEBUG_TOKEN` bearer as GET. **All**
 new addresses are NIP-57 mint-probed (`probeNip57Mint` with an ephemeral key)
-first; only then is any row persisted. One failing new-address probe is
+first; only then is any row persisted. Set `NIP57_PROBE=0` to skip that probe
+(e2e only; Playwright pins it). Unset in production so every new address is
+still probed. One failing new-address probe is
 **400** and no new address in that request is saved. Name-only updates
 (address already in the store) do **not** probe and run after every probe
 has passed.
