@@ -456,7 +456,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const parent = await deps.store.getById(parsed.data.inReplyTo);
-        // intern #8 is one-level only: replies to replies are not parents.
+        // One-level only: replies to replies are not parents.
         if (parent === undefined || parent.parentId !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
