@@ -227,6 +227,18 @@ describe('video', () => {
     expect(readStcoOffset(remuxed)).toBe(ftypBox().byteLength + 8 + moov.byteLength);
   });
 
+  it('remuxes when moov has a non-container sibling of stco', () => {
+    const ftyp = ftypBox();
+    const media = new Uint8Array([9, 8, 7, 6]);
+    const mdat = box('mdat', media);
+    const chunkOffset = ftyp.byteLength + 8;
+    const moov = box('moov', concat(box('mvhd', new Uint8Array(4)), stcoBox(chunkOffset)));
+    const input = concat(ftyp, mdat, moov);
+    const remuxed = faststartIsoBmff(input);
+    expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
+    expect(readStcoOffset(remuxed)).toBe(chunkOffset + moov.byteLength);
+  });
+
   it('remuxes when a top-level box uses a 64-bit size header', () => {
     const ftypPayload = new Uint8Array(16);
     ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 0);
@@ -353,6 +365,11 @@ describe('video', () => {
     ).toBeNull();
     expect(
       isoBmffDisplaySize(concat(ftypBox(), box('moov', new Uint8Array([1, 2, 3, 4])))),
+    ).toBeNull();
+    expect(
+      isoBmffDisplaySize(
+        concat(ftypBox(), box('moov', box('trak', box('tkhd', new Uint8Array(0))))),
+      ),
     ).toBeNull();
   });
 
