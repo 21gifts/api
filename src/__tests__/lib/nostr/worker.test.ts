@@ -18,6 +18,7 @@ import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { removeForumVideo } from '@/lib/video';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -800,6 +801,59 @@ describe('runNostrWorkerTick', () => {
         ],
       ]),
     );
+  });
+
+  it('omits dim and size on video imeta when the file is missing', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid-missing',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'gone',
+        createdAt: new Date('2026-08-28T00:02:33.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await removeForumVideo('m-vid-missing', 'video/mp4');
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) =>
+        call.event['kind'] === 1 && String(call.event['content']).includes('m-vid-missing/video'),
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        [
+          'imeta',
+          'url https://dev-api.21.gifts/messages/m-vid-missing/video.mp4',
+          'm video/mp4',
+          'image https://dev-api.21.gifts/messages/m-vid-missing/photo.jpg',
+        ],
+      ]),
+    );
+    const imeta = (note?.event['tags'] as string[][] | undefined)?.find(
+      (tag) => tag[0] === 'imeta' && tag.some((part) => part.includes('/video.mp4')),
+    );
+    expect(imeta?.some((part) => part.startsWith('dim '))).toBe(false);
+    expect(imeta?.some((part) => part.startsWith('size '))).toBe(false);
   });
 
   it('re-signs published photo posts that lack the photo URL', async () => {

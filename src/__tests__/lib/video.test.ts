@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { chmod, readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   decodeForumVideo,
@@ -35,6 +35,21 @@ function box(type: string, payload: Uint8Array): Uint8Array {
   out[6] = type.charCodeAt(2);
   out[7] = type.charCodeAt(3);
   out.set(payload, 8);
+  return out;
+}
+
+/** ISO-BMFF box with 32-bit size field `1` and 64-bit largesize (16-byte header). */
+function box64(type: string, payload: Uint8Array): Uint8Array {
+  const size = 16 + payload.byteLength;
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 1);
+  out[4] = type.charCodeAt(0);
+  out[5] = type.charCodeAt(1);
+  out[6] = type.charCodeAt(2);
+  out[7] = type.charCodeAt(3);
+  view.setBigUint64(8, BigInt(size));
+  out.set(payload, 16);
   return out;
 }
 
@@ -84,8 +99,20 @@ function topLevelTypes(bytes: Uint8Array): string[] {
   let offset = 0;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   while (offset + 8 <= bytes.byteLength) {
-    const size = view.getUint32(offset);
-    if (size < 8 || offset + size > bytes.byteLength) {
+    let size = view.getUint32(offset);
+    let headerSize = 8;
+    if (size === 1) {
+      if (offset + 16 > bytes.byteLength) {
+        break;
+      }
+      const large = view.getBigUint64(offset + 8);
+      if (large > BigInt(Number.MAX_SAFE_INTEGER)) {
+        break;
+      }
+      size = Number(large);
+      headerSize = 16;
+    }
+    if (size < headerSize || offset + size > bytes.byteLength) {
       break;
     }
     types.push(
@@ -198,6 +225,22 @@ describe('video', () => {
     expect(remuxed.byteLength).toBe(input.byteLength);
     expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
     expect(readStcoOffset(remuxed)).toBe(ftypBox().byteLength + 8 + moov.byteLength);
+  });
+
+  it('remuxes when a top-level box uses a 64-bit size header', () => {
+    const ftypPayload = new Uint8Array(16);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 0);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 8);
+    const ftyp = box64('ftyp', ftypPayload);
+    const media = new Uint8Array([1, 2, 3, 4]);
+    const mdat = box('mdat', media);
+    const chunkOffset = ftyp.byteLength + 8;
+    const moov = moovWithStco(chunkOffset);
+    const input = concat(ftyp, mdat, moov);
+    const remuxed = faststartIsoBmff(input);
+    expect(remuxed.byteLength).toBe(input.byteLength);
+    expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
+    expect(readStcoOffset(remuxed)).toBe(ftyp.byteLength + 8 + moov.byteLength);
   });
 
   it('is a no-op when moov already precedes mdat', () => {
@@ -325,6 +368,17 @@ describe('video', () => {
     expect(topLevelTypes(decoded?.bytes ?? new Uint8Array())).toEqual(['ftyp', 'moov', 'mdat']);
   });
 
+  it('copies WebM bytes without ISO-BMFF remux on decode', () => {
+    const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x77, 0x65, 0x62, 0x6d]);
+    const decoded = decodeForumVideo(webm);
+    expect(decoded).not.toBeNull();
+    if (decoded === null) {
+      return;
+    }
+    expect(decoded.contentType).toBe('video/webm');
+    expect(decoded.bytes).toEqual(webm);
+  });
+
   it('returns null display size for a truncated tkhd', () => {
     const short = concat(ftypBox(), box('moov', box('trak', box('tkhd', new Uint8Array(4)))));
     expect(isoBmffDisplaySize(short)).toBeNull();
@@ -370,5 +424,24 @@ describe('video', () => {
     await removeForumVideo('vid-1', 'video/mp4');
     await removeForumVideo('vid-heal', 'video/mp4');
     await removeForumVideo('missing', 'video/mp4');
+  });
+
+  it('returns remuxed bytes when heal cannot rewrite a read-only media dir', async () => {
+    const messageId = 'vid-heal-ro';
+    const mediaDir = resolveMediaDir();
+    await writeForumVideo(messageId, {
+      contentType: 'video/mp4',
+      bytes: mdatFirstFixture(),
+    });
+    const path = videoFilePath(mediaDir, messageId, 'video/mp4');
+    await chmod(mediaDir, 0o555);
+    try {
+      const remuxed = await readForumVideoBytes(path);
+      expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
+      expect(topLevelTypes(new Uint8Array(await readFile(path)))).toEqual(['ftyp', 'mdat', 'moov']);
+    } finally {
+      await chmod(mediaDir, 0o755);
+      await removeForumVideo(messageId, 'video/mp4');
+    }
   });
 });

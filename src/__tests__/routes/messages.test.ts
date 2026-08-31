@@ -2835,6 +2835,33 @@ describe('forum video', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(false);
   });
 
+  it('returns 404 when remuxed video bytes are empty after a non-empty stat', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    const videoMod = await import('@/lib/video');
+    const spy = vi.spyOn(videoMod, 'readForumVideoBytes').mockResolvedValue(new Uint8Array());
+    try {
+      warn.mockClear();
+      const emptyRemux = await app.request(`/messages/${created.id}/video.mp4`);
+      expect(emptyRemux.status).toBe(404);
+      expect(await emptyRemux.json()).toEqual({ error: 'Video not found' });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'messages.video.failed')).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('returns 404 when the video path is not a file', async () => {
     const auth = await namedStore('Ada');
     const store = new InMemoryMessageStore();
