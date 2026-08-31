@@ -2672,6 +2672,470 @@ describe('runNostrWorkerTick', () => {
     expect((await conversations.getMessageById('out-nack'))?.nostrPublishState).toBe('pending');
   });
 
+  it('parks a conversation EVENT when public relays are on but only space ACKs', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-park',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const space = 'wss://relay.nostr.space';
+    const publisher: RecordingPublisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return Promise.resolve(urls.map((url) => ({ url, ok: url === space })));
+    };
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+          conversations,
+        }),
+      );
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_060_000,
+          env,
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-park'))?.nostrPublishState).toBe('pending');
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.publish.ok' && e['parked'] === 1)).toBe(
+        true,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs nack and does not throw when conversation publish throws', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-throw',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher: RecordingPublisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (event['kind'] === 1059) {
+        throw new Error('relay down');
+      }
+      return Promise.resolve(urls.map((url) => ({ url, ok: true })));
+    };
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+          conversations,
+        }),
+      );
+      await expect(
+        runNostrWorkerTick(
+          deps({
+            messages,
+            auth,
+            kek: KEK,
+            publisher,
+            now: () => 1_700_000_060_000,
+            env,
+            conversations,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      expect((await conversations.getMessageById('out-throw'))?.nostrPublishState).toBe('pending');
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.publish.nack')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips unpublished conversation rows whose stored event is null', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-null-event',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: 'ab'.repeat(32),
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-null-event'))?.nostrPublishState).toBe(
+      'pending',
+    );
+    expect(publisher.calls.every((call) => call.event['kind'] !== 1059)).toBe(true);
+  });
+
+  it('skips conversation publish when no conversation store is injected', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await expect(
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips unsigned conversation rows with a null sender account', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    conversations.claimUnsigned = async () => [
+      {
+        id: 'out-null-sender',
+        conversationId: 'c-missing',
+        text: 'ping',
+        createdAt: new Date(0),
+        senderAccountId: null,
+        senderPubkey: null,
+        name: 'Ada',
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+      }),
+    );
+    expect(await conversations.getMessageById('out-null-sender')).toBeUndefined();
+  });
+
+  it('skips unsigned conversation rows when the thread is missing', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    await conversations.appendMessage({
+      id: 'out-nothread',
+      conversationId: 'c-missing',
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-nothread'))?.eventId).toBeNull();
+  });
+
+  it('skips conversation wrap when the sender secret is missing', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const innerSecret = auth.getNostrSecret.bind(auth);
+    auth.getNostrSecret = async (accountId) => {
+      if (accountId === 'acc') {
+        return undefined;
+      }
+      return innerSecret(accountId);
+    };
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-secret',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-secret'))?.eventId).toBeNull();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'nostr.dm.sign.failed' && e['reason'] === 'secret'),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs sign.failed when the wrapped conversation event id collides', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-collide',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    conversations.updateSignedEvent = async () => false;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-collide'))?.eventId).toBeNull();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'nostr.dm.sign.failed' && e['reason'] === 'event_id'),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs sign.failed when wrapping a conversation message throws', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-sign-throw',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    conversations.updateSignedEvent = async () => {
+      throw new Error('store boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        runNostrWorkerTick(
+          deps({
+            messages,
+            auth,
+            kek: KEK,
+            publisher: new RecordingPublisher(),
+            now: () => 1_700_000_000_000,
+            env: {},
+            conversations,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some(
+          (e) => e['event'] === 'nostr.dm.sign.failed' && e['messageId'] === 'out-sign-throw',
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('skips unsigned conversation rows when the counterpart has no pubkey', async () => {
     const { auth, messages } = await seed();
     const conversations = new InMemoryConversationStore([

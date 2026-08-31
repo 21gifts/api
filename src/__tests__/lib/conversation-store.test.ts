@@ -156,6 +156,32 @@ describe('InMemoryConversationStore', () => {
     expect(memberOnly.map((t) => t.id)).toEqual([own.id]);
   });
 
+  it('lets staff see a member_member thread when the platform account is a party', async () => {
+    const store = new InMemoryConversationStore();
+    const thread = await store.openMemberMember('plat', 'someone', NOW);
+    expect((await store.listVisible('acc', true, 'plat', 10)).map((t) => t.id)).toEqual([
+      thread.id,
+    ]);
+    expect(await store.listVisible('acc', true, 'other-plat', 10)).toEqual([]);
+    expect(await store.listVisible('acc', true, null, 10)).toEqual([]);
+    expect(await store.listVisible('acc', false, 'plat', 10)).toEqual([]);
+  });
+
+  it('orders same-timestamp messages by id and hydrates lastText from the newest id', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ id: 'm-z', conversationId: opened.id, text: 'later-id', createdAt: NOW }),
+    );
+    await store.appendMessage(
+      message({ id: 'm-a', conversationId: opened.id, text: 'earlier-id', createdAt: NOW }),
+    );
+    expect((await store.listMessages(opened.id, 10)).map((r) => r.id)).toEqual(['m-a', 'm-z']);
+    expect((await store.getById(opened.id))?.lastText).toBe('later-id');
+    const claimed = await store.claimUnsigned(1, 1_000, 60_000);
+    expect(claimed.map((r) => r.id)).toEqual(['m-a']);
+  });
+
   it('caps listVisible at limit and breaks ties by id descending', async () => {
     const highId = thread({
       id: 'z',

@@ -706,6 +706,50 @@ describe('POST /me/lightning-address', () => {
     ).toBe(true);
   });
 
+  it('returns 503 when ensureAccountNostrKey throws', async () => {
+    const store = await seededStore();
+    store.setNostrKeyIfAbsent = async () => {
+      throw new Error('keygen boom');
+    };
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+  });
+
+  it('returns 503 when getNostrPublicKey is missing after ensure', async () => {
+    const store = await seededStore();
+    store.getNostrPublicKey = async () => undefined;
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+  });
+
+  it('returns 503 when getNostrPublicKey is empty after ensure', async () => {
+    const store = await seededStore();
+    store.getNostrPublicKey = async () => '';
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+  });
+
   it('rejects when the NIP-57 probe cannot mint after metadata resolved', async () => {
     const store = await seededStore({ lightningAddress: 'keep@example.com' });
     const fetchImpl: FetchFn = async (input) => {

@@ -580,6 +580,29 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
   });
 
+  it('returns 404 when inReplyTo is not a uuid', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'reply', inReplyTo: 'not-a-uuid' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when inReplyTo is a missing uuid', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'reply',
+        inReplyTo: '00000000-0000-4000-8000-000000000001',
+      }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
   it('posts a photo-only message and serves the bytes', async () => {
     const app = mount(await namedStore('Ada'));
     const post = await app.request('/messages', {

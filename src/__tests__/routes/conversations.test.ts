@@ -192,7 +192,41 @@ describe('POST /conversations', () => {
       text: 'note',
       createdAt: new Date(now()),
       hasPhoto: false,
+      hasVideo: false,
       ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, new InMemoryConversationStore(), messages).request(
+      '/conversations',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ forumMessageId: NOTE_ID }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Cannot message yourself' });
+  });
+
+  it('returns 400 when the note author pubkey matches the session pubkey', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    await auth.setNostrKeyIfAbsent('acc', {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array(16),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'other',
+      name: 'Bob',
+      text: 'note',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'AA'.repeat(32),
     });
     const res = await mount(auth, new InMemoryConversationStore(), messages).request(
       '/conversations',
@@ -334,6 +368,11 @@ describe('POST /conversations', () => {
 });
 
 describe('GET /conversations/:id', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/conversations/${NOTE_ID}`);
+    expect(res.status).toBe(401);
+  });
+
   it('returns 404 for a non-uuid id', async () => {
     const res = await mount(await seeded()).request('/conversations/nope', { headers: AUTH });
     expect(res.status).toBe(404);
