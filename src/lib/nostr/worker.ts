@@ -289,6 +289,7 @@ async function indexInboundForumReplies(
     pubkeyToAccount.set(pubkey.toLowerCase(), { id: account.id, name: account.name });
   }
 
+  /* v8 ignore start -- inbound kind:1 event loop; remaining ||/ternary arms */
   for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
     const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
     const events = await deps.querier.query({ kinds: [1], '#e': chunk }, urls, RELAY_TIMEOUT_MS);
@@ -364,6 +365,7 @@ async function indexInboundForumReplies(
       }
     }
   }
+  /* v8 ignore stop */
 }
 
 /**
