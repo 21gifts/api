@@ -33,6 +33,7 @@ export default defineConfig({
       VAPID_PRIVATE_KEY: '',
       VAPID_SUBJECT: '',
       DEBUG_TOKEN: 'e2e-debug-token',
+      NIP57_PROBE: '0',
       WEBAUTHN_RP_ID: 'localhost',
       CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
     },

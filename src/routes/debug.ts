@@ -113,8 +113,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           existing: await deps.store.getAccountByLightningAddress(row.lightningAddress),
         });
       }
+      const skipNip57Probe = process.env['NIP57_PROBE'] === '0';
       for (const row of classified) {
         if (row.existing !== undefined) {
+          continue;
+        }
+        if (skipNip57Probe) {
           continue;
         }
         const ephemeral = generateSecretKey();
