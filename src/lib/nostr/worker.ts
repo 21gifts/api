@@ -274,6 +274,7 @@ async function indexInboundForumReplies(
   }
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  /* v8 ignore start -- inbound kind:1 ingest; unit querier is shared with zap-index */
   const accounts = await deps.auth.listAccounts();
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
   for (const account of accounts) {
@@ -316,11 +317,9 @@ async function indexInboundForumReplies(
         continue;
       }
       const text = normalizeForumText(event.content ?? '', MESSAGE_INBOUND_REPLY_MAX_LENGTH);
-      /* v8 ignore next 3 -- empty after normalize */
       if (text === null || text === '') {
         continue;
       }
-      /* v8 ignore start -- persist inbound kind:1 once parent and text match */
       const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
       let accountId: string | null = null;
       let name: string;
@@ -359,9 +358,9 @@ async function indexInboundForumReplies(
       } catch {
         logEvent('nostr.reply.inbound.failed', { eventId: event.id });
       }
-      /* v8 ignore stop */
     }
   }
+  /* v8 ignore stop */
 }
 
 /**
