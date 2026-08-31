@@ -400,7 +400,7 @@ function findTkhdDisplaySize(
     }
     return null;
   }
-  if (!ISO_BMFF_CONTAINERS.has(box.type) && box.type !== 'moov') {
+  if (!ISO_BMFF_CONTAINERS.has(box.type)) {
     return null;
   }
   const children = parseIsoBmffBoxes(bytes, payloadStart, payloadEnd);
