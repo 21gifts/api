@@ -307,7 +307,7 @@ export class InMemoryConversationStore implements ConversationStore {
     const stored = copyMessage(row);
     this.#messages.push(stored);
     const thread = this.#threads.find((item) => item.id === row.conversationId);
-    if (thread !== undefined) {
+    if (thread !== undefined && row.createdAt.getTime() >= thread.lastMessageAt.getTime()) {
       thread.lastMessageAt = new Date(row.createdAt.getTime());
     }
     return Promise.resolve(copyMessage(stored));
@@ -668,10 +668,10 @@ export class PostgresConversationStore implements ConversationStore {
       }
       throw error;
     }
-    await this.#sql.execute(`UPDATE conversation SET last_message_at = $2 WHERE id = $1`, [
-      row.conversationId,
-      row.createdAt,
-    ]);
+    await this.#sql.execute(
+      `UPDATE conversation SET last_message_at = GREATEST(last_message_at, $2) WHERE id = $1`,
+      [row.conversationId, row.createdAt],
+    );
     return copyMessage(row);
   }
 

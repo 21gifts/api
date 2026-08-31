@@ -487,14 +487,14 @@ export class InMemoryMessageStore implements MessageStore {
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
    *
    * @param limit - Max ids.
-   * @returns Event id list, oldest first.
+   * @returns Event id list, newest first.
    */
   listPublishedEventIds(limit: number): Promise<string[]> {
     const ids = this.#rows
       .filter((row) => row.eventId !== null && row.parentId === null)
       .sort((a, b) => {
-        const byTime = a.createdAt.getTime() - b.createdAt.getTime();
-        return byTime !== 0 ? byTime : a.id.localeCompare(b.id);
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
       })
       .slice(0, limit)
       .map((row) => row.eventId as string);
@@ -949,13 +949,13 @@ export class PostgresMessageStore implements MessageStore {
    * Non-null top-level event ids for inbound reply REQ.
    *
    * @param limit - Max ids (`$1`).
-   * @returns Event id strings, oldest first.
+   * @returns Event id strings, newest first.
    */
   async listPublishedEventIds(limit: number): Promise<string[]> {
     const rows = await this.#sql.query<{ event_id: string }>(
       `SELECT event_id FROM message
        WHERE event_id IS NOT NULL AND parent_id IS NULL
-       ORDER BY created_at ASC, id ASC
+       ORDER BY created_at DESC, id DESC
        LIMIT $1`,
       [limit],
     );

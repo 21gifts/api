@@ -194,7 +194,7 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listReplies('a')).map((r) => r.id)).toEqual(['ra', 'rb']);
   });
 
-  it('listPublishedEventIds returns top-level non-null event ids oldest-first', async () => {
+  it('listPublishedEventIds returns top-level non-null event ids newest-first', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
       ...EARLY,
@@ -215,7 +215,7 @@ describe('InMemoryMessageStore', () => {
       eventId: '33'.repeat(32),
       createdAt: new Date('2026-07-01T00:00:00.000Z'),
     });
-    expect(await store.listPublishedEventIds(10)).toEqual(['11'.repeat(32), '22'.repeat(32)]);
+    expect(await store.listPublishedEventIds(10)).toEqual(['22'.repeat(32), '11'.repeat(32)]);
   });
 
   it('claimUnsigned skips Damus-only rows and replies whose parent has no eventId', async () => {
