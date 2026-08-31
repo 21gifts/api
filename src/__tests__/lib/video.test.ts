@@ -348,6 +348,12 @@ describe('video', () => {
     expect(isoBmffDisplaySize(audioThenVideo)).toEqual({ width: 1280, height: 720 });
     expect(isoBmffDisplaySize(ftypBox())).toBeNull();
     expect(isoBmffDisplaySize(new Uint8Array([1, 2, 3]))).toBeNull();
+    expect(
+      isoBmffDisplaySize(concat(ftypBox(), box('moov', box('mvhd', new Uint8Array(4))))),
+    ).toBeNull();
+    expect(
+      isoBmffDisplaySize(concat(ftypBox(), box('moov', new Uint8Array([1, 2, 3, 4])))),
+    ).toBeNull();
   });
 
   it('faststarts mdat-first mp4 on decode', () => {

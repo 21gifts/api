@@ -1243,7 +1243,7 @@
 
 ## Function: decodeForumVideo
 
-- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` so `moov` precedes `mdat` before return.
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
 - **Inputs:** raw bytes.
 - **Returns / side effects:** `{ contentType, bytes }` or null.
 - **Used by:** `POST /messages` multipart.

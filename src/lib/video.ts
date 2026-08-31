@@ -437,7 +437,8 @@ export function isoBmffDisplaySize(bytes: Uint8Array): { width: number; height: 
 }
 
 /**
- * Validate raw video bytes (size + magic). Faststarts MP4/MOV before return.
+ * Validate raw video bytes (size + magic). MP4/MOV go through {@link faststartIsoBmff}
+ * (`moov` before `mdat` only when remux succeeds; abort cases stay unchanged).
  *
  * @param bytes - Uploaded bytes.
  * @returns A {@link ForumVideo}, or `null` when empty, oversize, or unrecognized.

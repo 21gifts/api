@@ -164,7 +164,7 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public media (image URL or video URL + MIME; poster URL when video).
+ * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @returns Unsigned event fields for `finalizeEvent`.
  */

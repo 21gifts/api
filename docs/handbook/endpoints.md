@@ -9,7 +9,7 @@
 
 ## Endpoint: GET /messages/:id/video.mp4
 
-- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. MP4/MOV is faststarted (`moov` before `mdat`) on write and healed on read so Safari/Damus/njump can play without seeking to EOF. `Access-Control-Allow-Origin: *`. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
+- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
 - **Errors:** 404 `{ error: 'Video not found' }`; 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
 - **Used by:** Damus/Primal/Safari kind:1 video URLs.
 - **Auth:** none.
