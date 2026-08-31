@@ -239,6 +239,46 @@ describe('video', () => {
     expect(faststartIsoBmff(input)).toBe(input);
   });
 
+  it('aborts remux on truncated or oversized chunk-offset tables', () => {
+    const ftyp = ftypBox();
+    const mdat = box('mdat', new Uint8Array([1]));
+    const truncatedStco = box('stco', new Uint8Array(4));
+    const truncatedInput = concat(ftyp, mdat, box('moov', truncatedStco));
+    expect(faststartIsoBmff(truncatedInput)).toBe(truncatedInput);
+    const overCountPayload = new Uint8Array(12);
+    const overView = new DataView(overCountPayload.buffer);
+    overView.setUint32(4, 2);
+    const overCountInput = concat(ftyp, mdat, box('moov', box('stco', overCountPayload)));
+    expect(faststartIsoBmff(overCountInput)).toBe(overCountInput);
+    const truncatedCo64 = box('co64', new Uint8Array(4));
+    const truncatedCo64Input = concat(ftyp, mdat, box('moov', truncatedCo64));
+    expect(faststartIsoBmff(truncatedCo64Input)).toBe(truncatedCo64Input);
+    const overCo64Payload = new Uint8Array(12);
+    const overCo64View = new DataView(overCo64Payload.buffer);
+    overCo64View.setUint32(4, 1);
+    const overCo64Input = concat(ftyp, mdat, box('moov', box('co64', overCo64Payload)));
+    expect(faststartIsoBmff(overCo64Input)).toBe(overCo64Input);
+  });
+
+  it('aborts remux on cmov, empty offset tables, bad children, or duplicate boxes', () => {
+    const ftyp = ftypBox();
+    const mdat = box('mdat', new Uint8Array([1]));
+    const cmovInput = concat(ftyp, mdat, box('moov', box('cmov', new Uint8Array(4))));
+    expect(faststartIsoBmff(cmovInput)).toBe(cmovInput);
+    const emptyMoovInput = concat(ftyp, mdat, box('moov', box('trak', new Uint8Array(0))));
+    expect(faststartIsoBmff(emptyMoovInput)).toBe(emptyMoovInput);
+    const badChildrenInput = concat(
+      ftyp,
+      mdat,
+      box('moov', box('trak', new Uint8Array([1, 2, 3]))),
+    );
+    expect(faststartIsoBmff(badChildrenInput)).toBe(badChildrenInput);
+    const twoMdat = concat(ftyp, mdat, box('mdat', new Uint8Array([2])), moovWithStco(8));
+    expect(faststartIsoBmff(twoMdat)).toBe(twoMdat);
+    const twoMoov = concat(ftyp, mdat, moovWithStco(8), moovWithStco(8));
+    expect(faststartIsoBmff(twoMoov)).toBe(twoMoov);
+  });
+
   it('handles 64-bit and size-0 box headers without remuxing junk', () => {
     const large = new Uint8Array(24);
     const view = new DataView(large.buffer);

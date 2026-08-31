@@ -3,8 +3,8 @@
  * and ISO-BMFF faststart so Safari/Damus can play without seeking to EOF.
  */
 
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 /** Maximum decoded video size (32 MiB). */
@@ -233,23 +233,36 @@ function parseIsoBmffBoxes(bytes: Uint8Array, start: number, end: number): IsoBm
 /**
  * Add `delta` to every `stco` / `co64` chunk offset under `box`.
  *
+ * Aborts (`false`) on truncated / oversized chunk-offset tables, a `cmov`
+ * box, unparseable container children, or an `stco` uint32 overflow.
+ *
  * @param bytes - Mutable buffer holding the box tree.
  * @param box - Current box.
  * @param delta - Byte shift applied to chunk offsets.
- * @returns `false` when an `stco` offset would overflow uint32.
+ * @param state - Counts visited `stco` / `co64` boxes.
+ * @returns `false` when the remux must be abandoned.
  */
-function patchChunkOffsets(bytes: Uint8Array, box: IsoBmffBox, delta: number): boolean {
+function patchChunkOffsets(
+  bytes: Uint8Array,
+  box: IsoBmffBox,
+  delta: number,
+  state: { offsetBoxes: number },
+): boolean {
   const payloadStart = box.start + box.headerSize;
   const payloadEnd = box.start + box.size;
+  if (box.type === 'cmov') {
+    return false;
+  }
   if (box.type === 'stco') {
     if (payloadStart + 8 > payloadEnd) {
-      return true;
+      return false;
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = view.getUint32(payloadStart + 4);
     if (payloadStart + 8 + count * 4 > payloadEnd) {
-      return true;
+      return false;
     }
+    state.offsetBoxes += 1;
     for (let i = 0; i < count; i += 1) {
       const at = payloadStart + 8 + i * 4;
       const next = view.getUint32(at) + delta;
@@ -262,13 +275,14 @@ function patchChunkOffsets(bytes: Uint8Array, box: IsoBmffBox, delta: number): b
   }
   if (box.type === 'co64') {
     if (payloadStart + 8 > payloadEnd) {
-      return true;
+      return false;
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = view.getUint32(payloadStart + 4);
     if (payloadStart + 8 + count * 8 > payloadEnd) {
-      return true;
+      return false;
     }
+    state.offsetBoxes += 1;
     const bigDelta = BigInt(delta);
     for (let i = 0; i < count; i += 1) {
       const at = payloadStart + 8 + i * 8;
@@ -281,10 +295,10 @@ function patchChunkOffsets(bytes: Uint8Array, box: IsoBmffBox, delta: number): b
   }
   const children = parseIsoBmffBoxes(bytes, payloadStart, payloadEnd);
   if (children === null) {
-    return true;
+    return false;
   }
   for (const child of children) {
-    if (!patchChunkOffsets(bytes, child, delta)) {
+    if (!patchChunkOffsets(bytes, child, delta, state)) {
       return false;
     }
   }
@@ -304,17 +318,21 @@ export function faststartIsoBmff(bytes: Uint8Array): Uint8Array {
   }
   let moov: IsoBmffBox | undefined;
   let mdat: IsoBmffBox | undefined;
+  let moovCount = 0;
+  let mdatCount = 0;
   let hasMoof = false;
   for (const box of top) {
     if (box.type === 'moov') {
+      moovCount += 1;
       moov = box;
     } else if (box.type === 'mdat') {
+      mdatCount += 1;
       mdat = box;
     } else if (box.type === 'moof') {
       hasMoof = true;
     }
   }
-  if (moov === undefined || mdat === undefined || hasMoof) {
+  if (moovCount !== 1 || mdatCount !== 1 || moov === undefined || mdat === undefined || hasMoof) {
     return bytes;
   }
   if (moov.start < mdat.start) {
@@ -328,7 +346,8 @@ export function faststartIsoBmff(bytes: Uint8Array): Uint8Array {
     size: moov.size,
     headerSize: moov.headerSize,
   };
-  if (!patchChunkOffsets(moovBytes, moovBox, delta)) {
+  const state = { offsetBoxes: 0 };
+  if (!patchChunkOffsets(moovBytes, moovBox, delta, state) || state.offsetBoxes === 0) {
     return bytes;
   }
   const out = new Uint8Array(bytes.byteLength);
@@ -459,6 +478,10 @@ export async function writeForumVideo(
 /**
  * Read video bytes, remux for faststart, and rewrite the file when boxes move.
  *
+ * Heal writes go to a sibling temp file then `rename` onto `path`, so a failed
+ * write leaves the original file intact. On write/rename error the remuxed
+ * buffer is still returned for this response.
+ *
  * @param path - Absolute path on disk.
  * @returns Bytes to serve (moov before mdat when remux succeeds).
  */
@@ -466,7 +489,17 @@ export async function readForumVideoBytes(path: string): Promise<Uint8Array> {
   const bytes = new Uint8Array(await readFile(path));
   const remuxed = faststartIsoBmff(bytes);
   if (remuxed !== bytes) {
-    await writeFile(path, remuxed);
+    const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+    try {
+      await writeFile(tempPath, remuxed);
+      await rename(tempPath, path);
+    } catch {
+      try {
+        await unlink(tempPath);
+      } catch {
+        /* best-effort cleanup of a partial temp */
+      }
+    }
   }
   return remuxed;
 }

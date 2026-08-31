@@ -2501,6 +2501,13 @@ describe('forum video', () => {
     expect(ranged.headers.get('Content-Range')?.startsWith('bytes 0-3/')).toBe(true);
     expect(ranged.headers.get('Content-Length')).toBe('4');
     expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(mp4().subarray(0, 4));
+    const mid = await app.request(`/messages/${created.id}/video.mp4`, {
+      headers: { Range: 'bytes=8-11' },
+    });
+    expect(mid.status).toBe(206);
+    expect(mid.headers.get('Content-Range')).toBe(`bytes 8-11/${fullBody.byteLength}`);
+    expect(mid.headers.get('Content-Length')).toBe('4');
+    expect(new Uint8Array(await mid.arrayBuffer())).toEqual(fullBody.slice(8, 12));
     expect((await app.request(`/messages/${created.id}/video.webm`)).status).toBe(404);
     expect((await app.request('/messages/not-a-uuid/video.mp4')).status).toBe(404);
   });

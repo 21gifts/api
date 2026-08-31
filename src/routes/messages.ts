@@ -260,7 +260,7 @@ async function serveForumVideo(
       headers['Content-Range'] = `bytes */${size}`;
       return new Response(null, { status: 416, headers });
     }
-    const body = range.type === 'full' ? remuxed : remuxed.subarray(range.start, range.end + 1);
+    const body = range.type === 'full' ? remuxed : remuxed.slice(range.start, range.end + 1);
     const status = range.type === 'full' ? 200 : 206;
     headers['Content-Length'] = String(body.byteLength);
     if (range.type === 'partial') {
