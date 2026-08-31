@@ -357,9 +357,11 @@ describe('video', () => {
     sizeZeroView.setUint32(lastBox, 0);
     const remuxedZeroMoov = faststartIsoBmff(sizeZeroMoov);
     expect(topLevelTypes(remuxedZeroMoov)).toEqual(['ftyp', 'moov', 'mdat']);
-    expect(new DataView(remuxedZeroMoov.buffer, remuxedZeroMoov.byteOffset).getUint32(ftypBox().byteLength)).not.toBe(
-      0,
-    );
+    expect(
+      new DataView(remuxedZeroMoov.buffer, remuxedZeroMoov.byteOffset).getUint32(
+        ftypBox().byteLength,
+      ),
+    ).not.toBe(0);
     const truncated = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70, 1]);
     expect(faststartIsoBmff(truncated)).toBe(truncated);
   });
