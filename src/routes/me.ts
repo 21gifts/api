@@ -90,7 +90,7 @@ const confirmBody = z.object({ nonce: z.string() });
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, clock, payer, and fetch.
+ * @param deps - Shared store, clock, payer, fetch, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, display-name, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
