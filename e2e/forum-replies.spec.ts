@@ -25,7 +25,8 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
-  const ada = accounts.find((row) => row.name.startsWith('E2eAda'));
+  const adaName = `E2eAda${stamp.slice(0, 8)}`;
+  const ada = accounts.find((row) => row.name === adaName);
   expect(ada).toBeDefined();
 
   const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
@@ -70,12 +71,13 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const sessName = `E2eSess${stamp.slice(0, 8)}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
       accounts: [
         {
-          name: `E2eSess${stamp.slice(0, 8)}`,
+          name: sessName,
           lightningAddress: `e2e-sess-${stamp}@walletofsatoshi.com`,
         },
       ],
@@ -85,7 +87,7 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
-  const row = accounts.find((item) => item.name.startsWith('E2eSess'));
+  const row = accounts.find((item) => item.name === sessName);
   expect(row).toBeDefined();
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);

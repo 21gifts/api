@@ -401,6 +401,15 @@ describe('debugRoutes', () => {
     const body = (await res.json()) as { token: string };
     expect(body.token.length).toBeGreaterThan(8);
     expect((await store.getSession(body.token))?.accountId).toBe('acc');
+    const defaultClock = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const again = await defaultClock.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(again.status).toBe(200);
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {

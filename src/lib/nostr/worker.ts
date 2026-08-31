@@ -753,7 +753,7 @@ async function recipientPubkeyFor(
   if (thread.kind === 'member_platform' && thread.accountA === senderAccountId) {
     const accounts = await auth.listAccounts();
     const platform = accounts.find((account) => account.isPlatform === true);
-    if (platform !== undefined) {
+    if (platform !== undefined && platform.id !== senderAccountId) {
       const pubkey = await auth.getNostrPublicKey(platform.id);
       if (pubkey !== undefined && pubkey !== '') {
         return pubkey.toLowerCase();

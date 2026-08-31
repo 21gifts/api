@@ -18,8 +18,9 @@ import type { ConversationStore } from '@/lib/conversation-store';
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
- * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id`
- * (set role, unlink Lightning Address, and/or the official platform flag).
+ * Exposes `GET /` (list), `POST /` (provision), `PATCH /:id`
+ * (set role, unlink Lightning Address, and/or the official platform flag),
+ * and `POST /:id/session` (mint a member bearer).
  */
 
 /** Collaborators the debug routes need. */
