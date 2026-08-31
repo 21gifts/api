@@ -278,6 +278,9 @@ async function indexInboundForumReplies(
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
   const sampleId = noteEventIds[0];
+  if (sampleId === undefined) {
+    return;
+  }
   void pickParentNoteEventId(
     [
       ['e', sampleId, '', 'reply'],
@@ -908,7 +911,11 @@ async function indexInboundDirectMessages(
       const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
       let ingested = false;
       for (const tag of pTags) {
-        const recipientPubkey = tag[1].toLowerCase();
+        const tagged = tag[1];
+        if (tagged === undefined) {
+          continue;
+        }
+        const recipientPubkey = tagged.toLowerCase();
         const recipient = byPubkey.get(recipientPubkey);
         if (recipient === undefined || ingested) {
           continue;
