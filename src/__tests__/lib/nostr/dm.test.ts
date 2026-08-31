@@ -30,10 +30,10 @@ describe('wrapNip17 / unwrapNip17', () => {
     const recipient = generateSecretKey();
     const wrap = wrapNip17(sender, getPublicKey(recipient), 'hello');
     expect(wrap.kind).toBe(1059);
-    expect(unwrapNip17(wrap, recipient)).toEqual({
-      senderPubkey: getPublicKey(sender),
-      text: 'hello',
-    });
+    const unwrapped = unwrapNip17(wrap, recipient);
+    expect(unwrapped?.senderPubkey).toBe(getPublicKey(sender));
+    expect(unwrapped?.text).toBe('hello');
+    expect(typeof unwrapped?.createdAt).toBe('number');
   });
 
   it('returns null when unwrap fails', () => {

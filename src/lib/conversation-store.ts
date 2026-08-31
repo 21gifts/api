@@ -51,6 +51,13 @@ export interface ConversationStore {
    */
   openMemberPlatform(memberId: string, platformId: string, now: Date): Promise<ConversationThread>;
 
+  /**
+   * Point every member→platform thread at `platformId` (operator retarget).
+   *
+   * @param platformId - Current official platform account.
+   */
+  retargetMemberPlatform(platformId: string): Promise<void>;
+
   /** Open or return the member↔Damus thread. */
   openMemberDamus(
     memberId: string,
@@ -363,6 +370,21 @@ export class InMemoryConversationStore implements ConversationStore {
     const row = this.#messages.find((item) => item.id === id);
     if (row !== undefined) {
       row.nostrPublishState = state;
+    }
+    return Promise.resolve();
+  }
+
+  /**
+   * Point every member→platform thread at `platformId`.
+   *
+   * @param platformId - Current official platform account.
+   * @returns Resolves when every matching thread is updated.
+   */
+  retargetMemberPlatform(platformId: string): Promise<void> {
+    for (const thread of this.#threads) {
+      if (thread.kind === 'member_platform') {
+        thread.accountB = platformId;
+      }
     }
     return Promise.resolve();
   }
@@ -741,6 +763,19 @@ export class PostgresConversationStore implements ConversationStore {
     await this.#sql.execute(
       `UPDATE conversation_message SET nostr_publish_state = $2 WHERE id = $1`,
       [id, state],
+    );
+  }
+
+  /**
+   * Point every member→platform thread at `platformId`.
+   *
+   * @param platformId - Current official platform account.
+   * @returns Resolves when the UPDATE has run.
+   */
+  async retargetMemberPlatform(platformId: string): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE conversation SET account_b = $1 WHERE kind = 'member_platform'`,
+      [platformId],
     );
   }
 }

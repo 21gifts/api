@@ -12,6 +12,7 @@ import { logEvent } from '@/lib/log';
 import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
+import type { ConversationStore } from '@/lib/conversation-store';
 
 /**
  * Operator debug surface for registered accounts.
@@ -28,6 +29,11 @@ export interface DebugRouteDeps {
   debugToken: string | undefined;
   /** Injected `fetch` for NIP-57 mint probe on new addresses. */
   fetchImpl: FetchFn;
+  /**
+   * Private-message store. When set, `PATCH platform: true` points every
+   * member→platform thread at the new official account.
+   */
+  conversationStore?: ConversationStore;
 }
 
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
@@ -250,6 +256,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           accountId: updated.id,
           platform: updated.isPlatform === true,
         });
+      }
+      if (parsed.data.platform === true && deps.conversationStore !== undefined) {
+        await deps.conversationStore.retargetMemberPlatform(updated.id);
       }
       return c.json(serializeDebugAccount(updated), 200);
     });

@@ -750,6 +750,16 @@ async function recipientPubkeyFor(
   if (thread.kind === 'member_damus') {
     return thread.counterpartPubkey;
   }
+  if (thread.kind === 'member_platform' && thread.accountA === senderAccountId) {
+    const accounts = await auth.listAccounts();
+    const platform = accounts.find((account) => account.isPlatform === true);
+    if (platform !== undefined) {
+      const pubkey = await auth.getNostrPublicKey(platform.id);
+      if (pubkey !== undefined && pubkey !== '') {
+        return pubkey.toLowerCase();
+      }
+    }
+  }
   /* v8 ignore next -- sender is always one of the two account ids */
   const otherId = thread.accountA === senderAccountId ? thread.accountB : thread.accountA;
   /* v8 ignore next 3 -- member_member/platform threads always have the other id */
@@ -930,7 +940,12 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const createdAt = new Date(signed.created_at * 1000);
+          const rumorCreatedAt = plain.createdAt;
+          const createdAt = new Date(
+            (event.kind === 1059 && typeof rumorCreatedAt === 'number'
+              ? rumorCreatedAt
+              : signed.created_at) * 1000,
+          );
           let thread: ConversationThread;
           if (sender !== undefined) {
             if (sender.isPlatform === true || recipient.isPlatform === true) {

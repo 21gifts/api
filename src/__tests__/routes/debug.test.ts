@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -315,6 +316,53 @@ describe('debugRoutes', () => {
     expect(body.isPlatform).toBe(true);
     expect((await store.getAccount('acc'))?.isPlatform).toBe(true);
     expect((await store.getAccount('old'))?.isPlatform).toBe(false);
+  });
+
+  it('PATCH platform:true retargets member_platform threads', async () => {
+    const store = new InMemoryAuthStore();
+    const conversations = new InMemoryConversationStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'old',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Old',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const opened = await conversations.openMemberPlatform('mem', 'old', new Date(0));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        conversationStore: conversations,
+      }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await conversations.getById(opened.id))?.accountB).toBe('acc');
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {
