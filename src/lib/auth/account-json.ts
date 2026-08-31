@@ -109,10 +109,7 @@ export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @returns Five public profile fields.
  */
-export function serializeViewProfile(
-  account: Account,
-  hasPasskey: boolean,
-): ViewProfileResponse {
+export function serializeViewProfile(account: Account, hasPasskey: boolean): ViewProfileResponse {
   return {
     name: account.name,
     lightningAddress: account.lightningAddress,
