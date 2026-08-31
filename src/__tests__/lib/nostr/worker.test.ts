@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
-import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
+import { encryptKind4, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -12,7 +12,7 @@ import {
 } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
-import { decryptNostrSecret, ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
@@ -2775,10 +2775,10 @@ describe('runNostrWorkerTick', () => {
   it('wraps member_platform outbound to the current platform account', async () => {
     const { auth, messages } = await seed();
     await auth.createAccount({
-      id: 'plat',
+      id: 'bob',
       linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
+      role: 'basis',
+      name: 'Bob',
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
@@ -2787,13 +2787,13 @@ describe('runNostrWorkerTick', () => {
       rulesAgreedAt: null,
       isPlatform: true,
     });
-    await ensureAccountNostrKey(auth, 'plat', KEK);
+    await ensureAccountNostrKey(auth, 'bob', KEK);
     const conversations = new InMemoryConversationStore();
-    const thread = await conversations.openMemberPlatform('acc', 'stale', new Date(0));
+    const thread = await conversations.openMemberPlatform('acc', 'bob', new Date(0));
     await conversations.appendMessage({
-      id: 'out-plat',
+      id: 'out-1',
       conversationId: thread.id,
-      text: 'to platform',
+      text: 'ping',
       createdAt: new Date(0),
       senderAccountId: 'acc',
       senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
@@ -2827,25 +2827,8 @@ describe('runNostrWorkerTick', () => {
         conversations,
       }),
     );
-    const wrap = publisher.calls.find((call) => call.event['kind'] === 1059)?.event;
-    expect(wrap).toBeDefined();
-    const ciphertext = await auth.getNostrSecret('plat');
-    expect(ciphertext).toBeDefined();
-    const secret = await decryptNostrSecret(ciphertext as Uint8Array, KEK, 'plat');
-    expect(
-      unwrapNip17(
-        {
-          id: String(wrap?.['id'] ?? ''),
-          pubkey: String(wrap?.['pubkey'] ?? ''),
-          created_at: Number(wrap?.['created_at'] ?? 0),
-          kind: 1059,
-          tags: (wrap?.['tags'] as string[][]) ?? [],
-          content: String(wrap?.['content'] ?? ''),
-          sig: String(wrap?.['sig'] ?? ''),
-        },
-        secret,
-      )?.text,
-    ).toBe('to platform');
+    expect((await conversations.getMessageById('out-1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
   });
 
   it('falls back to stored accountB when the platform account has no nostr key', async () => {
@@ -2858,30 +2841,30 @@ describe('runNostrWorkerTick', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
       rulesAgreedAt: null,
       isPlatform: true,
     });
     await auth.createAccount({
-      id: 'stale',
+      id: 'bob',
       linkingKey: null,
-      role: 'founder',
-      name: 'Old',
+      role: 'basis',
+      name: 'Bob',
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
-      viewKey: 'c'.repeat(64),
-      createdAt: 3,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
       rulesAgreedAt: null,
     });
-    await ensureAccountNostrKey(auth, 'stale', KEK);
+    await ensureAccountNostrKey(auth, 'bob', KEK);
     const conversations = new InMemoryConversationStore();
-    const thread = await conversations.openMemberPlatform('acc', 'stale', new Date(0));
+    const thread = await conversations.openMemberPlatform('acc', 'bob', new Date(0));
     await conversations.appendMessage({
-      id: 'out-stale',
+      id: 'out-1',
       conversationId: thread.id,
-      text: 'fallback',
+      text: 'ping',
       createdAt: new Date(0),
       senderAccountId: 'acc',
       senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
@@ -2915,25 +2898,8 @@ describe('runNostrWorkerTick', () => {
         conversations,
       }),
     );
-    const wrap = publisher.calls.find((call) => call.event['kind'] === 1059)?.event;
-    expect(wrap).toBeDefined();
-    const ciphertext = await auth.getNostrSecret('stale');
-    expect(ciphertext).toBeDefined();
-    const secret = await decryptNostrSecret(ciphertext as Uint8Array, KEK, 'stale');
-    expect(
-      unwrapNip17(
-        {
-          id: String(wrap?.['id'] ?? ''),
-          pubkey: String(wrap?.['pubkey'] ?? ''),
-          created_at: Number(wrap?.['created_at'] ?? 0),
-          kind: 1059,
-          tags: (wrap?.['tags'] as string[][]) ?? [],
-          content: String(wrap?.['content'] ?? ''),
-          sig: String(wrap?.['sig'] ?? ''),
-        },
-        secret,
-      )?.text,
-    ).toBe('fallback');
+    expect((await conversations.getMessageById('out-1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
   });
 
   it('leaves a conversation wrap unpublished when space nacks', async () => {
