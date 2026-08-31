@@ -208,7 +208,10 @@ describe('InMemoryConversationStore', () => {
     await store.appendMessage(
       message({ id: 'earlier', conversationId: opened.id, text: 'earlier', createdAt: NOW }),
     );
-    expect((await store.listMessages(opened.id, 10)).map((r) => r.id)).toEqual(['earlier', 'later']);
+    expect((await store.listMessages(opened.id, 10)).map((r) => r.id)).toEqual([
+      'earlier',
+      'later',
+    ]);
   });
 
   it('caps listVisible at limit and breaks ties by id descending', async () => {
