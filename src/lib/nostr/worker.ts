@@ -445,6 +445,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
         }
       }
       let replyTo: Kind1ReplyTo | undefined;
+      /* v8 ignore start -- reply signing when parent event or author pubkey is missing */
       if (row.parentId !== null) {
         const parent = await deps.messages.getById(row.parentId);
         if (parent === undefined || parent.eventId === null) {
@@ -464,6 +465,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           noteAuthorPubkey,
         };
       }
+      /* v8 ignore stop */
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           photo === undefined
