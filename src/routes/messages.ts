@@ -542,7 +542,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const author =
           row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
         const payable =
-          row.eventId !== null && author !== undefined && author.lightningAddress !== null;
+          row.parentId === null &&
+          row.eventId !== null &&
+          author !== undefined &&
+          author.lightningAddress !== null;
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
         return c.json(serializeMessage(row, payable, role), 200);
       } catch {
@@ -624,6 +627,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         return c.json({ error: 'Not found' }, 404);
+      }
+      if (row.parentId !== null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            authorAccountId: row.accountId ?? account.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
       }
       if (row.accountId === null) {
         await persistInvoiceAttempt(
