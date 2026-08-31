@@ -346,9 +346,7 @@ export function faststartIsoBmff(bytes: Uint8Array): Uint8Array {
   if (moov.headerSize === 8) {
     const declared = new DataView(bytes.buffer, bytes.byteOffset + moov.start, 4).getUint32(0);
     if (declared === 0) {
-      if (moov.size > 0xffffffff) {
-        return bytes;
-      }
+      // Files are capped at 32 MiB, so the rewritten size always fits uint32.
       moovBytes = new Uint8Array(moovBytes);
       new DataView(moovBytes.buffer, moovBytes.byteOffset).setUint32(0, moov.size);
     }
