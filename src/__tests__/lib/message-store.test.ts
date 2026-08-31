@@ -558,6 +558,19 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('clip');
   });
 
+  it('listSignedMissingHashtags skips replies', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'reply',
+      parentId: 'a',
+      eventId: '99'.repeat(32),
+      nostrEvent: { content: 'child without tags' },
+    });
+    await store.updatePublishState('reply', 'published', 'space');
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).not.toContain('reply');
+  });
+
   it('listSignedMissingHashtags finds unpaid notes missing Damus hashtags', async () => {
     const store = new InMemoryMessageStore();
     const jpeg: ForumPhoto = {

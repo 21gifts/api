@@ -666,6 +666,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
@@ -1159,7 +1160,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND event_id IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
          AND (
            nostr_event IS NULL

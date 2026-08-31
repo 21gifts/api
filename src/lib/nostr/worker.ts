@@ -207,7 +207,6 @@ function defaultVerifyKind1(event: NostrEventFrame): boolean {
 /* v8 ignore stop */
 
 /** Project a queried kind:1 frame to the JSON object stored on the reply row. */
-/* v8 ignore next 12 -- only used from inbound persist */
 function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
   return {
     id: event.id,
@@ -289,7 +288,6 @@ async function indexInboundForumReplies(
     pubkeyToAccount.set(pubkey.toLowerCase(), { id: account.id, name: account.name });
   }
 
-  /* v8 ignore start -- inbound kind:1 event loop; remaining ||/ternary arms */
   for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
     const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
     const events = await deps.querier.query({ kinds: [1], '#e': chunk }, urls, RELAY_TIMEOUT_MS);
@@ -365,7 +363,6 @@ async function indexInboundForumReplies(
       }
     }
   }
-  /* v8 ignore stop */
 }
 
 /**

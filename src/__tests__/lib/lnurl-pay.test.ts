@@ -466,6 +466,32 @@ describe('requestZapInvoice', () => {
     expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: {} });
   });
 
+  it('treats a non-2xx callback with a pr field as unreachable', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({ pr: 'lnbc1fail' }, 502);
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unreachable',
+      lnurlResponse: { pr: 'lnbc1fail' },
+    });
+  });
+
   it('returns unreachable with lnurlResponse null when the callback fetch throws', async () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {

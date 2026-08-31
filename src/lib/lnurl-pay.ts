@@ -130,6 +130,9 @@ export async function requestZapInvoice(args: {
   if (fetched === null) {
     return { ok: false, reason: 'unreachable', lnurlResponse: null };
   }
+  if (!fetched.ok) {
+    return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
+  }
   const parsed = lnurlpInvoiceSchema.safeParse(fetched.body);
   if (!parsed.success) {
     return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
@@ -173,13 +176,12 @@ async function fetchJson<T>(
 /**
  * GET `url` and parse JSON without schema enforcement.
  *
- * @returns Raw body plus object form when the body is a plain object; `null`
- * on network/HTTP/JSON failure (no body).
+ * @returns Raw body plus object form and HTTP ok; `null` on network/JSON failure.
  */
 async function fetchJsonRaw(
   fetchImpl: FetchFn,
   url: string,
-): Promise<{ body: unknown; asObject: Record<string, unknown> | null } | null> {
+): Promise<{ body: unknown; asObject: Record<string, unknown> | null; ok: boolean } | null> {
   let response: Response;
   try {
     response = await fetchImpl(url);
@@ -196,5 +198,5 @@ async function fetchJsonRaw(
     body !== null && typeof body === 'object' && !Array.isArray(body)
       ? (body as Record<string, unknown>)
       : null;
-  return { body, asObject };
+  return { body, asObject, ok: response.ok };
 }
