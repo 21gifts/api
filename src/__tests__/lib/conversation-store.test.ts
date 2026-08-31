@@ -152,6 +152,19 @@ describe('InMemoryConversationStore', () => {
     expect((await store.getById('c-mm'))?.accountB).toBe('b');
   });
 
+  it('retargetMemberPlatform does not point a platform member thread at itself', async () => {
+    const store = new InMemoryConversationStore([
+      thread({
+        id: 'c-self',
+        kind: 'member_platform',
+        accountA: 'plat',
+        accountB: 'old-plat',
+      }),
+    ]);
+    await store.retargetMemberPlatform('plat');
+    expect((await store.getById('c-self'))?.accountB).toBe('old-plat');
+  });
+
   it('appends messages, hydrates lastText, and copies so callers cannot mutate', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
@@ -536,6 +549,7 @@ describe('PostgresConversationStore', () => {
     await store.retargetMemberPlatform('plat');
     expect(sql.executes.at(-1)?.text).toMatch(/UPDATE conversation SET account_b = \$1/);
     expect(sql.executes.at(-1)?.text).toMatch(/kind = 'member_platform'/);
+    expect(sql.executes.at(-1)?.text).toMatch(/account_a <> \$1/);
     expect(sql.executes.at(-1)?.params).toEqual(['plat']);
   });
 

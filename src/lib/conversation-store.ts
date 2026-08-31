@@ -52,7 +52,8 @@ export interface ConversationStore {
   openMemberPlatform(memberId: string, platformId: string, now: Date): Promise<ConversationThread>;
 
   /**
-   * Point every member→platform thread at `platformId` (operator retarget).
+   * Point every member→platform thread at `platformId` (operator retarget),
+   * except rows whose member (`accountA`) is already that account.
    *
    * @param platformId - Current official platform account.
    */
@@ -382,7 +383,7 @@ export class InMemoryConversationStore implements ConversationStore {
    */
   retargetMemberPlatform(platformId: string): Promise<void> {
     for (const thread of this.#threads) {
-      if (thread.kind === 'member_platform') {
+      if (thread.kind === 'member_platform' && thread.accountA !== platformId) {
         thread.accountB = platformId;
       }
     }
@@ -774,7 +775,8 @@ export class PostgresConversationStore implements ConversationStore {
    */
   async retargetMemberPlatform(platformId: string): Promise<void> {
     await this.#sql.execute(
-      `UPDATE conversation SET account_b = $1 WHERE kind = 'member_platform'`,
+      `UPDATE conversation SET account_b = $1
+       WHERE kind = 'member_platform' AND account_a <> $1`,
       [platformId],
     );
   }
