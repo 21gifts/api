@@ -495,6 +495,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
+   * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
    *
    * @param limit - Max ids.
    * @returns Event id list, newest first.
