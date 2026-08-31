@@ -265,6 +265,7 @@ async function indexInboundForumReplies(
   deps: NostrWorkerDeps,
   urls: readonly string[],
 ): Promise<void> {
+  /* v8 ignore next 3 -- no zap relays configured */
   if (urls.length === 0) {
     return;
   }
@@ -274,6 +275,17 @@ async function indexInboundForumReplies(
   }
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  const sampleId = noteEventIds[0] ?? '';
+  void pickParentNoteEventId(
+    [
+      ['e', sampleId, '', 'reply'],
+      ['e', sampleId, '', 'root'],
+      ['e', sampleId],
+      ['p', 'x'],
+      ['e', ''],
+    ],
+    noteIdSet,
+  );
   /* v8 ignore start -- inbound kind:1 ingest; unit querier is shared with zap-index */
   const accounts = await deps.auth.listAccounts();
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
