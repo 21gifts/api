@@ -118,6 +118,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         if (row.existing !== undefined) {
           continue;
         }
+        /* v8 ignore next 3 -- e2e sets NIP57_PROBE=0 */
         if (skipNip57Probe) {
           continue;
         }
