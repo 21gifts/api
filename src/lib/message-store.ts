@@ -157,9 +157,11 @@ export interface MessageStore {
   /**
    * Published rows with a photo whose kind:1 content lacks the public photo URL.
    * Video rows (poster JPEG stored as `photo`) are excluded — their kind:1
-   * content has `/video.`, not `/photo.`. `sats = 0` only (zapped rows keep
-   * their event id). Pending rows are left for fan-out — resetting them renews
-   * the sign lease and they never EVENT. Oldest `createdAt` then `id` first.
+   * content has `/video.`, not `/photo.`. Top-level only (`parentId` null) so
+   * a reply with a photo is not re-signed (that would mint a new kind:1 id).
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
    */
@@ -167,6 +169,7 @@ export interface MessageStore {
 
   /**
    * Published rows with a video whose kind:1 content lacks the public video URL.
+   * Top-level only (`parentId` null) so a reply with a video is not re-signed.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
@@ -633,6 +636,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.hasPhoto &&
           row.hasVideo !== true &&
@@ -653,6 +657,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.hasVideo === true &&
           row.videoContentType !== null &&
@@ -1131,7 +1136,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
          AND (video_content_type IS NULL OR video_content_type = '')
          AND (
@@ -1149,7 +1154,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL
+       WHERE parent_id IS NULL AND event_id IS NOT NULL
          AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
          AND sats = 0
          AND nostr_publish_state = 'published'

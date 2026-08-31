@@ -568,6 +568,32 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('clip');
   });
 
+  it('listSignedMissingPhoto skips replies', async () => {
+    const store = new InMemoryMessageStore();
+    const jpeg: ForumPhoto = {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+    };
+    await store.create({ ...EARLY, id: 'reply', parentId: 'a', text: '' }, jpeg);
+    await store.updateSignedEvent('reply', '99'.repeat(32), { content: 'no url' });
+    await store.updatePublishState('reply', 'published', 'space');
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).not.toContain('reply');
+  });
+
+  it('listSignedMissingVideo skips replies', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create(
+      { ...EARLY, id: 'reply', parentId: 'a', text: 'clip', hasPhoto: false },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    await store.updateSignedEvent('reply', '99'.repeat(32), { content: 'no url' });
+    await store.updatePublishState('reply', 'published', 'space');
+    expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('reply');
+  });
+
   it('listSignedMissingHashtags skips replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -1242,6 +1268,7 @@ describe('PostgresMessageStore', () => {
     const missing = await store.listSignedMissingPhoto(4);
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
+    expect(listSql).toMatch(/parent_id IS NULL/);
     expect(listSql).toMatch(/photo IS NOT NULL/);
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
@@ -1272,6 +1299,7 @@ describe('PostgresMessageStore', () => {
     const missing = await store.listSignedMissingVideo(4);
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
+    expect(listSql).toMatch(/parent_id IS NULL/);
     expect(listSql).toMatch(
       /video_content_type IN \('video\/mp4', 'video\/webm', 'video\/quicktime'\)/,
     );
