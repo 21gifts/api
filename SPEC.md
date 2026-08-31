@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (PN channel `GET/POST /conversations` + member→platform `POST /contact` thread; `Account.isPlatform` unique; inbound NIP-17/kind:4 and outbound wraps; forum replies via `parent_id` + `replyCount` / `GET /messages/:id/replies`; public `GET /messages/:id`; NIP-57 mint probe `probeNip57Mint` / `buildZapProbeRequest` before linking Lightning Address; `lnurlResponse` on invoice attempts; inbound Damus/member kind:1 reply indexing each worker tick; pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID; Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision with mint probe; passkey `viewKey` claim; `GET /debug/invoices` + `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; NIP-92 `imeta` photo URLs; forum roles; private `POST /contact`; zap invoices; SQL boot requires `NOSTR_NSEC_KEK`; gift stats BTC + historical USD; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-31 (`POST /debug/accounts/:id/session`; platform-thread retarget; NIP-17 rumor `created_at`; GET replies `{ messages }`).
 
 ---
 
@@ -91,6 +91,7 @@ Public base URLs used in examples:
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                                   |
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                |
 | PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`) |
+| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                           |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                   |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)                            |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                              |
@@ -726,7 +727,9 @@ gate as `GET /debug/accounts`). Body is one or more of `role`,
 `role` must be one of `basis`, `verified`, `moderator`, or `founder`.
 `lightningAddress` may only be JSON `null` (unlink). `platform` is a
 boolean; `true` clears any other platform flag (at most one `isPlatform`
-account). Setting a new address is not supported here
+account) and, when a conversation store is wired, points every
+`member_platform` thread at this account except a thread whose member is
+already this account. Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. `GET /me` then returns `setup: "lightning-address"` when a
@@ -770,6 +773,14 @@ with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
+
+### `POST /debug/accounts/:id/session`
+
+Operator mint of a member bearer for the given account id. Authenticated
+with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
+Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
+the other debug account routes. Not a member login path; for e2e and
+operator debugging.
 
 ### `GET /debug/contacts`
 

@@ -46,6 +46,10 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   expect(publicRead.status()).toBe(200);
   expect(((await publicRead.json()) as { text: string }).text).toBe('e2e parent note');
 
+  await new Promise((resolve) => {
+    setTimeout(resolve, 11_000);
+  });
+
   const reply = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
     data: { text: 'e2e reply', inReplyTo: note.id },

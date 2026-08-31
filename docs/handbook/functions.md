@@ -824,7 +824,7 @@
 - **Purpose:** Mints a bearer session token for an already-authenticated account.
 - **Inputs:** `store`, `now`, `account`.
 - **Returns / side effects:** `{ token, account }`; writes the session row.
-- **Used by:** passkey finish paths.
+- **Used by:** passkey finish paths and `POST /debug/accounts/:id/session`.
 
 ## Function: normalizeWebAuthnRpId
 
