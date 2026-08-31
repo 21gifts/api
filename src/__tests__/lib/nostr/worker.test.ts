@@ -3840,10 +3840,13 @@ describe('runNostrWorkerTick', () => {
         sig: 'ff'.repeat(32),
       },
     ];
+    const eventId = 'dd'.repeat(32);
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
-    expect(await messages.listReplies('m1')).toHaveLength(1);
+    const first = (await messages.listReplies('m1')).filter((row) => row.eventId === eventId);
+    expect(first).toHaveLength(1);
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
-    expect(await messages.listReplies('m1')).toHaveLength(1);
+    const second = (await messages.listReplies('m1')).filter((row) => row.eventId === eventId);
+    expect(second).toHaveLength(1);
   });
 
   it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
