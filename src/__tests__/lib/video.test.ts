@@ -1,5 +1,6 @@
+import * as fs from 'node:fs/promises';
 import { chmod, readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   decodeForumVideo,
   detectVideoContentType,
@@ -464,6 +465,26 @@ describe('video', () => {
       expect(topLevelTypes(new Uint8Array(await readFile(path)))).toEqual(['ftyp', 'mdat', 'moov']);
     } finally {
       await chmod(mediaDir, 0o755);
+      await removeForumVideo(messageId, 'video/mp4');
+    }
+  });
+
+  it('unlinks the heal temp when rename fails after a successful write', async () => {
+    const messageId = 'vid-heal-rename';
+    await writeForumVideo(messageId, {
+      contentType: 'video/mp4',
+      bytes: mdatFirstFixture(),
+    });
+    const path = videoFilePath(resolveMediaDir(), messageId, 'video/mp4');
+    const renameSpy = vi
+      .spyOn(fs, 'rename')
+      .mockRejectedValue(Object.assign(new Error('rename failed'), { code: 'EIO' }));
+    try {
+      const remuxed = await readForumVideoBytes(path);
+      expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
+      expect(topLevelTypes(new Uint8Array(await readFile(path)))).toEqual(['ftyp', 'mdat', 'moov']);
+    } finally {
+      renameSpy.mockRestore();
       await removeForumVideo(messageId, 'video/mp4');
     }
   });

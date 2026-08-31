@@ -3,7 +3,7 @@
  * and ISO-BMFF faststart so Safari/Damus can play without seeking to EOF.
  */
 
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -472,8 +472,8 @@ export async function writeForumVideo(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const dir = resolveMediaDir(env);
-  await mkdir(dir, { recursive: true });
-  await writeFile(videoFilePath(dir, messageId, video.contentType), video.bytes);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(videoFilePath(dir, messageId, video.contentType), video.bytes);
 }
 
 /**
@@ -487,16 +487,16 @@ export async function writeForumVideo(
  * @returns Bytes to serve (moov before mdat when remux succeeds).
  */
 export async function readForumVideoBytes(path: string): Promise<Uint8Array> {
-  const bytes = new Uint8Array(await readFile(path));
+  const bytes = new Uint8Array(await fs.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
   if (remuxed !== bytes) {
     const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {
-      await writeFile(tempPath, remuxed);
-      await rename(tempPath, path);
+      await fs.writeFile(tempPath, remuxed);
+      await fs.rename(tempPath, path);
     } catch {
       try {
-        await unlink(tempPath);
+        await fs.unlink(tempPath);
       } catch {
         /* best-effort cleanup of a partial temp */
       }
@@ -518,7 +518,7 @@ export async function removeForumVideo(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   try {
-    await unlink(videoFilePath(resolveMediaDir(env), messageId, mime));
+    await fs.unlink(videoFilePath(resolveMediaDir(env), messageId, mime));
   } catch {
     /* missing file is fine */
   }
