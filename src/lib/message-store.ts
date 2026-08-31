@@ -699,7 +699,12 @@ export class InMemoryMessageStore implements MessageStore {
 
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
+    if (
+      row !== undefined &&
+      row.eventId === expectedEventId &&
+      row.sats === 0 &&
+      !this.#rows.some((child) => child.parentId === id)
+    ) {
       row.eventId = null;
       row.nostrEvent = null;
       row.claimedUntil = null;
@@ -1198,7 +1203,8 @@ export class PostgresMessageStore implements MessageStore {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
          nostr_publish_state = 'pending', nostr_publish_epoch = NULL
-       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0`,
+       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
   }

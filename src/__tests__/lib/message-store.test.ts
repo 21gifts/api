@@ -594,6 +594,27 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('reply');
   });
 
+  it('resetSignedEvent is a no-op when the note already has replies', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'parent' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      id: 'child',
+      parentId: 'a',
+      eventId: 'bb'.repeat(32),
+      text: 'child',
+    });
+    await store.resetSignedEvent('a', 'aa'.repeat(32));
+    const again = await store.getById('a');
+    expect(again?.eventId).toBe('aa'.repeat(32));
+    expect(again?.nostrPublishState).toBe('published');
+  });
+
   it('listSignedMissingHashtags skips parents that already have replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -1296,6 +1317,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/sats = 0/);
+    expect(sql.executes.at(-1)?.text).toMatch(/NOT EXISTS/);
   });
 
   it('listSignedMissingVideo hits Postgres', async () => {
