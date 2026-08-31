@@ -594,6 +594,26 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('reply');
   });
 
+  it('clearSignedEvent is a no-op when the note already has replies', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'parent' },
+      nostrPublishState: 'pending',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'child',
+      parentId: 'a',
+      eventId: 'bb'.repeat(32),
+      text: 'child',
+    });
+    await store.clearSignedEvent('a', 'aa'.repeat(32));
+    const again = await store.getById('a');
+    expect(again?.eventId).toBe('aa'.repeat(32));
+  });
+
   it('resetSignedEvent is a no-op when the note already has replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -1286,6 +1306,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes.at(-1)?.text).toMatch(/event_id = NULL/);
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
+    expect(sql.executes.at(-1)?.text).toMatch(/NOT EXISTS/);
   });
 
   it('listSignedMissingPhoto and resetSignedEvent hit Postgres', async () => {

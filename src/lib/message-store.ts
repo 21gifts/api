@@ -148,7 +148,8 @@ export interface MessageStore {
 
   /**
    * Drop the stored kind:1 so the worker can re-sign (still pending).
-   * No-op unless `eventId` still matches `expectedEventId`.
+   * No-op unless `eventId` still matches `expectedEventId` and the note has
+   * no child replies.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -629,7 +630,8 @@ export class InMemoryMessageStore implements MessageStore {
     if (
       row !== undefined &&
       row.nostrPublishState === 'pending' &&
-      row.eventId === expectedEventId
+      row.eventId === expectedEventId &&
+      !this.#rows.some((child) => child.parentId === id)
     ) {
       row.eventId = null;
       row.nostrEvent = null;
@@ -1141,7 +1143,8 @@ export class PostgresMessageStore implements MessageStore {
   async clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
-       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2`,
+       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
   }
