@@ -478,9 +478,9 @@ export async function writeForumVideo(
 /**
  * Read video bytes, remux for faststart, and rewrite the file when boxes move.
  *
- * Heal writes go to a sibling temp file then `rename` onto `path`, so a failed
- * write leaves the original file intact. On write/rename error the remuxed
- * buffer is still returned for this response.
+ * Heal writes go to a UUID sibling temp (same directory as `path`) then
+ * `rename` onto `path`, so a failed write leaves the original file intact.
+ * On write/rename error the remuxed buffer is still returned for this response.
  *
  * @param path - Absolute path on disk.
  * @returns Bytes to serve (moov before mdat when remux succeeds).
@@ -489,7 +489,7 @@ export async function readForumVideoBytes(path: string): Promise<Uint8Array> {
   const bytes = new Uint8Array(await readFile(path));
   const remuxed = faststartIsoBmff(bytes);
   if (remuxed !== bytes) {
-    const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+    const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {
       await writeFile(tempPath, remuxed);
       await rename(tempPath, path);

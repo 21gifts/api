@@ -1257,9 +1257,9 @@
 
 ## Function: faststartIsoBmff
 
-- **Purpose:** Rearrange ISO-BMFF so `moov` precedes `mdat` (qt-faststart), patching `stco`/`co64` chunk offsets. No-op for already-faststart, fragmented (`moof`), truncated, or non-ISO input.
+- **Purpose:** Rearrange ISO-BMFF so `moov` precedes `mdat` (qt-faststart), patching `stco`/`co64` chunk offsets. Aborts to the original `bytes` reference (no remux) when already faststart (`moov` already before `mdat`), truncated / invalid box tree, top-level `moof`, `cmov`, not exactly one top-level `moov` and one top-level `mdat`, missing `stco` / `co64` (no chunk-offset box visited), or `stco` overflow (uint32 chunk offset would exceed `0xffffffff`).
 - **Inputs:** container bytes.
-- **Returns / side effects:** Remuxed copy (same length) or the original reference when unchanged.
+- **Returns / side effects:** Same-length remuxed copy with `moov` before `mdat` and patched `stco`/`co64`, or the original `bytes` reference on abort.
 - **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
 
 ## Function: forumVideoExt
@@ -1320,9 +1320,9 @@
 
 ## Function: readForumVideoBytes
 
-- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, and rewrite the file when boxes move (heal-on-read for clips stored before faststart).
+- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, and rewrite the file when boxes move (heal-on-read for clips stored before faststart). Heal writes a sibling temp file in the same directory as `path`, then `rename`s that temp onto `path`.
 - **Inputs:** absolute path.
-- **Returns / side effects:** Bytes to serve; may overwrite the path.
+- **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the remuxed buffer is still returned.
 - **Used by:** `GET /messages/:id/video.*`.
 
 ## Function: removeForumVideo
