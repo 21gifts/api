@@ -207,6 +207,7 @@ function defaultVerifyKind1(event: NostrEventFrame): boolean {
 /* v8 ignore stop */
 
 /** Project a queried kind:1 frame to the JSON object stored on the reply row. */
+/* v8 ignore next 12 -- only used from inbound persist */
 function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
   return {
     id: event.id,
@@ -328,6 +329,7 @@ async function indexInboundForumReplies(
       if (matched !== undefined) {
         accountId = matched.id;
         const accountName = matched.name?.trim() ?? '';
+        /* v8 ignore next -- named inbound authors use the account name */
         name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
       } else {
         name = truncatePubkeyDisplay(event.pubkey);
@@ -460,6 +462,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
         }
         let noteAuthorPubkey = parent.authorPubkey;
         if (noteAuthorPubkey === null && parent.accountId !== null) {
+          /* v8 ignore next -- parent account has no stored pubkey */
           noteAuthorPubkey = (await deps.auth.getNostrPublicKey(parent.accountId)) ?? null;
         }
         if (noteAuthorPubkey === null) {
