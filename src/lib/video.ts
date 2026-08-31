@@ -4,6 +4,9 @@
  */
 
 import * as fs from 'node:fs/promises';
+
+/** Disk ops {@link readForumVideoBytes} uses (overridable in tests). */
+export type ForumVideoFs = Pick<typeof fs, 'readFile' | 'writeFile' | 'rename' | 'unlink'>;
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -484,19 +487,23 @@ export async function writeForumVideo(
  * On write/rename error the remuxed buffer is still returned for this response.
  *
  * @param path - Absolute path on disk.
+ * @param io - Disk ops; production omits this and uses `node:fs/promises`.
  * @returns Bytes to serve (moov before mdat when remux succeeds).
  */
-export async function readForumVideoBytes(path: string): Promise<Uint8Array> {
-  const bytes = new Uint8Array(await fs.readFile(path));
+export async function readForumVideoBytes(
+  path: string,
+  io: ForumVideoFs = fs,
+): Promise<Uint8Array> {
+  const bytes = new Uint8Array(await io.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
   if (remuxed !== bytes) {
     const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {
-      await fs.writeFile(tempPath, remuxed);
-      await fs.rename(tempPath, path);
+      await io.writeFile(tempPath, remuxed);
+      await io.rename(tempPath, path);
     } catch {
       try {
-        await fs.unlink(tempPath);
+        await io.unlink(tempPath);
       } catch {
         /* best-effort cleanup of a partial temp */
       }

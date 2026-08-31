@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { chmod, readFile } from 'node:fs/promises';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   decodeForumVideo,
   detectVideoContentType,
@@ -476,15 +476,19 @@ describe('video', () => {
       bytes: mdatFirstFixture(),
     });
     const path = videoFilePath(resolveMediaDir(), messageId, 'video/mp4');
-    const renameSpy = vi
-      .spyOn(fs, 'rename')
-      .mockRejectedValue(Object.assign(new Error('rename failed'), { code: 'EIO' }));
+    const io = {
+      readFile: fs.readFile,
+      writeFile: fs.writeFile,
+      unlink: fs.unlink,
+      rename: async () => {
+        throw Object.assign(new Error('rename failed'), { code: 'EIO' });
+      },
+    };
     try {
-      const remuxed = await readForumVideoBytes(path);
+      const remuxed = await readForumVideoBytes(path, io);
       expect(topLevelTypes(remuxed)).toEqual(['ftyp', 'moov', 'mdat']);
       expect(topLevelTypes(new Uint8Array(await readFile(path)))).toEqual(['ftyp', 'mdat', 'moov']);
     } finally {
-      renameSpy.mockRestore();
       await removeForumVideo(messageId, 'video/mp4');
     }
   });

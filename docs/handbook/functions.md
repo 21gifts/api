@@ -1321,7 +1321,7 @@
 ## Function: readForumVideoBytes
 
 - **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, and rewrite the file when boxes move (heal-on-read for clips stored before faststart). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`.
-- **Inputs:** absolute path.
+- **Inputs:** absolute path; optional `io` disk ops (tests).
 - **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the remuxed buffer is still returned.
 - **Used by:** `GET /messages/:id/video.*`.
 
