@@ -499,11 +499,10 @@ describe('requestZapInvoice', () => {
           nostrPubkey: 'aa'.repeat(32),
         });
       }
-      return {
-        json: async () => {
-          throw new Error('not json');
-        },
-      } as Response;
+      return new Response('not json', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     };
     const result = await requestZapInvoice({
       address: ADDRESS,

@@ -304,17 +304,14 @@ async function indexInboundForumReplies(
         continue;
       }
       const existing = await deps.messages.getByEventId(event.id);
-      /* v8 ignore next 3 -- duplicate event id */
       if (existing !== undefined) {
         continue;
       }
       const parentEventId = pickParentNoteEventId(event.tags, noteIdSet);
-      /* v8 ignore next 3 -- e-tag is not one of our notes */
       if (parentEventId === null || parentEventId === event.id) {
         continue;
       }
       const parentNote = await deps.messages.getByEventId(parentEventId);
-      /* v8 ignore next 3 -- parent missing or is itself a reply */
       if (parentNote === undefined || parentNote.parentId !== null) {
         continue;
       }

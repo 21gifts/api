@@ -3798,6 +3798,104 @@ describe('runNostrWorkerTick', () => {
       warn.mockRestore();
     }
   });
+
+  it('skips duplicate inbound kind:1 event ids', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(1);
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(1);
+  });
+
+  it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    const foreignId = '11'.repeat(32);
+    const selfId = '22'.repeat(32);
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, selfId];
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', foreignId]],
+        content: 'foreign parent',
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: selfId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', selfId]],
+        content: 'self parent',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('skips inbound kind:1 when parent is itself a reply', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    const replyEventId = 'dd'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const replies = await messages.listReplies('m1');
+    expect(replies).toHaveLength(1);
+    const replyRow = replies[0]!;
+    expect(replyRow.eventId).toBe(replyEventId);
+    expect(replyRow.parentId).toBe('m1');
+
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, replyEventId];
+    };
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: '22'.repeat(32),
+        kind: 1,
+        tags: [['e', replyEventId]],
+        content: 'nested',
+        sig: '33'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies(replyRow.id)).toHaveLength(0);
+    expect(await messages.listReplies('m1')).toHaveLength(1);
+  });
 });
 
 describe('startNostrWorker', () => {
