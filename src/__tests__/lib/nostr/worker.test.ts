@@ -5,7 +5,11 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { encryptKind4, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import {
+  MESSAGE_INBOUND_REPLY_MAX_LENGTH,
+  truncatePubkeyDisplay,
+  unsignedNostrDefaults,
+} from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
@@ -3893,6 +3897,13 @@ describe('runNostrWorkerTick', () => {
     expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
+    expect(replies.find((row) => row.text === 'nameless member')?.name).toBe(
+      truncatePubkeyDisplay(namelessPubkey),
+    );
+    expect(replies.find((row) => row.text === 'member reply')?.name).toBe('Ada');
+    const namelessEvent = replies.find((row) => row.text === 'nameless member')?.nostrEvent;
+    expect(namelessEvent?.['sig']).toBe('');
+    expect(namelessEvent?.['content']).toBe('nameless member');
   });
 
   it('skips inbound kind:1 when verifyKind1 returns false', async () => {
@@ -4033,6 +4044,84 @@ describe('runNostrWorkerTick', () => {
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
     expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('skips inbound kind:1 when normalised content is null', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1),
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('persists a schnorr-signed inbound kind:1 with the default verifier', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const secret = generateSecretKey();
+    const signed = finalizeEvent(
+      {
+        kind: 1,
+        content: 'signed reply',
+        created_at: 1_700_000_000,
+        tags: [['e', noteEventId, '', 'reply']],
+      },
+      secret,
+    );
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no sig',
+        created_at: 1_700_000_000,
+      },
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty sig',
+        created_at: 1_700_000_000,
+        sig: '',
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+      }),
+    );
+    expect((await messages.listReplies('m1')).map((row) => row.text)).toEqual(['signed reply']);
   });
 
   it('skips inbound frames that are not a signed kind:1 note', async () => {

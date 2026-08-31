@@ -163,6 +163,16 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listLatest(1)).map((r) => r.id)).toEqual(['z']);
   });
 
+  it('returns the existing row when create repeats a non-null eventId', async () => {
+    const store = new InMemoryMessageStore();
+    const eventId = 'ee'.repeat(32);
+    const first = await store.create({ ...EARLY, id: 'm1', eventId });
+    const second = await store.create({ ...EARLY, id: 'm2', eventId, text: 'other' });
+    expect(second.id).toBe(first.id);
+    expect(second.text).toBe(first.text);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
   it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({

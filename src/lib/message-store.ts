@@ -503,6 +503,8 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Append a copy of `row` and optional photo and video; return a copy.
+   * A non-null `eventId` that already exists returns the stored row (same
+   * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -511,6 +513,12 @@ export class InMemoryMessageStore implements MessageStore {
    *   `hasVideo` / `videoContentType` from `video`.
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+    if (row.eventId !== null) {
+      const existing = this.#rows.find((item) => item.eventId === row.eventId);
+      if (existing !== undefined) {
+        return copyRow(existing);
+      }
+    }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const stored = copyRow({

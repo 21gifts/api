@@ -184,7 +184,6 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
  * @param event - Frame from a relay.
  * @returns Whether nostr-tools accepts the signature.
  */
-/* v8 ignore start -- default verifier unused when tests inject verifyKind1 */
 function defaultVerifyKind1(event: NostrEventFrame): boolean {
   if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
     return false;
@@ -204,7 +203,6 @@ function defaultVerifyKind1(event: NostrEventFrame): boolean {
     return false;
   }
 }
-/* v8 ignore stop */
 
 /**
  * Project a queried kind:1 frame to the JSON object stored on the reply row.
