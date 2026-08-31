@@ -212,9 +212,9 @@
 
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only profile card (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). No auth. Not a session.
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
 - **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown.
-- **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`).
+- **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
 - **Auth:** none.
 
 ## Endpoint: GET /messages

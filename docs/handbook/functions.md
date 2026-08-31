@@ -562,7 +562,7 @@
 
 ## Function: viewRoutes
 
-- **Purpose:** Hono sub-app for public `GET /:viewKey`. Param not 64 lowercase hex or unknown key → 404 `{ error: 'Not found' }`. Hit → `serializeViewProfile`. No auth; not a session.
+- **Purpose:** Hono sub-app for public `GET /:viewKey`. Param not 64 lowercase hex or unknown key → 404 `{ error: 'Not found' }`. Hit → `store.accountHasPasskey(account.id)` then `serializeViewProfile(account, hasPasskey)`. No auth; not a session.
 - **Inputs:** `{ store: AuthStore }`.
 - **Returns / side effects:** Hono app mounted at `/view` so the public path is `GET /view/:viewKey`.
 - **Used by:** `createApp`.
@@ -814,8 +814,8 @@
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Four fields only (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`). Omits `id`, `linkingKey`, `role`, and `viewKey`.
-- **Inputs:** `Account`.
+- **Purpose:** Public profile card for the capability URL. Five fields (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). Omits `id`, `linkingKey`, `role`, and `viewKey`.
+- **Inputs:** `Account`, `hasPasskey: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.
 
