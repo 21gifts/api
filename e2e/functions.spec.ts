@@ -1044,7 +1044,21 @@ test('Function: removeForumVideo — POST /messages without bearer is 401', asyn
   });
   expect(res.status()).toBe(401);
 });
-test('Function: streamForumVideo — POST /messages without bearer is 401', async ({ request }) => {
+test('Function: faststartIsoBmff — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: isoBmffDisplaySize — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: readForumVideoBytes — POST /messages without bearer is 401', async ({
+  request,
+}) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },
   });

@@ -728,6 +728,80 @@ describe('runNostrWorkerTick', () => {
     );
   });
 
+  it('adds dim and size on video imeta when the file is parseable', async () => {
+    const { auth, messages } = await seed();
+    const box = (type: string, payload: Uint8Array): Uint8Array => {
+      const out = new Uint8Array(8 + payload.byteLength);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, out.byteLength);
+      out[4] = type.charCodeAt(0);
+      out[5] = type.charCodeAt(1);
+      out[6] = type.charCodeAt(2);
+      out[7] = type.charCodeAt(3);
+      out.set(payload, 8);
+      return out;
+    };
+    const ftypPayload = new Uint8Array(16);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 0);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 8);
+    const tkhdPayload = new Uint8Array(84);
+    const tkhdView = new DataView(tkhdPayload.buffer);
+    tkhdView.setUint32(76, 720 << 16);
+    tkhdView.setUint32(80, 1280 << 16);
+    const parseable = (() => {
+      const ftyp = box('ftyp', ftypPayload);
+      const moov = box('moov', box('trak', box('tkhd', tkhdPayload)));
+      const mdat = box('mdat', new Uint8Array([1, 2, 3, 4]));
+      const out = new Uint8Array(ftyp.byteLength + moov.byteLength + mdat.byteLength);
+      out.set(ftyp, 0);
+      out.set(moov, ftyp.byteLength);
+      out.set(mdat, ftyp.byteLength + moov.byteLength);
+      return out;
+    })();
+    await messages.create(
+      {
+        id: 'm-vid-dim',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'dims',
+        createdAt: new Date('2026-08-28T00:02:32.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: parseable },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) =>
+        call.event['kind'] === 1 && String(call.event['content']).includes('m-vid-dim/video'),
+    );
+    expect(note?.event['tags']).toEqual(
+      expect.arrayContaining([
+        [
+          'imeta',
+          'url https://dev-api.21.gifts/messages/m-vid-dim/video.mp4',
+          'm video/mp4',
+          'dim 720x1280',
+          `size ${parseable.byteLength}`,
+        ],
+      ]),
+    );
+  });
+
   it('re-signs published photo posts that lack the photo URL', async () => {
     const { auth, messages } = await seed();
     await messages.create(

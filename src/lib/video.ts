@@ -1,13 +1,11 @@
 /**
- * Forum video validation: magic-byte MIME, size cap, and filename extension
- * so Damus embeds the URL as a player instead of a website card.
+ * Forum video validation: magic-byte MIME, size cap, filename extension,
+ * and ISO-BMFF faststart so Safari/Damus can play without seeking to EOF.
  */
 
-import { createReadStream } from 'node:fs';
-import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Readable } from 'node:stream';
 
 /** Maximum decoded video size (32 MiB). */
 export const MESSAGE_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
@@ -32,12 +30,40 @@ const MP4_BRANDS = new Set([
   'm4v ',
 ]);
 
+/** Container boxes that may nest `stco` / `co64` or further containers. */
+const ISO_BMFF_CONTAINERS = new Set([
+  'moov',
+  'trak',
+  'mdia',
+  'minf',
+  'stbl',
+  'edts',
+  'udta',
+  'mvex',
+  'moof',
+  'traf',
+  'meta',
+  'dinf',
+]);
+
 /** Decoded forum video ready for disk. */
 export interface ForumVideo {
   /** MIME from magic bytes. */
   contentType: ForumVideoContentType;
   /** Raw container bytes. */
   bytes: Uint8Array;
+}
+
+/** One top-level or nested ISO-BMFF box. */
+interface IsoBmffBox {
+  /** Four-character type. */
+  type: string;
+  /** Absolute start offset in the buffer. */
+  start: number;
+  /** Total box size including header. */
+  size: number;
+  /** Header length (8 or 16). */
+  headerSize: number;
 }
 
 /**
@@ -143,7 +169,256 @@ export function detectVideoContentType(bytes: Uint8Array): ForumVideoContentType
 }
 
 /**
- * Validate raw video bytes (size + magic).
+ * Read a box header at `offset`.
+ *
+ * @param bytes - Buffer.
+ * @param offset - Start of the box.
+ * @param end - Exclusive end of the available region.
+ * @returns Parsed box, or `null` when truncated/invalid.
+ */
+function readIsoBmffBox(bytes: Uint8Array, offset: number, end: number): IsoBmffBox | null {
+  if (offset + 8 > end) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let size = view.getUint32(offset);
+  let headerSize = 8;
+  if (size === 1) {
+    if (offset + 16 > end) {
+      return null;
+    }
+    const large = view.getBigUint64(offset + 8);
+    if (large > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    size = Number(large);
+    headerSize = 16;
+  } else if (size === 0) {
+    size = end - offset;
+  }
+  if (size < headerSize || offset + size > end) {
+    return null;
+  }
+  const type = String.fromCharCode(
+    bytes[offset + 4] as number,
+    bytes[offset + 5] as number,
+    bytes[offset + 6] as number,
+    bytes[offset + 7] as number,
+  );
+  return { type, start: offset, size, headerSize };
+}
+
+/**
+ * Parse contiguous sibling boxes in `[start, end)`.
+ *
+ * @param bytes - Buffer.
+ * @param start - Inclusive start.
+ * @param end - Exclusive end.
+ * @returns Boxes in order, or `null` when truncated/invalid.
+ */
+function parseIsoBmffBoxes(bytes: Uint8Array, start: number, end: number): IsoBmffBox[] | null {
+  const boxes: IsoBmffBox[] = [];
+  let offset = start;
+  while (offset < end) {
+    const box = readIsoBmffBox(bytes, offset, end);
+    if (box === null) {
+      return null;
+    }
+    boxes.push(box);
+    offset = box.start + box.size;
+  }
+  return boxes;
+}
+
+/**
+ * Add `delta` to every `stco` / `co64` chunk offset under `box`.
+ *
+ * @param bytes - Mutable buffer holding the box tree.
+ * @param box - Current box.
+ * @param delta - Byte shift applied to chunk offsets.
+ * @returns `false` when an `stco` offset would overflow uint32.
+ */
+function patchChunkOffsets(bytes: Uint8Array, box: IsoBmffBox, delta: number): boolean {
+  const payloadStart = box.start + box.headerSize;
+  const payloadEnd = box.start + box.size;
+  if (box.type === 'stco') {
+    if (payloadStart + 8 > payloadEnd) {
+      return true;
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = view.getUint32(payloadStart + 4);
+    if (payloadStart + 8 + count * 4 > payloadEnd) {
+      return true;
+    }
+    for (let i = 0; i < count; i += 1) {
+      const at = payloadStart + 8 + i * 4;
+      const next = view.getUint32(at) + delta;
+      if (next > 0xffffffff) {
+        return false;
+      }
+      view.setUint32(at, next);
+    }
+    return true;
+  }
+  if (box.type === 'co64') {
+    if (payloadStart + 8 > payloadEnd) {
+      return true;
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = view.getUint32(payloadStart + 4);
+    if (payloadStart + 8 + count * 8 > payloadEnd) {
+      return true;
+    }
+    const bigDelta = BigInt(delta);
+    for (let i = 0; i < count; i += 1) {
+      const at = payloadStart + 8 + i * 8;
+      view.setBigUint64(at, view.getBigUint64(at) + bigDelta);
+    }
+    return true;
+  }
+  if (!ISO_BMFF_CONTAINERS.has(box.type)) {
+    return true;
+  }
+  const children = parseIsoBmffBoxes(bytes, payloadStart, payloadEnd);
+  if (children === null) {
+    return true;
+  }
+  for (const child of children) {
+    if (!patchChunkOffsets(bytes, child, delta)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Rearrange ISO-BMFF so moov precedes mdat (qt-faststart).
+ *
+ * @param bytes - Container bytes.
+ * @returns Remuxed copy, or the original `bytes` when unchanged / invalid.
+ */
+export function faststartIsoBmff(bytes: Uint8Array): Uint8Array {
+  const top = parseIsoBmffBoxes(bytes, 0, bytes.byteLength);
+  if (top === null) {
+    return bytes;
+  }
+  let moov: IsoBmffBox | undefined;
+  let mdat: IsoBmffBox | undefined;
+  let hasMoof = false;
+  for (const box of top) {
+    if (box.type === 'moov') {
+      moov = box;
+    } else if (box.type === 'mdat') {
+      mdat = box;
+    } else if (box.type === 'moof') {
+      hasMoof = true;
+    }
+  }
+  if (moov === undefined || mdat === undefined || hasMoof) {
+    return bytes;
+  }
+  if (moov.start < mdat.start) {
+    return bytes;
+  }
+  const delta = moov.size;
+  const moovBytes = bytes.slice(moov.start, moov.start + moov.size);
+  const moovBox: IsoBmffBox = {
+    type: 'moov',
+    start: 0,
+    size: moov.size,
+    headerSize: moov.headerSize,
+  };
+  if (!patchChunkOffsets(moovBytes, moovBox, delta)) {
+    return bytes;
+  }
+  const out = new Uint8Array(bytes.byteLength);
+  let writeAt = 0;
+  for (const box of top) {
+    if (box.type === 'moov') {
+      continue;
+    }
+    if (box.type === 'mdat') {
+      out.set(moovBytes, writeAt);
+      writeAt += moovBytes.byteLength;
+    }
+    out.set(bytes.subarray(box.start, box.start + box.size), writeAt);
+    writeAt += box.size;
+  }
+  return out;
+}
+
+/**
+ * Walk nested boxes for the first non-zero `tkhd` display size.
+ *
+ * @param bytes - Buffer.
+ * @param box - Current box.
+ * @returns Width/height integers, or `null`.
+ */
+function findTkhdDisplaySize(
+  bytes: Uint8Array,
+  box: IsoBmffBox,
+): { width: number; height: number } | null {
+  const payloadStart = box.start + box.headerSize;
+  const payloadEnd = box.start + box.size;
+  if (box.type === 'tkhd') {
+    if (payloadStart >= payloadEnd) {
+      return null;
+    }
+    const version = bytes[payloadStart] as number;
+    const widthAt = version === 1 ? payloadStart + 88 : payloadStart + 76;
+    const heightAt = widthAt + 4;
+    if (heightAt + 4 > payloadEnd) {
+      return null;
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const width = view.getUint32(widthAt) >>> 16;
+    const height = view.getUint32(heightAt) >>> 16;
+    if (width > 0 && height > 0) {
+      return { width, height };
+    }
+    return null;
+  }
+  if (!ISO_BMFF_CONTAINERS.has(box.type) && box.type !== 'moov') {
+    return null;
+  }
+  const children = parseIsoBmffBoxes(bytes, payloadStart, payloadEnd);
+  if (children === null) {
+    return null;
+  }
+  for (const child of children) {
+    const size = findTkhdDisplaySize(bytes, child);
+    if (size !== null) {
+      return size;
+    }
+  }
+  return null;
+}
+
+/**
+ * Display size from the first non-zero tkhd (16.16).
+ *
+ * @param bytes - ISO-BMFF bytes.
+ * @returns Integer width/height, or `null` when missing.
+ */
+export function isoBmffDisplaySize(bytes: Uint8Array): { width: number; height: number } | null {
+  const top = parseIsoBmffBoxes(bytes, 0, bytes.byteLength);
+  if (top === null) {
+    return null;
+  }
+  for (const box of top) {
+    if (box.type !== 'moov') {
+      continue;
+    }
+    const size = findTkhdDisplaySize(bytes, box);
+    if (size !== null) {
+      return size;
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate raw video bytes (size + magic). Faststarts MP4/MOV before return.
  *
  * @param bytes - Uploaded bytes.
  * @returns A {@link ForumVideo}, or `null` when empty, oversize, or unrecognized.
@@ -156,7 +431,12 @@ export function decodeForumVideo(bytes: Uint8Array): ForumVideo | null {
   if (contentType === null) {
     return null;
   }
-  return { contentType, bytes: bytes.slice() };
+  const copy = bytes.slice();
+  const remuxed =
+    contentType === 'video/mp4' || contentType === 'video/quicktime'
+      ? faststartIsoBmff(copy)
+      : copy;
+  return { contentType, bytes: remuxed };
 }
 
 /**
@@ -174,6 +454,21 @@ export async function writeForumVideo(
   const dir = resolveMediaDir(env);
   await mkdir(dir, { recursive: true });
   await writeFile(videoFilePath(dir, messageId, video.contentType), video.bytes);
+}
+
+/**
+ * Read video bytes, remux for faststart, and rewrite the file when boxes move.
+ *
+ * @param path - Absolute path on disk.
+ * @returns Bytes to serve (moov before mdat when remux succeeds).
+ */
+export async function readForumVideoBytes(path: string): Promise<Uint8Array> {
+  const bytes = new Uint8Array(await readFile(path));
+  const remuxed = faststartIsoBmff(bytes);
+  if (remuxed !== bytes) {
+    await writeFile(path, remuxed);
+  }
+  return remuxed;
 }
 
 /**
@@ -252,21 +547,4 @@ export function parseBytesRange(header: string | undefined, size: number): Parse
     return { type: 'full' };
   }
   return { type: 'partial', start, end: Math.min(end, size - 1) };
-}
-
-/**
- * Stream a byte-inclusive file slice without loading the file into RAM.
- *
- * @param path - Absolute path.
- * @param start - Inclusive start offset.
- * @param end - Inclusive end offset.
- * @returns A web `ReadableStream` suitable as a `Response` body.
- */
-export function streamForumVideo(
-  path: string,
-  start: number,
-  end: number,
-): ReadableStream<Uint8Array> {
-  const nodeStream = createReadStream(path, { start, end });
-  return Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
@@ -2412,6 +2412,59 @@ describe('forum video', () => {
     return bytes;
   };
 
+  const box = (type: string, payload: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(8 + payload.byteLength);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, out.byteLength);
+    out[4] = type.charCodeAt(0);
+    out[5] = type.charCodeAt(1);
+    out[6] = type.charCodeAt(2);
+    out[7] = type.charCodeAt(3);
+    out.set(payload, 8);
+    return out;
+  };
+
+  const mdatFirstMp4 = (): Uint8Array => {
+    const ftypPayload = new Uint8Array(16);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 0);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 8);
+    const ftyp = box('ftyp', ftypPayload);
+    const mdat = box('mdat', new Uint8Array([1, 2, 3, 4]));
+    const stcoPayload = new Uint8Array(12);
+    const stcoView = new DataView(stcoPayload.buffer);
+    stcoView.setUint32(4, 1);
+    stcoView.setUint32(8, ftyp.byteLength + 8);
+    const stco = box('stco', stcoPayload);
+    const moov = box('moov', box('trak', box('mdia', box('minf', box('stbl', stco)))));
+    const out = new Uint8Array(ftyp.byteLength + mdat.byteLength + moov.byteLength);
+    out.set(ftyp, 0);
+    out.set(mdat, ftyp.byteLength);
+    out.set(moov, ftyp.byteLength + mdat.byteLength);
+    return out;
+  };
+
+  const topLevelTypes = (bytes: Uint8Array): string[] => {
+    const types: string[] = [];
+    let offset = 0;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    while (offset + 8 <= bytes.byteLength) {
+      const size = view.getUint32(offset);
+      if (size < 8 || offset + size > bytes.byteLength) {
+        break;
+      }
+      types.push(
+        String.fromCharCode(
+          bytes[offset + 4] as number,
+          bytes[offset + 5] as number,
+          bytes[offset + 6] as number,
+          bytes[offset + 7] as number,
+        ),
+      );
+      offset += size;
+    }
+    return types;
+  };
+
   it('accepts multipart video and serves Range', async () => {
     const auth = await namedStore('Ada');
     const store = new InMemoryMessageStore();
@@ -2439,14 +2492,49 @@ describe('forum video', () => {
     expect(full.status).toBe(200);
     expect(full.headers.get('Accept-Ranges')).toBe('bytes');
     expect(full.headers.get('Content-Type')).toBe('video/mp4');
+    const fullBody = new Uint8Array(await full.arrayBuffer());
+    expect(full.headers.get('Content-Length')).toBe(String(fullBody.byteLength));
     const ranged = await app.request(`/messages/${created.id}/video.mp4`, {
       headers: { Range: 'bytes=0-3' },
     });
     expect(ranged.status).toBe(206);
     expect(ranged.headers.get('Content-Range')?.startsWith('bytes 0-3/')).toBe(true);
+    expect(ranged.headers.get('Content-Length')).toBe('4');
     expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(mp4().subarray(0, 4));
     expect((await app.request(`/messages/${created.id}/video.webm`)).status).toBe(404);
     expect((await app.request('/messages/not-a-uuid/video.mp4')).status).toBe(404);
+  });
+
+  it('heals mdat-first mp4 on GET and rewrites the file', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    const path = videoFilePath(resolveMediaDir(), created.id, 'video/mp4');
+    const mdatFirst = mdatFirstMp4();
+    await writeFile(path, mdatFirst);
+    expect(topLevelTypes(mdatFirst)).toEqual(['ftyp', 'mdat', 'moov']);
+    const full = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('Content-Type')).toBe('video/mp4');
+    const body = new Uint8Array(await full.arrayBuffer());
+    expect(full.headers.get('Content-Length')).toBe(String(body.byteLength));
+    expect(topLevelTypes(body)).toEqual(['ftyp', 'moov', 'mdat']);
+    expect(topLevelTypes(new Uint8Array(await readFile(path)))).toEqual(['ftyp', 'moov', 'mdat']);
+    const again = await app.request(`/messages/${created.id}/video.mp4`);
+    expect(again.status).toBe(200);
+    expect(again.headers.get('Content-Length')).toBe(
+      String((await again.arrayBuffer()).byteLength),
+    );
   });
 
   it('rejects an oversized poster part before decoding', async () => {

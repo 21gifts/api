@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { ConversationThread } from '@/lib/conversation';
@@ -23,7 +24,7 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
-import { forumVideoUrl } from '@/lib/video';
+import { forumVideoUrl, isoBmffDisplaySize, resolveMediaDir, videoFilePath } from '@/lib/video';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -447,6 +448,18 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
               ? { posterUrl: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType) }
               : {}),
           };
+          try {
+            const fileBytes = new Uint8Array(
+              await readFile(videoFilePath(resolveMediaDir(deps.env), row.id, videoMime)),
+            );
+            const dim = isoBmffDisplaySize(fileBytes);
+            if (dim !== null) {
+              photo.dim = `${dim.width}x${dim.height}`;
+              photo.size = fileBytes.byteLength;
+            }
+          } catch {
+            /* missing or unreadable file — omit dim/size */
+          }
         } else if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
