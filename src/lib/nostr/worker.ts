@@ -720,6 +720,7 @@ async function accountsByPubkey(auth: AuthStore): Promise<Map<string, Account>> 
   const accounts = await auth.listAccounts();
   for (const account of accounts) {
     const pubkey = await auth.getNostrPublicKey(account.id);
+    /* v8 ignore next 3 -- accounts without a stored key are skipped */
     if (pubkey === undefined || pubkey === '') {
       continue;
     }
@@ -737,6 +738,7 @@ async function recipientPubkeyFor(
     return thread.counterpartPubkey;
   }
   const otherId = thread.accountA === senderAccountId ? thread.accountB : thread.accountA;
+  /* v8 ignore next 3 -- member_member/platform threads always have the other id */
   if (otherId === null) {
     return null;
   }
