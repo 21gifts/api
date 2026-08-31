@@ -4108,6 +4108,14 @@ describe('runNostrWorkerTick', () => {
         created_at: 1_700_000_000,
         sig: '',
       },
+      {
+        id: '11'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
     ];
     await runNostrWorkerTick(
       deps({

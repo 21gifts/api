@@ -3,7 +3,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
@@ -263,7 +263,6 @@ describe('indexOpenZapReceipts', () => {
   });
 
   it('chunks 21 distinct event ids into two queries of 20 then 1', async () => {
-    const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
     await auth.createAccount({
@@ -279,9 +278,10 @@ describe('indexOpenZapReceipts', () => {
       rulesAgreedAt: null,
     });
     const firstId = `${'01'.repeat(31)}00`;
+    const rows: MessageRow[] = [];
     for (let i = 0; i < 21; i += 1) {
       const eventId = `${'01'.repeat(31)}${i.toString(16).padStart(2, '0')}`;
-      await store.create({
+      rows.push({
         id: `m-chunk-${i}`,
         accountId: 'acc-chunk',
         name: 'Ada',
@@ -292,8 +292,8 @@ describe('indexOpenZapReceipts', () => {
         eventId,
       });
     }
-    // Duplicate eventId covers the seen.has branch without a third query.
-    await store.create({
+    // Seed a duplicate eventId (create() is unique) so seen.has is covered.
+    rows.push({
       id: 'm-chunk-dup',
       accountId: 'acc-chunk',
       name: 'Ada',
@@ -303,6 +303,7 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
+    const store = new InMemoryMessageStore(rows);
     await ingest({
       store,
       auth,
