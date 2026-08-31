@@ -94,6 +94,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(mapped?.forumLawsDismissed).toBe(false);
     expect(mapped?.rulesAgreedAt).toBeNull();
+    expect(mapped?.isPlatform).toBe(false);
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -147,12 +148,15 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[0]?.text).toMatch(/view_key/);
     expect(sql.executes[0]?.text).toMatch(/rules_agreed_at/);
+    expect(sql.executes[0]?.text).toMatch(/is_platform/);
     expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
     expect(sql.executes[0]?.params[9]).toBeNull();
+    expect(sql.executes[0]?.params[10]).toBe(false);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
+    expect(sql.executes[1]?.text).toMatch(/is_platform = \$11/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -165,7 +169,43 @@ describe('PostgresAuthStore', () => {
       1,
       VIEW_KEY,
       9_000,
+      false,
     ]);
+  });
+
+  it('clears other platform flags before inserting or updating is_platform true', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    await store.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    expect(sql.executes[0]?.text).toMatch(/is_platform = false WHERE is_platform/);
+    expect(sql.executes[1]?.params[10]).toBe(true);
+    await store.updateAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    expect(sql.executes[2]?.text).toMatch(/is_platform = false WHERE is_platform/);
+    expect(sql.executes[3]?.params[10]).toBe(true);
   });
 
   it('looks up an account by view_key', async () => {

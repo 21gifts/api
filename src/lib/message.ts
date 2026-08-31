@@ -9,12 +9,19 @@ import type { ForumVideoContentType } from '@/lib/video';
  * re-served on every list response. Empty trimmed text is allowed when a
  * photo is attached or `hasVideo`. Newlines (`\n`, `\r`) are allowed; other C0 controls
  * and DEL are not. Photos are JPEG/PNG/WebP only, capped at 1 MiB.
+ *
+ * Top-level notes have `parentId: null`. Replies are extra rows with
+ * `parentId` set (NIP-10). Damus-only inbound authors may have
+ * `accountId: null`.
  */
 
-/** Maximum stored length after trim. */
+/** Maximum stored length after trim (member posts and member replies). */
 export const MESSAGE_MAX_LENGTH = 500;
 
-/** Cap for `listLatest` / GET `/messages`. */
+/** Hard cap for inbound Damus reply content (may exceed member 500). */
+export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
+
+/** Cap for `listLatest` / GET `/messages` (top-level notes only). */
 export const MESSAGE_LIST_LIMIT = 200;
 
 /** Worker publish state for a forum row. */
@@ -41,9 +48,12 @@ export interface ForumPhoto {
 export interface MessageRow {
   /** Opaque unique message id. */
   id: string;
-  /** Author account id. */
-  accountId: string;
-  /** Display name snapshotted at post time. */
+  /**
+   * Author account id, or `null` for Damus-only inbound replies (no 21gifts
+   * account). Never auto-created from an inbound npub.
+   */
+  accountId: string | null;
+  /** Display name snapshotted at post time (or Damus kind:0 / truncated npub). */
   name: string;
   /** Message body (already normalised; may be empty when `hasPhoto` or `hasVideo`). */
   text: string;
@@ -55,6 +65,13 @@ export interface MessageRow {
   hasVideo?: boolean;
   /** Stored video MIME, or `null`. */
   videoContentType?: ForumVideoContentType | null;
+  /** Parent note id for NIP-10 replies; `null` for top-level notes. */
+  parentId: string | null;
+  /**
+   * Author Nostr pubkey (hex) when known from a signed event; else null.
+   * Set for Damus inbound and optionally for published member notes.
+   */
+  authorPubkey: string | null;
   /** Signed kind:1 id, or `null` until the worker signs. */
   eventId: string | null;
   /** Fan-out state. */
@@ -73,10 +90,17 @@ export interface MessageRow {
   nostrAttempts: number;
 }
 
-/** Public JSON shape of a forum message (no `accountId`, no event id, no photo bytes). */
+/**
+ * Public JSON shape of a forum message (no event id, no photo bytes).
+ * Public GET omits `accountId`; signed-in list/replies/create may include it.
+ */
 export interface PublicMessage {
   /** Opaque unique message id. */
   id: string;
+  /**
+   * 21gifts author id; omitted for Damus-only rows and on public GET.
+   */
+  accountId?: string;
   /** Author display name at post time. */
   name: string;
   /** Message body (may be empty when `hasPhoto` or `hasVideo` is true). */
@@ -94,10 +118,16 @@ export interface PublicMessage {
   /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
   videoContentType: ForumVideoContentType | null;
   /**
-   * Author's live `account.role` (not a snapshot). Always present; `"basis"`
-   * when the author account is missing.
+   * Author's live `account.role` (not a snapshot). Present for 21gifts
+   * authors (`"basis"` when the account is missing). Omitted for Damus-only
+   * authors.
    */
-  role: AccountRole;
+  role?: AccountRole;
+  /**
+   * Number of direct replies (`parent_id` children). Present on top-level
+   * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
+   */
+  replyCount?: number;
 }
 
 /**
@@ -107,14 +137,18 @@ export interface PublicMessage {
  * Over-long text and disallowed controls still reject.
  *
  * @param raw - User input.
+ * @param maxLength - Maximum length after trim (default {@link MESSAGE_MAX_LENGTH}).
  * @returns The trimmed text (possibly empty), or `null` when longer than
- * {@link MESSAGE_MAX_LENGTH}, or contains a C0 control other than LF/CR
+ * `maxLength`, or contains a C0 control other than LF/CR
  * (`charCode < 32` except 10 and 13) or DEL (`=== 127`). Internal spaces
  * and newlines are kept.
  */
-export function normalizeForumText(raw: string): string | null {
+export function normalizeForumText(
+  raw: string,
+  maxLength: number = MESSAGE_MAX_LENGTH,
+): string | null {
   const trimmed = raw.trim();
-  if (trimmed.length > MESSAGE_MAX_LENGTH) {
+  if (trimmed.length > maxLength) {
     return null;
   }
   for (let i = 0; i < trimmed.length; i += 1) {
@@ -130,21 +164,40 @@ export function normalizeForumText(raw: string): string | null {
 }
 
 /**
+ * Truncate a hex pubkey or npub-like string for Damus-only display names.
+ *
+ * @param pubkeyHex - 64-char hex pubkey when available.
+ * @returns Short display token (never empty).
+ */
+export function truncatePubkeyDisplay(pubkeyHex: string): string {
+  const trimmed = pubkeyHex.trim().toLowerCase();
+  if (trimmed.length <= 12) {
+    return trimmed === '' ? 'npub' : trimmed;
+  }
+  return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
+}
+
+/**
  * Project a store row to its public JSON shape.
  *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
- * @param role - Author's live {@link AccountRole} (or `'basis'` if missing).
+ * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
+ * @param replyCount - Optional reply count for top-level list rows.
+ * @param includeAccountId - When true, set `accountId` for 21gifts authors
+ * (`row.accountId !== null`). Public GET leaves this unset.
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
- * `videoContentType`, `role`; no `accountId`); `createdAt` ISO-8601. Never
- * includes photo or video bytes.
+ * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
+ * when requested); `createdAt` ISO-8601. Never includes photo or video bytes.
  */
 export function serializeMessage(
   row: MessageRow,
   payable: boolean,
-  role: AccountRole,
+  role: AccountRole | undefined,
+  replyCount?: number,
+  includeAccountId?: boolean,
 ): PublicMessage {
-  return {
+  const body: PublicMessage = {
     id: row.id,
     name: row.name,
     text: row.text,
@@ -154,8 +207,17 @@ export function serializeMessage(
     hasPhoto: row.hasPhoto,
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
-    role,
   };
+  if (role !== undefined) {
+    body.role = role;
+  }
+  if (replyCount !== undefined) {
+    body.replyCount = replyCount;
+  }
+  if (includeAccountId === true && row.accountId !== null) {
+    body.accountId = row.accountId;
+  }
+  return body;
 }
 
 /**
@@ -173,6 +235,8 @@ export function unsignedNostrDefaults(): Pick<
   | 'nostrFirstAttemptAt'
   | 'nostrPublishEpoch'
   | 'nostrAttempts'
+  | 'parentId'
+  | 'authorPubkey'
 > {
   return {
     eventId: null,
@@ -183,6 +247,8 @@ export function unsignedNostrDefaults(): Pick<
     nostrFirstAttemptAt: null,
     nostrPublishEpoch: null,
     nostrAttempts: 0,
+    parentId: null,
+    authorPubkey: null,
   };
 }
 

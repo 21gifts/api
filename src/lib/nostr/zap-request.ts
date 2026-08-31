@@ -25,3 +25,29 @@ export function buildZapRequest(args: {
     ],
   };
 }
+
+/**
+ * Build an unsigned throwaway kind:9734 for a NIP-57 mint probe (no `e`/`k`).
+ *
+ * Used before linking a Lightning Address; the invoice is never paid and is
+ * not written to `message_invoice`.
+ *
+ * @param args - Recipient pubkey, amount millisats, zap relays.
+ * @returns Unsigned event template for `finalizeEvent`.
+ */
+export function buildZapProbeRequest(args: {
+  recipientPubkey: string;
+  amountMsat: number;
+  relays: readonly string[];
+}): EventTemplate {
+  return {
+    kind: 9734,
+    content: '',
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ['p', args.recipientPubkey],
+      ['amount', String(args.amountMsat)],
+      ['relays', ...args.relays],
+    ],
+  };
+}

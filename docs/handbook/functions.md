@@ -107,7 +107,7 @@
 
 ## Function: migrateMessageSchema
 
-- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), then `message_invoice` and `nostr_zap_ingest` without FKs plus their `created_at`/`message_id` and `receipt_id` indexes).
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), `parent_id uuid REFERENCES message (id)`, `author_pubkey text`, then `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL` and `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`, then `message_invoice` and `nostr_zap_ingest` without FKs plus `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb` and their `created_at`/`message_id` and `receipt_id` indexes).
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -119,12 +119,19 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/contact.sql`.
 - **Used by:** `openBootStores` when SQL opens.
 
+## Function: migrateConversationSchema
+
+- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` tables and unique indexes). `db_change` attach runs later and covers the new public tables.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL matching `docs/schema/conversation.sql`.
+- **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
+
 ## Function: migratePushSchema
 
 - **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints`, supporting indexes, then `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
-- **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
+- **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
 
 ## Function: migrateDbChangeSchema
 
@@ -156,7 +163,7 @@
 
 ## Function: PostgresMessageStore
 
-- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` selects Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `create` inserts optional photo bytes and optional `video_content_type` (disk write via `writeForumVideo`; `removeForumVideo` unlink on INSERT failure); `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id; `listSignedMissingPhoto` returns published rows with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, video rows / `video_content_type` excluded so posters are not treated as missing photos, `created_at ASC, id ASC`); `listSignedMissingVideo` returns published rows with `video_content_type` set whose kind:1 content lacks `/messages/:id/video.` (`sats = 0`, pending excluded, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid rows whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches and `sats` is 0; `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts`; `recordZapIngest` / `listZapIngests`.
+- **Purpose:** Durable `MessageStore` over Postgres (`message` table plus `message_invoice` and `nostr_zap_ingest`). `listLatest` is **top-level only** (`WHERE parent_id IS NULL`) with subquery `replyCount` (direct children), selecting Nostr columns plus `(photo IS NOT NULL) AS has_photo` and never the `photo` bytea column (HTTP window newest-first; product UX is a messenger group — clients reverse); `listReplies` is oldest-first (`WHERE parent_id = $1`, `created_at ASC, id ASC`); `listPublishedEventIds` returns non-null top-level `event_id`s newest-first for inbound reply REQ; `create` inserts optional photo bytes and optional `video_content_type` (disk write via `writeForumVideo`; `removeForumVideo` unlink on INSERT failure); `getPhoto` loads bytes by id; `getById`; `getByEventId` (`WHERE event_id`); `claimUnsigned`/`claimUnpublished` lease rows (`claimed_until <= now` is expired; unsigned requires `pending` + null `event_id`); `listPendingSigned` returns pending rows whose kind:1 lacks `t=bitcoin` (`created_at ASC, id ASC`); `clearSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until` only while `pending` and `event_id` still matches the listed id and no child reply exists (`NOT EXISTS`); `listSignedMissingPhoto` returns published **top-level** rows (`parent_id IS NULL`) with a photo whose kind:1 content lacks `/messages/:id/photo.` plus an image extension (`sats = 0`, pending excluded so fan-out is not starved, video rows / `video_content_type` excluded so posters are not treated as missing photos, parents with children skipped via `NOT EXISTS`, `created_at ASC, id ASC`); `listSignedMissingVideo` returns published **top-level** rows (`parent_id IS NULL`) with `video_content_type` set whose kind:1 content lacks `/messages/:id/video.` (`sats = 0`, pending excluded, parents with children skipped via `NOT EXISTS`, `created_at ASC, id ASC`); `listSignedMissingHashtags` returns published unpaid **top-level** rows (`parent_id IS NULL`, parents with children skipped via `NOT EXISTS`) whose kind:1 content lacks a `#bitcoin` or `#21gifts` token (next character must not be `[A-Za-z0-9_]`; `sats = 0`, pending excluded so fan-out is not starved, includes null / non-string content, `created_at ASC, id ASC`); `resetSignedEvent` nulls `event_id` / `nostr_event` / `claimed_until`, parks `pending`, and clears the epoch only when `event_id` still matches, `sats` is 0, and no child reply exists (`NOT EXISTS`); `updateSignedEvent` (false on `event_id` collision); `updatePublishState`; `addSats`; `recordZapReceipt` (one statement: `INSERT nostr_zap_receipt ON CONFLICT DO NOTHING` plus `UPDATE message.sats`); `recordInvoiceAttempt` / `listInvoiceAttempts` (each attempt includes `lnurlResponse`: raw LNURL callback JSON object or null); `recordZapIngest` / `listZapIngests`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto` / invoice and ingest rows. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503) except invoice/ingest persist failures which are caught by callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -168,6 +175,13 @@
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ContactRow`. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
+## Function: PostgresConversationStore
+
+- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503).
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
 ## Function: fillRatesForGiftRange
 
 - **Purpose:** Boot helper: `SELECT min/max(paid_at)` for outbound gifts, then `ensureDays` for every UTC day from min through max.
@@ -177,14 +191,14 @@
 
 ## Function: InMemoryAuthStore
 
-- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. Maintains an O(1) `viewKey` index; `getAccountByViewKey` looks it up. `getAccountByLightningAddress` scans for a `lower(trim)` match and skips null addresses. `updateAccountNameByLightningAddress` mutates only `name` on the matched account (`lower(trim)`); other fields stay unchanged; unknown address → `undefined`. `accountHasPasskey` is true when any credential maps to the account id. `createAccount` is a no-op when `viewKey` is already stored, a non-null `linkingKey` already exists, or `lightningAddress` (`lower(trim)`) belongs to another id. `updateAccount` reindexes `viewKey` when it changes and refuses a `viewKey`, non-null `linkingKey`, or `lightningAddress` owned by another id. `deleteAccount` drops the row and its linking-key and viewKey indexes. `listAccounts` returns every account oldest-first.
+- **Purpose:** Process-local AuthStore: passkey challenges/credentials, accounts, sessions, verifications, and custodial Nostr keys (`getNostrPublicKey` / `getNostrSecret` / `setNostrKeyIfAbsent` / `listAccountIdsWithoutNostrKey`). Evicts expired challenges/sessions on write. Indexes `linkingKey` only when non-null. Maintains an O(1) `viewKey` index; `getAccountByViewKey` looks it up. `getAccountByLightningAddress` scans for a `lower(trim)` match and skips null addresses. `updateAccountNameByLightningAddress` mutates only `name` on the matched account (`lower(trim)`); other fields stay unchanged; unknown address → `undefined`. `accountHasPasskey` is true when any credential maps to the account id. `createAccount` is a no-op when `viewKey` is already stored, a non-null `linkingKey` already exists, or `lightningAddress` (`lower(trim)`) belongs to another id. `updateAccount` reindexes `viewKey` when it changes and refuses a `viewKey`, non-null `linkingKey`, or `lightningAddress` owned by another id. `createAccount` / `updateAccount` with `isPlatform: true` call `#clearPlatformExcept` so every other account's `isPlatform` is false (at most one platform account). `deleteAccount` drops the row and its linking-key and viewKey indexes. `listAccounts` returns every account oldest-first.
 - **Inputs:** Constructor none. Methods take domain objects (`PasskeyChallenge`, `PasskeyCredential`, `Account`, `Session`, `AddressVerification`). `createAccount` is a no-op when a non-null `linkingKey` already exists, when `viewKey` is already stored, or when `lightningAddress` (`lower(trim)`) is taken. `updateAccount` refuses a `linkingKey` / `viewKey` / `lightningAddress` owned by another account and keeps the viewKey index consistent. `updateAccountNameByLightningAddress(lightningAddress, name)` takes the address and new display name. `deleteAccount` drops the row and its linking-key and viewKey indexes. `createPasskeyCredential` returns false when this account already has a credential or the id is taken. `createFirstPasskeyCredential` returns false when this account already has a credential or the id is taken. `updatePasskeyCredential` returns false unless `(newCount === 0 && stored === 0)` or `newCount > stored`; missing id is false; does not rebind `accountId` / `publicKey`. `updatePasskeyChallenge` returns false when the row is missing or already consumed.
 - **Returns / side effects:** Lookups return the object or `undefined`. Writes resolve when persisted. `listAccounts` returns `Account[]`.
 - **Used by:** `createApp` default store; all auth/me/debug/view routes.
 
 ## Function: PostgresAuthStore
 
-- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, custodial Nostr key columns, and the `view_key` column. `getAccountByViewKey` is `WHERE view_key = $1`. `getAccountByLightningAddress` is `WHERE lower(trim(lightning_address)) = lower(trim($1))` (null addresses do not match). `updateAccountNameByLightningAddress` is `UPDATE account SET name = $2 WHERE lower(trim(lightning_address)) = lower(trim($1)) RETURNING …` (other columns unchanged; empty `RETURNING` → `undefined`). `accountHasPasskey` is `SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1`. `mapAccount` skips null `view_key` (`getAccount` / `getAccountByViewKey` / `getAccountByLightningAddress` / `updateAccountNameByLightningAddress` return undefined; `listAccounts` omits those rows). Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `createPasskeyCredential` also returns false on unique_violation `23505` for `passkey_credential_account_uidx` (one credential per account). `createFirstPasskeyCredential` inserts only when the account has no credential (`WHERE NOT EXISTS` plus unique `account_id`); unique_violation is false. `createAccount` INSERT unique_violation `23505` is a no-op. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). `deleteAccount` is `DELETE FROM account WHERE id = $1`. Unique index on `lower(trim(lightning_address))` where the address is not null.
+- **Purpose:** Durable AuthStore over Postgres (`SqlClient`). Same eviction-on-write semantics as the in-memory adapter, including passkey challenges, credentials, custodial Nostr key columns, and the `view_key` column. `getAccountByViewKey` is `WHERE view_key = $1`. `getAccountByLightningAddress` is `WHERE lower(trim(lightning_address)) = lower(trim($1))` (null addresses do not match). `updateAccountNameByLightningAddress` is `UPDATE account SET name = $2 WHERE lower(trim(lightning_address)) = lower(trim($1)) RETURNING …` (other columns unchanged; empty `RETURNING` → `undefined`). `accountHasPasskey` is `SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1`. `mapAccount` skips null `view_key` (`getAccount` / `getAccountByViewKey` / `getAccountByLightningAddress` / `updateAccountNameByLightningAddress` return undefined; `listAccounts` omits those rows) and sets `isPlatform` true only when `is_platform` is true. Passkey `signCount` advances with an atomic `WHERE` (`0/0` or `new > stored`) `RETURNING`, not `GREATEST`; duplicate credential ids are `ON CONFLICT DO NOTHING`. `createPasskeyCredential` also returns false on unique_violation `23505` for `passkey_credential_account_uidx` (one credential per account). `createFirstPasskeyCredential` inserts only when the account has no credential (`WHERE NOT EXISTS` plus unique `account_id`); unique_violation is false. `createAccount` INSERT unique_violation `23505` is a no-op. `updateAccount` refuses a `linkingKey` owned by another id (`UPDATE` matches no row; unique_violation `23505` is a no-op). Before `createAccount` / `updateAccount` when `isPlatform === true`, `UPDATE account SET is_platform = false WHERE is_platform AND id <> $1` so at most one platform account remains (partial unique `account_is_platform_uidx`). INSERT/UPDATE write `is_platform`. `deleteAccount` is `DELETE FROM account WHERE id = $1`. Unique index on `lower(trim(lightning_address))` where the address is not null.
 - **Inputs:** Constructor takes a `SqlClient`. Methods match `AuthStore` including `getAccountByViewKey`, `getAccountByLightningAddress`, `updateAccountNameByLightningAddress`, and `accountHasPasskey`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects.
 - **Used by:** `openAuthStore` when `DATABASE_URL` is set.
@@ -193,7 +207,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -205,9 +219,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migratePushSchema`, `PostgresPushStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `push_subscription`/`push_outbox` (via `migratePushSchema`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migratePushSchema` / `migrateDbChangeSchema`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, conversationStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateDbChangeSchema`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -226,9 +240,9 @@
 
 ## Function: debugRoutes
 
-- **Purpose:** Operator listing, provisioning, role assignment, and Lightning Address unlink for registered accounts.
-- **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role. Never logs the token or the previous address.
+- **Purpose:** Operator listing, provisioning, role assignment, Lightning Address unlink, and official platform-flag retarget for registered accounts.
+- **Inputs:** `DebugRouteDeps`: store, optional debugToken, required `fetchImpl` (NIP-57 mint probe on new POST addresses).
+- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` via `serializeDebugAccount` (includes `isPlatform`; no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); probes **all** new addresses first (`probeNip57Mint`) unless `NIP57_PROBE=0` (Playwright e2e skip; production must not set this); any `not_zap` / `unreachable` is 400 and no new address in that request is saved; name-only updates run only after every probe has passed; 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` and/or `{ platform: true|false }` → 400 unknown/missing; 404 missing account; 200 `serializeDebugAccount` of the updated row (includes `isPlatform`; no `viewKey`); unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role; `platform: true` uniquely retargets (store clears any other `isPlatform`) and logs `debug.accounts.platform_set`. Never logs the token or the previous address.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -242,7 +256,7 @@
 
 - **Purpose:** Operator listing of forum invoice attempts (`message_invoice`) and kind:9735 ingest decisions (`nostr_zap_ingest`).
 - **Inputs:** `DebugPaymentsRouteDeps`: message store, optional debugToken.
-- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices` and `{ ingests }` on `GET /zap-ingests`, newest-first (cap 200). Store throws → 503 `{ error: 'Messages are unavailable' }` and `debug.invoices.list_failed` / `debug.zap_ingests.list_failed`. Logs `debug.invoices.listed` / `debug.zap_ingests.listed` with count, never the token or nsec.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices` (each row serializes `lnurlResponse` as the raw LNURL callback JSON object or null, plus `pr` / `isNip57Invoice` / description fields; never nsec) and `{ ingests }` on `GET /zap-ingests`, newest-first (cap 200). Store throws → 503 `{ error: 'Messages are unavailable' }` and `debug.invoices.list_failed` / `debug.zap_ingests.list_failed`. Logs `debug.invoices.listed` / `debug.zap_ingests.listed` with count, never the token or nsec.
 - **Used by:** `createApp` at `/debug`.
 
 ## Function: inspectBolt11
@@ -366,8 +380,8 @@
 
 ## Function: InMemoryMessageStore
 
-- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId`, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded, video rows excluded so posters are not treated as missing photos), `listSignedMissingVideo` (published + video MIME, kind:1 content lacks `/messages/:id/video.`, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches and `sats` is 0), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts`, `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
-- **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row, photo?, video?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
+- **Purpose:** Process-local `MessageStore` for the public member forum. Default empty so the process boots without a database. Photos live in a private map, not on listed rows. Same port as Postgres: `getById`, `getByEventId`, `listLatest` (top-level only, `parentId` null, each row has `replyCount`), `listReplies` (oldest-first for a parent), `listPublishedEventIds` (non-null top-level `eventId`s newest-first), claim/sign/publish (`claimUnsigned` is pending + null `eventId`; lease expires at `claimedUntil`), `listPendingSigned` (pending, no `t=bitcoin`, oldest-first), `clearSignedEvent` (pending and `eventId` still matches `expectedEventId` and the note has no child replies, then nulls `eventId` / `nostrEvent` / `claimedUntil`), `listSignedMissingPhoto` (top-level only, no children, published + photo, kind:1 content lacks `/messages/:id/photo.` plus extension, oldest-first, `sats === 0`, pending excluded, video rows excluded so posters are not treated as missing photos), `listSignedMissingVideo` (top-level only, no children, published + video MIME, kind:1 content lacks `/messages/:id/video.`, oldest-first, `sats === 0`, pending excluded), `listSignedMissingHashtags` (top-level only, no children, published unpaid, kind:1 content lacks a `#bitcoin` or `#21gifts` token, oldest-first, `sats === 0`, pending excluded so fan-out is not starved), `resetSignedEvent` (nulls `eventId` / `nostrEvent` / `claimedUntil`, parks `pending`, no-op unless `eventId` still matches, `sats` is 0, and the note has no child replies), `addSats`, `recordZapReceipt` (duplicate receipt id does not add sats), `recordInvoiceAttempt` / `listInvoiceAttempts` (each attempt includes `lnurlResponse` object or null), `recordZapIngest` / `listZapIngests`; `updateSignedEvent` returns false on duplicate `eventId`. Store/HTTP order is newest-first; product UX is a messenger group (clients reverse).
+- **Inputs:** Optional seed `MessageRow[]` (copied; `hasPhoto` defaults false). `listLatest(limit)` is top-level only (`parentId === null`) with `replyCount`, sorts newest `createdAt` then `id` DESC and caps at `limit`. `listReplies(parentId, limit?)` is oldest-first (default 200). `listPublishedEventIds(limit)` is newest-first non-null top-level `eventId`s. `create(row, photo?, video?)` appends a copy; `getPhoto(id)` returns a photo copy or null.
 - **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes. When `video` is set, `create` awaits `writeForumVideo` (disk under `MEDIA_DIR`); if that write throws, the row is never pushed (no unlink).
 - **Used by:** `createApp` default `messageStore`.
 
@@ -377,6 +391,13 @@
 - **Inputs:** Optional seed `ContactRow[]` (copied). `listLatest(limit)` sorts newest `createdAt` then `id` DESC and caps at `limit`. `create(row)` appends a copy.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `contactStore`.
+
+## Function: InMemoryConversationStore
+
+- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database.
+- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `listVisible` is newest `lastMessageAt` then `id` DESC.
+- **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `eventId` append returns the existing row. No I/O.
+- **Used by:** `createApp` default `conversationStore`.
 
 ## Function: InMemoryLnAddressCache
 
@@ -520,8 +541,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -555,9 +576,9 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check, verification). `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
-- **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl.
-- **Returns / side effects:** Hono at `/me`.
+- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint`, verification). `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
+- **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl, optional `nostrKek` (required to sign the mint probe).
+- **Returns / side effects:** Hono at `/me`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged).
 - **Used by:** `createApp`.
 
 ## Function: viewRoutes
@@ -569,16 +590,23 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: `GET /` lists newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`); `POST /` creates text and/or one photo (JSON) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` streams stored files with `Accept-Ranges` / 206 / 416; `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful create, optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200). Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note; Bearer `GET /:id/replies` lists direct replies oldest-first; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` streams stored files with `Accept-Ranges` / 206 / 416; `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/invoice; 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 photo/video missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits `accountId` and media bytes (missing author → `role` `"basis"` on list).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice (public `GET /:id` and photo/video do not require Bearer); 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 `{ error: 'Not found' }` when JSON `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 404 photo/video/`GET /:id`/`GET /:id/replies` missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.get.failed` / `messages.replies.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits media bytes (list includes `replyCount`; missing author → `role` `"basis"` on list; Damus-only omits `role`). Signed-in list/replies/create may include `accountId` (21gifts author id; omitted for Damus-only); public `GET /:id` never includes it.
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
 
-- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name.
-- **Inputs:** `ContactRouteDeps`: contact `store`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 on store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name. After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread (working inbox). Conversation append failure logs `conversations.contact_sync.failed` and still 200.
+- **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Used by:** `createApp`.
+
+## Function: conversationRoutes
+
+- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec.
+- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public JSON omits `accountId`, event ids, and npubs (Damus-only `name` may be a truncated npub).
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -590,10 +618,10 @@
 
 ## Function: normalizeForumText
 
-- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (>500) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
-- **Inputs:** `raw` string.
+- **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (after trim, longer than `maxLength`) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
+- **Inputs:** `raw` string; optional `maxLength` (default `MESSAGE_MAX_LENGTH` 500). Inbound Nostr worker passes `MESSAGE_INBOUND_REPLY_MAX_LENGTH` (8192) for Damus kind:1 replies and NIP-17/kind:4 plaintext.
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
-- **Used by:** `POST /messages`, `POST /contact`.
+- **Used by:** `POST /messages`, `POST /contact`, `POST /conversations/:id`, `runNostrWorkerTick` inbound indexing.
 
 ## Function: detectImageContentType
 
@@ -611,10 +639,59 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, and live author role.
-- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, and `role` (`AccountRole`).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType, role }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `accountId` omitted; never photo/video bytes. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, live author role, optional `replyCount`, and optional `accountId`.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, optional `role` (`AccountRole`; omitted for Damus-only authors), optional `replyCount` (top-level `GET /messages` list rows), and optional `includeAccountId` (signed-in list/replies/create pass true; public GET omits).
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `role` omitted when undefined; `replyCount` omitted when undefined; `accountId` set only when `includeAccountId` is true and `row.accountId !== null` (Damus-only and public GET omit it); never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
+
+## Function: serializeConversation
+
+- **Purpose:** Project a stored thread to its public list JSON shape.
+- **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
+- **Returns / side effects:** `{ id, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
+- **Used by:** `conversationRoutes`.
+
+## Function: serializeConversationMessage
+
+- **Purpose:** Project a stored conversation message to its public JSON shape.
+- **Inputs:** `ConversationMessageRow`.
+- **Returns / side effects:** `{ id, name, text, createdAt }`. Omits account ids and event ids. No I/O.
+- **Used by:** `conversationRoutes`.
+
+## Function: unsignedConversationDefaults
+
+- **Purpose:** Unsigned/pending defaults for a locally persisted conversation message.
+- **Inputs:** none.
+- **Returns / side effects:** `{ eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
+- **Used by:** `contactRoutes`, `conversationRoutes`.
+
+## Function: wrapNip17
+
+- **Purpose:** Wrap plaintext as a NIP-17 kind:1059 gift wrap (rumor kind:14) using `nostr-tools`.
+- **Inputs:** sender 32-byte secret, recipient hex pubkey, text.
+- **Returns / side effects:** Signed kind:1059 event. Never logs the secret.
+- **Used by:** Nostr worker outbound DMs.
+
+## Function: unwrapNip17
+
+- **Purpose:** Unwrap a NIP-17 kind:1059 wrap to sender pubkey + plaintext.
+- **Inputs:** wrap event, recipient 32-byte secret.
+- **Returns / side effects:** `{ senderPubkey, text }` or `null` on failure / non-kind-14 rumor. Never logs the secret.
+- **Used by:** Nostr worker inbound DMs.
+
+## Function: encryptKind4
+
+- **Purpose:** NIP-04 encrypt plaintext for a legacy kind:4 DM.
+- **Inputs:** sender secret, recipient hex pubkey, text.
+- **Returns / side effects:** Ciphertext string. Never logs the secret.
+- **Used by:** Tests; inbound path uses `decryptKind4`.
+
+## Function: decryptKind4
+
+- **Purpose:** NIP-04 decrypt kind:4 content.
+- **Inputs:** recipient secret, sender hex pubkey, ciphertext.
+- **Returns / side effects:** Plaintext or `null` on failure. Never logs the secret.
+- **Used by:** Nostr worker inbound kind:4 DMs.
 
 ## Function: serializeContact
 
@@ -800,10 +877,17 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the nine-field dump without `viewKey` (no Nostr fields).
+- **Purpose:** Project an account to the nine-field dump without `viewKey` or `isPlatform` (no Nostr fields).
 - **Inputs:** `Account`.
 - **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
-- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id` only (not `/me`).
+- **Used by:** `serializeOwnerAccount` (member `/me`) and `serializeDebugAccount`.
+
+## Function: serializeDebugAccount
+
+- **Purpose:** Operator account JSON: the nine public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
+- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
 
 ## Function: serializeOwnerAccount
 
@@ -912,9 +996,9 @@
 
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned top-level kind:1 for a forum line. Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag; video may add `imeta` `image` from `posterUrl`. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified).
-- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl? }`.
-- **Returns / side effects:** Unsigned fields.
+- **Purpose:** Unsigned kind:1 for a forum line (top-level or NIP-10 reply). Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag; video may add `imeta` `image` from `posterUrl`. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified). When `replyTo` is set, adds NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional `imeta`); top-level notes never get `e`/`p`/`q`.
+- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl? }` (`Kind1Photo`), optional `replyTo?: Kind1ReplyTo` (`noteEventId`, `spaceRelay`, `noteAuthorPubkey`).
+- **Returns / side effects:** Unsigned fields (`kind`, `content`, `tags`, `created_at`).
 - **Used by:** Worker sign path.
 
 ## Function: buildKind0Content
@@ -937,6 +1021,27 @@
 - **Inputs:** relay URLs, unix created_at.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishRelayLists`.
+
+## Function: buildZapProbeRequest
+
+- **Purpose:** Unsigned kind:9734 used only to probe whether a Lightning Address mints a NIP-57 invoice.
+- **Inputs:** recipient pubkey, amount msat, relay URLs.
+- **Returns / side effects:** Unsigned event template (`p` / `amount` / `relays` only).
+- **Used by:** `probeNip57Mint`.
+
+## Function: probeNip57Mint
+
+- **Purpose:** Request a throwaway zap invoice and accept the address only when `description_hash` matches the signed 9734 JSON.
+- **Inputs:** LUD-16 address, signer pubkey, sign helper, fetch, optional env.
+- **Returns / side effects:** `'ok' | 'not_zap' | 'unreachable'`. Never pays. Never writes `message_invoice`.
+- **Used by:** `POST /me/lightning-address`, `POST /debug/accounts`.
+
+## Function: truncatePubkeyDisplay
+
+- **Purpose:** Short npub-style label for Damus authors without a 21.gifts account.
+- **Inputs:** hex pubkey.
+- **Returns / side effects:** Truncated display string.
+- **Used by:** Inbound forum replies; conversation display names (`GET /conversations` Damus-only counterparts).
 
 ## Function: signEventForAccount
 
@@ -1073,11 +1178,11 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off.
+- **Purpose:** Sign unsigned rows; fan out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off. Each tick also runs `signConversationBatch` (NIP-17 wraps when a conversation store is present) and, when `NOSTR_PUBLISH=1`, `publishConversationBatch`. After zap ingest, `indexInboundForumReplies` (REQ kind:1 `#e` our published note ids; persist Damus/member replies even when publish is off) and `indexInboundDirectMessages` (REQ kind:1059 / kind:4 to member and platform pubkeys when a conversation store is present).
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
 - **Inputs:** worker deps.
-- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack`. Event-id collision retries once with `created_at + 1`.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack` / `nostr.dm.sign.failed` / `nostr.dm.publish.*`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
 
 ## Function: startNostrWorker
@@ -1110,16 +1215,16 @@
 
 ## Function: requestZapInvoice
 
-- **Purpose:** LNURL-pay callback with `nostr=` (not `comment=`).
+- **Purpose:** LNURL-pay callback with `nostr=` (not `comment=`). Captures raw LNURL callback JSON so callers can persist it on invoice-attempt rows. Never pays.
 - **Inputs:** address, amountMsat, zapRequestJson, fetchImpl.
-- **Returns / side effects:** `{ pr, amountSats }` or `noZap`/`unreachable`.
-- **Used by:** `POST /messages/:id/invoice`.
+- **Returns / side effects:** Every path includes `lnurlResponse` (`Record<string, unknown>` when the callback body was a JSON object, else `null`). Success: `{ ok: true, pr, amountSats, lnurlResponse }`. Failure: `{ ok: false, reason: 'noZap' | 'unreachable', lnurlResponse }` — `noZap` when `allowsNostr` is not true or `nostrPubkey` is missing; `unreachable` on resolve/amount/callback/schema failure (`lnurlResponse` is the raw object when a JSON body was received, otherwise `null`).
+- **Used by:** `POST /messages/:id/invoice`, `probeNip57Mint`.
 
 ## Function: unsignedNostrDefaults
 
 - **Purpose:** Unsigned/pending defaults for a new forum row.
 - **Inputs:** none.
-- **Returns / side effects:** Column defaults including `sats: 0`.
+- **Returns / side effects:** Column defaults including `sats: 0`, `parentId: null`, `authorPubkey: null`, plus unsigned/pending Nostr columns (`eventId` / `nostrEvent` / `claimedUntil` / `nostrFirstAttemptAt` / `nostrPublishEpoch` null, `nostrPublishState: 'pending'`, `nostrAttempts: 0`).
 - **Used by:** `POST /messages`, stores.
 
 ## Function: allocateNip05Local

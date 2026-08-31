@@ -60,19 +60,35 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
   return !tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
 }
 
+/** Top-level list row with computed reply count. */
+export interface MessageListRow extends MessageRow {
+  /** Direct children with this note as `parentId`. */
+  replyCount: number;
+}
+
 /**
  * Persistence port for forum messages.
  */
 export interface MessageStore {
   /**
-   * Newest messages first (`createdAt` desc, then `id` desc), capped at
-   * `limit`. Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but
-   * never photo or video bytes.
+   * Newest **top-level** notes first (`parent_id IS NULL`, `createdAt` desc,
+   * then `id` desc), capped at `limit`. Each row includes `replyCount`.
+   * Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but never
+   * photo or video bytes. Replies are never listed.
    *
    * @param limit - Maximum rows to return.
-   * @returns Message rows (caller-owned copies).
+   * @returns Message list rows (caller-owned copies).
    */
-  listLatest(limit: number): Promise<MessageRow[]>;
+  listLatest(limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Oldest replies first for a parent note id.
+   *
+   * @param parentId - Parent message id.
+   * @param limit - Maximum rows (default 200).
+   * @returns Reply rows (caller-owned copies).
+   */
+  listReplies(parentId: string, limit?: number): Promise<MessageRow[]>;
 
   /**
    * Persist a new message row and optional photo and video.
@@ -100,6 +116,15 @@ export interface MessageStore {
   getByEventId(eventId: string): Promise<MessageRow | undefined>;
 
   /**
+   * Published note event ids (non-null) for inbound reply REQ, newest first.
+   * Top-level only (`parentId` null).
+   *
+   * @param limit - Max ids.
+   * @returns Event id strings.
+   */
+  listPublishedEventIds(limit: number): Promise<string[]>;
+
+  /**
    * Claim unsigned pending rows (`eventId` null) for signing.
    *
    * @param limit - Max rows.
@@ -123,7 +148,8 @@ export interface MessageStore {
 
   /**
    * Drop the stored kind:1 so the worker can re-sign (still pending).
-   * No-op unless `eventId` still matches `expectedEventId`.
+   * No-op unless `eventId` still matches `expectedEventId` and the note has
+   * no child replies.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -133,9 +159,12 @@ export interface MessageStore {
   /**
    * Published rows with a photo whose kind:1 content lacks the public photo URL.
    * Video rows (poster JPEG stored as `photo`) are excluded — their kind:1
-   * content has `/video.`, not `/photo.`. `sats = 0` only (zapped rows keep
-   * their event id). Pending rows are left for fan-out — resetting them renews
-   * the sign lease and they never EVENT. Oldest `createdAt` then `id` first.
+   * content has `/video.`, not `/photo.`. Top-level only (`parentId` null) so
+   * a reply with a photo is not re-signed (that would mint a new kind:1 id).
+   * Parents that already have a child row are skipped for the same reason.
+   * `sats = 0` only (zapped rows keep their event id). Pending rows are left
+   * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
    */
@@ -143,6 +172,8 @@ export interface MessageStore {
 
   /**
    * Published rows with a video whose kind:1 content lacks the public video URL.
+   * Top-level only (`parentId` null) so a reply with a video is not re-signed.
+   * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
@@ -154,7 +185,9 @@ export interface MessageStore {
   /**
    * Published rows whose kind:1 content lacks a `#21gifts` or `#bitcoin` token
    * (case-insensitive; next character must not be `[A-Za-z0-9_]`, so
-   * `#bitcoiners` still lacks `#bitcoin`). `sats = 0` only (zapped rows keep
+   * `#bitcoiners` still lacks `#bitcoin`). Top-level only (`parentId` null);
+   * parents that already have a child row are skipped so NIP-10 `e` tags stay
+   * valid. `sats = 0` only (zapped rows keep
    * their event id). Pending rows are left for fan-out — resetting them
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
    * first. Includes `nostrEvent === null` and non-string content.
@@ -165,7 +198,8 @@ export interface MessageStore {
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
-   * No-op unless `eventId` still matches `expectedEventId` and `sats` is 0.
+   * No-op unless `eventId` still matches `expectedEventId`, `sats` is 0, and
+   * the note has no child replies.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -240,6 +274,8 @@ export interface MessageInvoiceAttempt {
   description: string | null;
   descriptionHash: string | null;
   isNip57Invoice: boolean;
+  /** Raw LNURL callback JSON when the HTTP body was JSON; else null. Never nsec. */
+  lnurlResponse: Record<string, unknown> | null;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -280,6 +316,10 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_attempts integer NOT NULL DEFAULT 0`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS video_content_type text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS message_event_id_uidx ON message (event_id) WHERE event_id IS NOT NULL`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES message (id)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS author_pubkey text`,
+  `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`,
   `CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   event_id text PRIMARY KEY,
   message_id uuid NOT NULL REFERENCES message (id),
@@ -302,6 +342,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   description_hash text,
   is_nip57_invoice boolean NOT NULL DEFAULT false
 )`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb`,
   `CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC)`,
   `CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
@@ -348,6 +389,9 @@ function copyRow(row: MessageRow): MessageRow {
     hasPhoto: row.hasPhoto === true,
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
+    parentId: row.parentId ?? null,
+    authorPubkey: row.authorPubkey ?? null,
+    accountId: row.accountId ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
   };
@@ -359,6 +403,7 @@ function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     zapRequest: row.zapRequest === null ? null : { ...row.zapRequest },
+    lnurlResponse: row.lnurlResponse === null ? null : { ...row.lnurlResponse },
   };
 }
 
@@ -392,15 +437,16 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Newest-first copy of stored rows, capped at `limit`.
+   * Newest-first top-level notes only, capped at `limit`, with `replyCount`.
    *
    * @param limit - Maximum rows.
-   * @returns A new array of row copies; mutating it does not change the store.
+   * @returns A new array of list row copies; mutating it does not change the store.
    * Listed objects include `hasVideo` / `videoContentType` but never expose
    * photo or video bytes (video lives on disk under `MEDIA_DIR`).
    */
-  listLatest(limit: number): Promise<MessageRow[]> {
-    const sorted = [...this.#rows].sort((a, b) => {
+  listLatest(limit: number): Promise<MessageListRow[]> {
+    const topLevel = this.#rows.filter((row) => row.parentId === null);
+    const sorted = [...topLevel].sort((a, b) => {
       const byTime = b.createdAt.getTime() - a.createdAt.getTime();
       if (byTime !== 0) {
         return byTime;
@@ -413,13 +459,63 @@ export class InMemoryMessageStore implements MessageStore {
         copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
         copy.hasVideo = row.hasVideo === true;
         copy.videoContentType = row.videoContentType ?? null;
-        return copy;
+        const replyCount = this.#rows.filter((child) => child.parentId === row.id).length;
+        return { ...copy, replyCount };
       }),
     );
   }
 
   /**
+   * Oldest-first replies for `parentId`.
+   *
+   * @param parentId - Parent note id.
+   * @param limit - Max rows (default 200).
+   * @returns Reply row copies.
+   */
+  listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+    const replies = this.#rows
+      .filter((row) => row.parentId === parentId)
+      .sort((a, b) => {
+        const byTime = a.createdAt.getTime() - b.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return a.id.localeCompare(b.id);
+      })
+      .slice(0, limit)
+      .map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        return copy;
+      });
+    return Promise.resolve(replies);
+  }
+
+  /**
+   * Non-null event ids for published/pending signed notes (inbound reply REQ).
+   * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
+   *
+   * @param limit - Max ids.
+   * @returns Event id list, newest first.
+   */
+  listPublishedEventIds(limit: number): Promise<string[]> {
+    const ids = this.#rows
+      .filter((row) => row.eventId !== null && row.parentId === null)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+      })
+      .slice(0, limit)
+      .map((row) => row.eventId as string);
+    return Promise.resolve(ids);
+  }
+
+  /**
    * Append a copy of `row` and optional photo and video; return a copy.
+   * A non-null `eventId` that already exists returns the stored row (same
+   * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -428,6 +524,12 @@ export class InMemoryMessageStore implements MessageStore {
    *   `hasVideo` / `videoContentType` from `video`.
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+    if (row.eventId !== null) {
+      const existing = this.#rows.find((item) => item.eventId === row.eventId);
+      if (existing !== undefined) {
+        return copyRow(existing);
+      }
+    }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const stored = copyRow({
@@ -471,7 +573,23 @@ export class InMemoryMessageStore implements MessageStore {
   claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
     return Promise.resolve(
       this.#claim(
-        (row) => row.eventId === null && row.nostrPublishState === 'pending',
+        (row) => {
+          if (row.eventId !== null || row.nostrPublishState !== 'pending') {
+            return false;
+          }
+          // Damus inbound already has eventId; member replies wait for parent eventId.
+          if (row.parentId !== null) {
+            const parent = this.#rows.find((item) => item.id === row.parentId);
+            if (parent === undefined || parent.eventId === null) {
+              return false;
+            }
+          }
+          // Skip Damus-only rows without an account (nothing to sign with).
+          if (row.accountId === null) {
+            return false;
+          }
+          return true;
+        },
         limit,
         nowMs,
         leaseMs,
@@ -494,6 +612,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.nostrPublishState === 'pending' &&
           pendingKind1LacksBitcoinTag(row.nostrEvent),
@@ -512,7 +631,8 @@ export class InMemoryMessageStore implements MessageStore {
     if (
       row !== undefined &&
       row.nostrPublishState === 'pending' &&
-      row.eventId === expectedEventId
+      row.eventId === expectedEventId &&
+      !this.#rows.some((child) => child.parentId === id)
     ) {
       row.eventId = null;
       row.nostrEvent = null;
@@ -525,11 +645,13 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.hasPhoto &&
           row.hasVideo !== true &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
@@ -545,12 +667,14 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.hasVideo === true &&
           row.videoContentType !== null &&
           row.videoContentType !== undefined &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingVideoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
@@ -566,9 +690,11 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.parentId === null &&
           row.eventId !== null &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingHashtags(row.nostrEvent),
       )
       .sort((left, right) => {
@@ -582,7 +708,12 @@ export class InMemoryMessageStore implements MessageStore {
 
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row !== undefined && row.eventId === expectedEventId && row.sats === 0) {
+    if (
+      row !== undefined &&
+      row.eventId === expectedEventId &&
+      row.sats === 0 &&
+      !this.#rows.some((child) => child.parentId === id)
+    ) {
       row.eventId = null;
       row.nostrEvent = null;
       row.claimedUntil = null;
@@ -698,12 +829,14 @@ export class InMemoryMessageStore implements MessageStore {
 /** Row shape selected from `message` for list (no photo bytes). */
 interface MessageSqlRow {
   id: string;
-  account_id: string;
+  account_id: string | null;
   name: string;
   text: string;
   created_at: Date | string;
   has_photo: boolean | number | string | null;
   video_content_type?: string | null;
+  parent_id?: string | null;
+  author_pubkey?: string | null;
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
@@ -712,6 +845,7 @@ interface MessageSqlRow {
   nostr_first_attempt_at?: Date | string | null;
   nostr_publish_epoch?: string | null;
   nostr_attempts?: number | null;
+  reply_count?: string | number | null;
 }
 
 function optionalDate(value: Date | string | null | undefined): number | null {
@@ -752,6 +886,8 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
       row.video_content_type !== undefined &&
       row.video_content_type !== '',
     videoContentType: parseVideoContentType(row.video_content_type),
+    parentId: row.parent_id ?? null,
+    authorPubkey: row.author_pubkey ?? null,
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed'
@@ -778,6 +914,7 @@ function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
 const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               (photo IS NOT NULL) AS has_photo,
               video_content_type,
+              parent_id, author_pubkey,
               event_id, nostr_publish_state, sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`;
 
@@ -795,21 +932,65 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Newest-first list from `message`, capped at `limit`.
-   * Selects `(photo IS NOT NULL) AS has_photo` and `video_content_type`
-   * (`hasVideo` / `videoContentType`) — never the `photo` bytea column; video
-   * bytes live on disk under `MEDIA_DIR`, not as bytea.
+   * Newest-first top-level notes from `message`, capped at `limit`, with
+   * `replyCount`. Selects `(photo IS NOT NULL) AS has_photo` and
+   * `video_content_type` (`hasVideo` / `videoContentType`) — never the
+   * `photo` bytea column; video bytes live on disk under `MEDIA_DIR`, not as
+   * bytea. Replies (`parent_id IS NOT NULL`) are excluded.
    *
    * @param limit - Maximum rows (`$1`).
-   * @returns Mapped rows.
+   * @returns Mapped list rows.
    */
-  async listLatest(limit: number): Promise<MessageRow[]> {
+  async listLatest(limit: number): Promise<MessageListRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `SELECT ${MESSAGE_SELECT_COLUMNS}
-       FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child WHERE child.parent_id = message.id) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
       [limit],
     );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Oldest-first replies for a parent note.
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @param limit - Max rows (`$2`, default 200).
+   * @returns Mapped reply rows.
+   */
+  async listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE parent_id = $1
+       ORDER BY created_at ASC, id ASC
+       LIMIT $2`,
+      [parentId, limit],
+    );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Non-null top-level event ids for inbound reply REQ.
+   *
+   * @param limit - Max ids (`$1`).
+   * @returns Event id strings, newest first.
+   */
+  async listPublishedEventIds(limit: number): Promise<string[]> {
+    const rows = await this.#sql.query<{ event_id: string }>(
+      `SELECT event_id FROM message
+       WHERE event_id IS NOT NULL AND parent_id IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => row.event_id);
   }
 
   /**
@@ -837,8 +1018,12 @@ export class PostgresMessageStore implements MessageStore {
     }
     try {
       await this.#sql.execute(
-        `INSERT INTO message (id, account_id, name, text, photo, photo_content_type, video_content_type, created_at, nostr_publish_state, sats)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',0)`,
+        `INSERT INTO message (
+           id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event
+         ) VALUES (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb
+         )`,
         [
           stored.id,
           stored.accountId,
@@ -848,6 +1033,12 @@ export class PostgresMessageStore implements MessageStore {
           photo === undefined ? null : photo.contentType,
           stored.videoContentType,
           stored.createdAt,
+          stored.nostrPublishState,
+          stored.sats,
+          stored.parentId,
+          stored.authorPubkey,
+          stored.eventId,
+          stored.nostrEvent === null ? null : JSON.stringify(stored.nostrEvent),
         ],
       );
     } catch (err) {
@@ -884,10 +1075,18 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `UPDATE message SET claimed_until = $1
        WHERE id IN (
-         SELECT id FROM message
-         WHERE event_id IS NULL AND nostr_publish_state = 'pending'
-           AND (claimed_until IS NULL OR claimed_until <= $2)
-         ORDER BY created_at ASC, id ASC
+         SELECT m.id FROM message m
+         WHERE m.event_id IS NULL AND m.nostr_publish_state = 'pending'
+           AND m.account_id IS NOT NULL
+           AND (m.claimed_until IS NULL OR m.claimed_until <= $2)
+           AND (
+             m.parent_id IS NULL
+             OR EXISTS (
+               SELECT 1 FROM message p
+               WHERE p.id = m.parent_id AND p.event_id IS NOT NULL
+             )
+           )
+         ORDER BY m.created_at ASC, m.id ASC
          LIMIT $3
          FOR UPDATE SKIP LOCKED
        )
@@ -919,7 +1118,8 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+       WHERE parent_id IS NULL
+         AND event_id IS NOT NULL AND nostr_publish_state = 'pending'
          AND (
            nostr_event IS NULL
            OR NOT EXISTS (
@@ -944,7 +1144,8 @@ export class PostgresMessageStore implements MessageStore {
   async clearSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL
-       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2`,
+       WHERE id = $1 AND nostr_publish_state = 'pending' AND event_id IS NOT DISTINCT FROM $2
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
   }
@@ -953,8 +1154,9 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (video_content_type IS NULL OR video_content_type = '')
          AND (
            nostr_event IS NULL
@@ -971,10 +1173,11 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL
+       WHERE parent_id IS NULL AND event_id IS NOT NULL
          AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
          AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/video.%'
@@ -990,8 +1193,9 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE event_id IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND event_id IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
@@ -1009,7 +1213,8 @@ export class PostgresMessageStore implements MessageStore {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
          nostr_publish_state = 'pending', nostr_publish_epoch = NULL
-       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0`,
+       WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
   }
@@ -1072,9 +1277,10 @@ export class PostgresMessageStore implements MessageStore {
       `INSERT INTO message_invoice (
          id, created_at, message_id, payer_account_id, author_account_id,
          amount_sats, lightning_address, zap_request, result, http_status,
-         pr, payment_hash, description, description_hash, is_nip57_invoice
+         pr, payment_hash, description, description_hash, is_nip57_invoice,
+         lnurl_response
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15
+         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb
        )`,
       [
         row.id,
@@ -1092,6 +1298,7 @@ export class PostgresMessageStore implements MessageStore {
         row.description,
         row.descriptionHash,
         row.isNip57Invoice,
+        row.lnurlResponse === null ? null : JSON.stringify(row.lnurlResponse),
       ],
     );
   }
@@ -1100,7 +1307,8 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageInvoiceSqlRow>(
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
-              pr, payment_hash, description, description_hash, is_nip57_invoice
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response
        FROM message_invoice
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -1186,6 +1394,7 @@ interface MessageInvoiceSqlRow {
   description: string | null;
   description_hash: string | null;
   is_nip57_invoice: boolean | number | string | null;
+  lnurl_response?: Record<string, unknown> | string | null;
 }
 
 /** SQL row shape for `nostr_zap_ingest`. */
@@ -1242,6 +1451,7 @@ function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt 
     description: row.description,
     descriptionHash: row.description_hash,
     isNip57Invoice: Boolean(row.is_nip57_invoice),
+    lnurlResponse: parseJsonObject(row.lnurl_response),
   };
 }
 

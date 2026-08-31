@@ -40,8 +40,16 @@ if (import.meta.main) {
   // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
   // falls back to Coinbase; unset does not fail boot.
   const boot = await openBootStores(databaseUrl, createBunSqlClient);
-  const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek, contactStore } =
-    boot;
+  const {
+    authStore,
+    giftStore,
+    giftRecorder,
+    btcUsdRates,
+    messageStore,
+    nostrKek,
+    contactStore,
+    conversationStore,
+  } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
   let sender: PushSender = new UnconfiguredPushSender();
@@ -63,6 +71,7 @@ if (import.meta.main) {
     ...(messageStore === undefined ? {} : { messageStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
+    ...(conversationStore === undefined ? {} : { conversationStore }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
@@ -83,6 +92,7 @@ if (import.meta.main) {
         now: Date.now,
         env: process.env,
         pushStore,
+        ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
       },
       WORKER_INTERVAL_MS,
     );

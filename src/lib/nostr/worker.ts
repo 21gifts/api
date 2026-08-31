@@ -1,8 +1,18 @@
-import type { AuthStore } from '@/lib/auth/store';
+import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
+import type { Account, AuthStore } from '@/lib/auth/store';
+import type { ConversationThread } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
-import type { MessageRow } from '@/lib/message';
+import {
+  MESSAGE_INBOUND_REPLY_MAX_LENGTH,
+  MESSAGE_LIST_LIMIT,
+  normalizeForumText,
+  truncatePubkeyDisplay,
+  type MessageRow,
+} from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { logEvent } from '@/lib/log';
+import { decryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import {
   buildKind0Event,
   buildKind0Content,
@@ -10,14 +20,16 @@ import {
   buildKind10002Event,
   forumPhotoUrl,
   type Kind1Photo,
+  type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
 import { forumVideoUrl } from '@/lib/video';
-import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
   resolvePublicApiBase,
+  resolveRelaySpace,
   resolveWriteSet,
   resolveZapRelays,
   writeRelayUrls,
@@ -29,6 +41,9 @@ import type { PushStore } from '@/lib/push-store';
 
 /** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
+
+/** Event-id chunk size for inbound kind:1 reply REQ filters. */
+const REPLY_QUERY_CHUNK = 20;
 
 /** Lease before WebSocket I/O. */
 export const WORKER_LEASE_MS = 60_000;
@@ -61,6 +76,10 @@ export interface NostrWorkerDeps {
   env: Record<string, string | undefined>;
   /** Optional push store for zap enqueue after a newly indexed receipt. */
   pushStore?: PushStore;
+  /** Optional signature check for inbound kind:1 replies (tests inject). */
+  verifyKind1?: (event: NostrEventFrame) => boolean;
+  /** Optional private-message store (skip DMs when omitted). */
+  conversations?: ConversationStore;
 }
 
 type Kind0Reservation = {
@@ -121,7 +140,10 @@ function reservedContent(
  * profile cannot win a same-second replaceable-event tie. Each tick also queries
  * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
  * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
- * when publish is off.
+ * when publish is off. Each tick also REQs kind:1 replies (`#e` = our note
+ * event ids) and persists inbound Damus/member replies (even when publish is
+ * off). When a conversation store is present, also signs/publishes NIP-17
+ * wraps and REQs inbound kind:1059 / kind:4 to member and platform pubkeys.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
@@ -130,6 +152,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
+  await signConversationBatch(deps, nowMs);
   await resignPhotoKind1(deps);
   await resignVideoKind1(deps);
   await resignHashtagKind1(deps);
@@ -137,6 +160,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     await publishProfiles(deps, writeSet);
     await publishRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
+    await publishConversationBatch(deps, writeSet, nowMs);
   }
   const urls = resolveZapRelays(deps.env);
   await indexOpenZapReceipts({
@@ -150,6 +174,198 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
+  await indexInboundForumReplies(deps, urls);
+  await indexInboundDirectMessages(deps, urls);
+}
+
+/**
+ * Verify a queried kind:1 frame is a signed Nostr event.
+ *
+ * @param event - Frame from a relay.
+ * @returns Whether nostr-tools accepts the signature.
+ */
+function defaultVerifyKind1(event: NostrEventFrame): boolean {
+  if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
+    return false;
+  }
+  try {
+    return verifyEvent({
+      id: event.id,
+      pubkey: event.pubkey,
+      created_at: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content ?? '',
+      sig: event.sig,
+    });
+    /* v8 ignore next 3 -- nostr-tools verifyEvent returns boolean, does not throw */
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Project a queried kind:1 frame to the JSON object stored on the reply row.
+ *
+ * @param event - Frame from a relay.
+ * @param content - Event content (empty string when the frame omitted it).
+ * @param sig - Signature hex (empty string when the frame omitted it).
+ * @returns JSON object stored on the reply row.
+ */
+function kind1Frame(event: NostrEventFrame, content: string, sig: string): Record<string, unknown> {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    tags: event.tags,
+    created_at: event.created_at,
+    content,
+    sig,
+  };
+}
+
+/**
+ * Pick the parent note event id from NIP-10 `e` tags.
+ *
+ * Prefers `reply`, then `root`, then the first matching `e` whose id is in
+ * `noteEventIds`. Does not require `t=21gifts`.
+ *
+ * @param tags - Event tags.
+ * @param noteEventIds - Top-level published note event ids.
+ * @returns Matching note event id, or null.
+ */
+function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<string>): string | null {
+  let replyMatch: string | null = null;
+  let rootMatch: string | null = null;
+  let firstMatch: string | null = null;
+  for (const tag of tags) {
+    if (tag[0] !== 'e' || typeof tag[1] !== 'string' || tag[1] === '') {
+      continue;
+    }
+    if (!noteEventIds.has(tag[1])) {
+      continue;
+    }
+    const marker = tag[3];
+    if (marker === 'reply' && replyMatch === null) {
+      replyMatch = tag[1];
+    } else if (marker === 'root' && rootMatch === null) {
+      rootMatch = tag[1];
+    }
+    if (firstMatch === null) {
+      firstMatch = tag[1];
+    }
+  }
+  return replyMatch ?? rootMatch ?? firstMatch;
+}
+
+/**
+ * REQ kind:1 replies referencing our published top-level notes and persist them.
+ *
+ * Runs every tick (even when `NOSTR_PUBLISH` is off). Does not require
+ * `t=21gifts`. Skips invalid signatures, already-stored event ids, empty /
+ * over-long content, and events that equal the parent note id.
+ *
+ * @param deps - Worker collaborators.
+ * @param urls - Zap relay URLs (space + public list).
+ */
+async function indexInboundForumReplies(
+  deps: NostrWorkerDeps,
+  urls: readonly string[],
+): Promise<void> {
+  /* v8 ignore next 3 -- no zap relays configured */
+  if (urls.length === 0) {
+    return;
+  }
+  const noteEventIds = await deps.messages.listPublishedEventIds(MESSAGE_LIST_LIMIT);
+  if (noteEventIds.length === 0) {
+    return;
+  }
+  const noteIdSet = new Set(noteEventIds);
+  const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  const accounts = await deps.auth.listAccounts();
+  const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
+  for (const account of accounts) {
+    const pubkey = await deps.auth.getNostrPublicKey(account.id);
+    if (pubkey === undefined || pubkey === '') {
+      continue;
+    }
+    pubkeyToAccount.set(pubkey.toLowerCase(), { id: account.id, name: account.name });
+  }
+
+  for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
+    const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
+    const events = await deps.querier.query({ kinds: [1], '#e': chunk }, urls, RELAY_TIMEOUT_MS);
+    for (const event of events) {
+      if (event.kind !== 1) {
+        continue;
+      }
+      if (typeof event.id !== 'string' || event.id === '') {
+        continue;
+      }
+      if (typeof event.pubkey !== 'string' || event.pubkey === '') {
+        continue;
+      }
+      if (!verify(event)) {
+        continue;
+      }
+      const existing = await deps.messages.getByEventId(event.id);
+      if (existing !== undefined) {
+        continue;
+      }
+      const parentEventId = pickParentNoteEventId(event.tags, noteIdSet);
+      if (parentEventId === null || parentEventId === event.id) {
+        continue;
+      }
+      const parentNote = await deps.messages.getByEventId(parentEventId);
+      if (parentNote === undefined || parentNote.parentId !== null) {
+        continue;
+      }
+      const rawContent = event.content ?? '';
+      const rawSig = event.sig ?? '';
+      const text = normalizeForumText(rawContent, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+      if (text === null || text === '') {
+        continue;
+      }
+      const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
+      let accountId: string | null = null;
+      let name: string;
+      if (matched !== undefined) {
+        accountId = matched.id;
+        const accountName = matched.name?.trim() ?? '';
+        name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
+      } else {
+        name = truncatePubkeyDisplay(event.pubkey);
+      }
+      const createdAt =
+        typeof event.created_at === 'number'
+          ? new Date(event.created_at * 1000)
+          : new Date(deps.now());
+      try {
+        await deps.messages.create({
+          id: crypto.randomUUID(),
+          accountId,
+          name,
+          text,
+          createdAt,
+          hasPhoto: false,
+          hasVideo: false,
+          videoContentType: null,
+          parentId: parentNote.id,
+          authorPubkey: event.pubkey,
+          eventId: event.id,
+          nostrPublishState: 'published',
+          sats: 0,
+          nostrEvent: kind1Frame(event, rawContent, rawSig),
+          claimedUntil: null,
+          nostrFirstAttemptAt: null,
+          nostrPublishEpoch: null,
+          nostrAttempts: 0,
+        });
+      } catch {
+        logEvent('nostr.reply.inbound.failed', { eventId: event.id });
+      }
+    }
+  }
 }
 
 /**
@@ -209,7 +425,11 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
     }
   }
   const rows = await deps.messages.claimUnsigned(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  const spaceRelay = resolveRelaySpace(deps.env);
   for (const row of rows) {
+    if (row.accountId === null) {
+      continue;
+    }
     try {
       await ensureAccountNostrKey(deps.auth, row.accountId, deps.kek);
       let createdAt = Math.floor(row.createdAt.getTime() / 1000);
@@ -236,11 +456,32 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
         }
       }
+      let replyTo: Kind1ReplyTo | undefined;
+      if (row.parentId !== null) {
+        const parent = await deps.messages.getById(row.parentId);
+        if (parent === undefined || parent.eventId === null) {
+          continue;
+        }
+        let noteAuthorPubkey = parent.authorPubkey;
+        if (noteAuthorPubkey === null && parent.accountId !== null) {
+          /* v8 ignore next -- parent account has no stored pubkey */
+          noteAuthorPubkey = (await deps.auth.getNostrPublicKey(parent.accountId)) ?? null;
+        }
+        if (noteAuthorPubkey === null) {
+          logEvent('nostr.sign.failed', { messageId: row.id, reason: 'parent_pubkey' });
+          continue;
+        }
+        replyTo = {
+          noteEventId: parent.eventId,
+          spaceRelay,
+          noteAuthorPubkey,
+        };
+      }
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           photo === undefined
-            ? buildKind1Event(row.text, createdAt)
-            : buildKind1Event(row.text, createdAt, photo);
+            ? buildKind1Event(row.text, createdAt, undefined, replyTo)
+            : buildKind1Event(row.text, createdAt, photo, replyTo);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,
@@ -468,6 +709,268 @@ async function publishBatch(
       }
     } catch {
       logEvent('nostr.publish.nack', { messageId: row.id });
+    }
+  }
+}
+
+function asNostrEvent(event: NostrEventFrame): NostrEvent | null {
+  if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
+    return null;
+  }
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content ?? '',
+    sig: event.sig,
+  };
+}
+
+async function accountsByPubkey(auth: AuthStore): Promise<Map<string, Account>> {
+  const map = new Map<string, Account>();
+  const accounts = await auth.listAccounts();
+  for (const account of accounts) {
+    const pubkey = await auth.getNostrPublicKey(account.id);
+    /* v8 ignore next 3 -- accounts without a stored key are skipped */
+    if (pubkey === undefined || pubkey === '') {
+      continue;
+    }
+    map.set(pubkey.toLowerCase(), account);
+  }
+  return map;
+}
+
+async function recipientPubkeyFor(
+  thread: ConversationThread,
+  senderAccountId: string,
+  auth: AuthStore,
+): Promise<string | null> {
+  if (thread.kind === 'member_damus') {
+    return thread.counterpartPubkey;
+  }
+  /* v8 ignore next -- sender is always one of the two account ids */
+  const otherId = thread.accountA === senderAccountId ? thread.accountB : thread.accountA;
+  /* v8 ignore next 3 -- member_member/platform threads always have the other id */
+  if (otherId === null) {
+    return null;
+  }
+  const pubkey = await auth.getNostrPublicKey(otherId);
+  /* v8 ignore next -- missing counterpart key */
+  return pubkey === undefined || pubkey === '' ? null : pubkey.toLowerCase();
+}
+
+async function withAccountSecret<T>(
+  deps: NostrWorkerDeps,
+  accountId: string,
+  fn: (secret: Uint8Array) => Promise<T> | T,
+): Promise<T | null> {
+  const ciphertext = await deps.auth.getNostrSecret(accountId);
+  if (ciphertext === undefined) {
+    return null;
+  }
+  const secret = await decryptNostrSecret(ciphertext, deps.kek, accountId);
+  try {
+    return await fn(secret);
+  } finally {
+    zeroizeSecret(secret);
+  }
+}
+
+async function signConversationBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined) {
+    return;
+  }
+  const rows = await store.claimUnsigned(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  for (const row of rows) {
+    if (row.senderAccountId === null) {
+      continue;
+    }
+    const thread = await store.getById(row.conversationId);
+    if (thread === undefined) {
+      continue;
+    }
+    try {
+      await ensureAccountNostrKey(deps.auth, row.senderAccountId, deps.kek);
+      const recipient = await recipientPubkeyFor(thread, row.senderAccountId, deps.auth);
+      if (recipient === null) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'recipient_pubkey' });
+        continue;
+      }
+      const wrap = await withAccountSecret(deps, row.senderAccountId, (secret) =>
+        wrapNip17(secret, recipient, row.text),
+      );
+      if (wrap === null) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'secret' });
+        continue;
+      }
+      const stored = await store.updateSignedEvent(
+        row.id,
+        wrap.id,
+        wrap as unknown as Record<string, unknown>,
+      );
+      if (!stored) {
+        logEvent('nostr.dm.sign.failed', { messageId: row.id, reason: 'event_id' });
+      }
+    } catch {
+      logEvent('nostr.dm.sign.failed', { messageId: row.id });
+    }
+  }
+}
+
+async function publishConversationBatch(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+  nowMs: number,
+): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined) {
+    return;
+  }
+  const rows = await store.claimUnpublished(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
+  const urls = writeRelayUrls(writeSet);
+  for (const row of rows) {
+    if (row.nostrEvent === null) {
+      continue;
+    }
+    try {
+      const acks = await deps.publisher.publish(row.nostrEvent, urls, RELAY_TIMEOUT_MS);
+      const space = spaceAcked(acks, writeSet.spaceUrl);
+      if (!space) {
+        logEvent('nostr.dm.publish.nack', { messageId: row.id, relay: 'space' });
+        continue;
+      }
+      if (!writeSet.publicEnabled || publicAcked(acks, writeSet.spaceUrl)) {
+        await store.updatePublishState(row.id, 'published');
+        logEvent('nostr.dm.publish.ok', { messageId: row.id });
+      } else {
+        await store.updatePublishState(row.id, 'pending');
+        logEvent('nostr.dm.publish.ok', { messageId: row.id, parked: 1 });
+      }
+    } catch {
+      logEvent('nostr.dm.publish.nack', { messageId: row.id });
+    }
+  }
+}
+
+async function indexInboundDirectMessages(
+  deps: NostrWorkerDeps,
+  urls: readonly string[],
+): Promise<void> {
+  const store = deps.conversations;
+  if (store === undefined || urls.length === 0) {
+    return;
+  }
+  const byPubkey = await accountsByPubkey(deps.auth);
+  const ourPubkeys = [...byPubkey.keys()];
+  if (ourPubkeys.length === 0) {
+    return;
+  }
+  const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  for (let i = 0; i < ourPubkeys.length; i += REPLY_QUERY_CHUNK) {
+    const chunk = ourPubkeys.slice(i, i + REPLY_QUERY_CHUNK);
+    const events = await deps.querier.query(
+      { kinds: [4, 1059], '#p': chunk },
+      urls,
+      RELAY_TIMEOUT_MS,
+    );
+    for (const event of events) {
+      if (event.kind !== 4 && event.kind !== 1059) {
+        continue;
+      }
+      if (typeof event.id !== 'string' || event.id === '') {
+        continue;
+      }
+      if (!verify(event)) {
+        continue;
+      }
+      const existing = await store.getMessageByEventId(event.id);
+      if (existing !== undefined) {
+        continue;
+      }
+      const signed = asNostrEvent(event);
+      if (signed === null) {
+        continue;
+      }
+      const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
+      let ingested = false;
+      for (const tag of pTags) {
+        const tagged = tag[1];
+        /* v8 ignore next 3 -- p-tags are filtered to strings */
+        if (tagged === undefined) {
+          continue;
+        }
+        const recipientPubkey = tagged.toLowerCase();
+        const recipient = byPubkey.get(recipientPubkey);
+        if (recipient === undefined || ingested) {
+          continue;
+        }
+        try {
+          const plain = await withAccountSecret(deps, recipient.id, (secret) => {
+            if (event.kind === 1059) {
+              return unwrapNip17(signed, secret);
+            }
+            const text = decryptKind4(secret, event.pubkey, event.content ?? '');
+            if (text === null) {
+              return null;
+            }
+            return { senderPubkey: event.pubkey.toLowerCase(), text };
+          });
+          if (plain === null) {
+            continue;
+          }
+          const text = normalizeForumText(plain.text, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+          if (text === null || text === '') {
+            continue;
+          }
+          const senderPubkey = plain.senderPubkey.toLowerCase();
+          if (senderPubkey === recipientPubkey) {
+            continue;
+          }
+          const sender = byPubkey.get(senderPubkey);
+          const createdAt = new Date(signed.created_at * 1000);
+          let thread: ConversationThread;
+          if (sender !== undefined) {
+            if (sender.isPlatform === true || recipient.isPlatform === true) {
+              const member = sender.isPlatform === true ? recipient : sender;
+              const platform = sender.isPlatform === true ? sender : recipient;
+              thread = await store.openMemberPlatform(member.id, platform.id, createdAt);
+            } else {
+              thread = await store.openMemberMember(sender.id, recipient.id, createdAt);
+            }
+          } else {
+            thread = await store.openMemberDamus(recipient.id, senderPubkey, createdAt);
+          }
+          const liveName = sender?.name?.trim() ?? '';
+          const senderName = liveName !== '' ? liveName : truncatePubkeyDisplay(senderPubkey);
+          await store.appendMessage({
+            id: crypto.randomUUID(),
+            conversationId: thread.id,
+            text,
+            createdAt,
+            senderAccountId: sender?.id ?? null,
+            senderPubkey,
+            name: senderName,
+            eventId: event.id,
+            nostrPublishState: 'published',
+            nostrEvent: {
+              id: signed.id,
+              pubkey: signed.pubkey,
+              kind: signed.kind,
+              tags: signed.tags,
+              created_at: signed.created_at,
+              content: signed.content,
+              sig: signed.sig,
+            },
+            claimedUntil: null,
+          });
+          ingested = true;
+        } catch {
+          logEvent('nostr.dm.inbound.failed', { eventId: event.id });
+        }
+      }
     }
   }
 }

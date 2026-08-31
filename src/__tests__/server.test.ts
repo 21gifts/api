@@ -204,6 +204,12 @@ describe('createApp', () => {
     expect(res.status).toBe(401);
   });
 
+  it('returns 401 for unauthenticated GET /conversations', async () => {
+    const app = createApp();
+    const res = await app.request('/conversations');
+    expect(res.status).toBe(401);
+  });
+
   it('returns 401 for unauthenticated POST /contact', async () => {
     const app = createApp();
     const res = await app.request('/contact', {

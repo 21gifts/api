@@ -449,6 +449,23 @@ async function ingestOneReceipt(
     return;
   }
 
+  if (row.accountId === null) {
+    logEvent('nostr.zap.rejected', { reason: 'author' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'author',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return;
+  }
   const author = await args.auth.getAccount(row.accountId);
   const address = author?.lightningAddress;
   if (address === undefined || address === null || address.trim() === '') {
@@ -501,7 +518,7 @@ async function ingestOneReceipt(
     receiptEvent: receipt,
     noteEventId,
   });
-  if (indexed && args.pushStore !== undefined) {
+  if (indexed && args.pushStore !== undefined && row.accountId !== null) {
     try {
       await enqueueZapPush(args.pushStore, row.accountId, row.id, args.now());
     } catch {

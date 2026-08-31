@@ -117,6 +117,46 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc-false'))?.forumLawsDismissed).toBe(true);
   });
 
+  it('clears any other isPlatform flag when setting a new platform account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'plat-1',
+      linkingKey: null,
+      role: 'founder',
+      name: 'One',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await store.createAccount({
+      id: 'plat-2',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Two',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'f'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    expect((await store.getAccount('plat-1'))?.isPlatform).toBe(false);
+    expect((await store.getAccount('plat-2'))?.isPlatform).toBe(true);
+    const first = await store.getAccount('plat-1');
+    expect(first).toBeDefined();
+    if (first === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...first, isPlatform: true });
+    expect((await store.getAccount('plat-1'))?.isPlatform).toBe(true);
+    expect((await store.getAccount('plat-2'))?.isPlatform).toBe(false);
+  });
+
   it('returns undefined for an unknown account id', async () => {
     expect(await new InMemoryAuthStore().getAccount('missing')).toBeUndefined();
   });

@@ -1,19 +1,23 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
-import { serializeAccount } from '@/lib/auth/account-json';
+import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import { normalizeDisplayName } from '@/lib/name';
+import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
+import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id`
- * (set role and/or unlink Lightning Address).
+ * (set role, unlink Lightning Address, and/or the official platform flag).
  */
 
 /** Collaborators the debug routes need. */
@@ -22,15 +26,21 @@ export interface DebugRouteDeps {
   store: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** Injected `fetch` for NIP-57 mint probe on new addresses. */
+  fetchImpl: FetchFn;
 }
 
-/** Body schema for operator role assignment and Lightning Address unlink. */
+/** Body schema for operator role, Lightning Address unlink, and platform flag. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'founder']).optional(),
     lightningAddress: z.null().optional(),
+    platform: z.boolean().optional(),
   })
-  .refine((body) => body.role !== undefined || body.lightningAddress === null);
+  .refine(
+    (body) =>
+      body.role !== undefined || body.lightningAddress === null || body.platform !== undefined,
+  );
 
 /** One row in the operator provision body. */
 const provisionAccountRow = z.object({
@@ -66,7 +76,7 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
 /**
  * Build the `/debug/accounts` route group.
  *
- * @param deps - Shared store and optional debug token.
+ * @param deps - Store, optional debug token, and required `fetchImpl` for the NIP-57 mint probe.
  * @returns A Hono app exposing `GET /`, `POST /`, and `PATCH /:id`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
@@ -75,7 +85,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
     .get('/', async (c) => {
       const accounts = await deps.store.listAccounts();
       logEvent('debug.accounts.listed', { count: accounts.length });
-      return c.json({ accounts: accounts.map(serializeAccount) }, 200);
+      return c.json({ accounts: accounts.map(serializeDebugAccount) }, 200);
     })
     .post('/', async (c) => {
       const parsed = provisionBody.safeParse(await c.req.json().catch(() => null));
@@ -91,6 +101,44 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
         accounts.push({ name, lightningAddress });
       }
+      const classified: Array<{
+        name: string;
+        lightningAddress: string;
+        existing: Account | undefined;
+      }> = [];
+      for (const row of accounts) {
+        classified.push({
+          name: row.name,
+          lightningAddress: row.lightningAddress,
+          existing: await deps.store.getAccountByLightningAddress(row.lightningAddress),
+        });
+      }
+      const skipNip57Probe = process.env['NIP57_PROBE'] === '0';
+      for (const row of classified) {
+        if (row.existing !== undefined) {
+          continue;
+        }
+        if (skipNip57Probe) {
+          continue;
+        }
+        const ephemeral = generateSecretKey();
+        const recipientPubkey = publicKeyHexFromSecret(ephemeral);
+        const probe = await probeNip57Mint({
+          address: row.lightningAddress,
+          recipientPubkey,
+          sign: async (unsigned) =>
+            finalizeEvent(unsigned, ephemeral) as unknown as Record<string, unknown>,
+          fetchImpl: deps.fetchImpl,
+          env: process.env,
+        });
+        ephemeral.fill(0);
+        if (probe === 'not_zap') {
+          return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
+        }
+        if (probe === 'unreachable') {
+          return c.json({ error: 'Lightning Address could not be resolved' }, 400);
+        }
+      }
       let created = 0;
       let updated = 0;
       const results: Array<{
@@ -99,9 +147,8 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         viewKey: string;
         created: boolean;
       }> = [];
-      for (const row of accounts) {
-        const found = await deps.store.getAccountByLightningAddress(row.lightningAddress);
-        if (found !== undefined) {
+      for (const row of classified) {
+        if (row.existing !== undefined) {
           const named = await deps.store.updateAccountNameByLightningAddress(
             row.lightningAddress,
             row.name,
@@ -168,7 +215,10 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
-          { error: 'Expected a JSON body with a "role" string and/or lightningAddress null' },
+          {
+            error:
+              'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+          },
           400,
         );
       }
@@ -184,6 +234,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         updated.lightningAddress = null;
         updated.lightningAddressVerified = false;
       }
+      if (parsed.data.platform !== undefined) {
+        updated.isPlatform = parsed.data.platform;
+      }
       await deps.store.updateAccount(updated);
       if (parsed.data.lightningAddress === null) {
         await deps.store.deleteVerification(updated.id);
@@ -192,6 +245,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.role !== undefined) {
         logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
       }
-      return c.json(serializeAccount(updated), 200);
+      if (parsed.data.platform !== undefined) {
+        logEvent('debug.accounts.platform_set', {
+          accountId: updated.id,
+          platform: updated.isPlatform === true,
+        });
+      }
+      return c.json(serializeDebugAccount(updated), 200);
     });
 }

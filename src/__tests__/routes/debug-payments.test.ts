@@ -79,6 +79,7 @@ describe('debugPaymentsRoutes', () => {
       description: null,
       descriptionHash: 'bb'.repeat(32),
       isNip57Invoice: true,
+      lnurlResponse: null,
     };
     const late: MessageInvoiceAttempt = {
       ...early,

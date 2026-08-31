@@ -1,8 +1,9 @@
 /**
  * Nostr event templates for the 21.gifts forum.
  *
- * Kind:1 tags are frozen. Do not add `e`/`p`/`q` — member-forum posts are
- * top-level notes for discovery-feed virality.
+ * Top-level kind:1 tags are frozen without `e`/`p`/`q` — member-forum posts
+ * are top-level notes for discovery-feed virality. NIP-10 replies add `e`/`p`
+ * on top of the frozen tags (never on top-level notes).
  */
 
 /** Frozen kind:1 tags, in this order. Extra `imeta` rows may follow. */
@@ -33,6 +34,16 @@ export interface Kind1Photo {
   mime: 'image/jpeg' | 'image/png' | 'image/webp' | 'video/mp4' | 'video/webm' | 'video/quicktime';
   /** Optional poster image URL (video `imeta` `image` field). */
   posterUrl?: string;
+}
+
+/** NIP-10 reply pointers for a forum reply kind:1 (not used on top-level notes). */
+export interface Kind1ReplyTo {
+  /** Parent note event id (hex). Used for both `root` and `reply` markers. */
+  noteEventId: string;
+  /** Space (durability) relay URL for the `e` tags. */
+  spaceRelay: string;
+  /** Parent note author pubkey (hex) for the `p` tag. */
+  noteAuthorPubkey: string;
 }
 
 /**
@@ -139,21 +150,25 @@ export interface UnsignedKind1 {
 }
 
 /**
- * Build an unsigned top-level kind:1 for a forum message.
+ * Build an unsigned kind:1 for a forum message (top-level or NIP-10 reply).
  *
  * Content is plaintext (no name prefix). `kind1ContentWithHashtags` ensures
  * Damus-visible `#bitcoin` / `#21gifts` tokens (appends only missing ones).
- * Tags are frozen — no `e`/`p`/`q`.
+ * Top-level tags are frozen — no `e`/`p`/`q`. When `replyTo` is set, adds
+ * NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional
+ * `imeta`).
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
  * @param photo - Optional public media (image URL or video URL + MIME; poster URL when video).
+ * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
   content: string,
   createdAtUnix: number,
   photo?: Kind1Photo,
+  replyTo?: Kind1ReplyTo,
 ): UnsignedKind1 {
   const tags = kind1Tags();
   let body = content;
@@ -164,6 +179,11 @@ export function buildKind1Event(
       imeta.push(`image ${photo.posterUrl}`);
     }
     tags.push(imeta);
+  }
+  if (replyTo !== undefined) {
+    tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'root']);
+    tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'reply']);
+    tags.push(['p', replyTo.noteAuthorPubkey]);
   }
   body = kind1ContentWithHashtags(body);
   return {

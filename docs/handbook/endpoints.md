@@ -44,23 +44,23 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`) **without** `viewKey`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`) **without** `viewKey`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /debug/accounts
 
-- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). Creates a new `basis` row with a fresh `viewKey`, or updates **only** `name` when the address already exists (`lower(trim)` match; other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it.
-- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body, C0/DEL names, or non-LUD-16 addresses (no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name.
+- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). **All** new addresses are NIP-57 mint-probed (`probeNip57Mint`) first, unless `NIP57_PROBE=0` (e2e only); only then is any row persisted. Name-only updates (address already in store) do **not** probe and run after every new-address probe has passed. Creates a new `basis` row with a fresh `viewKey`, or updates **only** `name` when the address already exists (`lower(trim)` match; other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body, C0/DEL names, or non-LUD-16 addresses (no row is written); 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }` when any new address fails the NIP-57 mint probe (`not_zap`; no new address in that request is saved); 400 `{ error: 'Lightning Address could not be resolved' }` when any new-address probe is unreachable (no new address in that request is saved); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name.
 - **Used by:** Operator provisioning before passkey claim.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: PATCH /debug/accounts/:id
 
-- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`) and/or hard-unlink of the Lightning Address. Body is one or both of `{ "role": "<AccountRole>" }` and `{ "lightningAddress": null }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Returns the updated account JSON (same nine-field dump as `GET /debug/accounts` via `serializeAccount`; no `viewKey`). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
-- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string and/or lightningAddress null' }` for unknown/missing/non-JSON body or a non-null `lightningAddress`; 404 `{ error: 'Not found' }` when the account id is unknown.
-- **Used by:** Operator `gifts-debug role` and `gifts-debug unlink` CLI.
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, and/or the official platform flag. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true). Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`; no `viewKey`). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean' }` for unknown/missing/non-JSON body or a non-null `lightningAddress`; 404 `{ error: 'Not found' }` when the account id is unknown.
+- **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` CLI and platform-account setup.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: GET /debug/contacts
@@ -72,9 +72,9 @@
 
 ## Endpoint: GET /debug/invoices
 
-- **Purpose:** Operator listing of forum `POST /messages/:id/invoice` attempts newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, and `isNip57Invoice`. ISO `createdAt`. Never includes nsec. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Purpose:** Operator listing of forum `POST /messages/:id/invoice` attempts newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
-- **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr`).
+- **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: GET /debug/zap-ingests
@@ -219,9 +219,23 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists the public member forum newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, and live author `role`), capped at 200 (latest-200 window). Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo/video bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /messages/:id
+
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included.
+- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
+- **Used by:** App deep links / share URLs for one forum note.
+- **Auth:** none (public).
+
+## Endpoint: GET /messages/:id/replies
+
+- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the parent is missing; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
+- **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id/photo
@@ -261,9 +275,9 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data } }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
-- **Used by:** App forum composer.
+- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped). New notes have `sats` 0 and `payable` false until signed. Top-level creates may enqueue push; replies do not.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
+- **Used by:** App forum composer and reply composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /messages/:id/invoice
@@ -275,9 +289,37 @@
 
 ## Endpoint: POST /contact
 
-- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). 200 is the public contact object (no `accountId`).
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 Contact is unavailable (`contact.create.failed`).
+- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread so the message is readable via `GET /conversations`. Conversation append failure logs `conversations.contact_sync.failed` and still returns 200 (contact is the product surface). 200 is the public contact object (no `accountId`).
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account exists (neither contact nor thread is written); 503 Contact is unavailable (`contact.create.failed`).
 - **Used by:** App in-app contact composer.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /conversations
+
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, name, lastText, lastAt }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `DEBUG_TOKEN` cannot read this inbox.
+- **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
+- **Used by:** App conversation list.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /conversations
+
+- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "forumMessageId" string; 400 `{ error: 'Cannot message yourself' }` when the author is the session account; 404 `{ error: 'Not found' }` for a non-UUID / missing note / Damus note without pubkey; 503 Conversations are unavailable.
+- **Used by:** App "message the author" from a forum note.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /conversations/:id
+
+- **Purpose:** Bearer required. `:id` is a UUID. Messages oldest-first (cap 200) as `{ messages: [{ id, name, text, createdAt }] }`. 404 when the session may not see the thread.
+- **Errors:** 401 Unauthorized; 404 Not found; 503 Conversations are unavailable.
+- **Used by:** App conversation thread.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /conversations/:id
+
+- **Purpose:** Bearer required. Body `{ text }` 1–500 via `normalizeForumText`. Appends a message. Staff (founder/moderator) replies on a platform thread persist as the platform account (worker signs with the platform nsec). Local persist does not wait for relay ACK.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 404 Not found; 503 Conversations are unavailable.
+- **Used by:** App conversation composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/forum-laws-dismissed
@@ -289,8 +331,8 @@
 
 ## Endpoint: POST /me/lightning-address
 
-- **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then stores the address unverified on the account.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable or missing zap metadata; account unchanged); 409 Lightning Address is already in use (another account owns it, including a unique-index race).
+- **Purpose:** Body `{ address }`. Live-resolves LUD-16 well-known metadata, requires zap support (`allowsNostr` + non-empty `nostrPubkey`), then runs a NIP-57 mint probe (`probeNip57Mint` with the account's custodial key). On `ok`, stores the address unverified on the account.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an "address" string; 400 Not a valid Lightning Address (expected name@domain); 400 Lightning Address could not be resolved (unreachable well-known / missing zap metadata / unreachable probe; account unchanged); 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }` when the mint probe returns `not_zap` (account unchanged); 503 `{ error: 'Lightning Address could not be resolved' }` when `NOSTR_NSEC_KEK` / `nostrKek` is missing or key ensure fails; 409 Lightning Address is already in use (another account owns it, including a unique-index race).
 - **Used by:** App `setLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 

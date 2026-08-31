@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { encryptKind4, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import {
+  MESSAGE_INBOUND_REPLY_MAX_LENGTH,
+  truncatePubkeyDisplay,
+  unsignedNostrDefaults,
+} from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
-import { RecordingQuerier } from '@/lib/nostr/query';
+import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -66,6 +73,39 @@ async function seed(): Promise<{
     ...unsignedNostrDefaults(),
   });
   return { auth, messages };
+}
+
+/** Kind:1 fixture with t=bitcoin so resignLegacyKind1Tags leaves the signed row alone. */
+const BITCOIN_KIND1 = {
+  kind: 1,
+  content: 'hello',
+  tags: [
+    ['t', 'bitcoin'],
+    ['t', '21gifts'],
+    ['r', 'https://21.gifts'],
+  ],
+};
+
+/** One tick with conversations and inbound signature checks skipped. */
+async function inboundTick(
+  auth: InMemoryAuthStore,
+  messages: InMemoryMessageStore,
+  conversations: InMemoryConversationStore,
+  querier: RecordingQuerier,
+): Promise<void> {
+  await runNostrWorkerTick(
+    deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier,
+      now: () => 1_700_000_000_000,
+      env: {},
+      conversations,
+      verifyKind1: () => true,
+    }),
+  );
 }
 
 describe('runNostrWorkerTick', () => {
@@ -2083,6 +2123,149 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('m1'))?.eventId).toBeNull();
   });
 
+  it('skips unsigned forum rows with a null accountId and keeps signing others', async () => {
+    const { auth, messages } = await seed();
+    const inner = messages.claimUnsigned.bind(messages);
+    messages.claimUnsigned = async (limit, nowMs, leaseMs) => [
+      {
+        id: 'damus-unsigned',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'from damus',
+        createdAt: new Date('2026-08-28T00:00:00.000Z'),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      ...(await inner(limit, nowMs, leaseMs)),
+    ];
+    await expect(
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(await messages.getById('damus-unsigned')).toBeUndefined();
+  });
+
+  it('does not sign an unsigned reply whose parent has no eventId', async () => {
+    const { auth, messages } = await seed();
+    await messages.create({
+      id: 'parent-unsigned',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'reply-wait',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-unsigned',
+    });
+    const inner = messages.claimUnsigned.bind(messages);
+    messages.claimUnsigned = async (limit, nowMs, leaseMs) => {
+      const reply = await messages.getById('reply-wait');
+      const claimed = await inner(limit, nowMs, leaseMs);
+      return reply === undefined ? claimed : [reply, ...claimed];
+    };
+    const tickDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    await runNostrWorkerTick(tickDeps);
+    expect((await messages.getById('reply-wait'))?.eventId).toBeNull();
+    expect((await messages.getById('parent-unsigned'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    await runNostrWorkerTick(tickDeps);
+    expect((await messages.getById('reply-wait'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
+    const { auth, messages } = await seed();
+    const parent = {
+      id: 'parent-damus',
+      accountId: null as string | null,
+      name: 'aabbccdd…8899',
+      text: 'note',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      authorPubkey: null,
+      nostrEvent: BITCOIN_KIND1,
+    };
+    const reply = {
+      id: 'reply-nopk',
+      accountId: 'acc' as string | null,
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-damus',
+    };
+    await messages.create(parent);
+    await messages.create(reply);
+    messages.claimUnsigned = async () =>
+      [await messages.getById('reply-nopk')].filter(
+        (row): row is NonNullable<typeof row> => row !== undefined,
+      );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+        }),
+      );
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some(
+          (e) =>
+            e['event'] === 'nostr.sign.failed' &&
+            e['messageId'] === 'reply-nopk' &&
+            e['reason'] === 'parent_pubkey',
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('reply-nopk'))?.eventId).toBeNull();
+  });
+
   it('logs nack when space rejects', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -2302,6 +2485,1814 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     expect(querier.calls[0]?.urls).toEqual(['wss://space', ...DEFAULT_RELAY_PUBLIC]);
+  });
+
+  it('skips private-message ingest when no conversation store is injected', async () => {
+    const { auth, messages } = await seed();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', 'aa'.repeat(32)]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        verifyKind1: () => true,
+      }),
+    );
+    expect(querier.calls.some((call) => JSON.stringify(call.filter).includes('1059'))).toBe(false);
+  });
+
+  it('ingests an inbound NIP-17 wrap into a Damus thread', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = await auth.getNostrPublicKey('acc');
+    expect(recipient).toBeDefined();
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient as string, 'hello from damus');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => true,
+      }),
+    );
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe('member_damus');
+    const rows = await conversations.listMessages(listed[0]!.id, 10);
+    expect(rows[0]?.text).toBe('hello from damus');
+    expect(rows[0]?.eventId).toBe(wrap.id);
+  });
+
+  it('ingests inbound kind:4 from a nameless 21gifts member', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('bob')) as Uint8Array,
+      KEK,
+      'bob',
+    );
+    const cipher = encryptKind4(senderSecret, recipient, 'legacy hi');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed[0]?.kind).toBe('member_member');
+    const rows = await conversations.listMessages(listed[0]!.id, 10);
+    expect(rows[0]?.text).toBe('legacy hi');
+    expect(rows[0]?.senderAccountId).toBe('bob');
+    expect(rows[0]?.name).toMatch(/…/);
+  });
+
+  it('ingests inbound kind:4 from a 21gifts member', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const senderCipher = (await auth.getNostrSecret('bob')) as Uint8Array;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(senderCipher, KEK, 'bob');
+    const cipher = encryptKind4(senderSecret, recipient, 'legacy hi');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => true,
+      }),
+    );
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed[0]?.kind).toBe('member_member');
+    const rows = await conversations.listMessages(listed[0]!.id, 10);
+    expect(rows[0]?.text).toBe('legacy hi');
+    expect(rows[0]?.senderAccountId).toBe('bob');
+  });
+
+  it('does not re-ingest a conversation event id', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, 'once');
+    const thread = await conversations.openMemberDamus('acc', getPublicKey(sender), new Date(0));
+    await conversations.appendMessage({
+      id: 'm-existing',
+      conversationId: thread.id,
+      text: 'once',
+      createdAt: new Date(0),
+      senderAccountId: null,
+      senderPubkey: getPublicKey(sender),
+      name: 'npub',
+      eventId: wrap.id,
+      nostrPublishState: 'published',
+      nostrEvent: { id: wrap.id },
+      claimedUntil: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => true,
+      }),
+    );
+    expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
+  });
+
+  it('wraps and publishes an outbound conversation message', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-1',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    const row = await conversations.getMessageById('out-1');
+    expect(row?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(row?.nostrPublishState).toBe('published');
+    expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
+  });
+
+  it('leaves a conversation wrap unpublished when space nacks', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-nack',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    publisher.ok = false;
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-nack'))?.nostrPublishState).toBe('pending');
+  });
+
+  it('parks a conversation EVENT when public relays are on but only space ACKs', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-park',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const space = 'wss://relay.nostr.space';
+    const publisher: RecordingPublisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return Promise.resolve(urls.map((url) => ({ url, ok: url === space })));
+    };
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_PUBLISH_PUBLIC: '1',
+      NOSTR_RELAY_SPACE: space,
+      NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+          conversations,
+        }),
+      );
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_060_000,
+          env,
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-park'))?.nostrPublishState).toBe('pending');
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.publish.ok' && e['parked'] === 1)).toBe(
+        true,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs nack and does not throw when conversation publish throws', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-throw',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher: RecordingPublisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (event['kind'] === 1059) {
+        throw new Error('relay down');
+      }
+      return Promise.resolve(urls.map((url) => ({ url, ok: true })));
+    };
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+          conversations,
+        }),
+      );
+      await expect(
+        runNostrWorkerTick(
+          deps({
+            messages,
+            auth,
+            kek: KEK,
+            publisher,
+            now: () => 1_700_000_060_000,
+            env,
+            conversations,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      expect((await conversations.getMessageById('out-throw'))?.nostrPublishState).toBe('pending');
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.publish.nack')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips unpublished conversation rows whose stored event is null', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-null-event',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: 'ab'.repeat(32),
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-null-event'))?.nostrPublishState).toBe(
+      'pending',
+    );
+    expect(publisher.calls.every((call) => call.event['kind'] !== 1059)).toBe(true);
+  });
+
+  it('skips conversation publish when no conversation store is injected', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await expect(
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher,
+          now: () => 1_700_000_000_000,
+          env,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips unsigned conversation rows with a null sender account', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    conversations.claimUnsigned = async () => [
+      {
+        id: 'out-null-sender',
+        conversationId: 'c-missing',
+        text: 'ping',
+        createdAt: new Date(0),
+        senderAccountId: null,
+        senderPubkey: null,
+        name: 'Ada',
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+      }),
+    );
+    expect(await conversations.getMessageById('out-null-sender')).toBeUndefined();
+  });
+
+  it('skips unsigned conversation rows when the thread is missing', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    await conversations.appendMessage({
+      id: 'out-nothread',
+      conversationId: 'c-missing',
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-nothread'))?.eventId).toBeNull();
+  });
+
+  it('skips conversation wrap when the sender secret is missing', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const innerSecret = auth.getNostrSecret.bind(auth);
+    auth.getNostrSecret = async (accountId) => {
+      if (accountId === 'acc') {
+        return undefined;
+      }
+      return innerSecret(accountId);
+    };
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-secret',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-secret'))?.eventId).toBeNull();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'nostr.dm.sign.failed' && e['reason'] === 'secret'),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs sign.failed when the wrapped conversation event id collides', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-collide',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    conversations.updateSignedEvent = async () => false;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          conversations,
+        }),
+      );
+      expect((await conversations.getMessageById('out-collide'))?.eventId).toBeNull();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'nostr.dm.sign.failed' && e['reason'] === 'event_id'),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs sign.failed when wrapping a conversation message throws', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-sign-throw',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    conversations.updateSignedEvent = async () => {
+      throw new Error('store boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        runNostrWorkerTick(
+          deps({
+            messages,
+            auth,
+            kek: KEK,
+            publisher: new RecordingPublisher(),
+            now: () => 1_700_000_000_000,
+            env: {},
+            conversations,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some(
+          (e) => e['event'] === 'nostr.dm.sign.failed' && e['messageId'] === 'out-sign-throw',
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips unsigned conversation rows when the counterpart has no pubkey', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore([
+      {
+        id: 'c-nokey',
+        kind: 'member_damus',
+        accountA: 'acc',
+        accountB: null,
+        counterpartPubkey: null,
+        createdAt: new Date(0),
+        lastMessageAt: new Date(0),
+        name: '',
+        lastText: '',
+      },
+    ]);
+    await conversations.appendMessage({
+      id: 'out-nokey',
+      conversationId: 'c-nokey',
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-nokey'))?.eventId).toBeNull();
+  });
+
+  it('skips inbound DMs with an invalid signature', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        content: 'nope',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => false,
+      }),
+    );
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('ingests a kind:4 from the platform account onto a member_platform thread', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'p'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await ensureAccountNostrKey(auth, 'plat', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('plat')) as Uint8Array,
+      KEK,
+      'plat',
+    );
+    const cipher = encryptKind4(senderSecret, recipient, 'official hello');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => true,
+      }),
+    );
+    const listed = await conversations.listVisible('acc', false, 'plat', 10);
+    expect(listed[0]?.kind).toBe('member_platform');
+    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe('official hello');
+  });
+
+  it('skips inbound DMs that lack created_at after verify', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        content: 'cipher',
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        verifyKind1: () => true,
+      }),
+    );
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DM query when no account has a pubkey', async () => {
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', 'aa'.repeat(32)]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, new InMemoryMessageStore(), new InMemoryConversationStore(), querier);
+    expect(querier.calls.some((call) => JSON.stringify(call.filter).includes('1059'))).toBe(false);
+  });
+
+  it('skips inbound DMs that are the wrong kind, lack an id, or tag someone else', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 1,
+        tags: [['p', recipient]],
+        content: 'note',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', recipient]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: 1 as unknown as string,
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', recipient]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '22'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', 'ff'.repeat(32)]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '33'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p']],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips a kind:1059 wrap that cannot be unwrapped', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 1059,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        content: 'not-a-wrap',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips a kind:4 whose NIP-04 decrypt returns null', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs whose plaintext is rejected after normalisation', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, 'hello\u0001');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs whose plaintext is empty after normalisation', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, '   ');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs sent from an account to itself', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('acc')) as Uint8Array,
+      KEK,
+      'acc',
+    );
+    const wrap = wrapNip17(senderSecret, recipient, 'hello self');
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips an unknown p-tag then ingests the wrap for our pubkey', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, 'hello from damus');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: [['p', 'ff'.repeat(32)], ...(wrap.tags as string[][]), ['p', recipient]],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe('member_damus');
+    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe('hello from damus');
+  });
+
+  it('ingests a kind:4 from a member onto a member_platform thread', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'p'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await ensureAccountNostrKey(auth, 'plat', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('plat')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('acc')) as Uint8Array,
+      KEK,
+      'acc',
+    );
+    const cipher = encryptKind4(senderSecret, recipient, 'member to platform');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, 'plat', 10);
+    expect(listed[0]?.kind).toBe('member_platform');
+    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe(
+      'member to platform',
+    );
+  });
+
+  it('logs inbound.failed when appending the conversation message throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { auth, messages } = await seed();
+      const conversations = new InMemoryConversationStore();
+      conversations.appendMessage = async () => {
+        throw new Error('boom');
+      };
+      const recipient = (await auth.getNostrPublicKey('acc')) as string;
+      const sender = generateSecretKey();
+      const wrap = wrapNip17(sender, recipient, 'hello from damus');
+      const querier = new RecordingQuerier();
+      querier.events = [
+        {
+          id: wrap.id,
+          pubkey: wrap.pubkey,
+          kind: wrap.kind,
+          tags: wrap.tags as string[][],
+          content: wrap.content,
+          created_at: wrap.created_at,
+          sig: wrap.sig,
+        },
+      ];
+      await inboundTick(auth, messages, conversations, querier);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.inbound.failed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('persists inbound kind:1 replies from members and Damus authors', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'nameless',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'nameless', KEK);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const namelessPubkey = (await auth.getNostrPublicKey('nameless')) as string;
+    const memberReplyId = 'bb'.repeat(32);
+    const foreignParentId = '14'.repeat(32);
+    const selfId = '13'.repeat(32);
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, selfId];
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: memberReplyId,
+        pubkey: accPubkey,
+        kind: 1,
+        tags: [['e', noteEventId, '', 'reply']],
+        content: 'member reply',
+        created_at: 1_700_000_000,
+        sig: 'cc'.repeat(32),
+      },
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '77'.repeat(32),
+        pubkey: '88'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId, '', 'root']],
+        content: 'root reply',
+        created_at: 1_700_000_001,
+        sig: '99'.repeat(32),
+      },
+      {
+        id: '66'.repeat(32),
+        pubkey: namelessPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'nameless member',
+        created_at: 1_700_000_002,
+      },
+      {
+        id: '01'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 4,
+        tags: [['e', noteEventId]],
+        content: 'not kind 1',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '02'.repeat(32),
+        pubkey: '',
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '03'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', foreignParentId]],
+        content: 'foreign parent',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: selfId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', selfId]],
+        content: 'self parent',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: memberReplyId,
+        pubkey: accPubkey,
+        kind: 1,
+        tags: [['e', noteEventId, '', 'reply']],
+        content: 'member reply duplicate',
+        created_at: 1_700_000_003,
+        sig: 'cc'.repeat(32),
+      },
+      {
+        id: 1,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'non-string id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      } as unknown as NostrEventFrame,
+      {
+        id: '05'.repeat(32),
+        pubkey: 1,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'non-string pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      } as unknown as NostrEventFrame,
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const replies = await messages.listReplies('m1');
+    expect(replies.map((row) => row.text).sort()).toEqual([
+      'damus reply',
+      'member reply',
+      'nameless member',
+      'root reply',
+    ]);
+    expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
+    expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
+    expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
+    expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
+    expect(replies.find((row) => row.text === 'nameless member')?.name).toBe(
+      truncatePubkeyDisplay(namelessPubkey),
+    );
+    expect(replies.find((row) => row.text === 'member reply')?.name).toBe('Ada');
+    const namelessEvent = replies.find((row) => row.text === 'nameless member')?.nostrEvent;
+    expect(namelessEvent?.['sig']).toBe('');
+    expect(namelessEvent?.['content']).toBe('nameless member');
+  });
+
+  it('skips inbound kind:1 when verifyKind1 returns false', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bad sig',
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: () => false,
+      }),
+    );
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const origCreate = messages.create.bind(messages);
+    messages.create = async (row, photo, video) => {
+      if (row.parentId === 'm1') {
+        throw new Error('disk');
+      }
+      return origCreate(row, photo, video);
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'x',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes('nostr.reply.inbound.failed')),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips duplicate inbound kind:1 event ids', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    const eventId = 'dd'.repeat(32);
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const first = (await messages.listReplies('m1')).filter((row) => row.eventId === eventId);
+    expect(first).toHaveLength(1);
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const second = (await messages.listReplies('m1')).filter((row) => row.eventId === eventId);
+    expect(second).toHaveLength(1);
+  });
+
+  it('skips a duplicate kind:1 event id in the same query batch', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    const eventId = 'dd'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const frame = {
+      id: eventId,
+      pubkey: 'ee'.repeat(32),
+      kind: 1,
+      tags: [['e', noteEventId]],
+      content: 'damus reply',
+      created_at: 1_700_000_000,
+      sig: 'ff'.repeat(32),
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [frame, { ...frame, tags: [['e', noteEventId]] }];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(
+      (await messages.listReplies('m1')).filter((row) => row.eventId === eventId),
+    ).toHaveLength(1);
+  });
+
+  it('skips inbound kind:1 with empty content', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: '   ',
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '11'.repeat(32),
+        pubkey: '22'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        created_at: 1_700_000_000,
+        sig: '33'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('skips inbound kind:1 when normalised content is null', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1),
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('persists a schnorr-signed inbound kind:1 with the default verifier', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const secret = generateSecretKey();
+    const signed = finalizeEvent(
+      {
+        kind: 1,
+        content: 'signed reply',
+        created_at: 1_700_000_000,
+        tags: [['e', noteEventId, '', 'reply']],
+      },
+      secret,
+    );
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no sig',
+        created_at: 1_700_000_000,
+      },
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty sig',
+        created_at: 1_700_000_000,
+        sig: '',
+      },
+      {
+        id: '11'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+      }),
+    );
+    expect((await messages.listReplies('m1')).map((row) => row.text)).toEqual(['signed reply']);
+  });
+
+  it('skips inbound frames that are not a signed kind:1 note', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'nokey',
+      linkingKey: null,
+      role: 'basis',
+      name: 'NoKey',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await auth.createAccount({
+      id: 'emptykey',
+      linkingKey: null,
+      role: 'basis',
+      name: 'EmptyKey',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const origPubkey = auth.getNostrPublicKey.bind(auth);
+    auth.getNostrPublicKey = async (id: string): Promise<string | undefined> =>
+      id === 'emptykey' ? '' : origPubkey(id);
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 4,
+        tags: [['e', noteEventId]],
+        content: 'dm',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '22'.repeat(32),
+        pubkey: '',
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '33'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bad sig',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: (event) => event.id !== '33'.repeat(32),
+      }),
+    );
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const foreignId = '11'.repeat(32);
+    const selfId = '22'.repeat(32);
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, selfId];
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', foreignId]],
+        content: 'foreign parent',
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: selfId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', selfId]],
+        content: 'self parent',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
+  it('skips inbound kind:1 when parent is itself a reply', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    const replyEventId = 'dd'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const replies = await messages.listReplies('m1');
+    expect(replies).toHaveLength(1);
+    const replyRow = replies[0]!;
+    expect(replyRow.eventId).toBe(replyEventId);
+    expect(replyRow.parentId).toBe('m1');
+
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, replyEventId];
+    };
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: '22'.repeat(32),
+        kind: 1,
+        tags: [['e', replyEventId]],
+        content: 'nested',
+        sig: '33'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies(replyRow.id)).toHaveLength(0);
+    expect(await messages.listReplies('m1')).toHaveLength(1);
   });
 });
 

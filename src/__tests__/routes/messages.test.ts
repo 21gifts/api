@@ -98,6 +98,8 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
   };
   return {
     listLatest: boom,
+    listReplies: boom,
+    listPublishedEventIds: boom,
     create: boom,
     getPhoto: boom,
     getById: boom,
@@ -284,6 +286,31 @@ describe('GET /messages', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.list.failed')).toBe(true);
   });
+
+  it('lists a Damus-only note as not payable with role omitted', async () => {
+    const authStore = await seededStore();
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'damus-list',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ payable: boolean; role?: string; hasVideo: boolean }>;
+    };
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
+    expect(body.messages[0]?.hasVideo).toBe(false);
+  });
 });
 
 describe('POST /messages', () => {
@@ -363,24 +390,28 @@ describe('POST /messages', () => {
       sats: number;
       payable: boolean;
       hasPhoto: boolean;
+      hasVideo: boolean;
+      videoContentType: string | null;
       role: string;
       accountId?: string;
     };
     expect(created.name).toBe('Ada');
     expect(created.text).toBe('hello world');
     expect(created.hasPhoto).toBe(false);
+    expect(created.hasVideo).toBe(false);
+    expect(created.videoContentType).toBeNull();
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
     expect(created.role).toBe('basis');
-    expect(created.accountId).toBeUndefined();
+    expect(created.accountId).toBe('acc');
     expect(created.id.length).toBeGreaterThan(8);
 
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
-    const body = (await list.json()) as { messages: (typeof created)[] };
+    const body = (await list.json()) as { messages: (typeof created & { replyCount: number })[] };
     expect(body.messages).toHaveLength(1);
-    expect(body.messages[0]).toEqual(created);
+    expect(body.messages[0]).toEqual({ ...created, replyCount: 0 });
   });
 
   it('enqueues a forum push for other subscribed accounts, not the author', async () => {
@@ -548,6 +579,94 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+  });
+
+  it('returns 404 when inReplyTo is not a uuid', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'reply', inReplyTo: 'not-a-uuid' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when inReplyTo is a missing uuid', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'reply',
+        inReplyTo: '00000000-0000-4000-8000-000000000001',
+      }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('posts a reply to a top-level note via inReplyTo', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { text: string };
+    expect(created.text).toBe('child');
+    const replies = await messageStore.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.parentId).toBe(parentId);
+    expect(replies[0]?.text).toBe('child');
+  });
+
+  it('returns 404 when inReplyTo is a nested reply', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const childId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'nested', inReplyTo: childId }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await messageStore.listReplies(childId)).toHaveLength(0);
   });
 
   it('posts a photo-only message and serves the bytes', async () => {
@@ -1179,6 +1298,92 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 400 no_author when invoicing a Damus-only reply', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '13131313-1313-4131-8131-131313131313',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '14141414-1414-4141-8141-141414141414',
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore: await namedStore('Ada'),
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/13131313-1313-4131-8131-131313131313/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
+  it('returns 400 no_author when invoicing a top-level Damus-only note', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '16161616-1616-4161-8161-161616161616',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore: await namedStore('Ada'),
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/16161616-1616-4161-8161-161616161616/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.authorAccountId).toBe('acc');
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
   it('persists an ok invoice attempt with pr and isNip57Invoice from inspect', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
@@ -1620,6 +1825,8 @@ describe('POST /messages/:id/invoice', () => {
     });
     const store: MessageStore = {
       listLatest: (limit) => base.listLatest(limit),
+      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
@@ -1816,6 +2023,256 @@ describe('POST /messages/:id/invoice', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('GET /messages/:id', () => {
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seededStore()).request('/messages/not-a-uuid');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the note is missing', async () => {
+    const res = await mount(await seededStore()).request(
+      '/messages/14141414-1414-4141-8141-141414141414',
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 503 when getById throws', async () => {
+    const res = await mount(await seededStore(), throwingStore()).request(
+      '/messages/14141414-1414-4141-8141-141414141414',
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
+  });
+
+  it('omits role for a Damus-only note and is not payable', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '14141414-1414-4141-8141-141414141414',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(new InMemoryAuthStore(), messageStore).request(
+      '/messages/14141414-1414-4141-8141-141414141414',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      id: '14141414-1414-4141-8141-141414141414',
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()).toISOString(),
+      sats: 0,
+      payable: false,
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    expect(body).not.toHaveProperty('role');
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('replyCount');
+  });
+
+  it('includes the live author role for a 21gifts note', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '16161616-1616-4161-8161-161616161616',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/16161616-1616-4161-8161-161616161616',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { role: string; payable: boolean; hasVideo: boolean };
+    expect(body.role).toBe('basis');
+    expect(body.payable).toBe(false);
+    expect(body.hasVideo).toBe(false);
+    expect(body).not.toHaveProperty('accountId');
+  });
+
+  it('marks a signed note with a Lightning Address as payable', async () => {
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '19191919-1919-4191-8191-191919191919',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/19191919-1919-4191-8191-191919191919',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { payable: boolean; role: string };
+    expect(body.payable).toBe(true);
+    expect(body.role).toBe('basis');
+  });
+
+  it('defaults role to basis when the author account is missing', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a',
+      accountId: 'gone',
+      name: 'Ghost',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ff'.repeat(32),
+    });
+    const res = await mount(await seededStore(), messageStore).request(
+      '/messages/1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { payable: boolean; role: string };
+    expect(body.payable).toBe(false);
+    expect(body.role).toBe('basis');
+  });
+});
+
+describe('GET /messages/:id/replies', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(
+      '/messages/14141414-1414-4141-8141-141414141414/replies',
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seededStore()).request('/messages/not-a-uuid/replies', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when the parent is missing', async () => {
+    const res = await mount(await seededStore()).request(
+      '/messages/14141414-1414-4141-8141-141414141414/replies',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 503 when listing replies throws', async () => {
+    const res = await mount(await seededStore(), throwingStore()).request(
+      '/messages/14141414-1414-4141-8141-141414141414/replies',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
+  });
+
+  it('omits role on Damus-only replies and includes live role for members', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '17171717-1717-4171-8171-171717171717',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+      authorPubkey: 'ab'.repeat(32),
+    });
+    await messageStore.create({
+      id: '18181818-1818-4181-8181-181818181818',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'member reply',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+    });
+    await messageStore.create({
+      id: '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b',
+      accountId: 'gone',
+      name: 'Ghost',
+      text: 'orphan reply',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/15151515-1515-4151-8151-151515151515/replies',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; role?: string; accountId?: string; hasVideo: boolean }>;
+    };
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages[0]?.text).toBe('from damus');
+    expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
+    expect(body.messages[0]?.hasVideo).toBe(false);
+    expect(body.messages[1]?.text).toBe('member reply');
+    expect(body.messages[1]?.role).toBe('basis');
+    expect(body.messages[1]?.accountId).toBe('acc');
+    expect(body.messages[2]?.text).toBe('orphan reply');
+    expect(body.messages[2]?.role).toBe('basis');
+    expect(body.messages[2]?.accountId).toBe('gone');
   });
 });
 
