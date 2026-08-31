@@ -206,16 +206,23 @@ function defaultVerifyKind1(event: NostrEventFrame): boolean {
 }
 /* v8 ignore stop */
 
-/** Project a queried kind:1 frame to the JSON object stored on the reply row. */
-function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
+/**
+ * Project a queried kind:1 frame to the JSON object stored on the reply row.
+ *
+ * @param event - Frame from a relay.
+ * @param content - Event content (empty string when the frame omitted it).
+ * @param sig - Signature hex (empty string when the frame omitted it).
+ * @returns JSON object stored on the reply row.
+ */
+function kind1Frame(event: NostrEventFrame, content: string, sig: string): Record<string, unknown> {
   return {
     id: event.id,
     pubkey: event.pubkey,
     kind: event.kind,
     tags: event.tags,
     created_at: event.created_at,
-    content: event.content ?? '',
-    sig: event.sig ?? '',
+    content,
+    sig,
   };
 }
 
@@ -317,7 +324,9 @@ async function indexInboundForumReplies(
       if (parentNote === undefined || parentNote.parentId !== null) {
         continue;
       }
-      const text = normalizeForumText(event.content ?? '', MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+      const rawContent = event.content ?? '';
+      const rawSig = event.sig ?? '';
+      const text = normalizeForumText(rawContent, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
       /* v8 ignore next 3 -- empty after normalize */
       if (text === null || text === '') {
         continue;
@@ -352,7 +361,7 @@ async function indexInboundForumReplies(
           eventId: event.id,
           nostrPublishState: 'published',
           sats: 0,
-          nostrEvent: kind1Frame(event),
+          nostrEvent: kind1Frame(event, rawContent, rawSig),
           claimedUntil: null,
           nostrFirstAttemptAt: null,
           nostrPublishEpoch: null,

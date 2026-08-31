@@ -3753,7 +3753,7 @@ describe('runNostrWorkerTick', () => {
       id: 'nameless',
       linkingKey: null,
       role: 'basis',
-      name: '   ',
+      name: null,
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
@@ -3807,7 +3807,6 @@ describe('runNostrWorkerTick', () => {
         tags: [['e', noteEventId]],
         content: 'nameless member',
         created_at: 1_700_000_002,
-        sig: '55'.repeat(32),
       },
       {
         id: '01'.repeat(32),
@@ -4022,6 +4021,14 @@ describe('runNostrWorkerTick', () => {
         content: '   ',
         created_at: 1_700_000_000,
         sig: 'ff'.repeat(32),
+      },
+      {
+        id: '11'.repeat(32),
+        pubkey: '22'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        created_at: 1_700_000_000,
+        sig: '33'.repeat(32),
       },
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
