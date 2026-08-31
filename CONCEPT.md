@@ -238,8 +238,9 @@ Every "message" the user writes in the UI is a NOSTR event. (v1 note: NOSTR
 is fully custodial in v1 — the api holds one keypair per account and signs
 events server-side with the account's own key, see "NOSTR in v1". The table
 below applies to v1 for the surfaces v1 ships — profile metadata, campaign
-post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
-scope. The client-side-signing flow beneath it is target state.)
+post, public comment, and the custodial PN channel on `/conversations`.
+Zap-receipt / leaderboard rows stay deferred, see MVP scope. The
+client-side-signing flow beneath it is target state.)
 
 | UI surface                            | NOSTR primitive                                                                                                                                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -406,6 +407,12 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - USD → sats conversion for recurring-gift amounts via an exchange-rate
   source (fail-closed on a missing or implausible rate; paying stays in
   the spend worker)
+- Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
+  official platform account; `Account.isPlatform`)
+- Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
+  `GET /messages/:id`
+- NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
+  and operator `POST /debug/accounts` unless `NIP57_PROBE=0`)
 
 **Out, deferred:**
 
