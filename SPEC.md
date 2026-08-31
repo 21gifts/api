@@ -1270,8 +1270,9 @@ Address), `hasPhoto`, `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for Damus-only authors), and
 `replyCount` (direct `parent_id` children). List JSON never includes photo
-or video bytes. `accountId` and Nostr event ids are never included in the
-JSON.
+or video bytes. Signed-in list/replies/create may include `accountId`
+(21gifts author id; omitted for Damus-only); public GET `/messages/:id`
+never includes it. Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1349,15 +1350,15 @@ timestamp. Text longer than **500** after trim, or with disallowed C0/DEL
 controls, is rejected. Newlines (`\n`, `\r`) are allowed. The **200** body
 is the public message object itself (not wrapped in `{ messages }`),
 including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
-`videoContentType`. No `accountId`, no `replyCount`, and no photo or video
-bytes in the JSON. `sats` is 0 and `payable` is false until the worker
-signs the note. `role` is the posting session account's live
-`account.role`. Web Push is enqueued **only** when `parentId` is null
-(top-level notes); replies do not push. Over-limit posters get **429**
-`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
-20/UTC-day). The worker signs a top-level kind:1 (content includes Damus-visible
-`#bitcoin` and `#21gifts`; forum `text` stays the member's words) and fans out when
-`NOSTR_PUBLISH=1`.
+`videoContentType`. May include `accountId` (21gifts author id). No
+`replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
+`payable` is false until the worker signs the note. `role` is the posting
+session account's live `account.role`. Web Push is enqueued **only** when
+`parentId` is null (top-level notes); replies do not push. Over-limit
+posters get **429** `{ "error": "Too many messages" }` with
+`Retry-After: 10` (1/10s, 6/h, 20/UTC-day). The worker signs a top-level
+kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`; forum
+`text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1525,8 +1526,9 @@ Success → **Response** `200` or `206`: raw video body,
 Bearer session required. Lists **direct replies** for parent `:id`
 oldest-first (`createdAt` then `id` ascending), capped at **200**. Each
 item is the public message JSON with `payable` false and no `replyCount`.
-Damus-only replies (`accountId` null) omit `role`. Photo and video bytes
-are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
+Signed-in replies may include `accountId` (21gifts author id; omitted for
+Damus-only). Damus-only replies (`accountId` null) omit `role`. Photo and
+video bytes are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1575,9 +1577,9 @@ Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
 **after** photo, video, and `GET /messages/:id/replies` so those paths are
 not captured as `:id`. Returns the public message JSON (`sats`, `payable`,
 `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts
-authors). Damus-only notes (`accountId` null) omit `role` and set
-`payable` false. `replyCount` is omitted. Photo and video bytes are never
-included.
+authors). Never includes `accountId`. Damus-only notes (`accountId` null)
+omit `role` and set `payable` false. `replyCount` is omitted. Photo and
+video bytes are never included.
 
 Non-UUID `:id` or missing row → **Response** `404`:
 

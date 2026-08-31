@@ -219,21 +219,21 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No `accountId` and no photo/video bytes in JSON; `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id
 
-- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Photo/video bytes are never included.
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included.
 - **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
 - **Used by:** App deep links / share URLs for one forum note.
 - **Auth:** none (public).
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Each item is public message JSON with `payable` false; Damus-only replies omit `role`.
+- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the parent is missing; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
 - **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.
@@ -275,7 +275,7 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, and the session account's live `role` (not wrapped). New notes have `sats` 0 and `payable` false until signed. Top-level creates may enqueue push; replies do not.
+- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped). New notes have `sats` 0 and `payable` false until signed. Top-level creates may enqueue push; replies do not.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer and reply composer.
 - **Auth:** `Authorization: Bearer` session.

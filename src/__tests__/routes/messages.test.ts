@@ -308,6 +308,7 @@ describe('GET /messages', () => {
     };
     expect(body.messages[0]?.payable).toBe(false);
     expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
     expect(body.messages[0]?.hasVideo).toBe(false);
   });
 });
@@ -403,7 +404,7 @@ describe('POST /messages', () => {
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
     expect(created.role).toBe('basis');
-    expect(created.accountId).toBeUndefined();
+    expect(created.accountId).toBe('acc');
     expect(created.id.length).toBeGreaterThan(8);
 
     const list = await app.request('/messages', { headers: AUTH });
@@ -2109,6 +2110,7 @@ describe('GET /messages/:id', () => {
     expect(body.role).toBe('basis');
     expect(body.payable).toBe(false);
     expect(body.hasVideo).toBe(false);
+    expect(body).not.toHaveProperty('accountId');
   });
 
   it('marks a signed note with a Lightning Address as payable', async () => {
@@ -2258,16 +2260,19 @@ describe('GET /messages/:id/replies', () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      messages: Array<{ text: string; role?: string; hasVideo: boolean }>;
+      messages: Array<{ text: string; role?: string; accountId?: string; hasVideo: boolean }>;
     };
     expect(body.messages).toHaveLength(3);
     expect(body.messages[0]?.text).toBe('from damus');
     expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
     expect(body.messages[0]?.hasVideo).toBe(false);
     expect(body.messages[1]?.text).toBe('member reply');
     expect(body.messages[1]?.role).toBe('basis');
+    expect(body.messages[1]?.accountId).toBe('acc');
     expect(body.messages[2]?.text).toBe('orphan reply');
     expect(body.messages[2]?.role).toBe('basis');
+    expect(body.messages[2]?.accountId).toBe('gone');
   });
 });
 

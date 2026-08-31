@@ -158,6 +158,31 @@ describe('serializeMessage', () => {
     const withoutCount = serializeMessage(row, false, undefined);
     expect(withoutCount).not.toHaveProperty('replyCount');
   });
+
+  it('includes accountId when requested for 21gifts authors and omits when null', () => {
+    const withAuthor: MessageRow = {
+      id: 'msg-5',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(withAuthor, false, 'basis', undefined, true).accountId).toBe('acc-1');
+    const damusOnly: MessageRow = {
+      id: 'msg-6',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(damusOnly, false, undefined, undefined, true)).not.toHaveProperty(
+      'accountId',
+    );
+  });
 });
 
 describe('unsignedNostrDefaults', () => {

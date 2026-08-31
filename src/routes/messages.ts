@@ -345,7 +345,7 @@ async function postMultipartMessage(
         logEvent('push.enqueue.failed');
       }
     }
-    return c.json(serializeMessage(created, false, account.role), 200);
+    return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
   } catch {
     logEvent('messages.create.failed');
     return c.json({ error: 'Messages are unavailable' }, 503);
@@ -404,7 +404,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const payable =
             row.eventId !== null && author !== undefined && author.lightningAddress !== null;
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          messages.push(serializeMessage(row, payable, role, row.replyCount));
+          messages.push(serializeMessage(row, payable, role, row.replyCount, true));
         }
         return c.json({ messages }, 200);
       } catch {
@@ -484,7 +484,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             logEvent('push.enqueue.failed');
           }
         }
-        return c.json(serializeMessage(created, false, account.role), 200);
+        return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
       } catch {
         logEvent('messages.create.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -516,12 +516,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const messages = [];
         for (const row of rows) {
           if (row.accountId === null) {
-            messages.push(serializeMessage(row, false, undefined));
+            messages.push(serializeMessage(row, false, undefined, undefined, true));
             continue;
           }
           const author = await deps.authStore.getAccount(row.accountId);
           const role = author?.role ?? 'basis';
-          messages.push(serializeMessage(row, false, role));
+          messages.push(serializeMessage(row, false, role, undefined, true));
         }
         return c.json({ messages }, 200);
       } catch {

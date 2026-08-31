@@ -90,10 +90,17 @@ export interface MessageRow {
   nostrAttempts: number;
 }
 
-/** Public JSON shape of a forum message (no `accountId`, no event id, no photo bytes). */
+/**
+ * Public JSON shape of a forum message (no event id, no photo bytes).
+ * Public GET omits `accountId`; signed-in list/replies/create may include it.
+ */
 export interface PublicMessage {
   /** Opaque unique message id. */
   id: string;
+  /**
+   * 21gifts author id; omitted for Damus-only rows and on public GET.
+   */
+  accountId?: string;
   /** Author display name at post time. */
   name: string;
   /** Message body (may be empty when `hasPhoto` or `hasVideo` is true). */
@@ -177,15 +184,18 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
  * @param replyCount - Optional reply count for top-level list rows.
+ * @param includeAccountId - When true, set `accountId` for 21gifts authors
+ * (`row.accountId !== null`). Public GET leaves this unset.
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
- * `videoContentType`; live `role` for 21gifts authors; no `accountId`);
- * `createdAt` ISO-8601. Never includes photo or video bytes.
+ * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
+ * when requested); `createdAt` ISO-8601. Never includes photo or video bytes.
  */
 export function serializeMessage(
   row: MessageRow,
   payable: boolean,
   role: AccountRole | undefined,
   replyCount?: number,
+  includeAccountId?: boolean,
 ): PublicMessage {
   const body: PublicMessage = {
     id: row.id,
@@ -203,6 +213,9 @@ export function serializeMessage(
   }
   if (replyCount !== undefined) {
     body.replyCount = replyCount;
+  }
+  if (includeAccountId === true && row.accountId !== null) {
+    body.accountId = row.accountId;
   }
   return body;
 }

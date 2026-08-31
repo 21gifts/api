@@ -10,7 +10,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
-import { RecordingQuerier } from '@/lib/nostr/query';
+import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -3764,10 +3764,18 @@ describe('runNostrWorkerTick', () => {
     await ensureAccountNostrKey(auth, 'nameless', KEK);
     const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const namelessPubkey = (await auth.getNostrPublicKey('nameless')) as string;
+    const memberReplyId = 'bb'.repeat(32);
+    const foreignParentId = '14'.repeat(32);
+    const selfId = '13'.repeat(32);
+    const origList = messages.listPublishedEventIds.bind(messages);
+    messages.listPublishedEventIds = async (limit: number) => {
+      const ids = await origList(limit);
+      return [...ids, selfId];
+    };
     const querier = new RecordingQuerier();
     querier.events = [
       {
-        id: 'bb'.repeat(32),
+        id: memberReplyId,
         pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId, '', 'reply']],
@@ -3801,6 +3809,78 @@ describe('runNostrWorkerTick', () => {
         created_at: 1_700_000_002,
         sig: '55'.repeat(32),
       },
+      {
+        id: '01'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 4,
+        tags: [['e', noteEventId]],
+        content: 'not kind 1',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '02'.repeat(32),
+        pubkey: '',
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'empty pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '03'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', foreignParentId]],
+        content: 'foreign parent',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: selfId,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', selfId]],
+        content: 'self parent',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: memberReplyId,
+        pubkey: accPubkey,
+        kind: 1,
+        tags: [['e', noteEventId, '', 'reply']],
+        content: 'member reply duplicate',
+        created_at: 1_700_000_003,
+        sig: 'cc'.repeat(32),
+      },
+      {
+        id: 1,
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'non-string id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      } as unknown as NostrEventFrame,
+      {
+        id: '05'.repeat(32),
+        pubkey: 1,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'non-string pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      } as unknown as NostrEventFrame,
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
     const replies = await messages.listReplies('m1');
@@ -3814,6 +3894,38 @@ describe('runNostrWorkerTick', () => {
     expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
+  });
+
+  it('skips inbound kind:1 when verifyKind1 returns false', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bad sig',
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: () => false,
+      }),
+    );
+    expect(await messages.listReplies('m1')).toHaveLength(0);
   });
 
   it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
