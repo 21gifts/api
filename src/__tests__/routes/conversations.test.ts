@@ -598,4 +598,28 @@ describe('POST /conversations/:id', () => {
     });
     expect(res.status).toBe(503);
   });
+
+  it('labels a platform thread 21.gifts when the counterpart has no name', async () => {
+    const store = await seeded('moderator');
+    await store.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
+    const conversations = new InMemoryConversationStore();
+    await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    const res = await mount(store, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    expect(body.conversations[0]?.name).toBe('21.gifts');
+  });
 });

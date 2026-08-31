@@ -276,6 +276,27 @@ describe('requestPayInvoice', () => {
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 
+  it('maps a non-ok invoice callback to unreachable', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          commentAllowed: 255,
+        });
+      }
+      return new Response('nope', { status: 502 });
+    };
+    const result = await requestPayInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      comment: COMMENT,
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
   it('maps a thrown fetch on the invoice callback to unreachable', async () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {

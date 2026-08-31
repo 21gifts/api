@@ -101,6 +101,18 @@ describe('probeNip57Mint', () => {
     expect(result).toBe('unreachable');
   });
 
+  it('returns unreachable when minSendable exceeds maxSendable', async () => {
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse(zapMeta({ minSendable: 5_000, maxSendable: 1_000 }));
+    const result = await probeNip57Mint({
+      address: ADDRESS,
+      recipientPubkey: PUBKEY,
+      sign: async () => ({}),
+      fetchImpl,
+    });
+    expect(result).toBe('unreachable');
+  });
+
   it('returns unreachable when nostrPubkey is blank', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse(zapMeta({ nostrPubkey: '   ' }));
     const result = await probeNip57Mint({

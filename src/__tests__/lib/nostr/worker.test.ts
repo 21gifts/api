@@ -3301,6 +3301,18 @@ describe('runNostrWorkerTick', () => {
 
   it('skips inbound DM query when no account has a pubkey', async () => {
     const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'anon',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
     const querier = new RecordingQuerier();
     querier.events = [
       {

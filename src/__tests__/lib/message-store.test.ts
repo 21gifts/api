@@ -186,6 +186,14 @@ describe('InMemoryMessageStore', () => {
     expect(replies.map((r) => r.id)).toEqual(['r1', 'r2']);
   });
 
+  it('breaks reply ties by id when createdAt matches', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    const same = new Date('2026-08-01T12:00:00.000Z');
+    await store.create({ ...LATE, id: 'rb', parentId: 'a', text: 'b', createdAt: same });
+    await store.create({ ...LATE, id: 'ra', parentId: 'a', text: 'a', createdAt: same });
+    expect((await store.listReplies('a')).map((r) => r.id)).toEqual(['ra', 'rb']);
+  });
+
   it('listPublishedEventIds returns top-level non-null event ids oldest-first', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
