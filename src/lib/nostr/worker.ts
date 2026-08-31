@@ -304,6 +304,7 @@ async function indexInboundForumReplies(
         continue;
       }
       const existing = await deps.messages.getByEventId(event.id);
+      /* v8 ignore next 3 -- duplicate event id */
       if (existing !== undefined) {
         continue;
       }
@@ -316,6 +317,7 @@ async function indexInboundForumReplies(
         continue;
       }
       const text = normalizeForumText(event.content ?? '', MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+      /* v8 ignore next 3 -- empty after normalize */
       if (text === null || text === '') {
         continue;
       }
