@@ -1071,4 +1071,41 @@ describe('debugRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
     expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
   });
+
+  it('POST returns 400 without creating earlier new addresses when a later probe fails', async () => {
+    const store = new InMemoryAuthStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/other')) {
+        return new Response(null, { status: 500 });
+      }
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({ pr: 'lnbc10n1ptest' });
+    };
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          { name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' },
+          { name: 'Bob', lightningAddress: 'other@walletofsatoshi.com' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+    expect(await store.getAccountByLightningAddress('other@walletofsatoshi.com')).toBeUndefined();
+  });
 });

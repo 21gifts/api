@@ -45,7 +45,10 @@ export interface ConversationStore {
    */
   openMemberMember(accountA: string, accountB: string, now: Date): Promise<ConversationThread>;
 
-  /** Open or return the member→platform thread. */
+  /**
+   * Open or return the member→platform thread. When an existing thread's
+   * `accountB` is not `platformId`, update it to the current platform id.
+   */
   openMemberPlatform(memberId: string, platformId: string, now: Date): Promise<ConversationThread>;
 
   /** Open or return the member↔Damus thread. */
@@ -233,6 +236,9 @@ export class InMemoryConversationStore implements ConversationStore {
       (thread) => thread.kind === 'member_platform' && thread.accountA === memberId,
     );
     if (existing !== undefined) {
+      if (existing.accountB !== platformId) {
+        existing.accountB = platformId;
+      }
       return Promise.resolve(this.#hydrate(existing));
     }
     return Promise.resolve(
@@ -537,7 +543,7 @@ export class PostgresConversationStore implements ConversationStore {
     );
     const found = existing[0];
     if (found !== undefined) {
-      return mapThread(found);
+      return alignMemberPlatformAccountB(this.#sql, found, platformId);
     }
     const id = crypto.randomUUID();
     try {
@@ -560,7 +566,7 @@ export class PostgresConversationStore implements ConversationStore {
     if (row === undefined) {
       throw new Error('conversation open failed');
     }
-    return mapThread(row);
+    return alignMemberPlatformAccountB(this.#sql, row, platformId);
   }
 
   async openMemberDamus(
@@ -827,6 +833,22 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     name: '',
     lastText: row.last_text ?? '',
   };
+}
+
+/** Point an existing member→platform thread at the current platform account. */
+async function alignMemberPlatformAccountB(
+  sql: SqlClient,
+  row: ConversationSqlRow,
+  platformId: string,
+): Promise<ConversationThread> {
+  if (row.account_b === platformId) {
+    return mapThread(row);
+  }
+  await sql.execute(
+    `UPDATE conversation SET account_b = $1 WHERE id = $2 AND kind = 'member_platform'`,
+    [platformId, row.id],
+  );
+  return mapThread({ ...row, account_b: platformId });
 }
 
 function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {

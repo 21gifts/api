@@ -38,7 +38,7 @@ api/
 │   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
-│   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id role or unlink (DEBUG_TOKEN)
+│   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id role, unlink, and/or platform (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; GET /debug/zap-ingests (DEBUG_TOKEN)
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
@@ -46,7 +46,7 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
+│   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   └── conversations.ts  # GET/POST /conversations, GET/POST /conversations/:id
@@ -57,6 +57,7 @@ api/
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
 │   │   ├── video.ts          # Forum video magic-bytes, MEDIA_DIR, Range parse, disk stream
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
+│   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
@@ -135,6 +136,7 @@ api/
 │       │   ├── message.test.ts
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
+│       │   ├── nip57-probe.test.ts
 │       │   ├── message-store.test.ts
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
 │       │   ├── contact.test.ts
@@ -289,6 +291,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresMessageStore`, `migrateMessageSchema`,
 `PostgresContactStore`, `migrateContactSchema`,
+`PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`, `migrateDbChangeSchema`,
 `DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,

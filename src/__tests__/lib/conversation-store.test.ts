@@ -116,6 +116,22 @@ describe('InMemoryConversationStore', () => {
     expect((await store.openMemberDamus('mem', 'aa'.repeat(32), NOW)).id).toBe(damus.id);
   });
 
+  it('openMemberPlatform updates accountB when the platform id changes', async () => {
+    const store = new InMemoryConversationStore([
+      thread({
+        id: 'c-plat',
+        kind: 'member_platform',
+        accountA: 'mem',
+        accountB: 'old-plat',
+      }),
+    ]);
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    expect(opened.id).toBe('c-plat');
+    expect(opened.accountB).toBe('plat');
+    expect((await store.getById('c-plat'))?.accountB).toBe('plat');
+    expect((await store.openMemberPlatform('mem', 'plat', NOW)).accountB).toBe('plat');
+  });
+
   it('appends messages, hydrates lastText, and copies so callers cannot mutate', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
@@ -311,6 +327,30 @@ describe('PostgresConversationStore', () => {
     const opened = await store.openMemberMember('a', 'b', NOW);
     expect(opened.id).toBe('c-new');
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation/);
+  });
+
+  it('openMemberPlatform updates account_b when the platform id changes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'c1',
+        kind: 'member_platform',
+        account_a: 'mem',
+        account_b: 'old-plat',
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: 'hi',
+      },
+    ];
+    const store = new PostgresConversationStore(sql);
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    expect(opened.id).toBe('c1');
+    expect(opened.accountB).toBe('plat');
+    expect(opened.lastText).toBe('hi');
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/UPDATE conversation SET account_b/);
+    expect(sql.executes[0]?.params).toEqual(['plat', 'c1']);
   });
 
   it('openMemberPlatform and openMemberDamus return existing rows without inserting', async () => {

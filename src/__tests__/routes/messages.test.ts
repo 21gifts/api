@@ -603,6 +603,71 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
+  it('posts a reply to a top-level note via inReplyTo', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { text: string };
+    expect(created.text).toBe('child');
+    const replies = await messageStore.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.parentId).toBe(parentId);
+    expect(replies[0]?.text).toBe('child');
+  });
+
+  it('returns 404 when inReplyTo is a nested reply', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const childId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'nested', inReplyTo: childId }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await messageStore.listReplies(childId)).toHaveLength(0);
+  });
+
   it('posts a photo-only message and serves the bytes', async () => {
     const app = mount(await namedStore('Ada'));
     const post = await app.request('/messages', {

@@ -60,11 +60,12 @@ export interface ViewProfileResponse {
 }
 
 /**
- * Project an account to the nine-field debug listing shape.
+ * Project an account to the nine-field public JSON shape.
  *
- * Used by `GET /debug/accounts` and `PATCH /debug/accounts/:id` only.
- * Does not include `viewKey`.
- * Owner responses use {@link serializeOwnerAccount} instead.
+ * Shared by {@link serializeDebugAccount} and {@link serializeOwnerAccount}.
+ * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
+ * {@link serializeDebugAccount}, not this function. Does not include
+ * `viewKey` or `isPlatform`.
  *
  * @param account - Stored account.
  * @returns The nine public fields only.

@@ -177,7 +177,7 @@
 
 ## Function: PostgresConversationStore
 
-- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, append messages, claim unsigned/unpublished wraps, unique `event_id`.
+- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -242,7 +242,7 @@
 
 - **Purpose:** Operator listing, provisioning, role assignment, and Lightning Address unlink for registered accounts.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken.
-- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role. Never logs the token or the previous address.
+- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` (no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); probes **all** new addresses first (`probeNip57Mint`); any `not_zap` / `unreachable` is 400 and no new address in that request is saved; name-only updates run only after every probe has passed; 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress` (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` → 400 unknown/missing; 404 missing account; 200 `serializeAccount` of the updated row; unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role. Never logs the token or the previous address.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -395,7 +395,7 @@
 ## Function: InMemoryConversationStore
 
 - **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database.
-- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `listVisible` is newest `lastMessageAt` then `id` DESC.
+- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `listVisible` is newest `lastMessageAt` then `id` DESC.
 - **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `eventId` append returns the existing row. No I/O.
 - **Used by:** `createApp` default `conversationStore`.
 
@@ -597,9 +597,9 @@
 
 ## Function: contactRoutes
 
-- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name. Also opens/appends the member→platform conversation thread (working inbox).
+- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name. After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread (working inbox). Conversation append failure logs `conversations.contact_sync.failed` and still 200.
 - **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account; 503 Contact is unavailable on store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). Public JSON omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: conversationRoutes
@@ -639,9 +639,9 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, and live author role.
-- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, and `role` (`AccountRole`).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType, role }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `accountId` omitted; never photo/video bytes. No I/O.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, live author role, and optional `replyCount`.
+- **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, optional `role` (`AccountRole`; omitted for Damus-only authors), and optional `replyCount` (top-level `GET /messages` list rows).
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `role` omitted when undefined; `replyCount` omitted when undefined; `accountId` omitted; never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
 
 ## Function: serializeConversation
@@ -1041,7 +1041,7 @@
 - **Purpose:** Short npub-style label for Damus authors without a 21.gifts account.
 - **Inputs:** hex pubkey.
 - **Returns / side effects:** Truncated display string.
-- **Used by:** Inbound forum replies.
+- **Used by:** Inbound forum replies; conversation display names (`GET /conversations` Damus-only counterparts).
 
 ## Function: signEventForAccount
 

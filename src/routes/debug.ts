@@ -4,7 +4,7 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -101,31 +101,20 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
         accounts.push({ name, lightningAddress });
       }
-      let created = 0;
-      let updated = 0;
-      const results: Array<{
+      const classified: Array<{
         name: string;
         lightningAddress: string;
-        viewKey: string;
-        created: boolean;
+        existing: Account | undefined;
       }> = [];
       for (const row of accounts) {
-        const found = await deps.store.getAccountByLightningAddress(row.lightningAddress);
-        if (found !== undefined) {
-          const named = await deps.store.updateAccountNameByLightningAddress(
-            row.lightningAddress,
-            row.name,
-          );
-          if (named === undefined || named.name !== row.name) {
-            return c.json({ error: 'Could not save the account' }, 500);
-          }
-          updated += 1;
-          results.push({
-            name: named.name,
-            lightningAddress: named.lightningAddress ?? row.lightningAddress,
-            viewKey: named.viewKey,
-            created: false,
-          });
+        classified.push({
+          name: row.name,
+          lightningAddress: row.lightningAddress,
+          existing: await deps.store.getAccountByLightningAddress(row.lightningAddress),
+        });
+      }
+      for (const row of classified) {
+        if (row.existing !== undefined) {
           continue;
         }
         const ephemeral = generateSecretKey();
@@ -144,6 +133,33 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
         if (probe === 'unreachable') {
           return c.json({ error: 'Lightning Address could not be resolved' }, 400);
+        }
+      }
+      let created = 0;
+      let updated = 0;
+      const results: Array<{
+        name: string;
+        lightningAddress: string;
+        viewKey: string;
+        created: boolean;
+      }> = [];
+      for (const row of classified) {
+        if (row.existing !== undefined) {
+          const named = await deps.store.updateAccountNameByLightningAddress(
+            row.lightningAddress,
+            row.name,
+          );
+          if (named === undefined || named.name !== row.name) {
+            return c.json({ error: 'Could not save the account' }, 500);
+          }
+          updated += 1;
+          results.push({
+            name: named.name,
+            lightningAddress: named.lightningAddress ?? row.lightningAddress,
+            viewKey: named.viewKey,
+            created: false,
+          });
+          continue;
         }
         const viewKey = randomHex(32);
         await deps.store.createAccount({

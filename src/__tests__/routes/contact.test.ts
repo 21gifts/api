@@ -237,13 +237,15 @@ describe('POST /contact', () => {
   });
 
   it('returns 503 when no platform account is configured', async () => {
-    const res = await mount(await namedStore('Ada')).request('/contact', {
+    const contacts = new InMemoryContactStore();
+    const res = await mount(await namedStore('Ada'), contacts).request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Platform account is not configured' });
+    expect(await contacts.listLatest(10)).toEqual([]);
   });
 
   it('accepts a newline in text', async () => {
@@ -255,6 +257,21 @@ describe('POST /contact', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { text: string };
     expect(body.text).toBe('hello\nworld');
+  });
+
+  it('returns 503 when listing accounts throws before contact create', async () => {
+    const authStore = await namedStoreWithPlatform('Ada');
+    vi.spyOn(authStore, 'listAccounts').mockRejectedValue(new Error('list boom'));
+    const contacts = new InMemoryContactStore();
+    const res = await mount(authStore, contacts).request('/contact', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Contact is unavailable' });
+    expect(await contacts.listLatest(10)).toEqual([]);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'contact.create.failed')).toBe(true);
   });
 
   it('returns 503 and logs when create throws', async () => {
@@ -272,5 +289,29 @@ describe('POST /contact', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Contact is unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'contact.create.failed')).toBe(true);
+  });
+
+  it('returns 200 and logs when conversation append fails after contact create', async () => {
+    const contacts = new InMemoryContactStore();
+    const conversations = new InMemoryConversationStore();
+    vi.spyOn(conversations, 'appendMessage').mockRejectedValue(new Error('append boom'));
+    const res = await mount(await namedStoreWithPlatform('Ada'), contacts, conversations).request(
+      '/contact',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string };
+    expect(body.text).toBe('hi');
+    expect(await contacts.listLatest(10)).toHaveLength(1);
+    const threads = await conversations.listVisible('acc', false, 'plat', 10);
+    expect(threads).toHaveLength(1);
+    expect(await conversations.listMessages(threads[0]!.id, 10)).toHaveLength(0);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.contact_sync.failed')).toBe(
+      true,
+    );
   });
 });

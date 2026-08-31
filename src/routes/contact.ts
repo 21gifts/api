@@ -78,12 +78,25 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
       text,
       createdAt,
     };
+    let platform: Account | undefined;
     try {
       const accounts = await deps.authStore.listAccounts();
-      const platform = accounts.find((item) => item.isPlatform === true);
-      if (platform === undefined) {
-        return c.json({ error: 'Platform account is not configured' }, 503);
-      }
+      platform = accounts.find((item) => item.isPlatform === true);
+    } catch {
+      logEvent('contact.create.failed');
+      return c.json({ error: 'Contact is unavailable' }, 503);
+    }
+    if (platform === undefined) {
+      return c.json({ error: 'Platform account is not configured' }, 503);
+    }
+    let created: ContactRow;
+    try {
+      created = await deps.store.create(row);
+    } catch {
+      logEvent('contact.create.failed');
+      return c.json({ error: 'Contact is unavailable' }, 503);
+    }
+    try {
       const thread = await deps.conversationStore.openMemberPlatform(
         account.id,
         platform.id,
@@ -99,11 +112,9 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
         name: row.name,
         ...unsignedConversationDefaults(),
       });
-      const created = await deps.store.create(row);
-      return c.json(serializeContact(created), 200);
     } catch {
-      logEvent('contact.create.failed');
-      return c.json({ error: 'Contact is unavailable' }, 503);
+      logEvent('conversations.contact_sync.failed');
     }
+    return c.json(serializeContact(created), 200);
   });
 }
