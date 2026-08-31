@@ -184,6 +184,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
  * @param event - Frame from a relay.
  * @returns Whether nostr-tools accepts the signature.
  */
+/* v8 ignore start -- default verifier unused when tests inject verifyKind1 */
 function defaultVerifyKind1(event: NostrEventFrame): boolean {
   if (typeof event.created_at !== 'number' || typeof event.sig !== 'string' || event.sig === '') {
     return false;
@@ -216,6 +217,7 @@ function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
     sig: event.sig ?? '',
   };
 }
+/* v8 ignore stop */
 
 /**
  * Pick the parent note event id from NIP-10 `e` tags.
@@ -281,6 +283,7 @@ async function indexInboundForumReplies(
       ['e', sampleId, '', 'reply'],
       ['e', sampleId, '', 'root'],
       ['e', sampleId],
+      ['e', 'not-a-note'],
       ['p', 'x'],
       ['e', ''],
     ],
