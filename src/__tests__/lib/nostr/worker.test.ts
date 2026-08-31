@@ -3731,6 +3731,72 @@ describe('runNostrWorkerTick', () => {
       warn.mockRestore();
     }
   });
+
+  it('persists inbound kind:1 replies from members and Damus authors', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: accPubkey,
+        kind: 1,
+        tags: [['e', noteEventId, '', 'reply']],
+        content: 'member reply',
+        created_at: 1_700_000_000,
+        sig: 'cc'.repeat(32),
+      },
+      {
+        id: 'dd'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'damus reply',
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const replies = await messages.listReplies('m1');
+    expect(replies.map((row) => row.text).sort()).toEqual(['damus reply', 'member reply']);
+    expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
+    expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
+  });
+
+  it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    const origCreate = messages.create.bind(messages);
+    messages.create = async (row, photo, video) => {
+      if (row.parentId === 'm1') {
+        throw new Error('disk');
+      }
+      return origCreate(row, photo, video);
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'bb'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'x',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes('nostr.reply.inbound.failed')),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('startNostrWorker', () => {
