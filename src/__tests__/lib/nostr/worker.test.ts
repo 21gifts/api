@@ -3905,6 +3905,9 @@ describe('runNostrWorkerTick', () => {
       createdAt: 2,
       rulesAgreedAt: null,
     });
+    const origPubkey = auth.getNostrPublicKey.bind(auth);
+    auth.getNostrPublicKey = async (id: string): Promise<string | undefined> =>
+      id === 'nokey' ? '' : origPubkey(id);
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const querier = new RecordingQuerier();
