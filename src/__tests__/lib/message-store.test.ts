@@ -915,6 +915,24 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
   });
 
+  it('create binds JSON-stringified nostrEvent when present', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const nostrEvent = { id: 'evt', kind: 1 };
+    const row: MessageRow = {
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'signed',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      nostrEvent,
+    };
+    await store.create(row);
+    expect(sql.executes[0]?.params[13]).toBe(JSON.stringify(nostrEvent));
+  });
+
   it('create writes video bytes then binds video_content_type', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);

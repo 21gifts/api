@@ -160,6 +160,30 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.name).toBe('21.gifts');
   });
 
+  it('names a counterpart without a display name as member', async () => {
+    const auth = await seeded();
+    await auth.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'other'.padEnd(64, 'b'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: false,
+    });
+    const conversations = new InMemoryConversationStore();
+    await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('member');
+  });
+
   it('names a member_platform thread with a null platform party 21.gifts', async () => {
     const auth = await seeded();
     const conversations = new InMemoryConversationStore([
@@ -619,6 +643,24 @@ describe('POST /conversations/:id', () => {
     const body = (await res.json()) as { name: string; text: string };
     expect(body.name).toBe('21.gifts');
     expect(body.text).toBe('official');
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows[0]?.senderAccountId).toBe('plat');
+  });
+
+  it('lets staff reply on a member_member thread where the platform is a party as the platform', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('plat', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'official' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string };
+    expect(body.name).toBe('21.gifts');
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
   });

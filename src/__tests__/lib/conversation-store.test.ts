@@ -198,6 +198,19 @@ describe('InMemoryConversationStore', () => {
     expect(claimed.map((r) => r.id)).toEqual(['m-a']);
   });
 
+  it('orders messages by createdAt ascending when timestamps differ', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const laterAt = new Date(NOW.getTime() + 1000);
+    await store.appendMessage(
+      message({ id: 'later', conversationId: opened.id, text: 'later', createdAt: laterAt }),
+    );
+    await store.appendMessage(
+      message({ id: 'earlier', conversationId: opened.id, text: 'earlier', createdAt: NOW }),
+    );
+    expect((await store.listMessages(opened.id, 10)).map((r) => r.id)).toEqual(['earlier', 'later']);
+  });
+
   it('caps listVisible at limit and breaks ties by id descending', async () => {
     const highId = thread({
       id: 'z',

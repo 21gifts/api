@@ -465,4 +465,52 @@ describe('requestZapInvoice', () => {
     });
     expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: {} });
   });
+
+  it('returns unreachable with lnurlResponse null when the callback fetch throws', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      throw new Error('callback down');
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
+  });
+
+  it('returns unreachable with lnurlResponse null when the callback json() throws', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return {
+        json: async () => {
+          throw new Error('not json');
+        },
+      } as Response;
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
+  });
 });
