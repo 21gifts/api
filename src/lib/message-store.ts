@@ -116,7 +116,8 @@ export interface MessageStore {
   getByEventId(eventId: string): Promise<MessageRow | undefined>;
 
   /**
-   * Published note event ids (non-null) for inbound reply REQ, oldest first.
+   * Published note event ids (non-null) for inbound reply REQ, newest first.
+   * Top-level only (`parentId` null).
    *
    * @param limit - Max ids.
    * @returns Event id strings.
@@ -159,6 +160,7 @@ export interface MessageStore {
    * Video rows (poster JPEG stored as `photo`) are excluded — their kind:1
    * content has `/video.`, not `/photo.`. Top-level only (`parentId` null) so
    * a reply with a photo is not re-signed (that would mint a new kind:1 id).
+   * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
@@ -170,6 +172,7 @@ export interface MessageStore {
   /**
    * Published rows with a video whose kind:1 content lacks the public video URL.
    * Top-level only (`parentId` null) so a reply with a video is not re-signed.
+   * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
    * Oldest `createdAt` then `id` first.
@@ -181,7 +184,9 @@ export interface MessageStore {
   /**
    * Published rows whose kind:1 content lacks a `#21gifts` or `#bitcoin` token
    * (case-insensitive; next character must not be `[A-Za-z0-9_]`, so
-   * `#bitcoiners` still lacks `#bitcoin`). `sats = 0` only (zapped rows keep
+   * `#bitcoiners` still lacks `#bitcoin`). Top-level only (`parentId` null);
+   * parents that already have a child row are skipped so NIP-10 `e` tags stay
+   * valid. `sats = 0` only (zapped rows keep
    * their event id). Pending rows are left for fan-out — resetting them
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
    * first. Includes `nostrEvent === null` and non-string content.
@@ -192,7 +197,8 @@ export interface MessageStore {
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
-   * No-op unless `eventId` still matches `expectedEventId` and `sats` is 0.
+   * No-op unless `eventId` still matches `expectedEventId`, `sats` is 0, and
+   * the note has no child replies.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
