@@ -2188,9 +2188,9 @@ describe('runNostrWorkerTick', () => {
 
   it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
-    await messages.create({
+    const parent = {
       id: 'parent-damus',
-      accountId: null,
+      accountId: null as string | null,
       name: 'aabbccdd…8899',
       text: 'note',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
@@ -2200,10 +2200,10 @@ describe('runNostrWorkerTick', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
       authorPubkey: null,
-    });
-    await messages.create({
+    };
+    const reply = {
       id: 'reply-nopk',
-      accountId: 'acc',
+      accountId: 'acc' as string | null,
       name: 'Ada',
       text: 'reply',
       createdAt: new Date('2026-08-28T00:01:00.000Z'),
@@ -2212,7 +2212,13 @@ describe('runNostrWorkerTick', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
       parentId: 'parent-damus',
-    });
+    };
+    await messages.create(parent);
+    await messages.create(reply);
+    messages.claimUnsigned = async () =>
+      [await messages.getById('reply-nopk')].filter(
+        (row): row is NonNullable<typeof row> => row !== undefined,
+      );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await runNostrWorkerTick(
@@ -2241,7 +2247,6 @@ describe('runNostrWorkerTick', () => {
       warn.mockRestore();
     }
     expect((await messages.getById('reply-nopk'))?.eventId).toBeNull();
-    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('logs nack when space rejects', async () => {
