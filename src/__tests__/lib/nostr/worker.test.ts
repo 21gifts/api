@@ -3893,6 +3893,18 @@ describe('runNostrWorkerTick', () => {
 
   it('skips inbound frames that are not a signed kind:1 note', async () => {
     const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'nokey',
+      linkingKey: null,
+      role: 'basis',
+      name: 'NoKey',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const querier = new RecordingQuerier();
