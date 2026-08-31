@@ -642,6 +642,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.hasVideo !== true &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
@@ -664,6 +665,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.videoContentType !== undefined &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingVideoUrl(row.nostrEvent, row.id),
       )
       .sort((left, right) => {
@@ -683,6 +685,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.eventId !== null &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingHashtags(row.nostrEvent),
       )
       .sort((left, right) => {
@@ -1138,6 +1141,7 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE parent_id IS NULL AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (video_content_type IS NULL OR video_content_type = '')
          AND (
            nostr_event IS NULL
@@ -1158,6 +1162,7 @@ export class PostgresMessageStore implements MessageStore {
          AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
          AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
            OR COALESCE(nostr_event->>'content', '') NOT LIKE '%/messages/' || id::text || '/video.%'
@@ -1175,6 +1180,7 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE parent_id IS NULL AND event_id IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'

@@ -594,6 +594,24 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain('reply');
   });
 
+  it('listSignedMissingHashtags skips parents that already have replies', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'parent without tags' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      id: 'child',
+      parentId: 'a',
+      eventId: 'bb'.repeat(32),
+      text: 'child',
+    });
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).not.toContain('a');
+  });
+
   it('listSignedMissingHashtags skips replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -1269,6 +1287,7 @@ describe('PostgresMessageStore', () => {
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/parent_id IS NULL/);
+    expect(listSql).toMatch(/NOT EXISTS/);
     expect(listSql).toMatch(/photo IS NOT NULL/);
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
@@ -1300,6 +1319,7 @@ describe('PostgresMessageStore', () => {
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/parent_id IS NULL/);
+    expect(listSql).toMatch(/NOT EXISTS/);
     expect(listSql).toMatch(
       /video_content_type IN \('video\/mp4', 'video\/webm', 'video\/quicktime'\)/,
     );
@@ -1328,6 +1348,7 @@ describe('PostgresMessageStore', () => {
     expect(missing[0]?.id).toBe('m1');
     const listSql = sql.queries.at(-1)?.text ?? '';
     expect(listSql).toMatch(/sats = 0/);
+    expect(listSql).toMatch(/NOT EXISTS/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
     expect(listSql).toMatch(/jsonb_typeof\(nostr_event->'content'\) IS DISTINCT FROM 'string'/);
     expect(listSql).toContain('#21gifts([^a-z0-9_]|$)');
