@@ -204,6 +204,7 @@ function defaultVerifyKind1(event: NostrEventFrame): boolean {
     return false;
   }
 }
+/* v8 ignore stop */
 
 /** Project a queried kind:1 frame to the JSON object stored on the reply row. */
 function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
@@ -217,7 +218,6 @@ function kind1Frame(event: NostrEventFrame): Record<string, unknown> {
     sig: event.sig ?? '',
   };
 }
-/* v8 ignore stop */
 
 /**
  * Pick the parent note event id from NIP-10 `e` tags.
@@ -277,23 +277,6 @@ async function indexInboundForumReplies(
   }
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
-  const sampleId = noteEventIds[0];
-  /* v8 ignore next 3 -- list length already checked */
-  if (sampleId === undefined) {
-    return;
-  }
-  void pickParentNoteEventId(
-    [
-      ['e', sampleId, '', 'reply'],
-      ['e', sampleId, '', 'root'],
-      ['e', sampleId],
-      ['e', 'not-a-note'],
-      ['p', 'x'],
-      ['e', ''],
-    ],
-    noteIdSet,
-  );
-  /* v8 ignore start -- inbound kind:1 ingest; unit querier is shared with zap-index */
   const accounts = await deps.auth.listAccounts();
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
   for (const account of accounts) {
@@ -379,7 +362,6 @@ async function indexInboundForumReplies(
       }
     }
   }
-  /* v8 ignore stop */
 }
 
 /**
@@ -471,7 +453,6 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
         }
       }
       let replyTo: Kind1ReplyTo | undefined;
-      /* v8 ignore start -- reply signing when parent event or author pubkey is missing */
       if (row.parentId !== null) {
         const parent = await deps.messages.getById(row.parentId);
         if (parent === undefined || parent.eventId === null) {
@@ -491,7 +472,6 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           noteAuthorPubkey,
         };
       }
-      /* v8 ignore stop */
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           photo === undefined

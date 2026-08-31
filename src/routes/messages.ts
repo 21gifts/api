@@ -403,7 +403,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
           const payable =
             row.eventId !== null && author !== undefined && author.lightningAddress !== null;
-          const role = author?.role ?? 'basis';
+          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           messages.push(serializeMessage(row, payable, role, row.replyCount));
         }
         return c.json({ messages }, 200);

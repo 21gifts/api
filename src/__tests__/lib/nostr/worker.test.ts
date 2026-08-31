@@ -2172,21 +2172,22 @@ describe('runNostrWorkerTick', () => {
       const claimed = await inner(limit, nowMs, leaseMs);
       return reply === undefined ? claimed : [reply, ...claimed];
     };
-    await runNostrWorkerTick(
-      deps({
-        messages,
-        auth,
-        kek: KEK,
-        publisher: new RecordingPublisher(),
-        now: () => 1_700_000_000_000,
-        env: {},
-      }),
-    );
+    const tickDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    await runNostrWorkerTick(tickDeps);
     expect((await messages.getById('reply-wait'))?.eventId).toBeNull();
     expect((await messages.getById('parent-unsigned'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    await runNostrWorkerTick(tickDeps);
+    expect((await messages.getById('reply-wait'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it.skip('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
+  it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
     const parent = {
       id: 'parent-damus',
@@ -3732,7 +3733,7 @@ describe('runNostrWorkerTick', () => {
     }
   });
 
-  it.skip('persists inbound kind:1 replies from members and Damus authors', async () => {
+  it('persists inbound kind:1 replies from members and Damus authors', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
@@ -3764,7 +3765,7 @@ describe('runNostrWorkerTick', () => {
     expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
   });
 
-  it.skip('logs inbound.failed when persisting a kind:1 reply throws', async () => {
+  it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });

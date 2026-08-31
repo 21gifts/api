@@ -287,7 +287,7 @@ describe('GET /messages', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.list.failed')).toBe(true);
   });
 
-  it('lists a Damus-only note as not payable with a basis role', async () => {
+  it('lists a Damus-only note as not payable with role omitted', async () => {
     const authStore = await seededStore();
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -304,10 +304,10 @@ describe('GET /messages', () => {
     const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      messages: Array<{ payable: boolean; role: string; hasVideo: boolean }>;
+      messages: Array<{ payable: boolean; role?: string; hasVideo: boolean }>;
     };
     expect(body.messages[0]?.payable).toBe(false);
-    expect(body.messages[0]?.role).toBe('basis');
+    expect(body.messages[0]).not.toHaveProperty('role');
     expect(body.messages[0]?.hasVideo).toBe(false);
   });
 });
