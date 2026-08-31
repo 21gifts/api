@@ -248,7 +248,10 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
-  app.route('/debug/accounts', debugRoutes({ store, debugToken, fetchImpl, conversationStore }));
+  app.route(
+    '/debug/accounts',
+    debugRoutes({ store, debugToken, fetchImpl, conversationStore, now }),
+  );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route(

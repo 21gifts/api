@@ -56,6 +56,13 @@
 - **Used by:** Operator provisioning before passkey claim.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/accounts/:id/session
+
+- **Purpose:** Operator mint of a member bearer session for the given account id. Response `{ token }`. For e2e and operator debugging only — not a member login path.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when the account id is unknown.
+- **Used by:** Playwright e2e against the booted process; operators reproducing member HTTP.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: PATCH /debug/accounts/:id
 
 - **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, and/or the official platform flag. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`; no `viewKey`). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
@@ -233,7 +240,7 @@
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
+- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the parent is missing; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
 - **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.

@@ -4,6 +4,7 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
@@ -34,6 +35,8 @@ export interface DebugRouteDeps {
    * member→platform thread at the new official account.
    */
   conversationStore?: ConversationStore;
+  /** Clock for minted debug sessions. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
@@ -83,7 +86,7 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
  * Build the `/debug/accounts` route group.
  *
  * @param deps - Store, optional debug token, and required `fetchImpl` for the NIP-57 mint probe.
- * @returns A Hono app exposing `GET /`, `POST /`, and `PATCH /:id`.
+ * @returns A Hono app exposing `GET /`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
@@ -261,5 +264,15 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         await deps.conversationStore.retargetMemberPlatform(updated.id);
       }
       return c.json(serializeDebugAccount(updated), 200);
+    })
+    .post('/:id/session', async (c) => {
+      const existing = await deps.store.getAccount(c.req.param('id'));
+      if (existing === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const now = deps.now ?? Date.now;
+      const minted = await issueSession(deps.store, now(), existing);
+      logEvent('debug.accounts.session_minted', { accountId: existing.id });
+      return c.json({ token: minted.token }, 200);
     });
 }

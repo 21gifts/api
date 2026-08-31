@@ -365,6 +365,44 @@ describe('debugRoutes', () => {
     expect((await conversations.getById(opened.id))?.accountB).toBe('acc');
   });
 
+  it('POST /:id/session mints a bearer the account can use', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const missing = await app.request('/debug/accounts/missing/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(missing.status).toBe(404);
+    const res = await app.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string };
+    expect(body.token.length).toBeGreaterThan(8);
+    expect((await store.getSession(body.token))?.accountId).toBe('acc');
+  });
+
   it('PATCH clears the Lightning Address and verification flag', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
