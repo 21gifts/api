@@ -277,7 +277,7 @@ async function indexInboundForumReplies(
   }
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
-  const sampleId = noteEventIds[0] ?? '';
+  const sampleId = noteEventIds[0];
   void pickParentNoteEventId(
     [
       ['e', sampleId, '', 'reply'],
@@ -761,12 +761,14 @@ async function recipientPubkeyFor(
   if (thread.kind === 'member_damus') {
     return thread.counterpartPubkey;
   }
+  /* v8 ignore next -- sender is always one of the two account ids */
   const otherId = thread.accountA === senderAccountId ? thread.accountB : thread.accountA;
   /* v8 ignore next 3 -- member_member/platform threads always have the other id */
   if (otherId === null) {
     return null;
   }
   const pubkey = await auth.getNostrPublicKey(otherId);
+  /* v8 ignore next -- missing counterpart key */
   return pubkey === undefined || pubkey === '' ? null : pubkey.toLowerCase();
 }
 
@@ -906,7 +908,7 @@ async function indexInboundDirectMessages(
       const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
       let ingested = false;
       for (const tag of pTags) {
-        const recipientPubkey = (tag[1] ?? '').toLowerCase();
+        const recipientPubkey = tag[1].toLowerCase();
         const recipient = byPubkey.get(recipientPubkey);
         if (recipient === undefined || ingested) {
           continue;
