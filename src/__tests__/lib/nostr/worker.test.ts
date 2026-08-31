@@ -3905,9 +3905,21 @@ describe('runNostrWorkerTick', () => {
       createdAt: 2,
       rulesAgreedAt: null,
     });
+    await auth.createAccount({
+      id: 'emptykey',
+      linkingKey: null,
+      role: 'basis',
+      name: 'EmptyKey',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
     const origPubkey = auth.getNostrPublicKey.bind(auth);
     auth.getNostrPublicKey = async (id: string): Promise<string | undefined> =>
-      id === 'nokey' ? '' : origPubkey(id);
+      id === 'emptykey' ? '' : origPubkey(id);
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const querier = new RecordingQuerier();
