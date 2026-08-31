@@ -3849,6 +3849,48 @@ describe('runNostrWorkerTick', () => {
     expect(second).toHaveLength(1);
   });
 
+  it('skips a duplicate kind:1 event id in the same query batch', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    const eventId = 'dd'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const frame = {
+      id: eventId,
+      pubkey: 'ee'.repeat(32),
+      kind: 1,
+      tags: [['e', noteEventId]],
+      content: 'damus reply',
+      created_at: 1_700_000_000,
+      sig: 'ff'.repeat(32),
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [frame, { ...frame, tags: [['e', noteEventId]] }];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(
+      (await messages.listReplies('m1')).filter((row) => row.eventId === eventId),
+    ).toHaveLength(1);
+  });
+
+  it('skips inbound kind:1 with empty content', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'cc'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: '   ',
+        created_at: 1_700_000_000,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
   it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
