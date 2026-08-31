@@ -309,16 +309,21 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (four fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (five fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
   "name": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
-  "createdAt": 0
+  "createdAt": 0,
+  "hasPasskey": false
 }
 ```
+
+`hasPasskey` is `true` when the account has at least one passkey credential,
+otherwise `false`. Clients use it to show an activation banner only while the
+profile is still unclaimed.
 
 ### `POST /me/name`
 

@@ -35,6 +35,7 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
     if (account === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
-    return c.json(serializeViewProfile(account), 200);
+    const hasPasskey = await deps.store.accountHasPasskey(account.id);
+    return c.json(serializeViewProfile(account, hasPasskey), 200);
   });
 }

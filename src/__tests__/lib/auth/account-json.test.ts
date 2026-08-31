@@ -61,18 +61,23 @@ describe('serializeOwnerAccount', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly four public profile fields', () => {
-    const json = serializeViewProfile(account);
+  it('emits exactly five public profile fields', () => {
+    const json = serializeViewProfile(account, false);
     expect(json).toEqual({
       name: 'Ada',
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
       createdAt: 1,
+      hasPasskey: false,
     });
     expect(json).not.toHaveProperty('id');
     expect(json).not.toHaveProperty('linkingKey');
     expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
-    expect(Object.keys(json)).toHaveLength(4);
+    expect(Object.keys(json)).toHaveLength(5);
+  });
+
+  it('passes through hasPasskey true', () => {
+    expect(serializeViewProfile(account, true).hasPasskey).toBe(true);
   });
 });
