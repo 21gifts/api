@@ -55,6 +55,8 @@ export interface ViewProfileResponse {
   lightningAddressVerified: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
+  /** True when the account has at least one passkey credential. */
+  hasPasskey: boolean;
 }
 
 /**
@@ -104,13 +106,18 @@ export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
  * Omits `id`, `linkingKey`, `role`, and `viewKey`.
  *
  * @param account - Stored account.
- * @returns Four public profile fields.
+ * @param hasPasskey - Whether the account already has a passkey credential.
+ * @returns Five public profile fields.
  */
-export function serializeViewProfile(account: Account): ViewProfileResponse {
+export function serializeViewProfile(
+  account: Account,
+  hasPasskey: boolean,
+): ViewProfileResponse {
   return {
     name: account.name,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
     createdAt: account.createdAt,
+    hasPasskey,
   };
 }
