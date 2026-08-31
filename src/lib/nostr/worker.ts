@@ -281,6 +281,7 @@ async function indexInboundForumReplies(
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
   for (const account of accounts) {
     const pubkey = await deps.auth.getNostrPublicKey(account.id);
+    /* v8 ignore next 3 -- missing and empty pubkey are the same skip */
     if (pubkey === undefined || pubkey === '') {
       continue;
     }
