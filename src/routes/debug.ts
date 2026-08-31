@@ -76,7 +76,7 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
 /**
  * Build the `/debug/accounts` route group.
  *
- * @param deps - Shared store and optional debug token.
+ * @param deps - Store, optional debug token, and required `fetchImpl` for the NIP-57 mint probe.
  * @returns A Hono app exposing `GET /`, `POST /`, and `PATCH /:id`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
