@@ -2816,6 +2816,17 @@ describe('runNostrWorkerTick', () => {
         conversations,
       }),
     );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
     const wrap = publisher.calls.find((call) => call.event['kind'] === 1059)?.event;
     expect(wrap).toBeDefined();
     const ciphertext = await auth.getNostrSecret('plat');
@@ -2889,6 +2900,17 @@ describe('runNostrWorkerTick', () => {
         kek: KEK,
         publisher,
         now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
         env,
         conversations,
       }),
