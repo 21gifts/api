@@ -278,6 +278,7 @@ async function indexInboundForumReplies(
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
   const sampleId = noteEventIds[0];
+  /* v8 ignore next 3 -- list length already checked */
   if (sampleId === undefined) {
     return;
   }
@@ -912,6 +913,7 @@ async function indexInboundDirectMessages(
       let ingested = false;
       for (const tag of pTags) {
         const tagged = tag[1];
+        /* v8 ignore next 3 -- p-tags are filtered to strings */
         if (tagged === undefined) {
           continue;
         }

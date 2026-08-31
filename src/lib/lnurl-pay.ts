@@ -186,9 +186,6 @@ async function fetchJsonRaw(
   } catch {
     return null;
   }
-  if (!response.ok) {
-    return null;
-  }
   let body: unknown;
   try {
     body = await response.json();

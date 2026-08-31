@@ -248,10 +248,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const staffOnPlatform =
-          thread.kind === 'member_platform' &&
           isStaffRole(account.role) &&
           platform !== undefined &&
-          account.id !== thread.accountA;
+          account.id !== platform.id &&
+          (thread.kind === 'member_platform' ||
+            thread.accountA === platform.id ||
+            thread.accountB === platform.id);
         const sender: Account = staffOnPlatform && platform !== undefined ? platform : account;
         const senderName = sender.name?.trim() ?? '';
         if (!staffOnPlatform && senderName === '') {
