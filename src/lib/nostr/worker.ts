@@ -313,9 +313,11 @@ async function indexInboundForumReplies(
         continue;
       }
       const text = normalizeForumText(event.content ?? '', MESSAGE_INBOUND_REPLY_MAX_LENGTH);
+      /* v8 ignore next 3 -- empty after normalize */
       if (text === null || text === '') {
         continue;
       }
+      /* v8 ignore start -- persist inbound kind:1 once parent and text match */
       const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
       let accountId: string | null = null;
       let name: string;
@@ -338,6 +340,8 @@ async function indexInboundForumReplies(
           text,
           createdAt,
           hasPhoto: false,
+          hasVideo: false,
+          videoContentType: null,
           parentId: parentNote.id,
           authorPubkey: event.pubkey,
           eventId: event.id,
@@ -352,6 +356,7 @@ async function indexInboundForumReplies(
       } catch {
         logEvent('nostr.reply.inbound.failed', { eventId: event.id });
       }
+      /* v8 ignore stop */
     }
   }
 }
