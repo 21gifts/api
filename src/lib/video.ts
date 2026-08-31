@@ -342,7 +342,17 @@ export function faststartIsoBmff(bytes: Uint8Array): Uint8Array {
     return bytes;
   }
   const delta = moov.size;
-  const moovBytes = bytes.slice(moov.start, moov.start + moov.size);
+  let moovBytes = bytes.slice(moov.start, moov.start + moov.size);
+  if (moov.headerSize === 8) {
+    const declared = new DataView(bytes.buffer, bytes.byteOffset + moov.start, 4).getUint32(0);
+    if (declared === 0) {
+      if (moov.size > 0xffffffff) {
+        return bytes;
+      }
+      moovBytes = new Uint8Array(moovBytes);
+      new DataView(moovBytes.buffer, moovBytes.byteOffset).setUint32(0, moov.size);
+    }
+  }
   const moovBox: IsoBmffBox = {
     type: 'moov',
     start: 0,
@@ -387,6 +397,9 @@ function findTkhdDisplaySize(
       return null;
     }
     const version = bytes[payloadStart] as number;
+    if (version !== 0 && version !== 1) {
+      return null;
+    }
     const widthAt = version === 1 ? payloadStart + 88 : payloadStart + 76;
     const heightAt = widthAt + 4;
     if (heightAt + 4 > payloadEnd) {

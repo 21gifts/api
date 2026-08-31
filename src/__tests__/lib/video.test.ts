@@ -345,6 +345,21 @@ describe('video', () => {
     const sizeZero = new Uint8Array(16);
     sizeZero.set([0x6d, 0x64, 0x61, 0x74], 4);
     expect(faststartIsoBmff(sizeZero)).toBe(sizeZero);
+    const mdatFirst = mdatFirstFixture();
+    const sizeZeroMoov = new Uint8Array(mdatFirst);
+    const sizeZeroView = new DataView(sizeZeroMoov.buffer);
+    let lastBox = 0;
+    let walk = 0;
+    while (walk + 8 <= sizeZeroMoov.byteLength) {
+      lastBox = walk;
+      walk += sizeZeroView.getUint32(walk);
+    }
+    sizeZeroView.setUint32(lastBox, 0);
+    const remuxedZeroMoov = faststartIsoBmff(sizeZeroMoov);
+    expect(topLevelTypes(remuxedZeroMoov)).toEqual(['ftyp', 'moov', 'mdat']);
+    expect(new DataView(remuxedZeroMoov.buffer, remuxedZeroMoov.byteOffset).getUint32(ftypBox().byteLength)).not.toBe(
+      0,
+    );
     const truncated = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70, 1]);
     expect(faststartIsoBmff(truncated)).toBe(truncated);
   });
@@ -354,6 +369,8 @@ describe('video', () => {
     expect(isoBmffDisplaySize(withTkhd)).toEqual({ width: 720, height: 1280 });
     const v1 = concat(ftypBox(), box('moov', box('trak', tkhdBox(640, 360, 1))));
     expect(isoBmffDisplaySize(v1)).toEqual({ width: 640, height: 360 });
+    const unknownVersion = concat(ftypBox(), box('moov', box('trak', tkhdBox(720, 1280, 2))));
+    expect(isoBmffDisplaySize(unknownVersion)).toBeNull();
     const audioThenVideo = concat(
       ftypBox(),
       box('moov', concat(box('trak', tkhdBox(0, 0)), box('trak', tkhdBox(1280, 720)))),
