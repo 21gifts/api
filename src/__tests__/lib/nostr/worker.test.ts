@@ -3891,6 +3891,65 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.listReplies('m1')).toHaveLength(0);
   });
 
+  it('skips inbound frames that are not a signed kind:1 note', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 4,
+        tags: [['e', noteEventId]],
+        content: 'dm',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no id',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '22'.repeat(32),
+        pubkey: '',
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'no pubkey',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+      {
+        id: '33'.repeat(32),
+        pubkey: 'ee'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bad sig',
+        created_at: 1,
+        sig: 'ff'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: (event) => event.id !== '33'.repeat(32),
+      }),
+    );
+    expect(await messages.listReplies('m1')).toHaveLength(0);
+  });
+
   it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
