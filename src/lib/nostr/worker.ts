@@ -277,7 +277,6 @@ async function indexInboundForumReplies(
   }
   const noteIdSet = new Set(noteEventIds);
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
-  /* v8 ignore start -- inbound kind:1 ingest; unit querier is shared with zap-index */
   const accounts = await deps.auth.listAccounts();
   const pubkeyToAccount = new Map<string, { id: string; name: string | null }>();
   for (const account of accounts) {
@@ -360,7 +359,6 @@ async function indexInboundForumReplies(
       }
     }
   }
-  /* v8 ignore stop */
 }
 
 /**

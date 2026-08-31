@@ -223,6 +223,33 @@ describe('probeNip57Mint', () => {
     });
   });
 
+  it('returns not_zap when inspectBolt11 yields a non-matching description_hash', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 1000,
+      description: 'Zap',
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 86400,
+    });
+    try {
+      const result = await probeNip57Mint({
+        address: ADDRESS,
+        recipientPubkey: PUBKEY,
+        sign: async (unsigned: EventTemplate) => ({
+          ...unsigned,
+          id: '1',
+          sig: '2',
+          pubkey: PUBKEY,
+        }),
+        fetchImpl: zapCapableFetch(),
+      });
+      expect(result).toBe('not_zap');
+    } finally {
+      inspectSpy.mockRestore();
+    }
+  });
+
   it('returns ok when the minted invoice is NIP-57', async () => {
     await withNip57(true, async () => {
       const result = await probeNip57Mint({

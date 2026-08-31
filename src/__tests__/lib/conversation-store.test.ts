@@ -290,6 +290,30 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['c1']);
   });
 
+  it('getById returns undefined when no row matches', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).getById('missing')).toBeUndefined();
+  });
+
+  it('maps null last_text to an empty string', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'c1',
+        kind: 'member_member',
+        account_a: 'a',
+        account_b: 'b',
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: null,
+      },
+    ];
+    const got = await new PostgresConversationStore(sql).getById('c1');
+    expect(got?.lastText).toBe('');
+  });
+
   it('listVisible binds staff and platform filters', async () => {
     const sql = new MockSql();
     const store = new PostgresConversationStore(sql);
@@ -531,6 +555,12 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
+  });
+
+  it('getMessageById returns undefined when no row matches', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).getMessageById('missing')).toBeUndefined();
   });
 
   it('appendMessage inserts then bumps last_message_at', async () => {

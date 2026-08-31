@@ -71,6 +71,17 @@ async function seed(): Promise<{
   return { auth, messages };
 }
 
+/** Kind:1 fixture with t=bitcoin so resignLegacyKind1Tags leaves the signed row alone. */
+const BITCOIN_KIND1 = {
+  kind: 1,
+  content: 'hello',
+  tags: [
+    ['t', 'bitcoin'],
+    ['t', '21gifts'],
+    ['r', 'https://21.gifts'],
+  ],
+};
+
 /** One tick with conversations and inbound signature checks skipped. */
 async function inboundTick(
   auth: InMemoryAuthStore,
@@ -2187,7 +2198,7 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('reply-wait'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it.skip('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
+  it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
     const { auth, messages } = await seed();
     const parent = {
       id: 'parent-damus',
@@ -2201,6 +2212,7 @@ describe('runNostrWorkerTick', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
       authorPubkey: null,
+      nostrEvent: BITCOIN_KIND1,
     };
     const reply = {
       id: 'reply-nopk',
@@ -3733,10 +3745,10 @@ describe('runNostrWorkerTick', () => {
     }
   });
 
-  it.skip('persists inbound kind:1 replies from members and Damus authors', async () => {
+  it('persists inbound kind:1 replies from members and Damus authors', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
@@ -3757,18 +3769,32 @@ describe('runNostrWorkerTick', () => {
         content: 'damus reply',
         sig: 'ff'.repeat(32),
       },
+      {
+        id: '77'.repeat(32),
+        pubkey: '88'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId, '', 'root']],
+        content: 'root reply',
+        created_at: 1_700_000_001,
+        sig: '99'.repeat(32),
+      },
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
     const replies = await messages.listReplies('m1');
-    expect(replies.map((row) => row.text).sort()).toEqual(['damus reply', 'member reply']);
+    expect(replies.map((row) => row.text).sort()).toEqual([
+      'damus reply',
+      'member reply',
+      'root reply',
+    ]);
     expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
     expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
+    expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
   });
 
-  it.skip('logs inbound.failed when persisting a kind:1 reply throws', async () => {
+  it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const origCreate = messages.create.bind(messages);
     messages.create = async (row, photo, video) => {
       if (row.parentId === 'm1') {
@@ -3799,10 +3825,10 @@ describe('runNostrWorkerTick', () => {
     }
   });
 
-  it.skip('skips duplicate inbound kind:1 event ids', async () => {
+  it('skips duplicate inbound kind:1 event ids', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -3823,7 +3849,7 @@ describe('runNostrWorkerTick', () => {
   it('skips inbound kind:1 when e-tag is not our note or equals event id', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const foreignId = '11'.repeat(32);
     const selfId = '22'.repeat(32);
     const origList = messages.listPublishedEventIds.bind(messages);
@@ -3854,11 +3880,11 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.listReplies('m1')).toHaveLength(0);
   });
 
-  it.skip('skips inbound kind:1 when parent is itself a reply', async () => {
+  it('skips inbound kind:1 when parent is itself a reply', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     const replyEventId = 'dd'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, { kind: 1, content: 'hello' });
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const querier = new RecordingQuerier();
     querier.events = [
       {
