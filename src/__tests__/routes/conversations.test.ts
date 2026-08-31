@@ -410,6 +410,68 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: '   ' }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+  });
+
+  it('returns 400 for a malformed JSON body', async () => {
+    const auth = await seeded();
+    const res = await mount(auth).request(`/conversations/${NOTE_ID}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "text" string' });
+  });
+
+  it('returns 400 for an empty text string', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+  });
+
+  it('returns 400 when text is longer than 500 characters', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'a'.repeat(501) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+  });
+
+  it('returns 404 when the thread is missing', async () => {
+    const res = await mount(await seeded()).request(`/conversations/${NOTE_ID}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the session cannot see the thread', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('x', 'y', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(404);
   });
 
   it('appends a member reply', async () => {

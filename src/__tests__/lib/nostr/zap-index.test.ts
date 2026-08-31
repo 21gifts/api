@@ -678,6 +678,50 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
   });
 
+  it('does not increment sats when the message has no author accountId', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    const eventId = 'da'.repeat(32);
+    await store.create({
+      id: 'm-damus-author',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+    });
+    querier.events = [
+      {
+        id: 'r-damus-author',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', eventId],
+          ['bolt11', 'lnbc'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById('m-damus-author'))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('rejected');
+    expect(ingests[0]?.reason).toBe('author');
+    expect(ingests[0]?.messageId).toBe('m-damus-author');
+  });
+
   it('does not increment sats when LNURL fetch fails or lacks zap fields', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

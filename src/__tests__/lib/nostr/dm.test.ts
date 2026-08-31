@@ -13,6 +13,12 @@ vi.mock('nostr-tools/nip17', async (importOriginal) => {
       if (wrap.content === 'force-empty') {
         return { kind: 14, content: 'x', pubkey: '' };
       }
+      if (wrap.content === 'force-content') {
+        return { kind: 14, content: 1, pubkey: 'aa'.repeat(32) };
+      }
+      if (wrap.content === 'force-pubkey-type') {
+        return { kind: 14, content: 'x', pubkey: 1 };
+      }
       return actual.unwrapEvent(wrap as never, secret);
     },
   };
@@ -63,6 +69,42 @@ describe('wrapNip17 / unwrapNip17', () => {
         {
           kind: 1059,
           content: 'force-empty',
+          id: 'ab'.repeat(32),
+          pubkey: 'cd'.repeat(32),
+          created_at: 1,
+          tags: [],
+          sig: 'ef'.repeat(32),
+        },
+        recipient,
+      ),
+    ).toBeNull();
+  });
+
+  it('treats a non-string rumor content as empty text', () => {
+    const recipient = generateSecretKey();
+    expect(
+      unwrapNip17(
+        {
+          kind: 1059,
+          content: 'force-content',
+          id: 'ab'.repeat(32),
+          pubkey: 'cd'.repeat(32),
+          created_at: 1,
+          tags: [],
+          sig: 'ef'.repeat(32),
+        },
+        recipient,
+      ),
+    ).toEqual({ senderPubkey: 'aa'.repeat(32), text: '' });
+  });
+
+  it('returns null when the rumor pubkey is not a string', () => {
+    const recipient = generateSecretKey();
+    expect(
+      unwrapNip17(
+        {
+          kind: 1059,
+          content: 'force-pubkey-type',
           id: 'ab'.repeat(32),
           pubkey: 'cd'.repeat(32),
           created_at: 1,

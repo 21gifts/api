@@ -71,6 +71,28 @@ async function seed(): Promise<{
   return { auth, messages };
 }
 
+/** One tick with conversations and inbound signature checks skipped. */
+async function inboundTick(
+  auth: InMemoryAuthStore,
+  messages: InMemoryMessageStore,
+  conversations: InMemoryConversationStore,
+  querier: RecordingQuerier,
+): Promise<void> {
+  await runNostrWorkerTick(
+    deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier,
+      now: () => 1_700_000_000_000,
+      env: {},
+      conversations,
+      verifyKind1: () => true,
+    }),
+  );
+}
+
 describe('runNostrWorkerTick', () => {
   it('re-signs pending kind:1 events that lack t=bitcoin', async () => {
     const { auth, messages } = await seed();
@@ -2376,6 +2398,56 @@ describe('runNostrWorkerTick', () => {
     expect(rows[0]?.eventId).toBe(wrap.id);
   });
 
+  it('ingests inbound kind:4 from a nameless 21gifts member', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('bob')) as Uint8Array,
+      KEK,
+      'bob',
+    );
+    const cipher = encryptKind4(senderSecret, recipient, 'legacy hi');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed[0]?.kind).toBe('member_member');
+    const rows = await conversations.listMessages(listed[0]!.id, 10);
+    expect(rows[0]?.text).toBe('legacy hi');
+    expect(rows[0]?.senderAccountId).toBe('bob');
+    expect(rows[0]?.name).toMatch(/…/);
+  });
+
   it('ingests inbound kind:4 from a 21gifts member', async () => {
     const { auth, messages } = await seed();
     await auth.createAccount({
@@ -2761,6 +2833,310 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DM query when no account has a pubkey', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', 'aa'.repeat(32)]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, new InMemoryMessageStore(), new InMemoryConversationStore(), querier);
+    expect(querier.calls.some((call) => JSON.stringify(call.filter).includes('1059'))).toBe(false);
+  });
+
+  it('skips inbound DMs that are the wrong kind, lack an id, or tag someone else', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 1,
+        tags: [['p', recipient]],
+        content: 'note',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '',
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', recipient]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: 1 as unknown as string,
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', recipient]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '22'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', 'ff'.repeat(32)]],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+      {
+        id: '33'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p']],
+        content: 'cipher',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips a kind:1059 wrap that cannot be unwrapped', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 1059,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        content: 'not-a-wrap',
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips a kind:4 whose NIP-04 decrypt returns null', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ab'.repeat(32),
+        pubkey: 'cd'.repeat(32),
+        kind: 4,
+        tags: [['p', (await auth.getNostrPublicKey('acc')) as string]],
+        created_at: 1,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs whose plaintext is rejected after normalisation', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, 'hello\u0001');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs whose plaintext is empty after normalisation', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, '   ');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips inbound DMs sent from an account to itself', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('acc')) as Uint8Array,
+      KEK,
+      'acc',
+    );
+    const wrap = wrapNip17(senderSecret, recipient, 'hello self');
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: wrap.tags as string[][],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+  });
+
+  it('skips an unknown p-tag then ingests the wrap for our pubkey', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const sender = generateSecretKey();
+    const wrap = wrapNip17(sender, recipient, 'hello from damus');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: wrap.id,
+        pubkey: wrap.pubkey,
+        kind: wrap.kind,
+        tags: [['p', 'ff'.repeat(32)], ...(wrap.tags as string[][]), ['p', recipient]],
+        content: wrap.content,
+        created_at: wrap.created_at,
+        sig: wrap.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, null, 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe('member_damus');
+    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe('hello from damus');
+  });
+
+  it('ingests a kind:4 from a member onto a member_platform thread', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'p'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await ensureAccountNostrKey(auth, 'plat', KEK);
+    const conversations = new InMemoryConversationStore();
+    const recipient = (await auth.getNostrPublicKey('plat')) as string;
+    const { decryptNostrSecret, zeroizeSecret } = await import('@/lib/nostr/keys');
+    const senderSecret = await decryptNostrSecret(
+      (await auth.getNostrSecret('acc')) as Uint8Array,
+      KEK,
+      'acc',
+    );
+    const cipher = encryptKind4(senderSecret, recipient, 'member to platform');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await inboundTick(auth, messages, conversations, querier);
+    const listed = await conversations.listVisible('acc', false, 'plat', 10);
+    expect(listed[0]?.kind).toBe('member_platform');
+    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe(
+      'member to platform',
+    );
+  });
+
+  it('logs inbound.failed when appending the conversation message throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { auth, messages } = await seed();
+      const conversations = new InMemoryConversationStore();
+      conversations.appendMessage = async () => {
+        throw new Error('boom');
+      };
+      const recipient = (await auth.getNostrPublicKey('acc')) as string;
+      const sender = generateSecretKey();
+      const wrap = wrapNip17(sender, recipient, 'hello from damus');
+      const querier = new RecordingQuerier();
+      querier.events = [
+        {
+          id: wrap.id,
+          pubkey: wrap.pubkey,
+          kind: wrap.kind,
+          tags: wrap.tags as string[][],
+          content: wrap.content,
+          created_at: wrap.created_at,
+          sig: wrap.sig,
+        },
+      ];
+      await inboundTick(auth, messages, conversations, querier);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.dm.inbound.failed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

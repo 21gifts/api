@@ -908,10 +908,7 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const createdAt =
-            typeof event.created_at === 'number'
-              ? new Date(event.created_at * 1000)
-              : new Date(deps.now());
+          const createdAt = new Date(signed.created_at * 1000);
           let thread: ConversationThread;
           if (sender !== undefined) {
             if (sender.isPlatform === true || recipient.isPlatform === true) {
@@ -937,13 +934,13 @@ async function indexInboundDirectMessages(
             eventId: event.id,
             nostrPublishState: 'published',
             nostrEvent: {
-              id: event.id,
-              pubkey: event.pubkey,
-              kind: event.kind,
-              tags: event.tags,
-              created_at: event.created_at,
-              content: event.content ?? '',
-              sig: event.sig ?? '',
+              id: signed.id,
+              pubkey: signed.pubkey,
+              kind: signed.kind,
+              tags: signed.tags,
+              created_at: signed.created_at,
+              content: signed.content,
+              sig: signed.sig,
             },
             claimedUntil: null,
           });

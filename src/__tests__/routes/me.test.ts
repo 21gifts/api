@@ -5,6 +5,7 @@ import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { bearerToken, meRoutes } from '@/routes/me';
 
@@ -684,6 +685,60 @@ describe('POST /me/lightning-address', () => {
       error: 'Lightning Address could not be resolved',
     });
     expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
+  it('rejects a zap-incapable invoice from the NIP-57 probe without saving', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(false);
+    const store = await seededStore();
+    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: LIGHTNING_ADDRESS_NOT_ZAP });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.lightning_address.not_zap' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects when the NIP-57 probe cannot mint after metadata resolved', async () => {
+    const store = await seededStore({ lightningAddress: 'keep@example.com' });
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          commentAllowed: 255,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({}, 500);
+    };
+    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBe('keep@example.com');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.lightning_address.resolve_failed' &&
+          e['accountId'] === 'acc' &&
+          e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
   });
 });
 

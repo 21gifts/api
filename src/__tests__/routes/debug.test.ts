@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
+import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -1031,5 +1032,43 @@ describe('debugRoutes', () => {
     };
     expect(racedBody.accounts[0]?.created).toBe(false);
     expect(racedBody.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('POST returns 400 when a new address is not zap-capable', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(false);
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: LIGHTNING_ADDRESS_NOT_ZAP });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+  });
+
+  it('POST returns 400 when a new address cannot be probed', async () => {
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
   });
 });
