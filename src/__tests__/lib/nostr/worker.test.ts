@@ -2108,6 +2108,142 @@ describe('runNostrWorkerTick', () => {
     expect((await messages.getById('m1'))?.eventId).toBeNull();
   });
 
+  it('skips unsigned forum rows with a null accountId and keeps signing others', async () => {
+    const { auth, messages } = await seed();
+    const inner = messages.claimUnsigned.bind(messages);
+    messages.claimUnsigned = async (limit, nowMs, leaseMs) => [
+      {
+        id: 'damus-unsigned',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'from damus',
+        createdAt: new Date('2026-08-28T00:00:00.000Z'),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      ...(await inner(limit, nowMs, leaseMs)),
+    ];
+    await expect(
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(await messages.getById('damus-unsigned')).toBeUndefined();
+  });
+
+  it('does not sign an unsigned reply whose parent has no eventId', async () => {
+    const { auth, messages } = await seed();
+    await messages.create({
+      id: 'parent-unsigned',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'reply-wait',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-unsigned',
+    });
+    const inner = messages.claimUnsigned.bind(messages);
+    messages.claimUnsigned = async (limit, nowMs, leaseMs) => {
+      const reply = await messages.getById('reply-wait');
+      const claimed = await inner(limit, nowMs, leaseMs);
+      return reply === undefined ? claimed : [reply, ...claimed];
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById('reply-wait'))?.eventId).toBeNull();
+    expect((await messages.getById('parent-unsigned'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('logs parent_pubkey when the parent has an eventId but no author pubkey', async () => {
+    const { auth, messages } = await seed();
+    await messages.create({
+      id: 'parent-damus',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'note',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      authorPubkey: null,
+    });
+    await messages.create({
+      id: 'reply-nopk',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-damus',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+        }),
+      );
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some(
+          (e) =>
+            e['event'] === 'nostr.sign.failed' &&
+            e['messageId'] === 'reply-nopk' &&
+            e['reason'] === 'parent_pubkey',
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('reply-nopk'))?.eventId).toBeNull();
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('logs nack when space rejects', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();

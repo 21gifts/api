@@ -1340,6 +1340,49 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts[0]?.pr).toBeNull();
   });
 
+  it('returns 400 no_author when invoicing a top-level Damus-only note', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '16161616-1616-4161-8161-161616161616',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore: await namedStore('Ada'),
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/16161616-1616-4161-8161-161616161616/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.authorAccountId).toBe('acc');
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
   it('persists an ok invoice attempt with pr and isNip57Invoice from inspect', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');

@@ -706,6 +706,29 @@ describe('POST /me/lightning-address', () => {
     ).toBe(true);
   });
 
+  it('returns 503 when nostrKek is unset', async () => {
+    const store = await seededStore();
+    const app = new Hono().route(
+      '/me',
+      meRoutes({
+        store,
+        now,
+        payer: new UnconfiguredInvoicePayer(),
+        fetchImpl: happyFetch(),
+      }),
+    );
+    const res = await app.request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Lightning Address could not be resolved',
+    });
+    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+  });
+
   it('returns 503 when ensureAccountNostrKey throws', async () => {
     const store = await seededStore();
     store.setNostrKeyIfAbsent = async () => {

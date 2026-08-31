@@ -125,12 +125,61 @@ describe('GET /conversations', () => {
   it('lets staff see platform threads they are not in', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
+    await withOther(auth, 'someone');
     const conversations = new InMemoryConversationStore();
     await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: unknown[] };
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
     expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+  });
+
+  it('names the counterpart when the viewer is accountB', async () => {
+    const auth = await seeded();
+    await withOther(auth, 'aaa');
+    const conversations = new InMemoryConversationStore();
+    await conversations.openMemberMember('aaa', 'acc', new Date(now()));
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+  });
+
+  it('lets staff list a member_member thread where the platform is a party', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    await conversations.openMemberMember('plat', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('21.gifts');
+  });
+
+  it('names a member_platform thread with a null platform party 21.gifts', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        kind: 'member_platform',
+        accountA: 'acc',
+        accountB: null,
+        counterpartPubkey: null,
+        createdAt: new Date(now()),
+        lastMessageAt: new Date(now()),
+        name: '',
+        lastText: '',
+      },
+    ]);
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('21.gifts');
   });
 
   it('returns 503 when listing throws', async () => {
@@ -386,6 +435,33 @@ describe('GET /conversations/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(404);
+  });
+
+  it('lets staff read a member_member thread where the platform is a party', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('plat', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-staff',
+      conversationId: thread.id,
+      text: 'official',
+      createdAt: new Date(now()),
+      senderAccountId: 'plat',
+      senderPubkey: null,
+      name: '21.gifts',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ text: string }> };
+    expect(body.messages.map((m) => m.text)).toEqual(['official']);
   });
 
   it('returns messages oldest-first', async () => {
