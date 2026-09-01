@@ -676,7 +676,7 @@
 
 - **Purpose:** Unwrap a NIP-17 kind:1059 wrap to sender pubkey, plaintext, and rumor `created_at`.
 - **Inputs:** wrap event, recipient 32-byte secret.
-- **Returns / side effects:** `{ senderPubkey, text, createdAt? }` or `null` on failure / non-kind-14 rumor. `createdAt` is the rumor unix time when present (not the wrap). Never logs the secret.
+- **Returns / side effects:** `{ senderPubkey, text, createdAt }` or `null` on failure / non-kind-14 rumor / missing rumor `created_at`. `createdAt` is the rumor unix time (not the wrap). Never logs the secret.
 - **Used by:** Nostr worker inbound DMs.
 
 ## Function: encryptKind4

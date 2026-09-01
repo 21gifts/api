@@ -35,7 +35,7 @@ export function wrapNip17(
 export function unwrapNip17(
   wrap: NostrEvent,
   recipientSecret: Uint8Array,
-): { senderPubkey: string; text: string; createdAt?: number } | null {
+): { senderPubkey: string; text: string; createdAt: number } | null {
   try {
     const rumor = unwrapEvent(wrap, recipientSecret);
     if (rumor.kind !== 14) {
@@ -43,13 +43,13 @@ export function unwrapNip17(
     }
     const text = typeof rumor.content === 'string' ? rumor.content : '';
     const senderPubkey = typeof rumor.pubkey === 'string' ? rumor.pubkey.toLowerCase() : '';
-    if (senderPubkey === '') {
+    if (senderPubkey === '' || !Number.isFinite(rumor.created_at)) {
       return null;
     }
     return {
       senderPubkey,
       text,
-      ...(typeof rumor.created_at === 'number' ? { createdAt: rumor.created_at } : {}),
+      createdAt: rumor.created_at,
     };
   } catch {
     return null;

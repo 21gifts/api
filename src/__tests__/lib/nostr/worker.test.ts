@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
-import { encryptKind4, wrapNip17 } from '@/lib/nostr/dm';
+import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -12,7 +12,7 @@ import {
 } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
-import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { decryptNostrSecret, ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
@@ -3920,7 +3920,14 @@ describe('runNostrWorkerTick', () => {
     const listed = await conversations.listVisible('acc', false, null, 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.kind).toBe('member_damus');
-    expect((await conversations.listMessages(listed[0]!.id, 10))[0]?.text).toBe('hello from damus');
+    const stored = (await conversations.listMessages(listed[0]!.id, 10))[0];
+    expect(stored?.text).toBe('hello from damus');
+    const ciphertext = await auth.getNostrSecret('acc');
+    expect(ciphertext).toBeDefined();
+    const secret = await decryptNostrSecret(ciphertext as Uint8Array, KEK, 'acc');
+    const rumor = unwrapNip17(wrap, secret);
+    expect(rumor).not.toBeNull();
+    expect(stored?.createdAt.getTime()).toBe(rumor!.createdAt * 1000);
   });
 
   it('ingests a kind:4 from a member onto a member_platform thread', async () => {

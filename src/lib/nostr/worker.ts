@@ -953,11 +953,8 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const rumorCreatedAt = plain.createdAt;
           const createdAt = new Date(
-            (event.kind === 1059 && typeof rumorCreatedAt === 'number'
-              ? rumorCreatedAt
-              : signed.created_at) * 1000,
+            (typeof plain.createdAt === 'number' ? plain.createdAt : signed.created_at) * 1000,
           );
           let thread: ConversationThread;
           if (sender !== undefined) {
