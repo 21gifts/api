@@ -931,16 +931,25 @@ async function indexInboundDirectMessages(
           continue;
         }
         try {
-          const plain = await withAccountSecret(deps, recipient.id, (secret) => {
-            if (event.kind === 1059) {
-              return unwrapNip17(signed, secret);
-            }
-            const text = decryptKind4(secret, event.pubkey, event.content ?? '');
-            if (text === null) {
-              return null;
-            }
-            return { senderPubkey: event.pubkey.toLowerCase(), text };
-          });
+          const plain = await withAccountSecret(
+            deps,
+            recipient.id,
+            (secret): { senderPubkey: string; text: string; createdAt: number } | null => {
+              if (event.kind === 1059) {
+                return unwrapNip17(signed, secret);
+              }
+              const text = decryptKind4(secret, event.pubkey, event.content ?? '');
+              const envelopeAt = event.created_at;
+              if (text === null || typeof envelopeAt !== 'number') {
+                return null;
+              }
+              return {
+                senderPubkey: event.pubkey.toLowerCase(),
+                text,
+                createdAt: envelopeAt,
+              };
+            },
+          );
           if (plain === null) {
             continue;
           }
@@ -953,12 +962,7 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const rumorCreatedAt = plain.createdAt;
-          const createdAt = new Date(
-            (event.kind === 1059 && typeof rumorCreatedAt === 'number'
-              ? rumorCreatedAt
-              : signed.created_at) * 1000,
-          );
+          const createdAt = new Date(plain.createdAt * 1000);
           let thread: ConversationThread;
           if (sender !== undefined) {
             if (sender.isPlatform === true || recipient.isPlatform === true) {
