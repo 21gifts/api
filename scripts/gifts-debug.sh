@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# gifts-debug — operator listing, role assignment, and Lightning Address unlink
-#               for 21.gifts accounts (GET /debug/accounts, PATCH /debug/accounts/:id).
-#               No raw SQL.
+# gifts-debug — operator listing, role assignment, Lightning Address unlink,
+#               and forum-video restore for 21.gifts
+#               (GET /debug/accounts, PATCH /debug/accounts/:id,
+#               PUT /debug/messages/:id/video). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL
@@ -13,12 +14,14 @@
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
+#   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
 #
 # Example:
 #   gifts-debug accounts
 #   gifts-debug accounts --raw
 #   gifts-debug role <account-id> moderator
 #   gifts-debug unlink <account-id>
+#   gifts-debug video-put <message-id> ./clip.mp4
 #
 set -euo pipefail
 
@@ -134,6 +137,28 @@ cmd_unlink() {
   printf '%s\n' "$body"
 }
 
+cmd_video_put() {
+  local id="${1:-}" path="${2:-}" tmp status body
+  [ -n "$id" ] || die "usage: gifts-debug video-put <message-id> <file>"
+  [ -n "$path" ] || die "usage: gifts-debug video-put <message-id> <file>"
+  [ -f "$path" ] || die "file not found: ${path}"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -X PUT \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    --data-binary @"${path}" \
+    "${DEBUG_API_URL}/debug/messages/${id}/video") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  printf '%s\n' "$status" >&2
+  if [ "$status" != "204" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+}
+
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -151,6 +176,7 @@ case "${1:-}" in
   accounts) cmd_accounts ;;
   role) shift; cmd_role "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
+  video-put) shift; cmd_video_put "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

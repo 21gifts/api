@@ -19,6 +19,7 @@ import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
 import { conversationRoutes } from '@/routes/conversations';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
+import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
@@ -80,7 +81,8 @@ export interface AppDeps {
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
    * `GET /debug/contacts`, `GET /debug/invoices`,
-   * and `GET /debug/zap-ingests` return 503.
+   * `GET /debug/zap-ingests`, and `PUT /debug/messages/:id/video`
+   * return 503.
    */
   debugToken?: string;
   /**
@@ -254,6 +256,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugRoutes({ store, debugToken, fetchImpl, conversationStore, now }),
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
+  app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route(
     '/debug/push-ping',

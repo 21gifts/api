@@ -159,7 +159,7 @@ async function authedAccount(
 }
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
-const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Public photo bytes for Nostr clients. Same handler for `/photo` and
