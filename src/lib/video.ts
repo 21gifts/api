@@ -128,6 +128,41 @@ export function videoFilePath(dir: string, messageId: string, mime: ForumVideoCo
 }
 
 /**
+ * True when the stored video file exists, is a regular file, and is non-empty.
+ *
+ * @param dir - Media directory.
+ * @param messageId - Message id.
+ * @param mime - Stored type, or `null` when the row has no video.
+ * @param statFn - Injected `stat` (tests).
+ * @returns False when `mime` is null, the path is missing (`ENOENT`), not a file, or size 0.
+ * @throws Non-ENOENT `stat` failures (for example EACCES, EIO).
+ */
+export async function forumVideoFilePresent(
+  dir: string,
+  messageId: string,
+  mime: ForumVideoContentType | null,
+  statFn: (path: string) => Promise<{ isFile: () => boolean; size: number }> = fs.stat,
+): Promise<boolean> {
+  if (mime === null) {
+    return false;
+  }
+  try {
+    const info = await statFn(videoFilePath(dir, messageId, mime));
+    return info.isFile() && info.size > 0;
+  } catch (err) {
+    if (
+      typeof err === 'object' &&
+      err !== null &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
  * Detect MP4 / QuickTime / WebM from magic bytes.
  *
  * @param bytes - Raw candidate.

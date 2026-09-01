@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import {
@@ -9,6 +10,7 @@ import {
   type MessageInvoiceAttempt,
   type ZapIngestRow,
 } from '@/lib/message-store';
+import { resolveMediaDir, videoFilePath } from '@/lib/video';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -118,6 +120,65 @@ describe('migrateMessageSchema', () => {
 describe('InMemoryMessageStore', () => {
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryMessageStore().listLatest(10)).toEqual([]);
+  });
+
+  it('deleteById removes the row and returns false when missing', async () => {
+    const store = new InMemoryMessageStore([EARLY, LATE]);
+    expect(await store.deleteById('missing')).toBe(false);
+    expect(await store.deleteById('a')).toBe(true);
+    expect(await store.getById('a')).toBeUndefined();
+    expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['b']);
+  });
+
+  it('deleteById cascades replies, invoices, zap receipts, photo, and video', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create({ ...EARLY, id: 'p-del', text: 'parent' }, JPEG, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
+    await store.create({
+      ...LATE,
+      id: 'c-del',
+      parentId: 'p-del',
+      text: 'child',
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-del',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      messageId: 'p-del',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(false);
+    await store.create({ ...LATE });
+    expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1)).toBe(true);
+    const videoPath = videoFilePath(resolveMediaDir(), 'p-del', 'video/mp4');
+    await readFile(videoPath);
+    expect(await store.deleteById('p-del')).toBe(true);
+    expect(await store.getById('p-del')).toBeUndefined();
+    expect(await store.getById('c-del')).toBeUndefined();
+    expect(
+      (await store.listInvoiceAttempts(10)).filter((row) => row.messageId === 'p-del'),
+    ).toEqual([]);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 7)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-keep', 'b', 1)).toBe(false);
+    expect(await store.getPhoto('p-del')).toBeNull();
+    await expect(readFile(videoPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('copies the seed and listed rows so callers cannot mutate store state', async () => {
@@ -1169,6 +1230,33 @@ describe('PostgresMessageStore', () => {
     await store.updatePublishState('m1', 'published', 'public');
     await store.addSats('m1', 7);
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+  });
+
+  it('deleteById issues one CTE query for receipts, invoices, and rows', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { id: 'm1', video_content_type: 'video/mp4' },
+      { id: 'm1-child', video_content_type: null },
+    ];
+    expect(await new PostgresMessageStore(sql).deleteById('m1')).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(/WITH/);
+    expect(text).toMatch(/DELETE FROM nostr_zap_receipt/);
+    expect(text).toMatch(/DELETE FROM message_invoice/);
+    expect(text).toMatch(/DELETE FROM message/);
+    expect(text).toMatch(/parent_id = \$1/);
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+  });
+
+  it('deleteById returns false when the CTE finds no rows', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresMessageStore(sql).deleteById('missing')).toBe(false);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/WITH/);
   });
 
   it('propagates create execute errors', async () => {

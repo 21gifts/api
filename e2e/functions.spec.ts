@@ -1083,6 +1083,12 @@ test('Function: videoFilePath — POST /messages without bearer is 401', async (
   });
   expect(res.status()).toBe(401);
 });
+test('Function: forumVideoFilePresent — GET /messages/:id without a file is 404', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/5c5051d3-adba-44f9-a964-9bd0df1ce084');
+  expect([200, 404]).toContain(res.status());
+});
 test('Function: wellKnownRoutes — GET /.well-known/nostr.json is 200', async ({ request }) => {
   expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
 });

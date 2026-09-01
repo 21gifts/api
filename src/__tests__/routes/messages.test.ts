@@ -102,6 +102,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listPublishedEventIds: boom,
     create: boom,
     getPhoto: boom,
+    deleteById: boom,
     getById: boom,
     getByEventId: boom,
     claimUnsigned: boom,
@@ -156,6 +157,121 @@ describe('GET /messages', () => {
     const res = await mount(await seededStore()).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('drops missing-file video notes from the list', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
+  });
+
+  it('lists a live parent with replyCount after dropping a missing-file video reply', async () => {
+    const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce085';
+    const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce086';
+    const keptChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce087';
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'live parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goneChildId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+      {
+        id: keptChildId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'text reply',
+        createdAt: new Date(now() + 2),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; replyCount: number; text: string }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(parentId);
+    expect(body.messages[0]?.replyCount).toBe(1);
+    expect(await messageStore.getById(goneChildId)).toBeUndefined();
+    expect(await messageStore.getById(keptChildId)).toBeDefined();
+    expect(await messageStore.getById(parentId)).toBeDefined();
+  });
+
+  it('lists replyCount above the 200-reply list window', async () => {
+    const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce088';
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent with many replies',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    for (let i = 0; i < 201; i++) {
+      await messageStore.create({
+        id: crypto.randomUUID(),
+        accountId: 'acc',
+        name: 'Ada',
+        text: `reply ${i}`,
+        createdAt: new Date(now() + 1 + i),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      });
+    }
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; replyCount: number }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(parentId);
+    expect(body.messages[0]?.replyCount).toBe(201);
   });
 
   it('returns newest first', async () => {
@@ -1830,6 +1946,7 @@ describe('POST /messages/:id/invoice', () => {
       create: (row, photo) => base.create(row, photo),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
+      deleteById: (id) => base.deleteById(id),
       getByEventId: (id) => base.getByEventId(id),
       claimUnsigned: (...args) => base.claimUnsigned(...args),
       claimUnpublished: (...args) => base.claimUnpublished(...args),
@@ -2087,6 +2204,29 @@ describe('GET /messages/:id', () => {
     expect(body).not.toHaveProperty('replyCount');
   });
 
+  it('deletes a hasVideo note when the file is missing on disk', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(
+      '/messages/5c5051d3-adba-44f9-a964-9bd0df1ce084',
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
+  });
+
   it('includes the live author role for a 21gifts note', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
@@ -2171,6 +2311,56 @@ describe('GET /messages/:id', () => {
 });
 
 describe('GET /messages/:id/replies', () => {
+  it('drops replies whose video file is missing', async () => {
+    const parentId = '14141414-1414-4141-8141-141414141414';
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: '15151515-1515-4151-8151-151515151515',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'damus clip',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        authorPubkey: 'ab'.repeat(32),
+      },
+      {
+        id: '16161616-1616-4161-8161-161616161616',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'member clip',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(await store.getById('15151515-1515-4151-8151-151515151515')).toBeUndefined();
+    expect(await store.getById('16161616-1616-4161-8161-161616161616')).toBeUndefined();
+  });
+
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request(
       '/messages/14141414-1414-4141-8141-141414141414/replies',
@@ -2488,6 +2678,9 @@ describe('forum video', () => {
     expect(created.hasVideo).toBe(true);
     expect(created.hasPhoto).toBe(true);
     expect(created.videoContentType).toBe('video/mp4');
+    const publicGet = await app.request(`/messages/${created.id}`);
+    expect(publicGet.status).toBe(200);
+    expect(((await publicGet.json()) as { hasVideo: boolean }).hasVideo).toBe(true);
     const full = await app.request(`/messages/${created.id}/video.mp4`);
     expect(full.status).toBe(200);
     expect(full.headers.get('Accept-Ranges')).toBe('bytes');

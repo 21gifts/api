@@ -34,6 +34,7 @@ import {
   MESSAGE_VIDEO_MAX_BYTES,
   decodeForumVideo,
   forumVideoExt,
+  forumVideoFilePresent,
   parseBytesRange,
   readForumVideoBytes,
   resolveMediaDir,
@@ -41,6 +42,34 @@ import {
   type ForumVideo,
 } from '@/lib/video';
 import { stat } from 'node:fs/promises';
+
+/**
+ * Delete a `hasVideo` row whose file is missing or empty. Notes without video
+ * are unchanged.
+ *
+ * @param store - Message store.
+ * @param row - Store row.
+ * @returns The row, or `null` when it was deleted.
+ */
+async function dropMissingVideoRow(
+  store: MessageStore,
+  row: MessageRow,
+): Promise<MessageRow | null> {
+  if (
+    row.hasVideo !== true ||
+    row.videoContentType === undefined ||
+    row.videoContentType === null
+  ) {
+    return row;
+  }
+  const present = await forumVideoFilePresent(resolveMediaDir(), row.id, row.videoContentType);
+  if (present) {
+    return row;
+  }
+  await store.deleteById(row.id);
+  logEvent('messages.video.dropped');
+  return null;
+}
 
 /** True when `err` is a Node errno with `code === 'ENOENT'`. */
 function isPathNotFound(err: unknown): boolean {
@@ -405,7 +434,21 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const payable =
             row.eventId !== null && author !== undefined && author.lightningAddress !== null;
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          messages.push(serializeMessage(row, payable, role, row.replyCount, true));
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          const children = await deps.store.listReplies(kept.id, MESSAGE_LIST_LIMIT);
+          let dropped = 0;
+          for (const child of children) {
+            const keptChild = await dropMissingVideoRow(deps.store, child);
+            if (keptChild === null) {
+              dropped += 1;
+            }
+          }
+          messages.push(
+            serializeMessage(kept, payable, role, Math.max(0, row.replyCount - dropped), true),
+          );
         }
         return c.json({ messages }, 200);
       } catch {
@@ -517,12 +560,20 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const messages = [];
         for (const row of rows) {
           if (row.accountId === null) {
-            messages.push(serializeMessage(row, false, undefined, undefined, true));
+            const keptDamus = await dropMissingVideoRow(deps.store, row);
+            if (keptDamus === null) {
+              continue;
+            }
+            messages.push(serializeMessage(keptDamus, false, undefined, undefined, true));
             continue;
           }
           const author = await deps.authStore.getAccount(row.accountId);
           const role = author?.role ?? 'basis';
-          messages.push(serializeMessage(row, false, role, undefined, true));
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          messages.push(serializeMessage(kept, false, role, undefined, true));
         }
         return c.json({ messages }, 200);
       } catch {
@@ -548,7 +599,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           author !== undefined &&
           author.lightningAddress !== null;
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        return c.json(serializeMessage(row, payable, role), 200);
+        const kept = await dropMissingVideoRow(deps.store, row);
+        if (kept === null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        return c.json(serializeMessage(kept, payable, role), 200);
       } catch {
         logEvent('messages.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
