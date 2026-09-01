@@ -1364,5 +1364,5 @@
 
 - **Purpose:** Persist video bytes under `MEDIA_DIR` (caller should already faststart MP4/MOV via `decodeForumVideo`).
 - **Inputs:** message id, video, env.
-- **Returns / side effects:** mkdir + writeFile.
-- **Used by:** `MessageStore.create`.
+- **Returns / side effects:** mkdir, write UUID sibling temp, `rename` onto the public path so readers never see a partial file.
+- **Used by:** `MessageStore.create`; `debugMessagesRoutes`.

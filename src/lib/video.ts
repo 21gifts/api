@@ -475,6 +475,8 @@ export function decodeForumVideo(bytes: Uint8Array): ForumVideo | null {
 
 /**
  * Write video bytes to `MEDIA_DIR`. Creates the directory when missing.
+ * Writes a UUID sibling temp then `rename`s onto the public path so readers
+ * never see a partial file.
  *
  * @param messageId - Message id (filename stem).
  * @param video - Validated video.
@@ -487,7 +489,10 @@ export async function writeForumVideo(
 ): Promise<void> {
   const dir = resolveMediaDir(env);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(videoFilePath(dir, messageId, video.contentType), video.bytes);
+  const dest = videoFilePath(dir, messageId, video.contentType);
+  const tempPath = join(dir, `.${basename(dest)}.${crypto.randomUUID()}.tmp`);
+  await fs.writeFile(tempPath, video.bytes);
+  await fs.rename(tempPath, dest);
 }
 
 /**
