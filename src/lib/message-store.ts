@@ -230,8 +230,10 @@ export interface MessageStore {
 
   /**
    * Persist a zap receipt once and add its sats to the message.
+   * Both adapters forget the receipt id when {@link MessageStore.deleteById}
+   * removes that message, so the same event id may be recorded again.
    *
-   * @param receiptEventId - Kind:9735 event id (unique).
+   * @param receiptEventId - Kind:9735 event id (unique while held).
    * @param messageId - Forum row to credit.
    * @param sats - Whole sats to add.
    * @returns `true` when the receipt was new and sats were added; `false` on
@@ -432,7 +434,8 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
-  readonly #receiptIds = new Set<string>();
+  /** Kind:9735 event id → message id; cleared when that message is deleted. */
+  readonly #receiptIds = new Map<string, string>();
   readonly #photos = new Map<string, ForumPhoto>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
@@ -774,7 +777,7 @@ export class InMemoryMessageStore implements MessageStore {
     if (this.#receiptIds.has(receiptEventId)) {
       return false;
     }
-    this.#receiptIds.add(receiptEventId);
+    this.#receiptIds.set(receiptEventId, messageId);
     await this.addSats(messageId, sats);
     return true;
   }
@@ -832,6 +835,11 @@ export class InMemoryMessageStore implements MessageStore {
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
     this.#invoiceAttempts.length = 0;
     this.#invoiceAttempts.push(...kept);
+    for (const [receiptEventId, messageId] of this.#receiptIds) {
+      if (ids.has(messageId)) {
+        this.#receiptIds.delete(receiptEventId);
+      }
+    }
     return true;
   }
 
@@ -1084,35 +1092,37 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   async deleteById(id: string): Promise<boolean> {
-    const row = await this.getById(id);
-    if (row === undefined) {
+    const targets = await this.#sql.query<{ id: string; video_content_type: string | null }>(
+      `WITH
+         targets AS (
+           SELECT id, video_content_type
+           FROM message
+           WHERE id = $1 OR parent_id = $1
+         ),
+         del_receipts AS (
+           DELETE FROM nostr_zap_receipt
+           WHERE message_id IN (SELECT id FROM targets)
+         ),
+         del_invoices AS (
+           DELETE FROM message_invoice
+           WHERE message_id IN (SELECT id FROM targets)
+         ),
+         del_rows AS (
+           DELETE FROM message
+           WHERE id IN (SELECT id FROM targets)
+           RETURNING id
+         )
+       SELECT t.id, t.video_content_type FROM targets t`,
+      [id],
+    );
+    if (targets.length === 0) {
       return false;
     }
-    const children = await this.#sql.query<{ id: string; video_content_type: string | null }>(
-      `SELECT id, video_content_type FROM message WHERE parent_id = $1`,
-      [id],
-    );
-    await this.#sql.execute(
-      `DELETE FROM nostr_zap_receipt WHERE message_id = $1
-       OR message_id IN (SELECT id FROM message WHERE parent_id = $1)`,
-      [id],
-    );
-    await this.#sql.execute(
-      `DELETE FROM message_invoice WHERE message_id = $1
-       OR message_id IN (SELECT id FROM message WHERE parent_id = $1)`,
-      [id],
-    );
-    await this.#sql.execute(`DELETE FROM message WHERE parent_id = $1`, [id]);
-    await this.#sql.execute(`DELETE FROM message WHERE id = $1`, [id]);
-    for (const child of children) {
-      const mime = parseVideoContentType(child.video_content_type);
+    for (const target of targets) {
+      const mime = parseVideoContentType(target.video_content_type);
       if (mime !== null) {
-        await removeForumVideo(child.id, mime);
+        await removeForumVideo(target.id, mime);
       }
-    }
-    const parentMime = row.videoContentType;
-    if (parentMime !== undefined && parentMime !== null) {
-      await removeForumVideo(row.id, parentMime);
     }
     return true;
   }

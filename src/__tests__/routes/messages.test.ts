@@ -180,6 +180,61 @@ describe('GET /messages', () => {
     expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
   });
 
+  it('lists a live parent with replyCount after dropping a missing-file video reply', async () => {
+    const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce085';
+    const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce086';
+    const keptChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce087';
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'live parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goneChildId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+      {
+        id: keptChildId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'text reply',
+        createdAt: new Date(now() + 2),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; replyCount: number; text: string }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(parentId);
+    expect(body.messages[0]?.replyCount).toBe(1);
+    expect(await messageStore.getById(goneChildId)).toBeUndefined();
+    expect(await messageStore.getById(keptChildId)).toBeDefined();
+    expect(await messageStore.getById(parentId)).toBeDefined();
+  });
+
   it('returns newest first', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
