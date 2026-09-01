@@ -197,7 +197,7 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address (DEBUG_TOKEN)
+│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address, video-put (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
