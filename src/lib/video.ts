@@ -8,7 +8,6 @@ import * as fs from 'node:fs/promises';
 /** Disk ops {@link readForumVideoBytes} uses (overridable in tests). */
 export type ForumVideoFs = Pick<typeof fs, 'readFile' | 'writeFile' | 'rename' | 'unlink'>;
 import { basename, dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
 
 /** Maximum decoded video size (32 MiB). */
 export const MESSAGE_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
@@ -73,14 +72,15 @@ interface IsoBmffBox {
  * Resolve the on-disk media directory.
  *
  * @param env - Process env (injected for tests).
- * @returns `MEDIA_DIR` when set, otherwise a process-local temp dir.
+ * @returns Trimmed `MEDIA_DIR`.
+ * @throws If `MEDIA_DIR` is missing, not a string, or blank after trim.
  */
 export function resolveMediaDir(env: Record<string, string | undefined> = process.env): string {
   const raw = env['MEDIA_DIR'];
-  if (raw !== undefined && raw.trim() !== '') {
-    return raw.trim();
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error('MEDIA_DIR must be a non-empty path');
   }
-  return join(tmpdir(), '21gifts-media');
+  return raw.trim();
 }
 
 /**

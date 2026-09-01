@@ -1334,10 +1334,10 @@
 
 ## Function: resolveMediaDir
 
-- **Purpose:** `MEDIA_DIR` or process temp `21gifts-media`.
-- **Inputs:** env.
-- **Returns / side effects:** directory path.
-- **Used by:** video read/write.
+- **Purpose:** Trimmed `MEDIA_DIR` for forum video files on disk; no temp fallback.
+- **Inputs:** env (defaults to `process.env`).
+- **Returns / side effects:** Trimmed path. Throws `Error` (`MEDIA_DIR must be a non-empty path`) when missing, not a string, or blank after trim. Boot calls it before stores / `Bun.serve`.
+- **Used by:** video read/write; `index.ts` boot.
 
 ## Function: videoFilePath
 

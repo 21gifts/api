@@ -17,6 +17,7 @@ import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
 import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
+import { resolveMediaDir } from './lib/video';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -36,6 +37,7 @@ function createBunSqlClient(databaseUrl: string): SqlClient {
 if (import.meta.main) {
   const addr = resolveBindAddr(undefined, process.env);
   const { host, port } = parseBindAddr(addr);
+  resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
   // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
   // falls back to Coinbase; unset does not fail boot.

@@ -214,9 +214,12 @@ describe('video', () => {
     expect(parseBytesRange('bytes=200-300', 100)).toEqual({ type: 'unsatisfiable' });
   });
 
-  it('falls back to a temp media dir', () => {
+  it('trims MEDIA_DIR and rejects missing or blank', () => {
     expect(resolveMediaDir({ MEDIA_DIR: ' /data/media ' })).toBe('/data/media');
-    expect(resolveMediaDir({})).toContain('21gifts-media');
+    expect(() => resolveMediaDir({})).toThrow('MEDIA_DIR must be a non-empty path');
+    expect(() => resolveMediaDir({ MEDIA_DIR: '   ' })).toThrow(
+      'MEDIA_DIR must be a non-empty path',
+    );
   });
 
   it('moves moov before mdat and patches stco', () => {
