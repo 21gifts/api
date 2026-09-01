@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-31 (`POST /debug/accounts/:id/session`; platform-thread retarget; NIP-17 rumor `created_at`; GET replies `{ messages }`).
+**Status**: living document. Last revised 2026-09-01 (`PUT /debug/messages/:id/video`).
 
 ---
 
@@ -95,6 +95,7 @@ Public base URLs used in examples:
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                   |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)                            |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                              |
+| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`  | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)              |
 | GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                                    |
 | POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                                          |
 | DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                                          |
@@ -957,6 +958,69 @@ Environment:
 | -------------- | ----------------------------------------------------------------- |
 | `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.  |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
+### `PUT /debug/messages/:id/video`
+
+Operator restore of missing forum-video bytes for an **existing**
+`hasVideo` row. Authenticated with `Authorization: Bearer` matching
+`DEBUG_TOKEN`. This is not an end-user session. The raw body is
+`decodeForumVideo`'d and written under `MEDIA_DIR`; the handler does
+not insert a message row or change columns.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401` (checked before the
+body is read):
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Non-UUID or unknown id → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Row has no video, or stored MIME missing → **Response** `409`:
+
+```json
+{ "error": "Message has no video" }
+```
+
+Decoded type extension does not match the stored MIME → **Response**
+`409`:
+
+```json
+{ "error": "Video type does not match" }
+```
+
+Empty, oversize, or unrecognized bytes → **Response** `400`:
+
+```json
+{ "error": "Expected a video body" }
+```
+
+Store or disk write throws → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `204` with an empty body. Public
+`GET /messages/:id/video.mp4` (or `.mov` / `.webm` matching the stored
+type) can then serve the file.
+
+Environment:
+
+| Variable      | Meaning                                                           |
+| ------------- | ----------------------------------------------------------------- |
+| `DEBUG_TOKEN` | Operator bearer for this route. Unset → 503; process still boots. |
+| `MEDIA_DIR`   | Directory the bytes are written to. Required at boot.             |
 
 ### `GET /push/vapid-public`
 

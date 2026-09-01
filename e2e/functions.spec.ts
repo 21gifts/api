@@ -414,6 +414,13 @@ test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 40
   expect(res.status()).toBe(401);
 });
 
+test('Function: debugMessagesRoutes — PUT /debug/messages/:id/video without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.put('/debug/messages/:id/video');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 401', async ({
   request,
 }) => {

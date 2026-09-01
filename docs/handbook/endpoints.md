@@ -91,6 +91,13 @@
 - **Used by:** Operators debugging zap receipt indexing.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: PUT /debug/messages/:id/video
+
+- **Purpose:** Operator restore of missing forum-video bytes for an existing message with `hasVideo`. Raw body is validated (`decodeForumVideo`), must match the stored MIME extension, and is written under `MEDIA_DIR` so public `GET /messages/:id/video.*` can serve it. Does not create a new message id or change the DB row.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match (checked before the body is read); 404 `{ error: 'Not found' }` for a non-UUID or unknown id; 409 `{ error: 'Message has no video' }` when `hasVideo` is not true or `videoContentType` is missing; 409 `{ error: 'Video type does not match' }` when the decoded type's extension differs from the stored MIME; 400 `{ error: 'Expected a video body' }` for empty, oversize, or unrecognized bytes; 503 `{ error: 'Messages are unavailable' }` when the store or disk write throws (`debug.messages.video.put_failed`).
+- **Used by:** Operators restoring a missing on-disk forum video without SSH (`gifts-debug video-put`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /push/vapid-public
 
 - **Purpose:** Bearer session. Returns `{ publicKey }` (URL-safe base64 VAPID public) so the app can subscribe.
