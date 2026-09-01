@@ -6,6 +6,7 @@ import {
   detectVideoContentType,
   faststartIsoBmff,
   forumVideoExt,
+  forumVideoFilePresent,
   forumVideoUrl,
   isoBmffDisplaySize,
   parseBytesRange,
@@ -186,6 +187,32 @@ describe('video', () => {
     huge.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     expect(decodeForumVideo(huge)).toBeNull();
     expect(decodeForumVideo(mp4Bytes())?.contentType).toBe('video/mp4');
+  });
+
+  it('reports when a video file is present on disk', async () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    expect(await forumVideoFilePresent(resolveMediaDir(), id, null)).toBe(false);
+    expect(await forumVideoFilePresent(resolveMediaDir(), id, 'video/mp4')).toBe(false);
+    await writeForumVideo(id, { contentType: 'video/mp4', bytes: mp4Bytes() });
+    try {
+      expect(await forumVideoFilePresent(resolveMediaDir(), id, 'video/mp4')).toBe(true);
+    } finally {
+      await removeForumVideo(id, 'video/mp4');
+    }
+    const emptyId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const emptyPath = videoFilePath(resolveMediaDir(), emptyId, 'video/mp4');
+    await fs.writeFile(emptyPath, new Uint8Array());
+    try {
+      expect(await forumVideoFilePresent(resolveMediaDir(), emptyId, 'video/mp4')).toBe(false);
+    } finally {
+      await fs.unlink(emptyPath);
+    }
+    expect(
+      await forumVideoFilePresent(resolveMediaDir(), id, 'video/mp4', async () => ({
+        isFile: () => false,
+        size: 12,
+      })),
+    ).toBe(false);
   });
 
   it('builds Damus-friendly video URLs', () => {

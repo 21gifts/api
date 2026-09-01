@@ -226,14 +226,14 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo` only when the file is on disk and non-empty, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id
 
-- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included.
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo` only when the file is on disk and non-empty, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included.
 - **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
 - **Used by:** App deep links / share URLs for one forum note.
 - **Auth:** none (public).

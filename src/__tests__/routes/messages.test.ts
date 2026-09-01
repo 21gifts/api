@@ -2087,6 +2087,29 @@ describe('GET /messages/:id', () => {
     expect(body).not.toHaveProperty('replyCount');
   });
 
+  it('omits hasVideo when the file is missing on disk', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'clip gone',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/5c5051d3-adba-44f9-a964-9bd0df1ce084',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hasVideo: boolean; videoContentType: string | null };
+    expect(body.hasVideo).toBe(false);
+    expect(body.videoContentType).toBeNull();
+  });
+
   it('includes the live author role for a 21gifts note', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
@@ -2488,6 +2511,9 @@ describe('forum video', () => {
     expect(created.hasVideo).toBe(true);
     expect(created.hasPhoto).toBe(true);
     expect(created.videoContentType).toBe('video/mp4');
+    const publicGet = await app.request(`/messages/${created.id}`);
+    expect(publicGet.status).toBe(200);
+    expect(((await publicGet.json()) as { hasVideo: boolean }).hasVideo).toBe(true);
     const full = await app.request(`/messages/${created.id}/video.mp4`);
     expect(full.status).toBe(200);
     expect(full.headers.get('Accept-Ranges')).toBe('bytes');

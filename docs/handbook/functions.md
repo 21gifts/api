@@ -590,7 +590,7 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note; Bearer `GET /:id/replies` lists direct replies oldest-first; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` serves sized video bytes (`Content-Length`, `Accept-Ranges` / 206 / 416, heal-on-read faststart); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo` only when the file is on disk and non-empty, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note; Bearer `GET /:id/replies` lists direct replies oldest-first; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` serves sized video bytes (`Content-Length`, `Accept-Ranges` / 206 / 416, heal-on-read faststart); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice (public `GET /:id` and photo/video do not require Bearer); 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 `{ error: 'Not found' }` when JSON `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 404 photo/video/`GET /:id`/`GET /:id/replies` missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.get.failed` / `messages.replies.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits media bytes (list includes `replyCount`; missing author → `role` `"basis"` on list; Damus-only omits `role`). Signed-in list/replies/create may include `accountId` (21gifts author id; omitted for Damus-only); public `GET /:id` never includes it.
 - **Used by:** `createApp`.
@@ -639,7 +639,7 @@
 
 ## Function: serializeMessage
 
-- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, live author role, optional `replyCount`, and optional `accountId`.
+- **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `hasVideo`, `videoContentType`, live author role, optional `replyCount`, and optional `accountId`. Callers that serve list/GET/replies first drop `hasVideo` when the file is missing or empty on disk (`forumVideoFilePresent`) so clients do not render a 404 player.
 - **Inputs:** `MessageRow` (includes `accountId`; never photo/video bytes), `payable` boolean, optional `role` (`AccountRole`; omitted for Damus-only authors), optional `replyCount` (top-level `GET /messages` list rows), and optional `includeAccountId` (signed-in list/replies/create pass true; public GET omits).
 - **Returns / side effects:** `{ id, name, text, createdAt, sats, payable, hasPhoto, hasVideo, videoContentType }` with ISO-8601 `createdAt`; `videoContentType` is null when `hasVideo` is false; `role` omitted when undefined; `replyCount` omitted when undefined; `accountId` set only when `includeAccountId` is true and `row.accountId !== null` (Damus-only and public GET omit it); never photo/video bytes. No I/O.
 - **Used by:** `messagesRoutes`.
@@ -1345,6 +1345,13 @@
 - **Inputs:** dir, id, MIME.
 - **Returns / side effects:** path.
 - **Used by:** write/read/serve.
+
+## Function: forumVideoFilePresent
+
+- **Purpose:** True when the stored video file exists, is a regular file, and is non-empty.
+- **Inputs:** media dir, message id, MIME or `null`, optional `stat` inject.
+- **Returns / side effects:** `false` when MIME is null, the path is missing, not a file, or size 0. Stats disk.
+- **Used by:** `messagesRoutes` list, public GET, and replies.
 
 ## Function: wellKnownRoutes
 

@@ -34,6 +34,7 @@ import {
   MESSAGE_VIDEO_MAX_BYTES,
   decodeForumVideo,
   forumVideoExt,
+  forumVideoFilePresent,
   parseBytesRange,
   readForumVideoBytes,
   resolveMediaDir,
@@ -41,6 +42,24 @@ import {
   type ForumVideo,
 } from '@/lib/video';
 import { stat } from 'node:fs/promises';
+
+/**
+ * Clear `hasVideo` when the bytes are gone from disk so public JSON does not
+ * advertise a player for a 404 URL.
+ *
+ * @param row - Store row.
+ * @returns The row, or a copy with `hasVideo` false and `videoContentType` null.
+ */
+async function rowWithPresentVideo(row: MessageRow): Promise<MessageRow> {
+  if (row.hasVideo !== true || row.videoContentType === null) {
+    return row;
+  }
+  const present = await forumVideoFilePresent(resolveMediaDir(), row.id, row.videoContentType);
+  if (present) {
+    return row;
+  }
+  return { ...row, hasVideo: false, videoContentType: null };
+}
 
 /** True when `err` is a Node errno with `code === 'ENOENT'`. */
 function isPathNotFound(err: unknown): boolean {
@@ -405,7 +424,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const payable =
             row.eventId !== null && author !== undefined && author.lightningAddress !== null;
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          messages.push(serializeMessage(row, payable, role, row.replyCount, true));
+          messages.push(
+            serializeMessage(await rowWithPresentVideo(row), payable, role, row.replyCount, true),
+          );
         }
         return c.json({ messages }, 200);
       } catch {
@@ -517,12 +538,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const messages = [];
         for (const row of rows) {
           if (row.accountId === null) {
-            messages.push(serializeMessage(row, false, undefined, undefined, true));
+            messages.push(
+              serializeMessage(await rowWithPresentVideo(row), false, undefined, undefined, true),
+            );
             continue;
           }
           const author = await deps.authStore.getAccount(row.accountId);
           const role = author?.role ?? 'basis';
-          messages.push(serializeMessage(row, false, role, undefined, true));
+          messages.push(
+            serializeMessage(await rowWithPresentVideo(row), false, role, undefined, true),
+          );
         }
         return c.json({ messages }, 200);
       } catch {
@@ -548,7 +573,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           author !== undefined &&
           author.lightningAddress !== null;
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        return c.json(serializeMessage(row, payable, role), 200);
+        return c.json(serializeMessage(await rowWithPresentVideo(row), payable, role), 200);
       } catch {
         logEvent('messages.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
