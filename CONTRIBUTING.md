@@ -6,7 +6,7 @@
 git clone https://github.com/21gifts/api.git
 cd api
 bun install
-bun run dev    # → http://localhost:3000/healthz
+MEDIA_DIR="$(mktemp -d)" bun run dev    # → http://localhost:3000/healthz
 ```
 
 ## Prerequisites
