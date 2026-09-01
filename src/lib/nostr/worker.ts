@@ -939,7 +939,7 @@ async function indexInboundDirectMessages(
             if (text === null) {
               return null;
             }
-            return { senderPubkey: event.pubkey.toLowerCase(), text };
+            return { senderPubkey: event.pubkey.toLowerCase(), text, createdAt: event.created_at };
           });
           if (plain === null) {
             continue;
@@ -953,9 +953,7 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const createdAt = new Date(
-            (typeof plain.createdAt === 'number' ? plain.createdAt : signed.created_at) * 1000,
-          );
+          const createdAt = new Date(plain.createdAt * 1000);
           let thread: ConversationThread;
           if (sender !== undefined) {
             if (sender.isPlatform === true || recipient.isPlatform === true) {
