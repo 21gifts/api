@@ -953,7 +953,11 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const createdAt = new Date(plain.createdAt * 1000);
+          const unix = plain.createdAt ?? signed.created_at;
+          if (!Number.isFinite(unix)) {
+            continue;
+          }
+          const createdAt = new Date(unix * 1000);
           let thread: ConversationThread;
           if (sender !== undefined) {
             if (sender.isPlatform === true || recipient.isPlatform === true) {
