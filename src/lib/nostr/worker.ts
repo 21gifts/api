@@ -450,7 +450,9 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           };
           try {
             const fileBytes = new Uint8Array(
-              await readFile(videoFilePath(resolveMediaDir(deps.env), row.id, videoMime)),
+              await readFile(
+                videoFilePath(resolveMediaDir({ ...process.env, ...deps.env }), row.id, videoMime),
+              ),
             );
             const dim = isoBmffDisplaySize(fileBytes);
             if (dim !== null) {
