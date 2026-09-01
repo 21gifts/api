@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-08-30 (pending kind:1 EVENT before hashtag/photo re-sign; Web Push VAPID: `GET /push/vapid-public`, `POST`/`DELETE /me/push-subscriptions`, `POST /debug/push-ping`; kind:1 content includes Damus-visible `#bitcoin` / `#21gifts`; `POST /debug/accounts` provision; `POST /auth/passkey/register/begin` optional `{ viewKey }` claim; `POST /me/lightning-address` `409` when the address is taken; `GET /debug/invoices` and `GET /debug/zap-ingests`; kind:0 `picture` + NIP-65 kind:10002; kind:1 NIP-92 `imeta` photo URLs; public `GET /messages/:id/photo`; forum `account.role` `basis`\|`verified`\|`moderator`\|`founder`; live `role` on `GET/POST /messages`; `PATCH /debug/accounts/:id`; private in-app `POST /contact` + `GET /debug/contacts`; `POST /me/lightning-address` live-resolves and requires zap metadata; invoice limiter after payable checks; public forum `GET/POST /messages` with `sats`/`payable`/`hasPhoto`; worker indexes kind:9735 zap receipts onto `sats`; `POST /messages/:id/invoice` NIP-57 zap; SQL boot requires `NOSTR_NSEC_KEK`; passkey-only login; gift stats BTC + historical USD via Coinbase daily close; `GET /gifts?day=`).
+**Status**: living document. Last revised 2026-08-31 (`POST /debug/accounts/:id/session`; platform-thread retarget; NIP-17 rumor `created_at`; GET replies `{ messages }`).
 
 ---
 
@@ -55,46 +55,54 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                                     |
-| ------ | -------------------------------------------- | ------------------------ | ----------------------------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                                    |
-| GET    | `/info`                                      | none                     | Service identity                                            |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                        |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                    |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                               |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                             |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                           |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                              |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                             |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` next onboarding step)                      |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                             |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                    |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                      |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                          |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve                       |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                              |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                      |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                           |
-| GET    | `/messages`                                  | Bearer                   | List public forum thread                                    |
-| POST   | `/messages`                                  | Bearer                   | Post text and/or one photo to the forum                     |
-| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                             |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                         |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                      |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                            |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                    |
-| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`) |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` and/or unlink Lightning Address         |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                    |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)             |
-| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)               |
-| GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                     |
-| POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                           |
-| DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                           |
-| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                         |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                    |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                         |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                        |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                            |
+| Method | Path                                         | Auth                     | Purpose                                                                    |
+| ------ | -------------------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
+| GET    | `/healthz`                                   | none                     | Liveness                                                                   |
+| GET    | `/info`                                      | none                     | Service identity                                                           |
+| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                                       |
+| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                                   |
+| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                                              |
+| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                                            |
+| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                                          |
+| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                                             |
+| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                                            |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` next onboarding step)                                     |
+| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                            |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                                   |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                                     |
+| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                         |
+| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve + NIP-57 mint probe                  |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                                             |
+| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                                     |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                          |
+| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`)                                |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; optional one-level `inReplyTo` parent UUID                |
+| GET    | `/messages/:id`                              | none                     | Public single-note JSON                                                    |
+| GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                                     |
+| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                            |
+| GET    | `/messages/:id/video.*`                      | none                     | Fetch forum video bytes (Range / 206)                                      |
+| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                        |
+| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                                     |
+| GET    | `/conversations`                             | Bearer                   | List visible private threads                                               |
+| POST   | `/conversations`                             | Bearer                   | Open thread from a forum note (`forumMessageId`)                           |
+| GET    | `/conversations/:id`                         | Bearer                   | Oldest-first messages in one thread                                        |
+| POST   | `/conversations/:id`                         | Bearer                   | Send `{ text }` in a private thread                                        |
+| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                                           |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                                   |
+| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`) |
+| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                           |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                   |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)                            |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                              |
+| GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                                    |
+| POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                                          |
+| DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                                          |
+| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                                        |
+| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                                   |
+| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                                        |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                                       |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                           |
 
 ### `GET /healthz`
 
@@ -382,8 +390,11 @@ link/unlink do not clear the timestamp.
 
 Link or replace the receiver Lightning Address. After the LUD-16 shape check,
 the api live-resolves the well-known LNURL-pay metadata and requires zap
-support (`allowsNostr === true` and a non-empty `nostrPubkey`). Placeholder or
-unreachable addresses are rejected and not stored. Body:
+support (`allowsNostr === true` and a non-empty `nostrPubkey`). It then runs a
+NIP-57 mint probe (`probeNip57Mint` with the account's custodial key): a
+throwaway kind:9734 is signed, an invoice is requested (never paid), and the
+BOLT11 must be a NIP-57 `description_hash` invoice. Placeholder, unreachable,
+or non-zap addresses are rejected and not stored. Body:
 
 ```json
 { "address": "name@domain.tld" }
@@ -404,8 +415,24 @@ Address fails LUD-16 shape check, or trimmed length `> 255` → **Response**
 { "error": "Not a valid Lightning Address (expected name@domain)" }
 ```
 
-Well-known resolve fails, or metadata lacks zap support → **Response** `400`
-(account unchanged; logs `account.lightning_address.resolve_failed`):
+Well-known resolve fails, metadata lacks zap support, or the mint probe is
+`unreachable` → **Response** `400` (account unchanged; logs
+`account.lightning_address.resolve_failed`):
+
+```json
+{ "error": "Lightning Address could not be resolved" }
+```
+
+Mint probe returns `not_zap` (wallet advertised zap support but the minted
+invoice is not NIP-57) → **Response** `400` (account unchanged; logs
+`account.lightning_address.not_zap`):
+
+```json
+{ "error": "This Wallet of Satoshi address cannot receive these Bitcoin payments" }
+```
+
+Missing `NOSTR_NSEC_KEK` / `nostrKek`, key ensure failure, or a missing
+account pubkey after ensure → **Response** `503` (account unchanged):
 
 ```json
 { "error": "Lightning Address could not be resolved" }
@@ -619,13 +646,16 @@ Success → **Response** `200`:
       "lightningAddressVerified": false,
       "forumLawsDismissed": false,
       "createdAt": 0,
-      "rulesAgreedAt": null
+      "rulesAgreedAt": null,
+      "isPlatform": false
     }
   ]
 }
 ```
 
-The listing uses the nine-field dump and never includes `viewKey`.
+The listing uses `serializeDebugAccount` (the nine public fields plus
+`isPlatform`) and never includes `viewKey`. Member `GET /me` does not
+include `isPlatform`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -640,16 +670,27 @@ Environment:
 ### `POST /debug/accounts`
 
 Operator provision of accounts by display name and Lightning Address, with no
-passkey and `rulesAgreedAt` null. Same `DEBUG_TOKEN` bearer as GET.
+passkey and `rulesAgreedAt` null. Same `DEBUG_TOKEN` bearer as GET. **All**
+new addresses are NIP-57 mint-probed (`probeNip57Mint` with an ephemeral key)
+first; only then is any row persisted. Set `NIP57_PROBE=0` to skip that probe
+(e2e only; Playwright pins it). Unset in production so every new address is
+still probed. One failing new-address probe is
+**400** and no new address in that request is saved. Name-only updates
+(address already in the store) do **not** probe and run after every probe
+has passed.
 
 **Request** JSON `{ "accounts": [ { "name": string, "lightningAddress": string } ] }`
 (1–100 rows; name 1–80 after trim; address has exactly one `@` with both sides
 non-empty). Invalid body, C0/DEL in a name, or an address that is not LUD-16
 → **Response** `400` `{ "error": "Expected a JSON body with an \"accounts\" array" }`
-(no row is written). Create that does not persist the
-address, a name-only update that matches no row, or a name-only update
-that returns a row whose `name` is not the requested name → **Response** `500`
-`{ "error": "Could not save the account" }`.
+(no row is written). Mint probe `not_zap` → **Response** `400`
+`{ "error": "This Wallet of Satoshi address cannot receive these Bitcoin payments" }`
+(no new address in that request is saved). Mint probe `unreachable` → **Response** `400`
+`{ "error": "Lightning Address could not be resolved" }` (no new address in
+that request is saved). Create that does
+not persist the address, a name-only update that matches no row, or a
+name-only update that returns a row whose `name` is not the requested name
+→ **Response** `500` `{ "error": "Could not save the account" }`.
 
 Success → **Response** `200`:
 
@@ -673,24 +714,30 @@ still omits `viewKey`.
 
 ### `PATCH /debug/accounts/:id`
 
-Operator assignment of the account's forum display role and/or unlinking the
-Lightning Address. Authenticated with `Authorization: Bearer` matching
-`DEBUG_TOKEN` (same gate as `GET /debug/accounts`). Body is one or both of:
+Operator assignment of the account's forum display role, unlinking the
+Lightning Address, and/or the official platform flag (`isPlatform`).
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (same
+gate as `GET /debug/accounts`). Body is one or more of `role`,
+`lightningAddress: null`, and `platform`:
 
 ```json
-{ "role": "basis", "lightningAddress": null }
+{ "role": "basis", "lightningAddress": null, "platform": true }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, or `founder`.
-`lightningAddress` may only be JSON `null` (unlink). Setting a new address
-is not supported here (`POST /me/lightning-address` remains the live
-resolve path). Unlink resets `lightningAddressVerified` to `false` and
-drops any in-flight verification. `GET /me` then returns
-`setup: "lightning-address"` when a name is already stored, so any client
-that follows `setup` (or a missing `lightningAddress`) shows the address
-form. `verified` as a **role** is a human-identity badge (a moderator
-physically met the person); it is not `lightningAddressVerified`. New
-passkey accounts stay `basis` until an operator changes them here.
+`lightningAddress` may only be JSON `null` (unlink). `platform` is a
+boolean; `true` clears any other platform flag (at most one `isPlatform`
+account) and, when a conversation store is wired, points every
+`member_platform` thread at this account except a thread whose member is
+already this account. Setting a new address is not supported here
+(`POST /me/lightning-address` remains the live resolve path). Unlink
+resets `lightningAddressVerified` to `false` and drops any in-flight
+verification. `GET /me` then returns `setup: "lightning-address"` when a
+name is already stored, so any client that follows `setup` (or a missing
+`lightningAddress`) shows the address form. `verified` as a **role** is a
+human-identity badge (a moderator physically met the person); it is not
+`lightningAddressVerified`. New passkey accounts stay `basis` until an
+operator changes them here.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -704,11 +751,13 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role` and/or `lightningAddress: null` →
-**Response** `400`:
+Body is not JSON with a known `role`, `lightningAddress: null`, and/or
+`platform` boolean → **Response** `400`:
 
 ```json
-{ "error": "Expected a JSON body with a \"role\" string and/or lightningAddress null" }
+{
+  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, and/or platform boolean"
+}
 ```
 
 Unknown account id → **Response** `404`:
@@ -717,11 +766,21 @@ Unknown account id → **Response** `404`:
 { "error": "Not found" }
 ```
 
-Success → **Response** `200` with the updated account JSON (same nine-field dump as
-`GET /debug/accounts`; no `viewKey`). Role changes log
-`debug.accounts.role_set` with the account id and new role. Unlink logs
+Success → **Response** `200` with the updated account JSON (same
+`serializeDebugAccount` shape as `GET /debug/accounts`, including
+`isPlatform`; no `viewKey`). Role changes log `debug.accounts.role_set`
+with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
-token or the previous address).
+token or the previous address). Platform changes log
+`debug.accounts.platform_set` with the account id and the new flag.
+
+### `POST /debug/accounts/:id/session`
+
+Operator mint of a member bearer for the given account id. Authenticated
+with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
+Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
+the other debug account routes. Not a member login path; for e2e and
+operator debugging.
 
 ### `GET /debug/contacts`
 
@@ -819,14 +878,17 @@ Success → **Response** `200`:
       "paymentHash": "<64-hex>",
       "description": null,
       "descriptionHash": "<64-hex>",
-      "isNip57Invoice": true
+      "isNip57Invoice": true,
+      "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" }
     }
   ]
 }
 ```
 
-Rows are newest-first, capped at **200**. Never includes nsec. `result` is one
-of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`, `no_author`, `no_key`,
+`lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
+was stored. Rows are newest-first, capped at **200**. Never includes nsec.
+`result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
+`no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
 true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
 sent as LNURL `nostr=`. Failure rows have `pr` null and `isNip57Invoice`
@@ -1207,18 +1269,23 @@ Success → **Response** `200`:
 
 ### `GET /messages`
 
-Public member forum thread. Bearer session required. Returns newest messages
-first (`createdAt` descending, then `id`), capped at **200**. This is the
-latest-200 **window** on the wire; clients must render the thread as a
-**messenger group** (oldest at the top, newest at the bottom above the
-composer), reversing the array for display. Each message exposes the author
-**name snapshotted at post time**, `text` (may be empty when a photo is
-attached), ISO-8601 `createdAt`, `sats` (validated Lightning receipts on that
-note, default 0), `payable` (true when the note is signed and the author has
-a Lightning Address), `hasPhoto`, and live `role` (the author's current
-`account.role`, or `"basis"` if the author is missing). List JSON never
-includes photo bytes. `accountId` and Nostr event ids are never included in
-the JSON.
+Public member forum thread. Bearer session required. Returns **only
+top-level notes** (`parent_id IS NULL`) newest first (`createdAt`
+descending, then `id`), capped at **200**. Replies are never listed here —
+use `GET /messages/:id/replies`. This is the latest-200 **window** on the
+wire; clients must render the thread as a **messenger group** (oldest at
+the top, newest at the bottom above the composer), reversing the array for
+display. Each message exposes the author **name snapshotted at post time**,
+`text` (may be empty when a photo or video is attached), ISO-8601
+`createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+`payable` (true when the note is signed and the author has a Lightning
+Address), `hasPhoto`, `hasVideo`, `videoContentType` (`null` when
+`hasVideo` is false), live `role` (the author's current `account.role`, or
+`"basis"` if the author is missing; omitted for Damus-only authors), and
+`replyCount` (direct `parent_id` children). List JSON never includes photo
+or video bytes. Signed-in list/replies/create may include `accountId`
+(21gifts author id; omitted for Damus-only); public GET `/messages/:id`
+never includes it. Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1245,7 +1312,10 @@ Success → **Response** `200`:
       "sats": 0,
       "payable": false,
       "hasPhoto": false,
-      "role": "basis"
+      "hasVideo": false,
+      "videoContentType": null,
+      "role": "basis",
+      "replyCount": 0
     }
   ]
 }
@@ -1253,8 +1323,10 @@ Success → **Response** `200`:
 
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
-Postgres `message`. List queries select `(photo IS NOT NULL) AS has_photo`
-and must not select the `photo` bytea column.
+Postgres `message`. List queries select top-level rows only
+(`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
+`replyCount` of direct children, and must not select the `photo` bytea
+column.
 
 The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
@@ -1268,30 +1340,38 @@ objects, not JSON strings.
 ### `POST /messages`
 
 Post to the public member forum. Bearer session required. JSON body (not
-multipart) with text and/or one photo:
+multipart) with text and/or one photo, and an optional parent UUID:
 
 ```json
-{ "text": "…", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
+{ "text": "…", "inReplyTo": "<uuid>", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
 ```
 
 `{ "text": "hello" }` without `photo` remains valid. Photo-only posts are
 allowed (`text` may be omitted or empty when a photo is present). At least
-one of (non-empty trimmed text, photo) is required.
+one of (non-empty trimmed text, photo) is required. Optional `inReplyTo`
+is a **top-level** parent message UUID (JSON only; sets `parentId` for a
+one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
+is not in the store, or a parent that is itself a reply (`parentId` not
+null) → **404** `{ "error": "Not found" }`. Multipart video posts do not
+accept `inReplyTo` (they are always top-level).
 
 The account must already have a non-blank display name. The api stores a
 **name snapshot** (trimmed account name at post time), normalised text
 (possibly `""` for photo-only), optional JPEG/PNG/WebP bytes (≤ 1 MiB;
-MIME from magic bytes), and a timestamp. Text longer than **500** after
-trim, or with disallowed C0/DEL controls, is rejected. Newlines (`\n`,
-`\r`) are allowed. The **200** body is the public message object itself
-(not wrapped in `{ messages }`), including `sats`, `payable`, and
-`hasPhoto`. No `accountId` and no photo bytes in the JSON. `sats` is 0 and
+MIME from magic bytes), `parentId` (null for top-level notes), and a
+timestamp. Text longer than **500** after trim, or with disallowed C0/DEL
+controls, is rejected. Newlines (`\n`, `\r`) are allowed. The **200** body
+is the public message object itself (not wrapped in `{ messages }`),
+including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
+`videoContentType`. May include `accountId` (21gifts author id). No
+`replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note. `role` is the posting
-session account's live `account.role`. Over-limit posters get **429**
-`{ "error": "Too many messages" }` with `Retry-After: 10` (1/10s, 6/h,
-20/UTC-day). The worker signs a top-level kind:1 (content includes Damus-visible
-`#bitcoin` and `#21gifts`; forum `text` stays the member's words) and fans out when
-`NOSTR_PUBLISH=1`.
+session account's live `account.role`. Web Push is enqueued **only** when
+`parentId` is null (top-level notes); replies do not push. Over-limit
+posters get **429** `{ "error": "Too many messages" }` with
+`Retry-After: 10` (1/10s, 6/h, 20/UTC-day). The worker signs a top-level
+kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`; forum
+`text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1331,6 +1411,14 @@ or decoded size `> 1_048_576` → **Response** `400`:
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
 ```
 
+`inReplyTo` present but not a UUID, the parent is missing, or the parent
+is itself a reply →
+**Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
 Store failure → **Response** `503`:
 
 ```json
@@ -1348,6 +1436,8 @@ Success → **Response** `200`:
   "sats": 0,
   "payable": false,
   "hasPhoto": false,
+  "hasVideo": false,
+  "videoContentType": null,
   "role": "basis"
 }
 ```
@@ -1415,6 +1505,124 @@ Success → **Response** `200`: raw image body, `Content-Type` one of
 `image/jpeg` / `image/png` / `image/webp` (from stored magic-derived type),
 `Cache-Control: public, max-age=86400`. Not JSON.
 
+Photo, video, and replies register **before** the public single-note
+`GET /messages/:id` so `/photo`, `/video.mp4` (and `.webm` / `.mov`), and
+`/replies` are not captured as an `:id`.
+
+### `GET /messages/:id/video.mp4`
+
+Fetch optional video bytes for one forum message (same handler for
+`.webm` and `.mov`). **No bearer** — Damus loads this URL from kind:1
+`imeta`. Missing message, message-without-video, extension that does not
+match the stored MIME, and a non-UUID `id` are the same **404**. Supports
+`Range` / HTTP **206** and **416** (`Content-Range: bytes */SIZE`).
+
+No video for `id` → **Response** `404`:
+
+```json
+{ "error": "Video not found" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200` or `206`: raw video body,
+`Content-Type` one of `video/mp4` / `video/webm` / `video/quicktime`,
+`Accept-Ranges: bytes`, `Cache-Control: public, max-age=86400`,
+`Access-Control-Allow-Origin: *`. Not JSON.
+
+### `GET /messages/:id/replies`
+
+Bearer session required. Lists **direct replies** for parent `:id`
+oldest-first (`createdAt` then `id` ascending), capped at **200**. Each
+item is the public message JSON with `payable` false and no `replyCount`.
+Signed-in replies may include `accountId` (21gifts author id; omitted for
+Damus-only). Damus-only replies (`accountId` null) omit `role`. Photo and
+video bytes are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+`:id` is not a UUID, or the parent is missing → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "messages": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "text": "A reply",
+      "createdAt": "2026-08-28T12:01:00.000Z",
+      "sats": 0,
+      "payable": false,
+      "hasPhoto": false,
+      "hasVideo": false,
+      "videoContentType": null,
+      "role": "basis"
+    }
+  ]
+}
+```
+
+An empty reply thread is **200** with `"messages": []`.
+
+### `GET /messages/:id`
+
+Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
+**after** photo, video, and `GET /messages/:id/replies` so those paths are
+not captured as `:id`. Returns the public message JSON (`sats`, `payable`,
+`hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts
+authors). Never includes `accountId`. Damus-only notes (`accountId` null)
+omit `role` and set `payable` false. `replyCount` is omitted. Photo and
+video bytes are never included.
+
+Non-UUID `:id` or missing row → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "id": "<uuid>",
+  "name": "Ada",
+  "text": "Thank you!",
+  "createdAt": "2026-08-28T12:00:00.000Z",
+  "sats": 0,
+  "payable": false,
+  "hasPhoto": false,
+  "hasVideo": false,
+  "videoContentType": null,
+  "role": "basis"
+}
+```
+
 ### `POST /contact`
 
 Private in-app contact mailbox. Bearer session required. Body:
@@ -1430,8 +1638,22 @@ allowed; other C0 and DEL rejected), then contact still requires trimmed
 length **1–500**. Forum photo-only empty text is not accepted here. The
 **200** body is the public contact object itself (not wrapped). No
 `accountId` in the member-facing JSON. Contacts are **never** listed
-publicly — operators read them via `GET /debug/contacts`. No email, no DMs,
-no Nostr fan-out.
+publicly — operators still read the mailbox via `GET /debug/contacts`
+(`DEBUG_TOKEN` must not read member PNs). After the platform account exists,
+the contact row is persisted first, then the same text is appended to the
+member→platform conversation thread so it is readable via
+`GET /conversations`. Conversation append failure logs
+`conversations.contact_sync.failed` and still returns **200** (contact is
+the product surface). When no platform account (`isPlatform`) exists
+(neither contact nor thread is written) →
+**Response** `503`:
+
+```json
+{ "error": "Platform account is not configured" }
+```
+
+No email. Outbound Nostr fan-out is the conversation worker (NIP-17 wrap),
+not this HTTP handler.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -1474,6 +1696,89 @@ Success → **Response** `200`:
   "createdAt": "2026-08-29T12:00:00.000Z"
 }
 ```
+
+### `GET /conversations`
+
+Bearer session required. Nothing public. Lists threads the session may see:
+own member↔member / member↔Damus / member↔platform threads, plus (when
+`role` is `founder` or `moderator`) every platform thread. Newest
+`lastMessageAt` first. Cap 200. Member JSON never includes `accountId`,
+event ids, or npubs; Damus-only counterpart `name` may be a truncated npub.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Conversations are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "conversations": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "lastText": "Hello",
+      "lastAt": "2026-08-29T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /conversations`
+
+Bearer session required. Open or return the thread with a forum note's
+author (`21gifts` account or Damus pubkey). Body:
+
+```json
+{ "forumMessageId": "<uuid>" }
+```
+
+Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
+the session account → **400** `{ "error": "Cannot message yourself" }`.
+
+Success → **Response** `200` (same public conversation object as list rows).
+
+### `GET /conversations/:id`
+
+Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
+**404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
+missing, or the session may not see it.
+
+Success → **Response** `200`:
+
+```json
+{
+  "messages": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "text": "Hello",
+      "createdAt": "2026-08-29T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /conversations/:id`
+
+Bearer session required. Body `{ "text": "…" }` 1–500 via
+`normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
+platform thread persist as the platform account; the worker signs with the
+platform nsec. Relay failure does not block local persist.
+
+Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
+**400** `{ "error": "Set a name before posting" }` when the sending member
+has no display name.
+
+Success → **Response** `200` (one public conversation message).
 
 ---
 

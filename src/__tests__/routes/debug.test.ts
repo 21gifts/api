@@ -1,7 +1,35 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { FetchFn } from '@/lib/lnurlp';
+import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { debugRoutes } from '@/routes/debug';
+
+const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** LNURL-pay that mints a zap-capable invoice (required for NEW-address provision). */
+function zapCapableFetch(): FetchFn {
+  return async (input) => {
+    if (String(input).includes('/.well-known/lnurlp/')) {
+      return jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: 100_000_000_000,
+        allowsNostr: true,
+        nostrPubkey: 'aa'.repeat(32),
+      });
+    }
+    return jsonResponse({ pr: 'lnbc10n1ptest' });
+  };
+}
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -12,19 +40,27 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 describe('debugRoutes', () => {
   let warn: ReturnType<typeof vi.spyOn>;
+  let nip57: { mockRestore: () => void };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bolt11 = await import('@/lib/bolt11');
+    nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    nip57.mockRestore();
   });
 
   it('returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(503);
@@ -34,7 +70,11 @@ describe('debugRoutes', () => {
   it('returns 503 when the token is blank', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: '  ' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: '  ',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', { headers: { authorization: 'Bearer   ' } });
     expect(res.status).toBe(503);
@@ -43,7 +83,11 @@ describe('debugRoutes', () => {
   it('returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(401);
@@ -63,7 +107,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -75,13 +122,18 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]?.id).toBe('acc');
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
     expect(body.accounts[0]).not.toHaveProperty('viewKey');
+    expect(body.accounts[0]).toHaveProperty('isPlatform');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
   it('PATCH returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -95,7 +147,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -108,7 +164,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 for a missing role body', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -117,14 +177,19 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
   it('PATCH returns 400 for an unknown role', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -133,14 +198,19 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
   it('PATCH returns 400 for non-JSON', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -153,7 +223,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 404 for a missing account', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/missing', {
       method: 'PATCH',
@@ -178,7 +252,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -194,6 +271,145 @@ describe('debugRoutes', () => {
         (e) => e['event'] === 'debug.accounts.role_set' && e['role'] === 'founder',
       ),
     ).toBe(true);
+    expect(body).toHaveProperty('isPlatform');
+  });
+
+  it('PATCH sets the platform flag and clears any other platform account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'old',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Old',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; isPlatform: boolean };
+    expect(body.id).toBe('acc');
+    expect(body.isPlatform).toBe(true);
+    expect((await store.getAccount('acc'))?.isPlatform).toBe(true);
+    expect((await store.getAccount('old'))?.isPlatform).toBe(false);
+  });
+
+  it('PATCH platform:true retargets member_platform threads', async () => {
+    const store = new InMemoryAuthStore();
+    const conversations = new InMemoryConversationStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'old',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Old',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const opened = await conversations.openMemberPlatform('mem', 'old', new Date(0));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        conversationStore: conversations,
+      }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await conversations.getById(opened.id))?.accountB).toBe('acc');
+  });
+
+  it('POST /:id/session mints a bearer the account can use', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const missing = await app.request('/debug/accounts/missing/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(missing.status).toBe(404);
+    const res = await app.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string };
+    expect(body.token.length).toBeGreaterThan(8);
+    expect((await store.getSession(body.token))?.accountId).toBe('acc');
+    const defaultClock = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const again = await defaultClock.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(again.status).toBe(200);
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {
@@ -210,7 +426,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 2,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -253,7 +472,10 @@ describe('debugRoutes', () => {
       nonce: 'a'.repeat(32),
       createdAt: 1,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -277,7 +499,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 2,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -293,7 +518,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 when lightningAddress is not null', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -302,14 +531,19 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "role" string and/or lightningAddress null',
+      error:
+        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
     });
   });
 
   it('POST returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: undefined }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: undefined,
+        fetchImpl: async () => new Response(null, { status: 500 }),
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -325,7 +559,11 @@ describe('debugRoutes', () => {
   it('POST returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -340,7 +578,11 @@ describe('debugRoutes', () => {
   it('POST returns 400 for an invalid body', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -356,7 +598,11 @@ describe('debugRoutes', () => {
   it('POST returns 400 when name or Lightning Address fail normalisation', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new InMemoryAuthStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const badName = await app.request('/debug/accounts', {
       method: 'POST',
@@ -384,7 +630,10 @@ describe('debugRoutes', () => {
 
   it('POST returns 400 without persisting earlier rows when one address fails normalisation', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -399,9 +648,40 @@ describe('debugRoutes', () => {
     expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
   });
 
+  it('POST skips the mint probe when NIP57_PROBE is 0', async () => {
+    const previous = process.env['NIP57_PROBE'];
+    process.env['NIP57_PROBE'] = '0';
+    try {
+      const store = new InMemoryAuthStore();
+      const app = new Hono().route(
+        '/debug/accounts',
+        debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      );
+      const res = await app.request('/debug/accounts', {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+      expect(stored?.name).toBe('Ada');
+    } finally {
+      if (previous === undefined) {
+        delete process.env['NIP57_PROBE'];
+      } else {
+        process.env['NIP57_PROBE'] = previous;
+      }
+    }
+  });
+
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -443,7 +723,10 @@ describe('debugRoutes', () => {
 
   it('POST updates name idempotently for the same address ignoring case', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const first = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -500,7 +783,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -532,7 +818,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new HollowStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new HollowStore(),
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -566,7 +856,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new MissingNameUpdateStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new MissingNameUpdateStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -602,7 +896,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -650,7 +947,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -694,7 +994,7 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret' }),
+      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret', fetchImpl: unusedFetch }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -718,7 +1018,10 @@ describe('debugRoutes', () => {
       }
     }
     const store = new NullCreatedStore();
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -764,7 +1067,10 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -799,7 +1105,11 @@ describe('debugRoutes', () => {
     }
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new AddressFallbackStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new AddressFallbackStore(),
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+      }),
     );
     const existing = await app.request('/debug/accounts', {
       method: 'POST',
@@ -826,7 +1136,11 @@ describe('debugRoutes', () => {
     }
     const raceApp = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new RaceAddressFallbackStore(), debugToken: 'secret' }),
+      debugRoutes({
+        store: new RaceAddressFallbackStore(),
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+      }),
     );
     const raced = await raceApp.request('/debug/accounts', {
       method: 'POST',
@@ -841,5 +1155,80 @@ describe('debugRoutes', () => {
     };
     expect(racedBody.accounts[0]?.created).toBe(false);
     expect(racedBody.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
+  });
+
+  it('POST returns 400 when a new address is not zap-capable', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(false);
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: LIGHTNING_ADDRESS_NOT_ZAP });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+  });
+
+  it('POST returns 400 when a new address cannot be probed', async () => {
+    const store = new InMemoryAuthStore();
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+  });
+
+  it('POST returns 400 without creating earlier new addresses when a later probe fails', async () => {
+    const store = new InMemoryAuthStore();
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/other')) {
+        return new Response(null, { status: 500 });
+      }
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({ pr: 'lnbc10n1ptest' });
+    };
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          { name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' },
+          { name: 'Bob', lightningAddress: 'other@walletofsatoshi.com' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
+    expect(await store.getAccountByLightningAddress('other@walletofsatoshi.com')).toBeUndefined();
   });
 });

@@ -17,6 +17,7 @@ import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
 import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
+import { resolveMediaDir } from './lib/video';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -36,12 +37,21 @@ function createBunSqlClient(databaseUrl: string): SqlClient {
 if (import.meta.main) {
   const addr = resolveBindAddr(undefined, process.env);
   const { host, port } = parseBindAddr(addr);
+  resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
   // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
   // falls back to Coinbase; unset does not fail boot.
   const boot = await openBootStores(databaseUrl, createBunSqlClient);
-  const { authStore, giftStore, giftRecorder, btcUsdRates, messageStore, nostrKek, contactStore } =
-    boot;
+  const {
+    authStore,
+    giftStore,
+    giftRecorder,
+    btcUsdRates,
+    messageStore,
+    nostrKek,
+    contactStore,
+    conversationStore,
+  } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
   let sender: PushSender = new UnconfiguredPushSender();
@@ -63,6 +73,7 @@ if (import.meta.main) {
     ...(messageStore === undefined ? {} : { messageStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
+    ...(conversationStore === undefined ? {} : { conversationStore }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
@@ -83,6 +94,7 @@ if (import.meta.main) {
         now: Date.now,
         env: process.env,
         pushStore,
+        ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
       },
       WORKER_INTERVAL_MS,
     );

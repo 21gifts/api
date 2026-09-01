@@ -238,8 +238,9 @@ Every "message" the user writes in the UI is a NOSTR event. (v1 note: NOSTR
 is fully custodial in v1 — the api holds one keypair per account and signs
 events server-side with the account's own key, see "NOSTR in v1". The table
 below applies to v1 for the surfaces v1 ships — profile metadata, campaign
-post, public comment; the DM and Zap-receipt rows stay deferred, see MVP
-scope. The client-side-signing flow beneath it is target state.)
+post, public comment, and the custodial PN channel on `/conversations`.
+Zap-receipt / leaderboard rows stay deferred, see MVP scope. The
+client-side-signing flow beneath it is target state.)
 
 | UI surface                            | NOSTR primitive                                                                                                                                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -268,8 +269,9 @@ app  ←──indexed feed──  api  ←──subscribe──  relays
   resource, not raw relay traffic
 - Default relay set is configured server-side; users can opt into a "raw mode"
   later (deferred) where the app talks to relays directly with the same key
-- Private DMs (NIP-17) pass through the api as opaque encrypted payloads — the
-  api never sees plaintext
+- Target-state private DMs pass through the api as opaque encrypted payloads
+  (client-side nsec). v1 is custodial: the api unwraps NIP-17 / decrypts
+  kind:4 with the account nsec for the `/conversations` PN channel.
 
 ### Public member forum (v1)
 
@@ -337,7 +339,8 @@ recurring paying stays in the external spend worker):
 - Event signing (the api never sees the nsec)
 - Guest Donate LNURL-pay flow (browser → wallet provider directly). Recurring
   spend-worker invoices are the exception (`POST /invoices`).
-- Decryption of NIP-17 sealed DMs (payloads pass through the api opaque)
+- Client-side decryption of NIP-17 sealed DMs (v1 custodial unwrap is on
+  the api for `/conversations`)
 
 The api lives in its own repository (`21gifts/api`) and is the **canonical
 home for project-level documentation**, including this concept document. The
@@ -404,6 +407,12 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - USD → sats conversion for recurring-gift amounts via an exchange-rate
   source (fail-closed on a missing or implausible rate; paying stays in
   the spend worker)
+- Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
+  official platform account; `Account.isPlatform`)
+- Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
+  `GET /messages/:id`
+- NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
+  and operator `POST /debug/accounts` unless `NIP57_PROBE=0`)
 
 **Out, deferred:**
 
@@ -413,7 +422,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   accepted risk, see "v1 Transitional Model")
 - Linking multiple LNURL-auth wallets to one account
 - Non-custodial donor spending (replaces the v1 spend worker)
-- Private DMs (NIP-17 sealed messages)
+- Non-custodial client-side DMs (v1 ships a custodial PN channel on
+  `/conversations`: NIP-17 + kind:4, official platform account)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
 - Native mobile app

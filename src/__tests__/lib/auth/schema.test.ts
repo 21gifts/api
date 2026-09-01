@@ -38,5 +38,11 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential \(account_id\)/i,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS is_platform boolean NOT NULL DEFAULT false/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS account_is_platform_uidx ON account \(is_platform\) WHERE is_platform/i,
+    );
   });
 });

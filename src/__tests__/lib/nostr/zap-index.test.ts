@@ -3,7 +3,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
@@ -263,7 +263,6 @@ describe('indexOpenZapReceipts', () => {
   });
 
   it('chunks 21 distinct event ids into two queries of 20 then 1', async () => {
-    const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
     await auth.createAccount({
@@ -279,9 +278,10 @@ describe('indexOpenZapReceipts', () => {
       rulesAgreedAt: null,
     });
     const firstId = `${'01'.repeat(31)}00`;
+    const rows: MessageRow[] = [];
     for (let i = 0; i < 21; i += 1) {
       const eventId = `${'01'.repeat(31)}${i.toString(16).padStart(2, '0')}`;
-      await store.create({
+      rows.push({
         id: `m-chunk-${i}`,
         accountId: 'acc-chunk',
         name: 'Ada',
@@ -292,8 +292,8 @@ describe('indexOpenZapReceipts', () => {
         eventId,
       });
     }
-    // Duplicate eventId covers the seen.has branch without a third query.
-    await store.create({
+    // Seed a duplicate eventId (create() is unique) so seen.has is covered.
+    rows.push({
       id: 'm-chunk-dup',
       accountId: 'acc-chunk',
       name: 'Ada',
@@ -303,6 +303,7 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
+    const store = new InMemoryMessageStore(rows);
     await ingest({
       store,
       auth,
@@ -676,6 +677,50 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+  });
+
+  it('does not increment sats when the message has no author accountId', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    const eventId = 'da'.repeat(32);
+    await store.create({
+      id: 'm-damus-author',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+    });
+    querier.events = [
+      {
+        id: 'r-damus-author',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', eventId],
+          ['bolt11', 'lnbc'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById('m-damus-author'))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('rejected');
+    expect(ingests[0]?.reason).toBe('author');
+    expect(ingests[0]?.messageId).toBe('m-damus-author');
   });
 
   it('does not increment sats when LNURL fetch fails or lacks zap fields', async () => {
@@ -1056,6 +1101,8 @@ describe('indexOpenZapReceipts', () => {
       });
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
+        listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+        listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         getById: (id: string) => base.getById(id),

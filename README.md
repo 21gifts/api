@@ -70,7 +70,7 @@ otherwise.
 git clone https://github.com/21gifts/api.git
 cd api
 bun install
-bun run dev    # → http://localhost:3000/healthz
+MEDIA_DIR="$(mktemp -d)" bun run dev    # → http://localhost:3000/healthz
 ```
 
 ## Local checks (the same gates CI runs)
@@ -89,6 +89,7 @@ bun run e2e             # Playwright against bun src/index.ts
 
 | Variable               | Required          | Purpose                                                                                                                             |
 | ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `MEDIA_DIR`            | yes               | Directory for forum video files. Missing or blank → process does not boot. Image/Compose pin `/data/media`. Not a secret.           |
 | `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
 | `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                        |
 | `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                      |

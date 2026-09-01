@@ -1,4 +1,6 @@
 import { defineConfig } from '@playwright/test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * HTTP end-to-end tests against `bun src/index.ts` (request-only; no browser).
@@ -33,8 +35,10 @@ export default defineConfig({
       VAPID_PRIVATE_KEY: '',
       VAPID_SUBJECT: '',
       DEBUG_TOKEN: 'e2e-debug-token',
+      NIP57_PROBE: '0',
       WEBAUTHN_RP_ID: 'localhost',
       CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
+      MEDIA_DIR: join(tmpdir(), '21gifts-e2e-media'),
     },
   },
 });

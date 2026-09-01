@@ -33,6 +33,7 @@ COPY --from=builder /app/public ./public
 USER app
 
 ENV BIND_ADDR=0.0.0.0:3000
+ENV MEDIA_DIR=/data/media
 EXPOSE 3000
 
 CMD ["bun", "run", "dist/index.js"]

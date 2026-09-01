@@ -50,6 +50,7 @@ function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
     description: row.description,
     descriptionHash: row.descriptionHash,
     isNip57Invoice: row.isNip57Invoice,
+    lnurlResponse: row.lnurlResponse,
   };
 }
 

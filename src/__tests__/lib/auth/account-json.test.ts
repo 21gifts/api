@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   serializeAccount,
+  serializeDebugAccount,
   serializeOwnerAccount,
   serializeViewProfile,
 } from '@/lib/auth/account-json';
@@ -39,6 +40,15 @@ describe('serializeAccount', () => {
   });
 });
 
+describe('serializeDebugAccount', () => {
+  it('adds isPlatform without exposing viewKey', () => {
+    const json = serializeDebugAccount({ ...account, isPlatform: true });
+    expect(json.isPlatform).toBe(true);
+    expect(json).not.toHaveProperty('viewKey');
+    expect(serializeDebugAccount(account).isPlatform).toBe(false);
+  });
+});
+
 describe('serializeOwnerAccount', () => {
   it('includes viewKey alongside the nine public fields', () => {
     const json = serializeOwnerAccount(account);
@@ -57,6 +67,7 @@ describe('serializeOwnerAccount', () => {
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
+    expect(json).not.toHaveProperty('isPlatform');
   });
 });
 

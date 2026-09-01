@@ -30,6 +30,10 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_content_type text;
 -- Video MIME only; bytes live on disk under MEDIA_DIR (not bytea).
 ALTER TABLE message ADD COLUMN IF NOT EXISTS video_content_type text;
 CREATE UNIQUE INDEX IF NOT EXISTS message_event_id_uidx ON message (event_id) WHERE event_id IS NOT NULL;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES message (id);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS author_pubkey text;
+ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC);
 CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   event_id text PRIMARY KEY,
   message_id uuid NOT NULL REFERENCES message (id),
@@ -55,6 +59,7 @@ CREATE TABLE IF NOT EXISTS message_invoice (
   description_hash text,
   is_nip57_invoice boolean NOT NULL DEFAULT false
 );
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb;
 CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx

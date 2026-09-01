@@ -17,6 +17,7 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
 import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
+import { conversationRoutes } from '@/routes/conversations';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
@@ -28,6 +29,8 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { resolveVapidConfig } from '@/lib/push-config';
@@ -75,7 +78,8 @@ export interface AppDeps {
   /**
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
-   * `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`,
+   * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
+   * `GET /debug/contacts`, `GET /debug/invoices`,
    * and `GET /debug/zap-ingests` return 503.
    */
   debugToken?: string;
@@ -124,6 +128,12 @@ export interface AppDeps {
    */
   contactStore?: ContactStore;
   /**
+   * Private messaging threads (default: empty
+   * {@link InMemoryConversationStore}). Boot injects
+   * {@link PostgresConversationStore} when `DATABASE_URL` is set.
+   */
+  conversationStore?: ConversationStore;
+  /**
    * Web Push subscriptions and outbox (default: empty
    * {@link InMemoryPushStore}). Boot injects
    * {@link PostgresPushStore} when `DATABASE_URL` is set.
@@ -148,7 +158,8 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, contact store, push store,
+ *   gift recorder, BTC-USD rates, message store, contact store, conversation
+ *   store, push store,
  *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
@@ -166,6 +177,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
@@ -222,13 +234,25 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
-  app.route('/me', meRoutes({ store, now, payer: invoicePayer, fetchImpl }));
+  app.route(
+    '/me',
+    meRoutes({
+      store,
+      now,
+      payer: invoicePayer,
+      fetchImpl,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
+    }),
+  );
   app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
-  app.route('/debug/accounts', debugRoutes({ store, debugToken }));
+  app.route(
+    '/debug/accounts',
+    debugRoutes({ store, debugToken, fetchImpl, conversationStore, now }),
+  );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route(
@@ -254,7 +278,19 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
-  app.route('/contact', contactRoutes({ store: contactStore, authStore: store, now }));
+  app.route(
+    '/contact',
+    contactRoutes({ store: contactStore, authStore: store, conversationStore, now }),
+  );
+  app.route(
+    '/conversations',
+    conversationRoutes({
+      store: conversationStore,
+      authStore: store,
+      messageStore,
+      now,
+    }),
+  );
   app.route(
     '/invoices',
     invoiceRoutes({

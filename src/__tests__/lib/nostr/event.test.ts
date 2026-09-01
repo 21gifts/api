@@ -39,6 +39,38 @@ describe('kind1', () => {
     ]);
   });
 
+  it('includes dim and size on imeta when provided', () => {
+    const event = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      dim: '720x1280',
+      size: 1659838,
+      posterUrl: 'https://api.21.gifts/messages/m1/photo.jpg',
+    });
+    expect(event.tags.at(-1)).toEqual([
+      'imeta',
+      'url https://api.21.gifts/messages/m1/video.mp4',
+      'm video/mp4',
+      'dim 720x1280',
+      'size 1659838',
+      'image https://api.21.gifts/messages/m1/photo.jpg',
+    ]);
+  });
+
+  it('omits dim and size on imeta when not provided', () => {
+    const event = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      posterUrl: 'https://api.21.gifts/messages/m1/photo.jpg',
+    });
+    expect(event.tags.at(-1)).toEqual([
+      'imeta',
+      'url https://api.21.gifts/messages/m1/video.mp4',
+      'm video/mp4',
+      'image https://api.21.gifts/messages/m1/photo.jpg',
+    ]);
+  });
+
   it('uses the photo URL as content when text is empty', () => {
     const event = buildKind1Event('', 1, {
       url: 'http://127.0.0.1:3000/messages/m1/photo.png',
@@ -76,6 +108,29 @@ describe('kind1', () => {
     );
     expect(kind1HasHashtag('#bitcoin.', 'bitcoin')).toBe(true);
     expect(kind1HasHashtag('#21gifts', '21gifts')).toBe(true);
+  });
+
+  it('appends NIP-10 e/p tags when replyTo is set', () => {
+    const noteEventId = 'ee'.repeat(32);
+    const noteAuthorPubkey = 'aa'.repeat(32);
+    const event = buildKind1Event('reply', 1_700_000_000, undefined, {
+      noteEventId,
+      spaceRelay: 'wss://relay.nostr.space',
+      noteAuthorPubkey,
+    });
+    expect(event.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'root'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'reply'],
+      ['p', noteAuthorPubkey],
+    ]);
+  });
+
+  it('keeps top-level notes without e/p tags', () => {
+    const event = buildKind1Event('hello', 1);
+    expect(event.tags.some((tag) => tag[0] === 'e' || tag[0] === 'p')).toBe(false);
   });
 });
 
