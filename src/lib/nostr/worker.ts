@@ -953,7 +953,7 @@ async function indexInboundDirectMessages(
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
-          const unix = plain.createdAt ?? signed.created_at;
+          const unix = plain.createdAt;
           /* v8 ignore next 3 -- unwrapNip17 requires finite rumor time; kind:4 uses event.created_at */
           if (!Number.isFinite(unix)) {
             continue;
