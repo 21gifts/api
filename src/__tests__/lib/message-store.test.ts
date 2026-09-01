@@ -134,11 +134,10 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     const mp4 = new Uint8Array(32);
     mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
-    await store.create(
-      { ...EARLY, id: 'p-del', text: 'parent' },
-      JPEG,
-      { contentType: 'video/mp4', bytes: mp4 },
-    );
+    await store.create({ ...EARLY, id: 'p-del', text: 'parent' }, JPEG, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
     await store.create({
       ...LATE,
       id: 'c-del',
