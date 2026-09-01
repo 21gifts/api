@@ -55,7 +55,11 @@ async function dropMissingVideoRow(
   store: MessageStore,
   row: MessageRow,
 ): Promise<MessageRow | null> {
-  if (row.hasVideo !== true || row.videoContentType === undefined || row.videoContentType === null) {
+  if (
+    row.hasVideo !== true ||
+    row.videoContentType === undefined ||
+    row.videoContentType === null
+  ) {
     return row;
   }
   const present = await forumVideoFilePresent(resolveMediaDir(), row.id, row.videoContentType);
