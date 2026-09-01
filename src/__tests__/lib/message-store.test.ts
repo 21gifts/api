@@ -120,6 +120,14 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore().listLatest(10)).toEqual([]);
   });
 
+  it('deleteById removes the row and returns false when missing', async () => {
+    const store = new InMemoryMessageStore([EARLY, LATE]);
+    expect(await store.deleteById('missing')).toBe(false);
+    expect(await store.deleteById('a')).toBe(true);
+    expect(await store.getById('a')).toBeUndefined();
+    expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['b']);
+  });
+
   it('copies the seed and listed rows so callers cannot mutate store state', async () => {
     const seed: MessageRow[] = [EARLY, LATE];
     const store = new InMemoryMessageStore(seed);
@@ -1169,6 +1177,34 @@ describe('PostgresMessageStore', () => {
     await store.updatePublishState('m1', 'published', 'public');
     await store.addSats('m1', 7);
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+  });
+
+  it('deleteById issues invoice and message deletes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        video_content_type: null,
+      },
+    ];
+    expect(await new PostgresMessageStore(sql).deleteById('m1')).toBe(true);
+    const texts = sql.executes.map((item) => item.text).join('\n');
+    expect(texts).toMatch(/DELETE FROM nostr_zap_receipt/);
+    expect(texts).toMatch(/DELETE FROM message_invoice/);
+    expect(texts).toMatch(/DELETE FROM message WHERE parent_id = \$1/);
+    expect(texts).toMatch(/DELETE FROM message WHERE id = \$1/);
+  });
+
+  it('deleteById returns false when the row is missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresMessageStore(sql).deleteById('missing')).toBe(false);
+    expect(sql.executes).toEqual([]);
   });
 
   it('propagates create execute errors', async () => {

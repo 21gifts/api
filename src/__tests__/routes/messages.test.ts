@@ -102,6 +102,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listPublishedEventIds: boom,
     create: boom,
     getPhoto: boom,
+    deleteById: boom,
     getById: boom,
     getByEventId: boom,
     claimUnsigned: boom,
@@ -156,6 +157,27 @@ describe('GET /messages', () => {
     const res = await mount(await seededStore()).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('drops missing-file video notes from the list', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
   });
 
   it('returns newest first', async () => {
@@ -2087,27 +2109,27 @@ describe('GET /messages/:id', () => {
     expect(body).not.toHaveProperty('replyCount');
   });
 
-  it('omits hasVideo when the file is missing on disk', async () => {
+  it('deletes a hasVideo note when the file is missing on disk', async () => {
     const authStore = await namedStore('Ada');
-    const messageStore = new InMemoryMessageStore();
-    await messageStore.create({
-      id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
-      accountId: 'acc',
-      name: 'Ada',
-      text: 'clip gone',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      hasVideo: true,
-      videoContentType: 'video/mp4',
-      ...unsignedNostrDefaults(),
-    });
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: '5c5051d3-adba-44f9-a964-9bd0df1ce084',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
     const res = await mount(authStore, messageStore).request(
       '/messages/5c5051d3-adba-44f9-a964-9bd0df1ce084',
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { hasVideo: boolean; videoContentType: string | null };
-    expect(body.hasVideo).toBe(false);
-    expect(body.videoContentType).toBeNull();
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
   });
 
   it('includes the live author role for a 21gifts note', async () => {

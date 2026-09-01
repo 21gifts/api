@@ -109,6 +109,15 @@ export interface MessageStore {
    */
   getPhoto(id: string): Promise<ForumPhoto | null>;
 
+  /**
+   * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
+   * and on-disk videos.
+   *
+   * @param id - Message id.
+   * @returns True when a row was removed.
+   */
+  deleteById(id: string): Promise<boolean>;
+
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
@@ -802,6 +811,29 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
   }
 
+  async deleteById(id: string): Promise<boolean> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return false;
+    }
+    const childIds = this.#rows.filter((item) => item.parentId === id).map((item) => item.id);
+    const ids = new Set([id, ...childIds]);
+    for (const item of this.#rows) {
+      if (!ids.has(item.id)) {
+        continue;
+      }
+      if (item.hasVideo === true && item.videoContentType !== null) {
+        await removeForumVideo(item.id, item.videoContentType);
+      }
+      this.#photos.delete(item.id);
+    }
+    this.#rows.splice(0, this.#rows.length, ...this.#rows.filter((item) => !ids.has(item.id)));
+    const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
+    this.#invoiceAttempts.length = 0;
+    this.#invoiceAttempts.push(...kept);
+    return true;
+  }
+
   #claim(
     predicate: (row: MessageRow) => boolean,
     limit: number,
@@ -1048,6 +1080,39 @@ export class PostgresMessageStore implements MessageStore {
       throw err;
     }
     return stored;
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const row = await this.getById(id);
+    if (row === undefined) {
+      return false;
+    }
+    const children = await this.#sql.query<{ id: string; video_content_type: string | null }>(
+      `SELECT id, video_content_type FROM message WHERE parent_id = $1`,
+      [id],
+    );
+    await this.#sql.execute(
+      `DELETE FROM nostr_zap_receipt WHERE message_id = $1
+       OR message_id IN (SELECT id FROM message WHERE parent_id = $1)`,
+      [id],
+    );
+    await this.#sql.execute(
+      `DELETE FROM message_invoice WHERE message_id = $1
+       OR message_id IN (SELECT id FROM message WHERE parent_id = $1)`,
+      [id],
+    );
+    await this.#sql.execute(`DELETE FROM message WHERE parent_id = $1`, [id]);
+    await this.#sql.execute(`DELETE FROM message WHERE id = $1`, [id]);
+    for (const child of children) {
+      const mime = parseVideoContentType(child.video_content_type);
+      if (mime !== null) {
+        await removeForumVideo(child.id, mime);
+      }
+    }
+    if (row.videoContentType !== null) {
+      await removeForumVideo(row.id, row.videoContentType);
+    }
+    return true;
   }
 
   async getById(id: string): Promise<MessageRow | undefined> {
