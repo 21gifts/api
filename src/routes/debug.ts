@@ -4,6 +4,7 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
@@ -12,12 +13,14 @@ import { logEvent } from '@/lib/log';
 import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
+import type { ConversationStore } from '@/lib/conversation-store';
 
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
- * Exposes `GET /` (list), `POST /` (provision), and `PATCH /:id`
- * (set role, unlink Lightning Address, and/or the official platform flag).
+ * Exposes `GET /` (list), `POST /` (provision), `PATCH /:id`
+ * (set role, unlink Lightning Address, and/or the official platform flag),
+ * and `POST /:id/session` (mint a member bearer).
  */
 
 /** Collaborators the debug routes need. */
@@ -28,6 +31,13 @@ export interface DebugRouteDeps {
   debugToken: string | undefined;
   /** Injected `fetch` for NIP-57 mint probe on new addresses. */
   fetchImpl: FetchFn;
+  /**
+   * Private-message store. When set, `PATCH platform: true` points every
+   * member→platform thread at the new official account.
+   */
+  conversationStore?: ConversationStore;
+  /** Clock for minted debug sessions. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
@@ -76,8 +86,8 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
 /**
  * Build the `/debug/accounts` route group.
  *
- * @param deps - Store, optional debug token, and required `fetchImpl` for the NIP-57 mint probe.
- * @returns A Hono app exposing `GET /`, `POST /`, and `PATCH /:id`.
+ * @param deps - Store, optional debug token, required `fetchImpl` for the NIP-57 mint probe, optional `conversationStore`, optional `now`.
+ * @returns A Hono app exposing `GET /`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
@@ -251,6 +261,19 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           platform: updated.isPlatform === true,
         });
       }
+      if (parsed.data.platform === true && deps.conversationStore !== undefined) {
+        await deps.conversationStore.retargetMemberPlatform(updated.id);
+      }
       return c.json(serializeDebugAccount(updated), 200);
+    })
+    .post('/:id/session', async (c) => {
+      const existing = await deps.store.getAccount(c.req.param('id'));
+      if (existing === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const now = deps.now ?? Date.now;
+      const minted = await issueSession(deps.store, now(), existing);
+      logEvent('debug.accounts.session_minted', { accountId: existing.id });
+      return c.json({ token: minted.token }, 200);
     });
 }

@@ -26,16 +26,16 @@ export function wrapNip17(
 }
 
 /**
- * Unwrap a NIP-17 kind:1059 wrap to the rumor sender + plaintext.
+ * Unwrap a NIP-17 kind:1059 wrap to the rumor sender, plaintext, and rumor time.
  *
  * @param wrap - Kind:1059 event.
  * @param recipientSecret - 32-byte recipient nsec (caller-owned).
- * @returns Sender pubkey + text, or `null` when unwrap fails.
+ * @returns Sender pubkey, text, and rumor `created_at`, or `null` when unwrap fails.
  */
 export function unwrapNip17(
   wrap: NostrEvent,
   recipientSecret: Uint8Array,
-): { senderPubkey: string; text: string } | null {
+): { senderPubkey: string; text: string; createdAt?: number } | null {
   try {
     const rumor = unwrapEvent(wrap, recipientSecret);
     if (rumor.kind !== 14) {
@@ -46,7 +46,11 @@ export function unwrapNip17(
     if (senderPubkey === '') {
       return null;
     }
-    return { senderPubkey, text };
+    return {
+      senderPubkey,
+      text,
+      ...(typeof rumor.created_at === 'number' ? { createdAt: rumor.created_at } : {}),
+    };
   } catch {
     return null;
   }

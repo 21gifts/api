@@ -78,7 +78,8 @@ export interface AppDeps {
   /**
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
-   * `PATCH /debug/accounts/:id`, `GET /debug/contacts`, `GET /debug/invoices`,
+   * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
+   * `GET /debug/contacts`, `GET /debug/invoices`,
    * and `GET /debug/zap-ingests` return 503.
    */
   debugToken?: string;
@@ -248,7 +249,10 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
   );
-  app.route('/debug/accounts', debugRoutes({ store, debugToken, fetchImpl }));
+  app.route(
+    '/debug/accounts',
+    debugRoutes({ store, debugToken, fetchImpl, conversationStore, now }),
+  );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
   app.route(

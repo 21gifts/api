@@ -132,6 +132,39 @@ describe('InMemoryConversationStore', () => {
     expect((await store.openMemberPlatform('mem', 'plat', NOW)).accountB).toBe('plat');
   });
 
+  it('retargetMemberPlatform points every member_platform thread at the new account', async () => {
+    const store = new InMemoryConversationStore([
+      thread({
+        id: 'c-plat',
+        kind: 'member_platform',
+        accountA: 'mem',
+        accountB: 'old-plat',
+      }),
+      thread({
+        id: 'c-mm',
+        kind: 'member_member',
+        accountA: 'a',
+        accountB: 'b',
+      }),
+    ]);
+    await store.retargetMemberPlatform('plat');
+    expect((await store.getById('c-plat'))?.accountB).toBe('plat');
+    expect((await store.getById('c-mm'))?.accountB).toBe('b');
+  });
+
+  it('retargetMemberPlatform does not point a platform member thread at itself', async () => {
+    const store = new InMemoryConversationStore([
+      thread({
+        id: 'c-self',
+        kind: 'member_platform',
+        accountA: 'plat',
+        accountB: 'old-plat',
+      }),
+    ]);
+    await store.retargetMemberPlatform('plat');
+    expect((await store.getById('c-self'))?.accountB).toBe('old-plat');
+  });
+
   it('appends messages, hydrates lastText, and copies so callers cannot mutate', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
@@ -508,6 +541,16 @@ describe('PostgresConversationStore', () => {
     const store = new PostgresConversationStore(sql);
     expect((await store.openMemberPlatform('mem', 'plat', NOW)).id).toBe('c1');
     expect((await store.openMemberDamus('mem', 'aa'.repeat(32), NOW)).id).toBe('c1');
+  });
+
+  it('retargetMemberPlatform updates every member_platform account_b', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await store.retargetMemberPlatform('plat');
+    expect(sql.executes.at(-1)?.text).toMatch(/UPDATE conversation SET account_b = \$1/);
+    expect(sql.executes.at(-1)?.text).toMatch(/kind = 'member_platform'/);
+    expect(sql.executes.at(-1)?.text).toMatch(/account_a <> \$1/);
+    expect(sql.executes.at(-1)?.params).toEqual(['plat']);
   });
 
   it('openMemberPlatform and openMemberDamus rethrow non-unique insert errors', async () => {

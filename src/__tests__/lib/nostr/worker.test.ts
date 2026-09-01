@@ -2772,6 +2772,136 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
   });
 
+  it('wraps member_platform outbound to the current platform account', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-1',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
+  });
+
+  it('falls back to stored accountB when the platform account has no nostr key', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'bob', new Date(0));
+    await conversations.appendMessage({
+      id: 'out-1',
+      conversationId: thread.id,
+      text: 'ping',
+      createdAt: new Date(0),
+      senderAccountId: 'acc',
+      senderPubkey: (await auth.getNostrPublicKey('acc')) ?? null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        conversations,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+        conversations,
+      }),
+    );
+    expect((await conversations.getMessageById('out-1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+    expect(publisher.calls.some((call) => call.event['kind'] === 1059)).toBe(true);
+  });
+
   it('leaves a conversation wrap unpublished when space nacks', async () => {
     const { auth, messages } = await seed();
     await auth.createAccount({

@@ -87,6 +87,11 @@ test('GET /messages without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /debug/accounts/:id/session without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/accounts/:id/session');
+  expect(res.status()).toBeGreaterThanOrEqual(400);
+});
+
 test('GET /messages/:id without bearer is 404 on default boot', async ({ request }) => {
   const res = await request.get('/messages/:id');
   expect(res.status()).toBe(404);
