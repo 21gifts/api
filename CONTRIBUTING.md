@@ -55,7 +55,7 @@ api/
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
-│   │   ├── video.ts          # Forum video magic-bytes, MEDIA_DIR, Range parse, disk stream
+│   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore

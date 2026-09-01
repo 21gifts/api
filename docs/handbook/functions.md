@@ -590,7 +590,7 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note; Bearer `GET /:id/replies` lists direct replies oldest-first; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` streams stored files with `Accept-Ranges` / 206 / 416; `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note; Bearer `GET /:id/replies` lists direct replies oldest-first; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` serves sized video bytes (`Content-Length`, `Accept-Ranges` / 206 / 416, heal-on-read faststart); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice (public `GET /:id` and photo/video do not require Bearer); 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 `{ error: 'Not found' }` when JSON `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 404 photo/video/`GET /:id`/`GET /:id/replies` missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.get.failed` / `messages.replies.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits media bytes (list includes `replyCount`; missing author → `role` `"basis"` on list; Damus-only omits `role`). Signed-in list/replies/create may include `accountId` (21gifts author id; omitted for Damus-only); public `GET /:id` never includes it.
 - **Used by:** `createApp`.
@@ -996,8 +996,8 @@
 
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned kind:1 for a forum line (top-level or NIP-10 reply). Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag; video may add `imeta` `image` from `posterUrl`. Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified). When `replyTo` is set, adds NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional `imeta`); top-level notes never get `e`/`p`/`q`.
-- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl? }` (`Kind1Photo`), optional `replyTo?: Kind1ReplyTo` (`noteEventId`, `spaceRelay`, `noteAuthorPubkey`).
+- **Purpose:** Unsigned kind:1 for a forum line (top-level or NIP-10 reply). Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag (`url`, `m`, optional `dim`, optional `size`, optional `image` from `posterUrl`). Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified). When `replyTo` is set, adds NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional `imeta`); top-level notes never get `e`/`p`/`q`.
+- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl?, dim?, size? }` (`Kind1Photo`), optional `replyTo?: Kind1ReplyTo` (`noteEventId`, `spaceRelay`, `noteAuthorPubkey`).
 - **Returns / side effects:** Unsigned fields (`kind`, `content`, `tags`, `created_at`).
 - **Used by:** Worker sign path.
 
@@ -1243,7 +1243,7 @@
 
 ## Function: decodeForumVideo
 
-- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap).
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
 - **Inputs:** raw bytes.
 - **Returns / side effects:** `{ contentType, bytes }` or null.
 - **Used by:** `POST /messages` multipart.
@@ -1254,6 +1254,13 @@
 - **Inputs:** bytes.
 - **Returns / side effects:** MIME or null.
 - **Used by:** `decodeForumVideo`.
+
+## Function: faststartIsoBmff
+
+- **Purpose:** Rearrange ISO-BMFF so `moov` precedes `mdat` (qt-faststart), patching `stco`/`co64` chunk offsets. Aborts to the original `bytes` reference (no remux) when already faststart (`moov` already before `mdat`), truncated / invalid box tree, truncated or oversized `stco`/`co64` tables, top-level `moof`, `cmov`, not exactly one top-level `moov` and one top-level `mdat`, missing `stco` / `co64` (no chunk-offset box visited), or `stco` overflow (uint32 chunk offset would exceed `0xffffffff`).
+- **Inputs:** container bytes.
+- **Returns / side effects:** Same-length remuxed copy with `moov` before `mdat` and patched `stco`/`co64`, or the original `bytes` reference on abort.
+- **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
 
 ## Function: forumVideoExt
 
@@ -1268,6 +1275,13 @@
 - **Inputs:** API origin, message id, MIME.
 - **Returns / side effects:** URL string.
 - **Used by:** Worker sign path.
+
+## Function: isoBmffDisplaySize
+
+- **Purpose:** Integer width/height from the first non-zero `tkhd` (16.16 fixed) under `moov`/`trak`.
+- **Inputs:** ISO-BMFF bytes.
+- **Returns / side effects:** `{ width, height }` or null.
+- **Used by:** Worker kind:1 video `imeta` `dim`.
 
 ## Function: listNip05Entries
 
@@ -1304,6 +1318,13 @@
 - **Returns / side effects:** `{ type: 'full' }` | `{ type: 'partial'; start; end }` | `{ type: 'unsatisfiable' }`.
 - **Used by:** `GET /messages/:id/video.*`.
 
+## Function: readForumVideoBytes
+
+- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, and rewrite the file when boxes move (heal-on-read for clips stored before faststart). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`.
+- **Inputs:** absolute path; optional `io` disk ops (tests).
+- **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the remuxed buffer is still returned.
+- **Used by:** `GET /messages/:id/video.*`.
+
 ## Function: removeForumVideo
 
 - **Purpose:** Best-effort unlink of a stored video file.
@@ -1317,13 +1338,6 @@
 - **Inputs:** env.
 - **Returns / side effects:** directory path.
 - **Used by:** video read/write.
-
-## Function: streamForumVideo
-
-- **Purpose:** Inclusive byte-range file stream for `GET /messages/:id/video.*` without loading the file into RAM.
-- **Inputs:** absolute path, inclusive start, inclusive end.
-- **Returns / side effects:** `ReadableStream<Uint8Array>` as the HTTP body.
-- **Used by:** `serveForumVideo`.
 
 ## Function: videoFilePath
 
@@ -1341,7 +1355,7 @@
 
 ## Function: writeForumVideo
 
-- **Purpose:** Persist video bytes under `MEDIA_DIR`.
+- **Purpose:** Persist video bytes under `MEDIA_DIR` (caller should already faststart MP4/MOV via `decodeForumVideo`).
 - **Inputs:** message id, video, env.
 - **Returns / side effects:** mkdir + writeFile.
 - **Used by:** `MessageStore.create`.

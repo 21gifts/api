@@ -35,8 +35,8 @@ import {
   decodeForumVideo,
   forumVideoExt,
   parseBytesRange,
+  readForumVideoBytes,
   resolveMediaDir,
-  streamForumVideo,
   videoFilePath,
   type ForumVideo,
 } from '@/lib/video';
@@ -200,11 +200,12 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
 }
 
 /**
- * Stream public video bytes with Range support so Damus can seek.
+ * Serve public video bytes with Range support so Damus can seek.
  *
- * Reads metadata via `stat` and streams with {@link streamForumVideo} (never
- * loads the whole file into RAM). Missing / empty / non-file paths are 404;
- * unsatisfiable ranges are 416; other I/O is 503.
+ * Loads bytes via {@link readForumVideoBytes} (heal-on-read faststart) and
+ * returns a sized `Uint8Array` body so `Content-Length` is kept. Missing /
+ * empty / non-file paths are 404; unsatisfiable ranges are 416; other I/O is
+ * 503.
  *
  * @param deps - Message store.
  * @param c - Request (Range header).
@@ -231,18 +232,21 @@ async function serveForumVideo(
       return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     const path = videoFilePath(resolveMediaDir(), id, mime);
-    let size: number;
     try {
       const fileStat = await stat(path);
       if (!fileStat.isFile() || fileStat.size === 0) {
         return Response.json({ error: 'Video not found' }, { status: 404 });
       }
-      size = fileStat.size;
     } catch (err) {
       if (isPathNotFound(err)) {
         return Response.json({ error: 'Video not found' }, { status: 404 });
       }
       throw err;
+    }
+    const remuxed = await readForumVideoBytes(path);
+    const size = remuxed.byteLength;
+    if (size === 0) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     const range = parseBytesRange(c.req.header('range') ?? undefined, size);
     const headers: Record<string, string> = {
@@ -256,16 +260,13 @@ async function serveForumVideo(
       headers['Content-Range'] = `bytes */${size}`;
       return new Response(null, { status: 416, headers });
     }
-    if (range.type === 'full') {
-      headers['Content-Length'] = String(size);
-      return new Response(streamForumVideo(path, 0, size - 1), { status: 200, headers });
+    const body = range.type === 'full' ? remuxed : remuxed.slice(range.start, range.end + 1);
+    const status = range.type === 'full' ? 200 : 206;
+    headers['Content-Length'] = String(body.byteLength);
+    if (range.type === 'partial') {
+      headers['Content-Range'] = `bytes ${range.start}-${range.end}/${size}`;
     }
-    headers['Content-Length'] = String(range.end - range.start + 1);
-    headers['Content-Range'] = `bytes ${range.start}-${range.end}/${size}`;
-    return new Response(streamForumVideo(path, range.start, range.end), {
-      status: 206,
-      headers,
-    });
+    return new Response(body, { status, headers });
   } catch {
     logEvent('messages.video.failed');
     return Response.json({ error: 'Messages are unavailable' }, { status: 503 });

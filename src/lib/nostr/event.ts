@@ -34,6 +34,10 @@ export interface Kind1Photo {
   mime: 'image/jpeg' | 'image/png' | 'image/webp' | 'video/mp4' | 'video/webm' | 'video/quicktime';
   /** Optional poster image URL (video `imeta` `image` field). */
   posterUrl?: string;
+  /** Optional display size for `imeta` (`WIDTHxHEIGHT`). */
+  dim?: string;
+  /** Optional byte length for `imeta` `size`. */
+  size?: number;
 }
 
 /** NIP-10 reply pointers for a forum reply kind:1 (not used on top-level notes). */
@@ -160,7 +164,7 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public media (image URL or video URL + MIME; poster URL when video).
+ * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @returns Unsigned event fields for `finalizeEvent`.
  */
@@ -175,6 +179,12 @@ export function buildKind1Event(
   if (photo !== undefined) {
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
     const imeta = ['imeta', `url ${photo.url}`, `m ${photo.mime}`];
+    if (photo.dim !== undefined) {
+      imeta.push(`dim ${photo.dim}`);
+    }
+    if (photo.size !== undefined) {
+      imeta.push(`size ${photo.size}`);
+    }
     if (photo.posterUrl !== undefined && photo.posterUrl !== '') {
       imeta.push(`image ${photo.posterUrl}`);
     }

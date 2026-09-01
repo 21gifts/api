@@ -9,23 +9,23 @@
 
 ## Endpoint: GET /messages/:id/video.mp4
 
-- **Purpose:** Public MP4 bytes streamed from disk with `Accept-Ranges` / HTTP 206 so Damus can seek. `Access-Control-Allow-Origin: *`.
+- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
 - **Errors:** 404 `{ error: 'Video not found' }`; 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
-- **Used by:** Damus/Primal kind:1 video URLs.
+- **Used by:** Damus/Primal/Safari kind:1 video URLs.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.webm
 
-- **Purpose:** Same as `video.mp4` for WebM posts.
+- **Purpose:** Same as `video.mp4` for WebM posts (sized body + Range; WebM is not remuxed).
 - **Errors:** Same 404 / 416 / 503.
-- **Used by:** Damus/Primal.
+- **Used by:** Damus/Primal/Safari.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.mov
 
-- **Purpose:** Same as `video.mp4` for QuickTime posts.
+- **Purpose:** Same as `video.mp4` for QuickTime posts (sized body + Range + faststart).
 - **Errors:** Same 404 / 416 / 503.
-- **Used by:** Damus/Primal.
+- **Used by:** Damus/Primal/Safari.
 - **Auth:** none.
 
 ## Endpoint: GET /.well-known/nostr.json
