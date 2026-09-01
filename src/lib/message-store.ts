@@ -109,6 +109,15 @@ export interface MessageStore {
    */
   getPhoto(id: string): Promise<ForumPhoto | null>;
 
+  /**
+   * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
+   * and on-disk videos.
+   *
+   * @param id - Message id.
+   * @returns True when a row was removed.
+   */
+  deleteById(id: string): Promise<boolean>;
+
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
@@ -221,8 +230,10 @@ export interface MessageStore {
 
   /**
    * Persist a zap receipt once and add its sats to the message.
+   * Both adapters forget the receipt id when {@link MessageStore.deleteById}
+   * removes that message, so the same event id may be recorded again.
    *
-   * @param receiptEventId - Kind:9735 event id (unique).
+   * @param receiptEventId - Kind:9735 event id (unique while held).
    * @param messageId - Forum row to credit.
    * @param sats - Whole sats to add.
    * @returns `true` when the receipt was new and sats were added; `false` on
@@ -423,7 +434,8 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
-  readonly #receiptIds = new Set<string>();
+  /** Kind:9735 event id → message id; cleared when that message is deleted. */
+  readonly #receiptIds = new Map<string, string>();
   readonly #photos = new Map<string, ForumPhoto>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
@@ -765,7 +777,7 @@ export class InMemoryMessageStore implements MessageStore {
     if (this.#receiptIds.has(receiptEventId)) {
       return false;
     }
-    this.#receiptIds.add(receiptEventId);
+    this.#receiptIds.set(receiptEventId, messageId);
     await this.addSats(messageId, sats);
     return true;
   }
@@ -800,6 +812,35 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id.localeCompare(a.id);
     });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return false;
+    }
+    const childIds = this.#rows.filter((item) => item.parentId === id).map((item) => item.id);
+    const ids = new Set([id, ...childIds]);
+    for (const item of this.#rows) {
+      if (!ids.has(item.id)) {
+        continue;
+      }
+      const mime = item.videoContentType;
+      if (item.hasVideo === true && mime !== undefined && mime !== null) {
+        await removeForumVideo(item.id, mime);
+      }
+      this.#photos.delete(item.id);
+    }
+    this.#rows.splice(0, this.#rows.length, ...this.#rows.filter((item) => !ids.has(item.id)));
+    const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
+    this.#invoiceAttempts.length = 0;
+    this.#invoiceAttempts.push(...kept);
+    for (const [receiptEventId, messageId] of this.#receiptIds) {
+      if (ids.has(messageId)) {
+        this.#receiptIds.delete(receiptEventId);
+      }
+    }
+    return true;
   }
 
   #claim(
@@ -1048,6 +1089,42 @@ export class PostgresMessageStore implements MessageStore {
       throw err;
     }
     return stored;
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const targets = await this.#sql.query<{ id: string; video_content_type: string | null }>(
+      `WITH
+         targets AS (
+           SELECT id, video_content_type
+           FROM message
+           WHERE id = $1 OR parent_id = $1
+         ),
+         del_receipts AS (
+           DELETE FROM nostr_zap_receipt
+           WHERE message_id IN (SELECT id FROM targets)
+         ),
+         del_invoices AS (
+           DELETE FROM message_invoice
+           WHERE message_id IN (SELECT id FROM targets)
+         ),
+         del_rows AS (
+           DELETE FROM message
+           WHERE id IN (SELECT id FROM targets)
+           RETURNING id
+         )
+       SELECT t.id, t.video_content_type FROM targets t`,
+      [id],
+    );
+    if (targets.length === 0) {
+      return false;
+    }
+    for (const target of targets) {
+      const mime = parseVideoContentType(target.video_content_type);
+      if (mime !== null) {
+        await removeForumVideo(target.id, mime);
+      }
+    }
+    return true;
   }
 
   async getById(id: string): Promise<MessageRow | undefined> {

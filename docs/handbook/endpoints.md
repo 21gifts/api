@@ -233,21 +233,21 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the stored direct-reply count minus those dropped. Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id
 
-- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included.
-- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included. A `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404.
+- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID, the row is missing, or a missing-file video row was dropped; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
 - **Used by:** App deep links / share URLs for one forum note.
 - **Auth:** none (public).
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
+- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the parent is missing; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
 - **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.
