@@ -822,7 +822,7 @@ export class InMemoryMessageStore implements MessageStore {
       if (!ids.has(item.id)) {
         continue;
       }
-      if (item.hasVideo === true && item.videoContentType !== null) {
+      if (item.hasVideo === true && item.videoContentType != null) {
         await removeForumVideo(item.id, item.videoContentType);
       }
       this.#photos.delete(item.id);
@@ -1109,7 +1109,7 @@ export class PostgresMessageStore implements MessageStore {
         await removeForumVideo(child.id, mime);
       }
     }
-    if (row.videoContentType !== null) {
+    if (row.videoContentType != null) {
       await removeForumVideo(row.id, row.videoContentType);
     }
     return true;

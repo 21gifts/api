@@ -1852,6 +1852,7 @@ describe('POST /messages/:id/invoice', () => {
       create: (row, photo) => base.create(row, photo),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
+      deleteById: (id) => base.deleteById(id),
       getByEventId: (id) => base.getByEventId(id),
       claimUnsigned: (...args) => base.claimUnsigned(...args),
       claimUnpublished: (...args) => base.claimUnpublished(...args),
