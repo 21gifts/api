@@ -136,6 +136,7 @@ function extractEndpoints() {
     'push.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
+    'debug-messages.ts': '/debug/messages',
     'debug-payments.ts': '/debug',
     'debug-push.ts': '/debug/push-ping',
     'well-known.ts': '/.well-known',

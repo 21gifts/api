@@ -229,7 +229,7 @@
 - **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
 - **Inputs:** Configured token (non-empty) and raw header or `undefined`.
 - **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
-- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`.
+- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugMessagesRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`.
 
 ## Function: compareAccountsForList
 
@@ -251,6 +251,13 @@
 - **Inputs:** `DebugContactsRouteDeps`: contact store, optional debugToken.
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ contacts }` newest-first (cap 200); 503 on store throw (`contact.list.failed`). Logs `debug.contacts.listed` with count, never the token.
 - **Used by:** `createApp` at `/debug/contacts`.
+
+## Function: debugMessagesRoutes
+
+- **Purpose:** Operator restore of a missing forum-video file for an already-existing message with `hasVideo` (raw body under `MEDIA_DIR`; no new message id, no DB create).
+- **Inputs:** `DebugMessagesRouteDeps`: message store, optional debugToken.
+- **Returns / side effects:** Hono app exposing `PUT /:id/video`. 503 if token unset/blank; 401 if bearer mismatches (before the body is read); 404 for non-UUID or unknown id; 409 when the row has no video or the decoded MIME extension does not match the stored type; 400 for empty/oversize/unrecognized body; 204 after `writeForumVideo`; 503 `{ error: 'Messages are unavailable' }` when `getById` or `writeForumVideo` throws (`debug.messages.video.put_failed`). Logs `debug.messages.video.put` with `messageId` and `bytes`, never the token or raw bytes.
+- **Used by:** `createApp` at `/debug/messages`.
 
 ## Function: debugPaymentsRoutes
 
@@ -541,7 +548,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
