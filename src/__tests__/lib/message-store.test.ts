@@ -1189,7 +1189,7 @@ describe('PostgresMessageStore', () => {
         text: 'hi',
         created_at: new Date(0),
         has_photo: false,
-        video_content_type: null,
+        video_content_type: 'video/mp4',
       },
     ];
     expect(await new PostgresMessageStore(sql).deleteById('m1')).toBe(true);
