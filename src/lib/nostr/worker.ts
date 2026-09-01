@@ -939,13 +939,14 @@ async function indexInboundDirectMessages(
                 return unwrapNip17(signed, secret);
               }
               const text = decryptKind4(secret, event.pubkey, event.content ?? '');
-              if (text === null || !Number.isFinite(event.created_at)) {
+              const envelopeAt = event.created_at;
+              if (text === null || typeof envelopeAt !== 'number') {
                 return null;
               }
               return {
                 senderPubkey: event.pubkey.toLowerCase(),
                 text,
-                createdAt: event.created_at,
+                createdAt: envelopeAt,
               };
             },
           );
