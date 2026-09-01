@@ -235,6 +235,45 @@ describe('GET /messages', () => {
     expect(await messageStore.getById(parentId)).toBeDefined();
   });
 
+  it('lists replyCount above the 200-reply list window', async () => {
+    const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce088';
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent with many replies',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    for (let i = 0; i < 201; i++) {
+      await messageStore.create({
+        id: crypto.randomUUID(),
+        accountId: 'acc',
+        name: 'Ada',
+        text: `reply ${i}`,
+        createdAt: new Date(now() + 1 + i),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      });
+    }
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; replyCount: number }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(parentId);
+    expect(body.messages[0]?.replyCount).toBe(201);
+  });
+
   it('returns newest first', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();

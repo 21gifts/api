@@ -165,6 +165,8 @@ describe('InMemoryMessageStore', () => {
     await store.recordInvoiceAttempt(invoice);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(true);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(false);
+    await store.create({ ...LATE });
+    expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1)).toBe(true);
     const videoPath = videoFilePath(resolveMediaDir(), 'p-del', 'video/mp4');
     await readFile(videoPath);
     expect(await store.deleteById('p-del')).toBe(true);
@@ -174,6 +176,7 @@ describe('InMemoryMessageStore', () => {
       (await store.listInvoiceAttempts(10)).filter((row) => row.messageId === 'p-del'),
     ).toEqual([]);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 7)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-keep', 'b', 1)).toBe(false);
     expect(await store.getPhoto('p-del')).toBeNull();
     await expect(readFile(videoPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });

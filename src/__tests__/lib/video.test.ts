@@ -213,6 +213,11 @@ describe('video', () => {
         size: 12,
       })),
     ).toBe(false);
+    await expect(
+      forumVideoFilePresent(resolveMediaDir(), id, 'video/mp4', async () => {
+        throw { code: 'EACCES' };
+      }),
+    ).rejects.toMatchObject({ code: 'EACCES' });
   });
 
   it('builds Damus-friendly video URLs', () => {

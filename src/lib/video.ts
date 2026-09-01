@@ -134,7 +134,8 @@ export function videoFilePath(dir: string, messageId: string, mime: ForumVideoCo
  * @param messageId - Message id.
  * @param mime - Stored type, or `null` when the row has no video.
  * @param statFn - Injected `stat` (tests).
- * @returns False when `mime` is null, the path is missing, not a file, or size 0.
+ * @returns False when `mime` is null, the path is missing (`ENOENT`), not a file, or size 0.
+ * @throws Non-ENOENT `stat` failures (for example EACCES, EIO).
  */
 export async function forumVideoFilePresent(
   dir: string,
@@ -148,8 +149,16 @@ export async function forumVideoFilePresent(
   try {
     const info = await statFn(videoFilePath(dir, messageId, mime));
     return info.isFile() && info.size > 0;
-  } catch {
-    return false;
+  } catch (err) {
+    if (
+      typeof err === 'object' &&
+      err !== null &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return false;
+    }
+    throw err;
   }
 }
 

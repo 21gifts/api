@@ -439,14 +439,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           const children = await deps.store.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let replyCount = 0;
+          let dropped = 0;
           for (const child of children) {
             const keptChild = await dropMissingVideoRow(deps.store, child);
-            if (keptChild !== null) {
-              replyCount += 1;
+            if (keptChild === null) {
+              dropped += 1;
             }
           }
-          messages.push(serializeMessage(kept, payable, role, replyCount, true));
+          messages.push(
+            serializeMessage(kept, payable, role, Math.max(0, row.replyCount - dropped), true),
+          );
         }
         return c.json({ messages }, 200);
       } catch {
