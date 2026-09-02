@@ -165,7 +165,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
       });
-      const named: Account = { ...ensured, name };
+      const live = (await deps.store.getAccount(current.id)) ?? ensured;
+      const named: Account = { ...live, name };
       await deps.store.updateAccount(named);
       logEvent('account.name.set', { accountId: current.id });
       return c.json(serializeOwnerAccount(named), 200);

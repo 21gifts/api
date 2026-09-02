@@ -1573,6 +1573,7 @@ Success → **Response** `200`:
 ```
 
 Missing Bearer → **401** `{ "error": "Unauthorized" }`.
+Payer missing living-room rules → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Malformed body or `sats` above 10 million → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a Lightning Address, or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
