@@ -197,12 +197,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage(
+            await ensureProfileMessage(
               profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
             );
-            if (ensured.profileMessageId !== named.profileMessageId) {
-              await deps.store.updateAccount(ensured);
-            }
           }
           updated += 1;
           results.push({
@@ -236,12 +233,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         const didCreate = stored.viewKey === viewKey;
         if (didCreate) {
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage(
+            await ensureProfileMessage(
               profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, stored, clock),
             );
-            if (ensured.profileMessageId !== stored.profileMessageId) {
-              await deps.store.updateAccount(ensured);
-            }
           }
           created += 1;
           results.push({
@@ -259,12 +253,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage(
+            await ensureProfileMessage(
               profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
             );
-            if (ensured.profileMessageId !== named.profileMessageId) {
-              await deps.store.updateAccount(ensured);
-            }
           }
           updated += 1;
           results.push({
