@@ -47,6 +47,28 @@ export interface DebugRouteDeps {
   now?: () => number;
 }
 
+/**
+ * Args for {@link ensureProfileMessage} during debug provision.
+ *
+ * @param deps - Debug collaborators (message store required at the call site).
+ * @param account - Account that just received a name.
+ * @param now - Clock.
+ * @returns Helper input, including push when configured.
+ */
+function profileEnsureArgs(
+  deps: DebugRouteDeps & { messageStore: MessageStore },
+  account: Account,
+  now: () => number,
+): Parameters<typeof ensureProfileMessage>[0] {
+  return {
+    auth: deps.store,
+    messages: deps.messageStore,
+    account,
+    now,
+    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+  };
+}
+
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
 const patchBody = z
   .object({
@@ -175,13 +197,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage({
-              auth: deps.store,
-              messages: deps.messageStore,
-              account: named,
-              now: clock,
-              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-            });
+            const ensured = await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+            );
             if (ensured.profileMessageId !== named.profileMessageId) {
               await deps.store.updateAccount(ensured);
             }
@@ -218,13 +236,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         const didCreate = stored.viewKey === viewKey;
         if (didCreate) {
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage({
-              auth: deps.store,
-              messages: deps.messageStore,
-              account: stored,
-              now: clock,
-              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-            });
+            const ensured = await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, stored, clock),
+            );
             if (ensured.profileMessageId !== stored.profileMessageId) {
               await deps.store.updateAccount(ensured);
             }
@@ -245,13 +259,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             return c.json({ error: 'Could not save the account' }, 500);
           }
           if (deps.messageStore !== undefined) {
-            const ensured = await ensureProfileMessage({
-              auth: deps.store,
-              messages: deps.messageStore,
-              account: named,
-              now: clock,
-              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-            });
+            const ensured = await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+            );
             if (ensured.profileMessageId !== named.profileMessageId) {
               await deps.store.updateAccount(ensured);
             }
