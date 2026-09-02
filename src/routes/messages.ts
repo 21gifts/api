@@ -1,10 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
-import {
-  MISSING_REQUIREMENTS_ERROR,
-  requireAction,
-} from '@/lib/auth/requirements';
+import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';

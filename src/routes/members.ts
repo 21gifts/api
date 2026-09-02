@@ -1,9 +1,6 @@
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
-import {
-  MISSING_REQUIREMENTS_ERROR,
-  requireAction,
-} from '@/lib/auth/requirements';
+import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { serializeMessage } from '@/lib/message';
@@ -74,13 +71,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             account.lightningAddress !== null &&
             account.lightningAddress.trim() !== '';
           const children = await deps.messageStore.listReplies(row.id, 200);
-          profileMessage = serializeMessage(
-            row,
-            payable,
-            account.role,
-            children.length,
-            true,
-          );
+          profileMessage = serializeMessage(row, payable, account.role, children.length, true);
         }
       }
       return c.json(

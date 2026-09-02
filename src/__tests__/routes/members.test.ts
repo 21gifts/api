@@ -13,10 +13,7 @@ function mount(
   authStore: InMemoryAuthStore,
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
 ): Hono {
-  return new Hono().route(
-    '/members',
-    membersRoutes({ authStore, messageStore, now }),
-  );
+  return new Hono().route('/members', membersRoutes({ authStore, messageStore, now }));
 }
 
 async function seededCaller(

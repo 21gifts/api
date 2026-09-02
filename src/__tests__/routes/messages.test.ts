@@ -106,9 +106,7 @@ async function rulesStore(
     ...existing,
     name: overrides.name === undefined ? existing.name : overrides.name,
     rulesAgreedAt: now(),
-    ...(overrides.nameSkippedAt === undefined
-      ? {}
-      : { nameSkippedAt: overrides.nameSkippedAt }),
+    ...(overrides.nameSkippedAt === undefined ? {} : { nameSkippedAt: overrides.nameSkippedAt }),
   });
   return store;
 }
@@ -652,13 +650,14 @@ describe('POST /messages', () => {
   });
 
   it('returns 409 when posting without a name after rules and name skip', async () => {
-    const res = await mount(
-      await rulesStore({ name: null, nameSkippedAt: now() }),
-    ).request('/messages', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'hi' }),
-    });
+    const res = await mount(await rulesStore({ name: null, nameSkippedAt: now() })).request(
+      '/messages',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' }),
+      },
+    );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
@@ -2987,13 +2986,14 @@ describe('forum video', () => {
   it('rejects multipart when the account has no name', async () => {
     const form = new FormData();
     form.set('text', 'clip');
-    const res = await mount(
-      await rulesStore({ name: null, nameSkippedAt: now() }),
-    ).request('/messages', {
-      method: 'POST',
-      headers: AUTH,
-      body: form,
-    });
+    const res = await mount(await rulesStore({ name: null, nameSkippedAt: now() })).request(
+      '/messages',
+      {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      },
+    );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',

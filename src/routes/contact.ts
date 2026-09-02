@@ -1,10 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
-import {
-  MISSING_REQUIREMENTS_ERROR,
-  requireAction,
-} from '@/lib/auth/requirements';
+import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { serializeContact, type ContactRow } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';

@@ -28,16 +28,13 @@ export type AccountMissingField = 'name' | 'lightning-address' | 'rules';
  */
 export function accountSetup(account: Account): AccountSetup {
   const nameBlank = account.name === null || account.name.trim() === '';
-  const nameSkipped =
-    account.nameSkippedAt !== null && account.nameSkippedAt !== undefined;
+  const nameSkipped = account.nameSkippedAt !== null && account.nameSkippedAt !== undefined;
   if (nameBlank && !nameSkipped) {
     return 'name';
   }
-  const lnBlank =
-    account.lightningAddress === null || account.lightningAddress.trim() === '';
+  const lnBlank = account.lightningAddress === null || account.lightningAddress.trim() === '';
   const lnSkipped =
-    account.lightningAddressSkippedAt !== null &&
-    account.lightningAddressSkippedAt !== undefined;
+    account.lightningAddressSkippedAt !== null && account.lightningAddressSkippedAt !== undefined;
   if (lnBlank && !lnSkipped) {
     return 'lightning-address';
   }

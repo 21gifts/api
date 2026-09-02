@@ -523,8 +523,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         ? null
         : epochMs(row.name_skipped_at),
     lightningAddressSkippedAt:
-      row.lightning_address_skipped_at === null ||
-      row.lightning_address_skipped_at === undefined
+      row.lightning_address_skipped_at === null || row.lightning_address_skipped_at === undefined
         ? null
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
