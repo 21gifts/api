@@ -62,10 +62,7 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     if (!gate.ok) {
       return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
     }
-    const authorName = account.name === null ? '' : account.name.trim();
-    if (authorName === '') {
-      return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['name'] }, 409);
-    }
+    const authorName = (account.name ?? '').trim();
     const parsed = textBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
       return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);

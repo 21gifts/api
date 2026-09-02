@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -678,9 +679,15 @@ describe('debugRoutes', () => {
 
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
+    const messageStore = new InMemoryMessageStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+        messageStore,
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -713,6 +720,10 @@ describe('debugRoutes', () => {
       viewKey: body.accounts[0]?.viewKey,
     });
     expect(await store.accountHasPasskey(stored!.id)).toBe(false);
+    expect(stored?.profileMessageId).toEqual(expect.any(String));
+    const profileNote = await messageStore.getById(stored!.profileMessageId as string);
+    expect(profileNote?.text).toBe('Ada');
+    expect(profileNote?.parentId).toBeNull();
     expect(
       parsedEvents(warn).some(
         (e) =>

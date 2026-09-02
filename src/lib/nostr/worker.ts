@@ -543,7 +543,6 @@ async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
       messages: deps.messages,
       account,
       now: deps.now,
-      ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     });
   }
 }

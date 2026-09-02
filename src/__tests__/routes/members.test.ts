@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
@@ -136,5 +136,19 @@ describe('GET /members/:accountId', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { profileMessage: null };
     expect(body.profileMessage).toBeNull();
+  });
+
+  it('returns 503 when getAccount throws', async () => {
+    const authStore = await seededCaller();
+    const original = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id: string) => {
+      if (id === ACCOUNT_ID) {
+        throw new Error('store down');
+      }
+      return original(id);
+    });
+    const res = await mount(authStore).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
   });
 });
