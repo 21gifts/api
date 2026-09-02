@@ -58,15 +58,29 @@ export async function ensureProfileMessage(args: {
     return args.account;
   }
 
+  const live = await args.auth.getAccount(args.account.id);
+  if (live === undefined) {
+    await args.messages.deleteById(created.id);
+    return args.account;
+  }
+  const liveId = live.profileMessageId;
+  if (typeof liveId === 'string' && liveId.trim() !== '') {
+    const winner = await args.messages.getById(liveId);
+    if (winner !== undefined) {
+      await args.messages.deleteById(created.id);
+      return live;
+    }
+  }
+
   const updated: Account = {
-    ...args.account,
+    ...live,
     profileMessageId: created.id,
   };
   try {
     await args.auth.updateAccount(updated);
   } catch {
     await args.messages.deleteById(created.id);
-    return args.account;
+    return live;
   }
 
   if (args.pushStore !== undefined) {

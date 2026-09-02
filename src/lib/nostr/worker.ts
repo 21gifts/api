@@ -130,7 +130,8 @@ function reservedContent(
  * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
  * signed. Then published unpaid rows missing a photo URL or a video URL
  * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset
- * for the next tick. Pending rows EVENT as-is — resetting them first renews
+ * for the next tick (`profileMessageId` rows are skipped so a name note is
+ * not rewritten with those hashtags). Pending rows EVENT as-is — resetting them first renews
  * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
  * keep their event id so receipts still resolve. An empty API base skips
  * photo- and video-URL resign so it cannot un-publish and loop. When

@@ -91,6 +91,38 @@ describe('ensureProfileMessage', () => {
     expect(pending.some((row) => row.type === 'forum')).toBe(true);
   });
 
+  it('deletes the insert when the account disappears before update', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(auth, 'getAccount').mockResolvedValueOnce(undefined);
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('deletes a raced insert when another profile note already won', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const winnerId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: winnerId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    vi.spyOn(auth, 'getAccount').mockResolvedValueOnce({
+      ...account,
+      profileMessageId: winnerId,
+    });
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBe(winnerId);
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
+    expect(await messages.getById(winnerId)).toBeDefined();
+  });
+
   it('keeps the note when forum push enqueue throws', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();

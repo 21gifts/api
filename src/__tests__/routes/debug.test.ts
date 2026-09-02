@@ -757,7 +757,6 @@ describe('debugRoutes', () => {
         debugToken: 'secret',
         fetchImpl: unusedFetch,
         messageStore,
-        pushStore: new InMemoryPushStore(),
       }),
     );
     const res = await app.request('/debug/accounts', {
@@ -808,7 +807,6 @@ describe('debugRoutes', () => {
         debugToken: 'secret',
         fetchImpl: zapCapableFetch(),
         messageStore,
-        pushStore: new InMemoryPushStore(),
       }),
     );
     const res = await app.request('/debug/accounts', {
