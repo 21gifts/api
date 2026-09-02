@@ -8,6 +8,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -44,6 +45,7 @@ interface MountOpts {
   fetchImpl?: FetchFn;
   clock?: () => number;
   messages?: InMemoryMessageStore;
+  pushStore?: InMemoryPushStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -56,6 +58,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       payer: opts.payer ?? new UnconfiguredInvoicePayer(),
       fetchImpl: opts.fetchImpl ?? globalThis.fetch,
       nostrKek: NOSTR_KEK,
+      ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
     }),
   );
 }
@@ -478,6 +481,27 @@ describe('POST /me/name', () => {
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
     ).toBe(true);
+  });
+
+  it('enqueues forum pushes when a push store is configured', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(store, { messages, pushStore }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const pending = await pushStore.claimPending(10, now(), 60_000);
+    expect(pending.some((row) => row.type === 'forum')).toBe(true);
   });
 
   it('does not create a second profile note or change its text on rename', async () => {

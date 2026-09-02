@@ -91,6 +91,29 @@ describe('ensureProfileMessage', () => {
     expect(pending.some((row) => row.type === 'forum')).toBe(true);
   });
 
+  it('keeps the note when forum push enqueue throws', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    vi.spyOn(pushStore, 'enqueue').mockRejectedValueOnce(new Error('fail'));
+    const result = await ensureProfileMessage({
+      auth,
+      messages,
+      account,
+      now,
+      pushStore,
+    });
+    expect(typeof result.profileMessageId).toBe('string');
+    expect(await messages.getById(result.profileMessageId!)).toBeDefined();
+  });
+
   it('deletes the note when updateAccount fails after insert', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();

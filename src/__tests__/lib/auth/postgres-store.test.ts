@@ -114,6 +114,42 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[2]?.text).toMatch(/rules_agreed_at/);
   });
 
+  it('maps omitted skip timestamps to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: ACCOUNT_ROW.id,
+        linking_key: ACCOUNT_ROW.linking_key,
+        role: ACCOUNT_ROW.role,
+        name: ACCOUNT_ROW.name,
+        lightning_address: ACCOUNT_ROW.lightning_address,
+        lightning_address_verified: ACCOUNT_ROW.lightning_address_verified,
+        forum_laws_dismissed: ACCOUNT_ROW.forum_laws_dismissed,
+        view_key: ACCOUNT_ROW.view_key,
+        created_at: ACCOUNT_ROW.created_at,
+        rules_agreed_at: ACCOUNT_ROW.rules_agreed_at,
+        profile_message_id: ACCOUNT_ROW.profile_message_id,
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.nameSkippedAt).toBeNull();
+    expect(mapped?.lightningAddressSkippedAt).toBeNull();
+  });
+
+  it('maps non-null skip timestamps', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        name_skipped_at: new Date(2_000),
+        lightning_address_skipped_at: new Date(3_000),
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.nameSkippedAt).toBe(2_000);
+    expect(mapped?.lightningAddressSkippedAt).toBe(3_000);
+  });
+
   it('maps a non-null rules_agreed_at timestamp', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, rules_agreed_at: new Date(5_000) }];

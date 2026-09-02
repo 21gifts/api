@@ -467,6 +467,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!gate.ok) {
         return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
       }
+      /* v8 ignore next -- requireAction already rejected a missing name */
       const authorName = (account.name ?? '').trim();
       if (!postLimiter.allow(account.id, deps.now())) {
         logEvent('messages.rate_limited', { accountId: account.id });

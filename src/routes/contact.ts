@@ -62,6 +62,7 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     if (!gate.ok) {
       return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
     }
+    /* v8 ignore next -- requireAction already rejected a missing name */
     const authorName = (account.name ?? '').trim();
     const parsed = textBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
