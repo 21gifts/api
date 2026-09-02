@@ -152,7 +152,6 @@ function reservedContent(
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
   const nowMs = deps.now();
-  await backfillProfileMessages(deps);
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   await signConversationBatch(deps, nowMs);
@@ -179,6 +178,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   });
   await indexInboundForumReplies(deps, urls);
   await indexInboundDirectMessages(deps, urls);
+  await backfillProfileMessages(deps);
 }
 
 /**
