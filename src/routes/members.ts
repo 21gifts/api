@@ -3,7 +3,7 @@ import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import { serializeMessage } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, serializeMessage } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
@@ -70,7 +70,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             row.eventId !== null &&
             account.lightningAddress !== null &&
             account.lightningAddress.trim() !== '';
-          const children = await deps.messageStore.listReplies(row.id, 200);
+          const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
           profileMessage = serializeMessage(row, payable, account.role, children.length, true);
         }
       }

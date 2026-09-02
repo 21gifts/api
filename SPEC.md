@@ -328,7 +328,8 @@ are **400**. Success → **200** owner JSON.
 Bearer required. `:accountId` must be a UUID. After auth,
 `requireAction(caller, 'forum.read')` — missing rules → **409**
 `{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
-**404**. Success → live `id` / `name` / `role` / `lightningAddress` / ISO
+**404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
+Success → live `id` / `name` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
 `replyCount`, or `null`). Never `viewKey` / `eventId`.
 

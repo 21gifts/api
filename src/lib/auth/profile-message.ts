@@ -11,9 +11,9 @@ import { enqueueForumPushes } from '@/lib/push-worker';
  *
  * First persisted non-empty name inserts one kind:1-pipeline message and
  * stores `profileMessageId`. Rename does not insert a second note and does
- * not change the note text. Callers must `updateAccount` only with the
- * returned account (so a failed insert never persists the name alone when
- * the caller has not yet written).
+ * not change the note text. A successful insert updates the account here.
+ * A failed insert returns the input account (name may still be persisted by
+ * the caller; worker backfill creates the missing note).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional push.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).

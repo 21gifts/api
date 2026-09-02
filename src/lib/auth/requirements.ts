@@ -13,7 +13,7 @@ export const MISSING_REQUIREMENTS_ERROR = 'missing_requirements';
 export interface MissingRequirementsBody {
   /** Always {@link MISSING_REQUIREMENTS_ERROR}. */
   error: typeof MISSING_REQUIREMENTS_ERROR;
-  /** Non-empty list in action order: `rules`, then `name`, then `lightning-address`. */
+  /** Non-empty list in action order: `rules`, then `name`. */
   missing: AccountMissingField[];
 }
 
