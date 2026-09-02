@@ -146,6 +146,39 @@ describe('ensureProfileMessage', () => {
     expect(await messages.getById(result.profileMessageId!)).toBeDefined();
   });
 
+  it('deletes the insert when a later write wins the profile pointer', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const winnerId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: winnerId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const get = vi.spyOn(auth, 'getAccount');
+    get.mockResolvedValueOnce({ ...account });
+    get.mockResolvedValueOnce({ ...account, profileMessageId: winnerId });
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBe(winnerId);
+    expect(await messages.getById(winnerId)).toBeDefined();
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
+  });
+
+  it('deletes the insert when the account disappears after update', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const get = vi.spyOn(auth, 'getAccount');
+    get.mockResolvedValueOnce({ ...account });
+    get.mockResolvedValueOnce(undefined);
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
   it('deletes the note when updateAccount fails after insert', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();

@@ -905,9 +905,9 @@
 
 ## Function: ensureProfileMessage
 
-- **Purpose:** Ensure a named account has exactly one top-level profile forum note. First non-blank name inserts one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails. Optional `pushStore` enqueues forum pushes for a new note.
+- **Purpose:** Ensure a named account has exactly one top-level profile forum note. First non-blank name inserts one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails or a later write wins the live pointer. Optional `pushStore` enqueues forum pushes for a new note.
 - **Inputs:** `{ auth, messages, account, now, pushStore? }`.
-- **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure.
+- **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure, a vanished row, or a later `profileMessageId` winner.
 - **Used by:** `meRoutes` (`POST /me/name`), `debugRoutes` provision, Nostr worker backfill.
 
 ## Function: serializeAccount

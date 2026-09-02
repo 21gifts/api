@@ -11,9 +11,11 @@ import { enqueueForumPushes } from '@/lib/push-worker';
  *
  * First persisted non-empty name inserts one kind:1-pipeline message and
  * stores `profileMessageId`. Rename does not insert a second note and does
- * not change the note text. A successful insert updates the account here.
- * A failed insert returns the input account (name may still be persisted by
- * the caller; worker backfill creates the missing note).
+ * not change the note text. A successful insert updates the account here,
+ * then re-reads the live row so a later writer’s `profileMessageId` wins and
+ * this insert is deleted. A failed insert returns the input account (name
+ * may still be persisted by the caller; worker backfill creates the missing
+ * note).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional push.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).
@@ -81,6 +83,12 @@ export async function ensureProfileMessage(args: {
   } catch {
     await args.messages.deleteById(created.id);
     return live;
+  }
+
+  const confirmed = await args.auth.getAccount(args.account.id);
+  if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
+    await args.messages.deleteById(created.id);
+    return confirmed === undefined ? live : confirmed;
   }
 
   if (args.pushStore !== undefined) {
