@@ -72,8 +72,10 @@ export async function ensureProfileMessage(args: {
     }
   }
 
+  const liveName = live.name !== null && live.name.trim() !== '' ? live.name : args.account.name;
   const updated: Account = {
     ...live,
+    name: liveName,
     profileMessageId: created.id,
   };
   try {

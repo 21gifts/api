@@ -91,6 +91,16 @@ describe('ensureProfileMessage', () => {
     expect(pending.some((row) => row.type === 'forum')).toBe(true);
   });
 
+  it('persists the requested name when the live row still has none', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(auth, 'getAccount').mockResolvedValueOnce({ ...account, name: null });
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.name).toBe('Ada');
+    expect(typeof result.profileMessageId).toBe('string');
+    expect((await auth.getAccount('acc'))?.name).toBe('Ada');
+  });
+
   it('deletes the insert when the account disappears before update', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
