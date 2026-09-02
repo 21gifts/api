@@ -1,6 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
+import {
+  MISSING_REQUIREMENTS_ERROR,
+  requireAction,
+} from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
@@ -315,11 +319,8 @@ async function postMultipartMessage(
   deps: MessagesRouteDeps,
   c: Context,
   account: Account,
+  authorName: string,
 ): Promise<Response> {
-  /* v8 ignore next 3 -- named accounts; trim-empty is the same 400 as JSON POST */
-  if (account.name === null || account.name.trim() === '') {
-    return c.json({ error: 'Set a name before posting' }, 400);
-  }
   const form = await c.req.formData();
   /* v8 ignore next -- form.get is string or File */
   const rawText = String(form.get('text') ?? '');
@@ -358,7 +359,7 @@ async function postMultipartMessage(
   const row: MessageRow = {
     id: crypto.randomUUID(),
     accountId: account.id,
-    name: account.name.trim(),
+    name: authorName,
     text,
     createdAt: new Date(deps.now()),
     hasPhoto: photo !== undefined,
@@ -425,6 +426,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const gate = requireAction(account, 'forum.read');
+      if (!gate.ok) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
+      }
       try {
         const rows = await deps.store.listLatest(MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -461,6 +466,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const gate = requireAction(account, 'forum.post');
+      if (!gate.ok) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
+      }
+      const authorName = account.name === null ? '' : account.name.trim();
+      if (authorName === '') {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['name'] }, 409);
+      }
       if (!postLimiter.allow(account.id, deps.now())) {
         logEvent('messages.rate_limited', { accountId: account.id });
         c.header('Retry-After', '10');
@@ -469,14 +482,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       /* v8 ignore next -- missing content-type is JSON parse 400 */
       const requestType = c.req.header('content-type') ?? '';
       if (requestType.toLowerCase().includes('multipart/form-data')) {
-        return postMultipartMessage(deps, c, account);
+        return postMultipartMessage(deps, c, account, authorName);
       }
       const parsed = postBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
-      }
-      if (account.name === null || account.name.trim() === '') {
-        return c.json({ error: 'Set a name before posting' }, 400);
       }
       const rawText = parsed.data.text ?? '';
       const text = normalizeForumText(rawText);
@@ -509,7 +519,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const row: MessageRow = {
         id: crypto.randomUUID(),
         accountId: account.id,
-        name: account.name.trim(),
+        name: authorName,
         text,
         createdAt: new Date(deps.now()),
         hasPhoto: photo !== undefined,
@@ -613,6 +623,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const payGate = requireAction(account, 'forum.pay');
+      if (!payGate.ok) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
       }
       const messageIdParam = c.req.param('id');
       if (!MESSAGE_ID_RE.test(messageIdParam)) {

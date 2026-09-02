@@ -69,4 +69,8 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential (account_id)`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS is_platform boolean NOT NULL DEFAULT false`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_is_platform_uidx ON account (is_platform) WHERE is_platform`,
+  // Skip / profile-note columns: no FK to message here (auth migrates before message).
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS name_skipped_at timestamptz`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS lightning_address_skipped_at timestamptz`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS profile_message_id uuid`,
 ];

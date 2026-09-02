@@ -4,16 +4,19 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { PushStore } from '@/lib/push-store';
 
 /**
  * Operator debug surface for registered accounts.
@@ -36,6 +39,10 @@ export interface DebugRouteDeps {
    * member→platform thread at the new official account.
    */
   conversationStore?: ConversationStore;
+  /** Forum store for profile notes after provisioned name writes. */
+  messageStore?: MessageStore;
+  /** Optional push outbox for profile-note create. */
+  pushStore?: PushStore;
   /** Clock for minted debug sessions. Defaults to `Date.now`. */
   now?: () => number;
 }
@@ -157,6 +164,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         viewKey: string;
         created: boolean;
       }> = [];
+      const clock = deps.now ?? Date.now;
       for (const row of classified) {
         if (row.existing !== undefined) {
           const named = await deps.store.updateAccountNameByLightningAddress(
@@ -165,6 +173,18 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           );
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
+          }
+          if (deps.messageStore !== undefined) {
+            const ensured = await ensureProfileMessage({
+              auth: deps.store,
+              messages: deps.messageStore,
+              account: named,
+              now: clock,
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            });
+            if (ensured.profileMessageId !== named.profileMessageId) {
+              await deps.store.updateAccount(ensured);
+            }
           }
           updated += 1;
           results.push({
@@ -185,8 +205,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           lightningAddressVerified: false,
           forumLawsDismissed: false,
           viewKey,
-          createdAt: Date.now(),
+          createdAt: clock(),
           rulesAgreedAt: null,
+          nameSkippedAt: null,
+          lightningAddressSkippedAt: null,
+          profileMessageId: null,
         });
         const stored = await deps.store.getAccountByLightningAddress(row.lightningAddress);
         if (stored === undefined) {
@@ -194,6 +217,18 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
         const didCreate = stored.viewKey === viewKey;
         if (didCreate) {
+          if (deps.messageStore !== undefined) {
+            const ensured = await ensureProfileMessage({
+              auth: deps.store,
+              messages: deps.messageStore,
+              account: stored,
+              now: clock,
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            });
+            if (ensured.profileMessageId !== stored.profileMessageId) {
+              await deps.store.updateAccount(ensured);
+            }
+          }
           created += 1;
           results.push({
             name: stored.name ?? row.name,
@@ -208,6 +243,18 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           );
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
+          }
+          if (deps.messageStore !== undefined) {
+            const ensured = await ensureProfileMessage({
+              auth: deps.store,
+              messages: deps.messageStore,
+              account: named,
+              now: clock,
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            });
+            if (ensured.profileMessageId !== named.profileMessageId) {
+              await deps.store.updateAccount(ensured);
+            }
           }
           updated += 1;
           results.push({
@@ -243,6 +290,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.lightningAddress === null) {
         updated.lightningAddress = null;
         updated.lightningAddressVerified = false;
+        updated.lightningAddressSkippedAt = null;
       }
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;

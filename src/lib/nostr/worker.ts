@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { ConversationThread } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -151,6 +152,7 @@ function reservedContent(
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
   const nowMs = deps.now();
+  await backfillProfileMessages(deps);
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   await signConversationBatch(deps, nowMs);
@@ -517,6 +519,35 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   }
 }
 
+/**
+ * Create a profile forum note for named accounts that lack one (or whose
+ * stored id no longer points at a message row).
+ *
+ * @param deps - Auth and message stores (and optional push).
+ */
+async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
+  const accounts = await deps.auth.listAccounts();
+  for (const account of accounts) {
+    if (account.name === null || account.name.trim() === '') {
+      continue;
+    }
+    const profileId = account.profileMessageId;
+    if (typeof profileId === 'string' && profileId.trim() !== '') {
+      const existing = await deps.messages.getById(profileId);
+      if (existing !== undefined) {
+        continue;
+      }
+    }
+    await ensureProfileMessage({
+      auth: deps.auth,
+      messages: deps.messages,
+      account,
+      now: deps.now,
+      ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+    });
+  }
+}
+
 async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
   const cache = profileCacheFor(deps.auth);
   const watermarks = profileWatermarkFor(deps.auth);
@@ -535,7 +566,15 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     }
     const namedForLive = named.map((row) => (row.id === live.id ? live : row));
     const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05);
+    let about = '21.gifts';
+    const profileId = live.profileMessageId;
+    if (typeof profileId === 'string' && profileId.trim() !== '') {
+      const note = await deps.messages.getById(profileId);
+      if (note !== undefined) {
+        about = note.text;
+      }
+    }
+    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -565,6 +604,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         live.lightningAddress,
         reservation.createdAt,
         nip05,
+        about,
       );
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {

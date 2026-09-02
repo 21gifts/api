@@ -50,7 +50,7 @@ describe('serializeDebugAccount', () => {
 });
 
 describe('serializeOwnerAccount', () => {
-  it('includes viewKey alongside the nine public fields', () => {
+  it('includes viewKey, setup, and missing alongside the nine public fields', () => {
     const json = serializeOwnerAccount(account);
     expect(json).toEqual({
       id: 'acc',
@@ -64,10 +64,13 @@ describe('serializeOwnerAccount', () => {
       rulesAgreedAt: null,
       viewKey: 'a'.repeat(64),
       setup: 'rules',
+      missing: ['rules'],
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
+    expect(json.missing).toEqual(['rules']);
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('profileMessageId');
   });
 });
 

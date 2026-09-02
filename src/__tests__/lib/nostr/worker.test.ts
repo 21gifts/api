@@ -50,6 +50,8 @@ async function seed(): Promise<{
   messages: InMemoryMessageStore;
 }> {
   const auth = new InMemoryAuthStore();
+  const messages = new InMemoryMessageStore();
+  const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   await auth.createAccount({
     id: 'acc',
     linkingKey: null,
@@ -61,9 +63,22 @@ async function seed(): Promise<{
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
+    profileMessageId: profileId,
   });
   await ensureAccountNostrKey(auth, 'acc', KEK);
-  const messages = new InMemoryMessageStore();
+  await messages.create({
+    id: profileId,
+    accountId: 'acc',
+    name: 'Ada',
+    text: 'Ada',
+    createdAt: new Date('2026-08-27T00:00:00.000Z'),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    // Already published so worker ticks under test do not claim this note.
+    eventId: 'aa'.repeat(32),
+    nostrPublishState: 'published',
+    nostrEvent: { ...BITCOIN_KIND1, id: 'aa'.repeat(32) },
+  });
   await messages.create({
     id: 'm1',
     accountId: 'acc',
@@ -494,10 +509,59 @@ describe('runNostrWorkerTick', () => {
       display_name: 'Ada',
       website: 'https://21.gifts',
       picture: 'https://21.gifts/apple-touch-icon.png',
-      about: '21.gifts',
+      about: 'Ada',
     });
     expect(kinds).toContain(10002);
     expect(kinds).toContain(1);
+  });
+
+  it('backfills a profile note for named accounts missing one', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc2',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'acc2', KEK);
+    const messages = new InMemoryMessageStore();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    const stored = await auth.getAccount('acc2');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    expect((await messages.getById(stored!.profileMessageId!))?.text).toBe('Bob');
+  });
+
+  it('uses profile note text as kind:0 about', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    const kind0 = publisher.calls.find((call) => call.event['kind'] === 0);
+    expect(JSON.parse(String(kind0?.event['content'])).about).toBe('Ada');
   });
 
   it('publishes kind:10002 with the write-set relays', async () => {

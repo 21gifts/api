@@ -40,6 +40,9 @@ const ACCOUNT_ROW = {
   view_key: VIEW_KEY,
   created_at: new Date(1_000),
   rules_agreed_at: null as Date | string | null,
+  name_skipped_at: null as Date | string | null,
+  lightning_address_skipped_at: null as Date | string | null,
+  profile_message_id: null as string | null,
 };
 
 describe('PostgresAuthStore nostr keys', () => {
@@ -95,11 +98,16 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.forumLawsDismissed).toBe(false);
     expect(mapped?.rulesAgreedAt).toBeNull();
     expect(mapped?.isPlatform).toBe(false);
+    expect(mapped?.nameSkippedAt).toBeNull();
+    expect(mapped?.lightningAddressSkippedAt).toBeNull();
+    expect(mapped?.profileMessageId).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
     expect(sql.queries[0]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.queries[0]?.text).toMatch(/rules_agreed_at/);
+    expect(sql.queries[0]?.text).toMatch(/name_skipped_at/);
+    expect(sql.queries[0]?.text).toMatch(/profile_message_id/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -152,11 +160,18 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
     expect(sql.executes[0]?.params[9]).toBeNull();
     expect(sql.executes[0]?.params[10]).toBe(false);
+    expect(sql.executes[0]?.params[11]).toBeNull();
+    expect(sql.executes[0]?.params[12]).toBeNull();
+    expect(sql.executes[0]?.params[13]).toBeNull();
+    expect(sql.executes[0]?.text).toMatch(/name_skipped_at/);
+    expect(sql.executes[0]?.text).toMatch(/profile_message_id/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
     expect(sql.executes[1]?.text).toMatch(/is_platform = \$11/);
+    expect(sql.executes[1]?.text).toMatch(/name_skipped_at/);
+    expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -170,6 +185,9 @@ describe('PostgresAuthStore', () => {
       VIEW_KEY,
       9_000,
       false,
+      null,
+      null,
+      null,
     ]);
   });
 
@@ -191,6 +209,7 @@ describe('PostgresAuthStore', () => {
     });
     expect(sql.executes[0]?.text).toMatch(/is_platform = false WHERE is_platform/);
     expect(sql.executes[1]?.params[10]).toBe(true);
+    expect(sql.executes[1]?.params[13]).toBeNull();
     await store.updateAccount({
       id: 'plat',
       linkingKey: null,

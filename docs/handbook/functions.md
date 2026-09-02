@@ -107,7 +107,7 @@
 
 ## Function: migrateMessageSchema
 
-- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), `parent_id uuid REFERENCES message (id)`, `author_pubkey text`, then `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL` and `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`, then `message_invoice` and `nostr_zap_ingest` without FKs plus `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb` and their `created_at`/`message_id` and `receipt_id` indexes).
+- **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), `parent_id uuid REFERENCES message (id)`, `author_pubkey text`, then `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL` and `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`, then `message_invoice` and `nostr_zap_ingest` without FKs plus `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb` and their `created_at`/`message_id` and `receipt_id` indexes). After `message` exists, adds `account_profile_message_id_fkey` (`ON DELETE SET NULL`) and unique partial index `account_profile_message_uidx`.
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/message.sql`.
 - **Used by:** `openBootStores` when SQL opens.
@@ -207,7 +207,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later).
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -583,9 +583,9 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (name, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint`, verification). `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
-- **Inputs:** `MeRouteDeps` store, now, payer, fetchImpl, optional `nostrKek` (required to sign the mint probe).
-- **Returns / side effects:** Hono at `/me`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged).
+- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage`, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
+- **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `nostrKek` (required to sign the mint probe).
+- **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
 - **Used by:** `createApp`.
 
 ## Function: viewRoutes
@@ -597,16 +597,16 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum: Bearer `GET /` lists **top-level** notes only (`parent_id` null) newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); a `hasVideo` row whose file is missing or empty is **deleted** (`messages.video.dropped`) and omitted; for each kept top-level note, missing-file `hasVideo` direct replies are dropped via `dropMissingVideoRow` / `deleteById` + `messages.video.dropped`, and `replyCount` is the stored `replyCount` minus how many missing-file video children were dropped in the replies window; `POST /` creates text and/or one photo (JSON, optional `inReplyTo` UUID of a **top-level** parent) or one video (multipart `video` + optional JPEG/PNG/WebP `poster`) when the account has a non-blank display name; public `GET /:id` (no Bearer) returns one note (404 after deleting a `hasVideo` row whose file is gone); Bearer `GET /:id/replies` lists direct replies oldest-first and likewise drops missing-file `hasVideo` replies via `dropMissingVideoRow` / `deleteById` + `messages.video.dropped`; `GET /:id/photo` serves raw bytes without auth (Nostr `imeta`); `GET /:id/video.mp4|.webm|.mov` serves sized video bytes (`Content-Length`, `Accept-Ranges` / 206 / 416, heal-on-read faststart); `POST /:id/invoice` returns `{ pr, amountSats }` only for a NIP-57 `description_hash` invoice (otherwise 400 author's-wallet copy + persist `not_zap` / `noZap`; invoice limiter after payable/KEK checks; post limiter on create). After a successful **top-level** create (`parentId` null), optional `pushStore` enqueues forum pushes for other subscribed accounts (`push.enqueue.failed` is swallowed; POST still 200); replies do not enqueue. Product UX is a messenger group — clients reverse the newest-first list for display (oldest top, newest bottom).
+- **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name; LN not required), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video; public `GET /:id` stays unauthenticated without `accountId`; Bearer `GET /:id/replies`; photo/video byte routes; invoice returns `{ pr, amountSats }` only for NIP-57 invoices (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues on top-level create.
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice (public `GET /:id` and photo/video do not require Bearer); 400 on bad body / missing name / invalid text / bad photo / bad poster / bad video / unpaid note ("This message cannot be paid yet") / author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 `{ error: 'Not found' }` when JSON `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 404 photo/video/`GET /:id`/`GET /:id/replies` missing; 416 unsatisfiable video Range; 429 on post or invoice rate limits (invoice only after payable checks; NIP-57 reject still counts like other LNURL failures); 503 on store/KEK/sign failure (`messages.list.failed` / `messages.create.failed` / `messages.get.failed` / `messages.replies.failed` / `messages.photo.failed` / `messages.video.failed`). Public JSON includes `sats`/`payable`/`hasPhoto`/`hasVideo`/`videoContentType`/live `role` and omits media bytes (list `replyCount` is stored `replyCount` minus missing-file video children dropped in the replies window; missing author → `role` `"basis"` on list; Damus-only omits `role`). Signed-in list/replies/create may include `accountId` (21gifts author id; omitted for Damus-only); public `GET /:id` never includes it.
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing rows; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public `GET /:id` never includes it.
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
 
-- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). Creates when the account has a non-blank display name. After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread (working inbox). Conversation append failure logs `conversations.contact_sync.failed` and still 200.
+- **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). After auth, `requireAction(account, 'contact.post')` (rules + name). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread. Conversation append failure logs `conversations.contact_sync.failed` and still 200.
 - **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 400 on bad body / missing name / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 409 `{ error: 'missing_requirements', missing }` when rules/name are missing; 400 on bad body / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). Public JSON omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: conversationRoutes
@@ -877,10 +877,38 @@
 
 ## Function: accountSetup
 
-- **Purpose:** Next owner setup step from stored account fields. The api is the source of truth; clients only route.
+- **Purpose:** Next owner wizard step from stored account fields. Skip timestamps count as completing that step. The api is the source of truth; clients only route.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `'name'` when name is null/blank, else `'lightning-address'` when Lightning Address is null/blank, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
+- **Returns / side effects:** `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
 - **Used by:** `serializeOwnerAccount`.
+
+## Function: accountMissing
+
+- **Purpose:** Factually unset account fields for action gates. Skip timestamps do not clear a field from this list.
+- **Inputs:** `Account`.
+- **Returns / side effects:** `AccountMissingField[]` in order `name`, `lightning-address`, `rules` (only those that are null/blank or rules unset). No I/O.
+- **Used by:** `serializeOwnerAccount`, `requireAction`.
+
+## Function: actionRequirements
+
+- **Purpose:** Declare which account fields an action needs before it may proceed.
+- **Inputs:** `AccountAction` (`forum.read` \| `forum.post` \| `contact.post` \| `forum.pay`).
+- **Returns / side effects:** Readonly list in 409 order: `forum.read` → `rules`; `forum.post` / `contact.post` → `rules`, `name`; `forum.pay` → `rules`. No I/O.
+- **Used by:** `requireAction`.
+
+## Function: requireAction
+
+- **Purpose:** Gate a signed-in action on factual account fields (skip does not satisfy). Filters `accountMissing` to the action's needs, preserving `actionRequirements` order.
+- **Inputs:** `Account`, `AccountAction`.
+- **Returns / side effects:** `{ ok: true }` or `{ ok: false, missing }` (never empty). No I/O. Routes respond 409 `{ error: 'missing_requirements', missing }` when `ok` is false.
+- **Used by:** `messagesRoutes`, `contactRoutes`, `membersRoutes`.
+
+## Function: ensureProfileMessage
+
+- **Purpose:** Ensure a named account has exactly one top-level profile forum note. First non-blank name inserts one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails. Optional `pushStore` enqueues forum pushes for a new note.
+- **Inputs:** `{ auth, messages, account, now, pushStore? }`.
+- **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure.
+- **Used by:** `meRoutes` (`POST /me/name`), `debugRoutes` provision, Nostr worker backfill.
 
 ## Function: serializeAccount
 
@@ -898,10 +926,17 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey` and `setup`, so the owner can copy the capability URL and the client can route onboarding. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, and passkey finish — never by the debug listing.
+- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, `setup`, and `missing`, so the owner can copy the capability URL and the client can route onboarding and action gates. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement` and `POST /me/setup/skip`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `OwnerAccountResponse` (eleven fields including `setup`). No I/O.
+- **Returns / side effects:** `OwnerAccountResponse` (twelve fields including `setup` and `missing`). No I/O.
 - **Used by:** `meRoutes`, `authRoutes`.
+
+## Function: membersRoutes
+
+- **Purpose:** Hono sub-app for `GET /members/:accountId`. Bearer + `requireAction(forum.read)`; UUID path; live identity plus optional `profileMessage` via `serializeMessage`.
+- **Inputs:** `MembersRouteDeps` (`authStore`, `messageStore`, `now`).
+- **Returns / side effects:** Hono app mounted at `/members`. Logs `members.get.failed` on 503.
+- **Used by:** `createApp`.
 
 ## Function: serializeViewProfile
 
@@ -1010,15 +1045,15 @@
 
 ## Function: buildKind0Content
 
-- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, `about: '21.gifts'`, optional `lud16`, optional `nip05`).
-- **Inputs:** name, lightningAddress or null, optional nip05 or null.
-- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `about` is always `21.gifts`; `lud16` only when address set; `nip05` only when a public identifier is passed.
+- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, `about`, optional `lud16`, optional `nip05`).
+- **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present).
+- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `about` is the fourth argument; `lud16` only when address set; `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
 
-- **Purpose:** Unsigned replaceable kind:0, including optional `nip05`.
-- **Inputs:** name, lightningAddress, unix created_at, optional nip05.
+- **Purpose:** Unsigned replaceable kind:0, including optional `nip05` and optional `about`.
+- **Inputs:** name, lightningAddress, unix created_at, optional nip05, optional about (default `'21.gifts'`).
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishProfiles`.
 

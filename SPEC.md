@@ -66,17 +66,19 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                                          |
 | POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                                             |
 | POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                                            |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` next onboarding step)                                     |
+| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` + factual `missing`)                                      |
 | GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                            |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name                                                   |
+| POST   | `/me/setup/skip`                             | Bearer                   | Skip name or Lightning Address wizard step                                 |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (first name creates profile note)                 |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                                     |
 | POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                         |
 | POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve + NIP-57 mint probe                  |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address                                                             |
+| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address (clears LN skip)                                            |
 | POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                                     |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                          |
-| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`)                                |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; optional one-level `inReplyTo` parent UUID                |
+| GET    | `/members/:accountId`                        | Bearer                   | Live member identity + profile note                                        |
+| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`); 409 if rules missing          |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name missing; LN not required to post        |
 | GET    | `/messages/:id`                              | none                     | Public single-note JSON                                                    |
 | GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                                     |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                            |
@@ -239,12 +241,13 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "name"
+    "setup": "name",
+    "missing": ["name", "lightning-address", "rules"]
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey` and `setup`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, and `missing`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -288,7 +291,8 @@ Missing or invalid bearer → **Response** `401`:
   "viewKey": "<64-hex>",
   "createdAt": 0,
   "rulesAgreedAt": null,
-  "setup": "name"
+  "setup": "name",
+  "missing": ["name", "lightning-address", "rules"]
 }
 ```
 
@@ -304,7 +308,29 @@ Missing or invalid bearer → **Response** `401`:
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                               |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                    |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                    |
-| `setup`                    | string \| null | Next owner step: `name`, `lightning-address`, `rules`, or `null` when complete. Computed here; clients must not invent a parallel sequence. |
+| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence. |
+| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                       |
+
+### `POST /me/setup/skip`
+
+Skip a skippable wizard step. Body:
+
+```json
+{ "step": "name" }
+```
+
+or `{ "step": "lightning-address" }`. Sets the matching skip timestamp to now;
+does not clear `name` / `lightningAddress`. `step: "rules"` and unknown steps
+are **400**. Success → **200** owner JSON.
+
+### `GET /members/:accountId`
+
+Bearer required. `:accountId` must be a UUID. After auth,
+`requireAction(caller, 'forum.read')` — missing rules → **409**
+`{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
+**404**. Success → live `id` / `name` / `role` / `lightningAddress` / ISO
+`createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
+`replyCount`, or `null`). Never `viewKey` / `eventId`.
 
 ### `GET /view/:viewKey`
 
@@ -358,7 +384,10 @@ control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 ```
 
 Success → **Response** `200` with the updated account (same shape as
-`GET /me`). The stored value is trimmed. Names are not unique.
+`GET /me`). The stored value is trimmed. Names are not unique. The first
+persisted non-empty name also creates exactly one top-level profile forum
+note and stores `profileMessageId` (not on owner JSON). Rename does not
+create a second note and does not change the note text.
 
 ### `POST /me/forum-laws-dismissed`
 
@@ -1333,7 +1362,8 @@ Success → **Response** `200`:
 
 ### `GET /messages`
 
-Public member forum thread. Bearer session required. Returns **only
+Public member forum thread. Bearer session required. After auth,
+`requireAction(account, 'forum.read')` (rules). Returns **only
 top-level notes** (`parent_id IS NULL`) newest first (`createdAt`
 descending, then `id`), capped at **200**. Replies are never listed here —
 use `GET /messages/:id/replies`. This is the latest-200 **window** on the
@@ -1355,6 +1385,12 @@ Missing/invalid/expired bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+Missing rules → **Response** `409`:
+
+```json
+{ "error": "missing_requirements", "missing": ["rules"] }
 ```
 
 Store failure → **Response** `503`:
@@ -1419,21 +1455,22 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
-The account must already have a non-blank display name. The api stores a
-**name snapshot** (trimmed account name at post time), normalised text
-(possibly `""` for photo-only), optional JPEG/PNG/WebP bytes (≤ 1 MiB;
-MIME from magic bytes), `parentId` (null for top-level notes), and a
+After auth, `requireAction(account, 'forum.post')` requires rules agreement
+and a non-blank display name (Lightning Address is **not** required to post).
+The api stores a **name snapshot** (trimmed account name at post time),
+normalised text (possibly `""` for photo-only), optional JPEG/PNG/WebP bytes
+(≤ 1 MiB; MIME from magic bytes), `parentId` (null for top-level notes), and a
 timestamp. Text longer than **500** after trim, or with disallowed C0/DEL
 controls, is rejected. Newlines (`\n`, `\r`) are allowed. The **200** body
 is the public message object itself (not wrapped in `{ messages }`),
 including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
-`payable` is false until the worker signs the note. `role` is the posting
-session account's live `account.role`. Web Push is enqueued **only** when
-`parentId` is null (top-level notes); replies do not push. Over-limit
-posters get **429** `{ "error": "Too many messages" }` with
-`Retry-After: 10` (1/10s, 6/h, 20/UTC-day). The worker signs a top-level
+`payable` is false until the worker signs the note (and stays false without
+author LN). `role` is the posting session account's live `account.role`. Web
+Push is enqueued **only** when `parentId` is null (top-level notes); replies
+do not push. Over-limit posters get **429** `{ "error": "Too many messages" }`
+with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). The worker signs a top-level
 kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`; forum
 `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
@@ -1443,16 +1480,18 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
+Missing required fields → **Response** `409`:
+
+```json
+{ "error": "missing_requirements", "missing": ["rules", "name"] }
+```
+
+(`missing` is never empty; order is `rules`, then `name`.)
+
 Body is not JSON with `text` and/or `photo` → **Response** `400`:
 
 ```json
 { "error": "Expected a JSON body with text and/or photo" }
-```
-
-Account has no display name (null or blank after trim) → **Response** `400`:
-
-```json
-{ "error": "Set a name before posting" }
 ```
 
 Text longer than 500 after trim, or contains a disallowed control →
@@ -1731,10 +1770,10 @@ Body is not JSON with a `text` string → **Response** `400`:
 { "error": "Expected a JSON body with a \"text\" string" }
 ```
 
-Account has no display name (null or blank after trim) → **Response** `400`:
+Missing required fields (`requireAction` `contact.post`) → **Response** `409`:
 
 ```json
-{ "error": "Set a name before posting" }
+{ "error": "missing_requirements", "missing": ["rules", "name"] }
 ```
 
 Text empty, longer than 500 after trim, or contains a disallowed control →

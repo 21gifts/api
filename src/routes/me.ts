@@ -4,13 +4,16 @@ import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeDisplayName } from '@/lib/name';
 import { serializeOwnerAccount } from '@/lib/auth/account-json';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import type { MessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount } from '@/lib/nostr/sign';
+import type { PushStore } from '@/lib/push-store';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
@@ -24,6 +27,8 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
+  /** Forum persistence (profile notes on first name). */
+  messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Pays the verification micro-payment invoice. */
@@ -32,6 +37,8 @@ export interface MeRouteDeps {
   fetchImpl: FetchFn;
   /** AES KEK for signing the NIP-57 mint probe; omit when unset. */
   nostrKek?: Uint8Array;
+  /** Optional push outbox; profile-note create enqueues when present. */
+  pushStore?: PushStore;
 }
 
 /**
@@ -87,11 +94,14 @@ const addressBody = z.object({ address: z.string() });
 /** Body schema for confirming address verification. */
 const confirmBody = z.object({ nonce: z.string() });
 
+/** Body schema for skipping a wizard step. */
+const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
+
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, clock, payer, fetch, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, display-name, forum-laws dismiss,
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, and optional `nostrKek` for the NIP-57 mint probe.
+ * @returns A Hono app exposing account, display-name, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -102,6 +112,32 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       return c.json(serializeOwnerAccount(account), 200);
+    })
+    .post('/setup/skip', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = skipBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Expected a JSON body with step "name" or "lightning-address"' },
+          400,
+        );
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const skippedAt = deps.now();
+      const updated: Account =
+        parsed.data.step === 'name'
+          ? { ...current, nameSkippedAt: skippedAt }
+          : { ...current, lightningAddressSkippedAt: skippedAt };
+      await deps.store.updateAccount(updated);
+      logEvent('account.setup.skipped', { accountId: current.id, step: parsed.data.step });
+      return c.json(serializeOwnerAccount(updated), 200);
     })
     .post('/name', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -121,10 +157,17 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const updated: Account = { ...current, name };
-      await deps.store.updateAccount(updated);
+      const withName: Account = { ...current, name };
+      const ensured = await ensureProfileMessage({
+        auth: deps.store,
+        messages: deps.messages,
+        account: withName,
+        now: deps.now,
+        ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+      });
+      await deps.store.updateAccount(ensured);
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(serializeOwnerAccount(updated), 200);
+      return c.json(serializeOwnerAccount(ensured), 200);
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -267,6 +310,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         ...current,
         lightningAddress: null,
         lightningAddressVerified: false,
+        lightningAddressSkippedAt: null,
       };
       await deps.store.updateAccount(updated);
       await deps.store.deleteVerification(account.id);

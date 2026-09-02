@@ -2,7 +2,7 @@
 
 ## Endpoint: DELETE /me/lightning-address
 
-- **Purpose:** Bearer required. Clears the account Lightning Address.
+- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt` so owner `setup` returns to `lightning-address` when a name is set or name-skipped.
 - **Errors:** 401 without session.
 - **Used by:** `unlinkLightningAddress` in the app.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -219,10 +219,17 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`). `setup` is the next owner step (`name` \| `lightning-address` \| `rules`) or `null` when complete; computed here so clients do not invent a parallel sequence.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: GET /members/:accountId
+
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `role`, `lightningAddress`, ISO `createdAt`, and `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note). Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
+- **Used by:** App member profile surfaces.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /view/:viewKey
 
@@ -233,8 +240,8 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the stored direct-reply count minus those dropped. Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
-- **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.read')` (needs rules). Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the stored direct-reply count minus those dropped. Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 409 `{ error: 'missing_requirements', missing: ['rules'] }` when rules are not agreed; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
@@ -289,22 +296,22 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped). New notes have `sats` 0 and `payable` false until signed. Top-level creates may enqueue push; replies do not.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with text and/or photo; 400 Set a name before posting; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.post')` (needs rules + name; Lightning Address is not required). JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped). New notes have `sats` 0 and `payable` false until signed (and stay `payable` false without author LN). Top-level creates may enqueue push; replies do not.
+- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: [...] }` when rules and/or name are missing (order `rules`, then `name`); 400 Expected a JSON body with text and/or photo; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer and reply composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /messages/:id/invoice
 
-- **Purpose:** Bearer required. `:id` is a UUID. Body `{ sats }` (integer 1..10_000_000). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns `{ pr, amountSats }` only when the minted BOLT11 is a NIP-57 `description_hash` invoice (`isNip57Invoice`); otherwise persists `not_zap` (with rejected `pr` for debug) and responds 400 `The author's wallet cannot receive this Bitcoin payment` without `pr` in the body. Same author's-wallet 400 for LNURL `noZap`; other LNURL transport failures (`unreachable`) keep `Could not start the Bitcoin payment`. After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks (NIP-57 reject still counts, same as other LNURL failures).
-- **Errors:** 401 Unauthorized; 400 bad body / This message cannot be paid yet / The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found (unknown id or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
+- **Purpose:** Bearer required. After auth, `requireAction(payer, 'forum.pay')` (payer needs rules only — never 409 `lightning-address` for the payer). `:id` is a UUID. Body `{ sats }` (integer 1..10_000_000). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns `{ pr, amountSats }` only when the minted BOLT11 is a NIP-57 `description_hash` invoice (`isNip57Invoice`); otherwise persists `not_zap` (with rejected `pr` for debug) and responds 400 `The author's wallet cannot receive this Bitcoin payment` without `pr` in the body. Same author's-wallet 400 for LNURL `noZap`; other LNURL transport failures (`unreachable`) keep `Could not start the Bitcoin payment`. Author LN / unsigned note stay 400 `This message cannot be paid yet` (resource state, not payer `missing`). After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks (NIP-57 reject still counts, same as other LNURL failures).
+- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: ['rules'] }` when the payer has not agreed to rules; 400 bad body / This message cannot be paid yet / The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found (unknown id or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /contact
 
-- **Purpose:** Bearer required. Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread so the message is readable via `GET /conversations`. Conversation append failure logs `conversations.contact_sync.failed` and still returns 200 (contact is the product surface). 200 is the public contact object (no `accountId`).
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account exists (neither contact nor thread is written); 503 Contact is unavailable (`contact.create.failed`).
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'contact.post')` (needs rules + name). Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread so the message is readable via `GET /conversations`. Conversation append failure logs `conversations.contact_sync.failed` and still returns 200 (contact is the product surface). 200 is the public contact object (no `accountId`).
+- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: [...] }` when rules and/or name are missing; 400 Expected a JSON body with a "text" string; 400 Text must be 1–500 characters; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account exists (neither contact nor thread is written); 503 Contact is unavailable (`contact.create.failed`).
 - **Used by:** App in-app contact composer.
 - **Auth:** `Authorization: Bearer` session.
 
@@ -373,7 +380,14 @@
 
 ## Endpoint: POST /me/name
 
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters).
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). The first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and stores `profileMessageId` (not exposed on owner JSON). Rename does not create a second note and does not change the note text.
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/setup/skip
+
+- **Purpose:** Bearer required. Body `{ step: "name" | "lightning-address" }`. Sets `nameSkippedAt` or `lightningAddressSkippedAt` to now so owner `setup` advances; does not clear or change `name` / `lightningAddress`. Skipping an already-set field is allowed (writes the skip timestamp). Rules cannot be skipped.
+- **Errors:** 401 without session; 400 for unknown step, `step: "rules"`, or bad JSON.
+- **Used by:** App onboarding skip controls (api-first; app proxy may follow later).
+- **Auth:** `Authorization: Bearer` session.

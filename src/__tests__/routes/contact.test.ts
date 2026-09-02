@@ -61,7 +61,7 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   if (existing === undefined) {
     throw new Error('expected account');
   }
-  await store.updateAccount({ ...existing, name });
+  await store.updateAccount({ ...existing, name, rulesAgreedAt: now() });
   return store;
 }
 
@@ -152,24 +152,41 @@ describe('POST /contact', () => {
     expect((await conversations.listMessages(threads[0]!.id, 10))[0]?.text).toBe('hello world');
   });
 
-  it('rejects posting without a name', async () => {
-    const res = await mount(await seededStore()).request('/contact', {
+  it('returns 409 when posting without a name', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({
+      ...existing,
+      rulesAgreedAt: now(),
+      nameSkippedAt: now(),
+    });
+    const res = await mount(store).request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Set a name before posting' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['name'],
+    });
   });
 
-  it('rejects posting with a whitespace-only name', async () => {
+  it('returns 409 when posting with a whitespace-only name', async () => {
     const res = await mount(await namedStore('   ')).request('/contact', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Set a name before posting' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['name'],
+    });
   });
 
   it('rejects invalid JSON', async () => {

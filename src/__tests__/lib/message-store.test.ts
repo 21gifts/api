@@ -106,6 +106,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_parent_id_idx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/lnurl_response/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/account_profile_message_id_fkey/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/ON DELETE SET NULL/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/account_profile_message_uidx/);
   });
 });
 

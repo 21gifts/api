@@ -108,6 +108,35 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: membersRoutes — GET /members/:accountId without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/members/:accountId');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: requireAction — GET /messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: actionRequirements — GET /messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: accountMissing — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
+test('Function: ensureProfileMessage — POST /me/name without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/name', { data: { name: 'Ada' } });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: probeNip57Mint — POST /me/lightning-address without bearer is 401', async ({
   request,
 }) => {

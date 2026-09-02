@@ -88,7 +88,28 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   if (existing === undefined) {
     throw new Error('expected account');
   }
-  await store.updateAccount({ ...existing, name });
+  await store.updateAccount({ ...existing, name, rulesAgreedAt: now() });
+  return store;
+}
+
+/** Signed-in account with rules agreed (name may still be missing). */
+async function rulesStore(
+  overrides: { name?: string | null; nameSkippedAt?: number | null } = {},
+): Promise<InMemoryAuthStore> {
+  const store = await seededStore();
+  const existing = await store.getAccount('acc');
+  expect(existing).toBeDefined();
+  if (existing === undefined) {
+    throw new Error('expected account');
+  }
+  await store.updateAccount({
+    ...existing,
+    name: overrides.name === undefined ? existing.name : overrides.name,
+    rulesAgreedAt: now(),
+    ...(overrides.nameSkippedAt === undefined
+      ? {}
+      : { nameSkippedAt: overrides.nameSkippedAt }),
+  });
   return store;
 }
 
@@ -153,8 +174,17 @@ describe('GET /messages', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns an empty list', async () => {
+  it('returns 409 when rules are not agreed', async () => {
     const res = await mount(await seededStore()).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules'],
+    });
+  });
+
+  it('returns an empty list', async () => {
+    const res = await mount(await rulesStore()).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: [] });
   });
@@ -375,7 +405,7 @@ describe('GET /messages', () => {
   });
 
   it('defaults role to basis and payable to false when the author is missing', async () => {
-    const authStore = await seededStore();
+    const authStore = await rulesStore();
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'orphan',
@@ -395,7 +425,7 @@ describe('GET /messages', () => {
   });
 
   it('returns 503 and logs when listLatest throws', async () => {
-    const res = await mount(await seededStore(), throwingStore()).request('/messages', {
+    const res = await mount(await rulesStore(), throwingStore()).request('/messages', {
       headers: AUTH,
     });
     expect(res.status).toBe(503);
@@ -404,7 +434,7 @@ describe('GET /messages', () => {
   });
 
   it('lists a Damus-only note as not payable with role omitted', async () => {
-    const authStore = await seededStore();
+    const authStore = await rulesStore();
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'damus-list',
@@ -621,24 +651,44 @@ describe('POST /messages', () => {
     expect(body.role).toBe('moderator');
   });
 
-  it('rejects posting without a name', async () => {
-    const res = await mount(await seededStore()).request('/messages', {
+  it('returns 409 when posting without a name after rules and name skip', async () => {
+    const res = await mount(
+      await rulesStore({ name: null, nameSkippedAt: now() }),
+    ).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Set a name before posting' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['name'],
+    });
   });
 
-  it('rejects posting with a whitespace-only name', async () => {
+  it('returns 409 when posting with a whitespace-only name', async () => {
     const res = await mount(await namedStore('   ')).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Set a name before posting' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['name'],
+    });
+  });
+
+  it('posts without a Lightning Address and returns payable false', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { payable: boolean; name: string };
+    expect(body.payable).toBe(false);
+    expect(body.name).toBe('Ada');
   });
 
   it('rejects invalid JSON', async () => {
@@ -886,6 +936,46 @@ describe('POST /messages', () => {
 });
 
 describe('POST /messages/:id/invoice', () => {
+  it('returns 409 when the payer has not agreed to rules', async () => {
+    const res = await mount(await seededStore()).request(
+      '/messages/11111111-1111-4111-8111-111111111111/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules'],
+    });
+  });
+
+  it('returns 400 not 409 lightning-address when the note is unsigned', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request(
+      '/messages/11111111-1111-4111-8111-111111111111/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
   it('returns 429 on a burst of invoice requests', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
@@ -1268,7 +1358,7 @@ describe('POST /messages/:id/invoice', () => {
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_001,
-      rulesAgreedAt: null,
+      rulesAgreedAt: now(),
     });
     await authStore.createSession({ token: 'payer-tok', accountId: 'payer', createdAt: now() });
     expect(await authStore.getNostrPublicKey('payer')).toBeUndefined();
@@ -2897,12 +2987,18 @@ describe('forum video', () => {
   it('rejects multipart when the account has no name', async () => {
     const form = new FormData();
     form.set('text', 'clip');
-    const res = await mount(await seededStore()).request('/messages', {
+    const res = await mount(
+      await rulesStore({ name: null, nameSkippedAt: now() }),
+    ).request('/messages', {
       method: 'POST',
       headers: AUTH,
       body: form,
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['name'],
+    });
   });
 
   it('returns 503 when video create throws', async () => {
