@@ -75,9 +75,10 @@ async function seed(): Promise<{
     hasPhoto: false,
     ...unsignedNostrDefaults(),
     // Already published so worker ticks under test do not claim this note.
-    eventId: 'aa'.repeat(32),
+    // Distinct from inbound-test event ids (`aa`/`ab`/…).
+    eventId: 'f1'.repeat(32),
     nostrPublishState: 'published',
-    nostrEvent: { ...BITCOIN_KIND1, id: 'aa'.repeat(32) },
+    nostrEvent: { ...BITCOIN_KIND1, id: 'f1'.repeat(32) },
   });
   await messages.create({
     id: 'm1',
