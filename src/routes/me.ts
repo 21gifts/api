@@ -165,9 +165,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
       });
-      await deps.store.updateAccount(ensured);
+      const named: Account = { ...ensured, name };
+      await deps.store.updateAccount(named);
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(serializeOwnerAccount(ensured), 200);
+      return c.json(serializeOwnerAccount(named), 200);
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
