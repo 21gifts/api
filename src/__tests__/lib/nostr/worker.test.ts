@@ -328,6 +328,70 @@ describe('runNostrWorkerTick', () => {
     expect(zapped?.sats).toBe(21);
   });
 
+  it('does not reset a published profile note that lacks Damus hashtags', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'acc-null-profile',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      profileMessageId: null,
+    });
+    await auth.createAccount({
+      id: 'acc-empty-profile',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+      profileMessageId: '',
+    });
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    await messages.create({
+      id: 'm-hashtag',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ohne foto funktioniert es',
+      createdAt: new Date('2026-08-28T00:10:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m-hashtag', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'ohne foto funktioniert es',
+      tags,
+      created_at: 1,
+    });
+    await messages.updatePublishState('m-hashtag', 'published', 'space');
+    const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    expect((await messages.getById(profileId))?.eventId).toBe('f1'.repeat(32));
+    expect((await messages.getById('m-hashtag'))?.eventId).toBeNull();
+  });
+
   it('signs a new post before resetting published notes that lack Damus hashtags', async () => {
     const { auth, messages } = await seed();
     const tags = [
