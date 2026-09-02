@@ -56,6 +56,12 @@ export interface Account {
    * stored account may be true. Default false. Omitted on member `GET /me`.
    */
   isPlatform?: boolean;
+  /** Epoch ms when the owner skipped the name wizard step, or null/omitted. */
+  nameSkippedAt?: number | null;
+  /** Epoch ms when the owner skipped the Lightning Address wizard step, or null/omitted. */
+  lightningAddressSkippedAt?: number | null;
+  /** Id of the single top-level profile forum message, or null/omitted. */
+  profileMessageId?: string | null;
 }
 
 /**

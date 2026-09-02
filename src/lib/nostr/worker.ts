@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { ConversationThread } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -129,7 +130,8 @@ function reservedContent(
  * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
  * signed. Then published unpaid rows missing a photo URL or a video URL
  * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset
- * for the next tick. Pending rows EVENT as-is — resetting them first renews
+ * for the next tick (`profileMessageId` rows are skipped so a name note is
+ * not rewritten with those hashtags). Pending rows EVENT as-is — resetting them first renews
  * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
  * keep their event id so receipts still resolve. An empty API base skips
  * photo- and video-URL resign so it cannot un-publish and loop. When
@@ -177,6 +179,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   });
   await indexInboundForumReplies(deps, urls);
   await indexInboundDirectMessages(deps, urls);
+  await backfillProfileMessages(deps);
 }
 
 /**
@@ -402,7 +405,17 @@ async function resignVideoKind1(deps: NostrWorkerDeps): Promise<void> {
 }
 
 async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
-  await resetPublishedBatch(deps, await deps.messages.listSignedMissingHashtags(WORKER_BATCH));
+  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH);
+  const accounts = await deps.auth.listAccounts();
+  const profileIds = new Set(
+    accounts
+      .map((account) => account.profileMessageId)
+      .filter((id): id is string => typeof id === 'string' && id !== ''),
+  );
+  await resetPublishedBatch(
+    deps,
+    rows.filter((row) => !profileIds.has(row.id)),
+  );
 }
 
 function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -517,6 +530,34 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   }
 }
 
+/**
+ * Create a profile forum note for named accounts that lack one (or whose
+ * stored id no longer points at a message row).
+ *
+ * @param deps - Auth and message stores (and optional push).
+ */
+async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
+  const accounts = await deps.auth.listAccounts();
+  for (const account of accounts) {
+    if (account.name === null || account.name.trim() === '') {
+      continue;
+    }
+    const profileId = account.profileMessageId;
+    if (typeof profileId === 'string' && profileId.trim() !== '') {
+      const existing = await deps.messages.getById(profileId);
+      if (existing !== undefined) {
+        continue;
+      }
+    }
+    await ensureProfileMessage({
+      auth: deps.auth,
+      messages: deps.messages,
+      account,
+      now: deps.now,
+    });
+  }
+}
+
 async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet): Promise<void> {
   const cache = profileCacheFor(deps.auth);
   const watermarks = profileWatermarkFor(deps.auth);
@@ -535,7 +576,15 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     }
     const namedForLive = named.map((row) => (row.id === live.id ? live : row));
     const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05);
+    let about = '21.gifts';
+    const profileId = live.profileMessageId;
+    if (typeof profileId === 'string' && profileId.trim() !== '') {
+      const note = await deps.messages.getById(profileId);
+      if (note !== undefined) {
+        about = note.text;
+      }
+    }
+    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -565,6 +614,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         live.lightningAddress,
         reservation.createdAt,
         nip05,
+        about,
       );
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {

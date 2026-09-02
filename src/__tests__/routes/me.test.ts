@@ -5,8 +5,10 @@ import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -42,6 +44,8 @@ interface MountOpts {
   payer?: InvoicePayer;
   fetchImpl?: FetchFn;
   clock?: () => number;
+  messages?: InMemoryMessageStore;
+  pushStore?: InMemoryPushStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -49,10 +53,12 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
     '/me',
     meRoutes({
       store,
+      messages: opts.messages ?? new InMemoryMessageStore(),
       now: opts.clock ?? now,
       payer: opts.payer ?? new UnconfiguredInvoicePayer(),
       fetchImpl: opts.fetchImpl ?? globalThis.fetch,
       nostrKek: NOSTR_KEK,
+      ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
     }),
   );
 }
@@ -152,6 +158,7 @@ describe('GET /me', () => {
       viewKey: string;
       rulesAgreedAt: number | null;
       setup: 'name' | 'lightning-address' | 'rules' | null;
+      missing: string[];
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -161,6 +168,81 @@ describe('GET /me', () => {
     expect(body.viewKey).toBe(VIEW_KEY);
     expect(body.rulesAgreedAt).toBeNull();
     expect(body.setup).toBe('name');
+    expect(body.missing).toEqual(['name', 'lightning-address', 'rules']);
+  });
+});
+
+describe('POST /me/setup/skip', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'name' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects step rules and unknown steps', async () => {
+    const store = await seededStore();
+    const rules = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'rules' }),
+    });
+    expect(rules.status).toBe(400);
+    const bad = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'nope' }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it('skips name then GET /me advances setup to lightning-address', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'name' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      setup: string | null;
+      missing: string[];
+      name: string | null;
+    };
+    expect(body.setup).toBe('lightning-address');
+    expect(body.name).toBeNull();
+    expect(body.missing).toContain('name');
+    expect((await store.getAccount('acc'))?.nameSkippedAt).toBe(now());
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.setup.skipped' &&
+          e['accountId'] === 'acc' &&
+          e['step'] === 'name',
+      ),
+    ).toBe(true);
+    const me = await mount(store).request('/me', { headers: AUTH });
+    expect(((await me.json()) as { setup: string }).setup).toBe('lightning-address');
+  });
+
+  it('skips lightning-address', async () => {
+    const store = await seededStore();
+    const account = await store.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...account, name: 'Ada' });
+    const res = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'lightning-address' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { setup: string }).setup).toBe('rules');
+    expect((await store.getAccount('acc'))?.lightningAddressSkippedAt).toBe(now());
   });
 });
 
@@ -379,7 +461,8 @@ describe('POST /me/name', () => {
 
   it('trims, stores, and returns the name', async () => {
     const store = await seededStore();
-    const res = await mount(store).request('/me/name', {
+    const messages = new InMemoryMessageStore();
+    const res = await mount(store, { messages }).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: '  Ada  ' }),
@@ -388,10 +471,59 @@ describe('POST /me/name', () => {
     const body = (await res.json()) as { name: string | null; viewKey: string };
     expect(body.name).toBe('Ada');
     expect(body.viewKey).toBe(VIEW_KEY);
-    expect((await store.getAccount('acc'))?.name).toBe('Ada');
+    expect(body).not.toHaveProperty('profileMessageId');
+    const stored = await store.getAccount('acc');
+    expect(stored?.name).toBe('Ada');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    const note = await messages.getById(stored!.profileMessageId!);
+    expect(note?.text).toBe('Ada');
+    expect(note?.parentId).toBeNull();
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
     ).toBe(true);
+  });
+
+  it('enqueues forum pushes when a push store is configured', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(store, { messages, pushStore }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const pending = await pushStore.claimPending(10, now(), 60_000);
+    expect(pending.some((row) => row.type === 'forum')).toBe(true);
+  });
+
+  it('does not create a second profile note or change its text on rename', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore();
+    const first = await mount(store, { messages }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(first.status).toBe(200);
+    const profileId = (await store.getAccount('acc'))?.profileMessageId;
+    expect(typeof profileId).toBe('string');
+    const second = await mount(store, { messages }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada Lovelace' }),
+    });
+    expect(second.status).toBe(200);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBe(profileId);
+    expect((await messages.getById(profileId!))?.text).toBe('Ada');
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
   });
 
   it('keeps a previously stored lightning address when setting a name', async () => {
@@ -712,6 +844,7 @@ describe('POST /me/lightning-address', () => {
       '/me',
       meRoutes({
         store,
+        messages: new InMemoryMessageStore(),
         now,
         payer: new UnconfiguredInvoicePayer(),
         fetchImpl: happyFetch(),
@@ -820,7 +953,11 @@ describe('DELETE /me/lightning-address', () => {
   it('unlinks the address and clears pending verification', async () => {
     const store = await seededStore({ lightningAddress: ADDRESS });
     const existing = await store.getAccount('acc');
-    await store.updateAccount({ ...existing!, name: 'Ada' });
+    await store.updateAccount({
+      ...existing!,
+      name: 'Ada',
+      lightningAddressSkippedAt: 99,
+    });
     await store.putVerification({
       accountId: 'acc',
       address: ADDRESS,
@@ -838,7 +975,9 @@ describe('DELETE /me/lightning-address', () => {
     };
     expect(body.lightningAddress).toBeNull();
     expect(body.setup).toBe('lightning-address');
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
+    const stored = await store.getAccount('acc');
+    expect(stored?.lightningAddress).toBeNull();
+    expect(stored?.lightningAddressSkippedAt).toBeNull();
     expect(await store.getVerification('acc')).toBeUndefined();
     expect(
       parsedEvents(warn).some(

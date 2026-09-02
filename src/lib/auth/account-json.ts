@@ -1,4 +1,9 @@
-import { accountSetup, type AccountSetup } from '@/lib/auth/account-setup';
+import {
+  accountMissing,
+  accountSetup,
+  type AccountMissingField,
+  type AccountSetup,
+} from '@/lib/auth/account-setup';
 import type { Account } from '@/lib/auth/store';
 
 /**
@@ -29,17 +34,23 @@ export interface AccountResponse {
 
 /**
  * Owner-facing account JSON: the nine public fields plus the durable
- * view-key capability secret and the next `setup` step.
+ * view-key capability secret, the next `setup` step, and factual `missing`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
    * Next setup step the owner must complete (`name`, `lightning-address`,
-   * `rules`), or `null` when the signed-in app is allowed. Computed on the
-   * api; clients must not invent a parallel sequence.
+   * `rules`), or `null` when the signed-in app is allowed. Skip timestamps
+   * count as done for the wizard. Computed on the api; clients must not
+   * invent a parallel sequence.
    */
   setup: AccountSetup;
+  /**
+   * Factually unset fields (skip does not clear them). Order: `name`,
+   * `lightning-address`, `rules`. Used by clients alongside action gates.
+   */
+  missing: AccountMissingField[];
 }
 
 /**
@@ -109,16 +120,17 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *
  * Includes `viewKey` so the owner can copy the capability URL. Never used
- * by the operator debug listing.
+ * by the operator debug listing. Does not expose `profileMessageId`.
  *
  * @param account - Stored account.
- * @returns Eleven fields including `viewKey` and `setup`.
+ * @returns Twelve fields including `viewKey`, `setup`, and `missing`.
  */
 export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
     viewKey: account.viewKey,
     setup: accountSetup(account),
+    missing: accountMissing(account),
   };
 }
 

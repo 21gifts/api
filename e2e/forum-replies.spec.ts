@@ -33,6 +33,8 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
 
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },

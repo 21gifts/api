@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
+import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { serializeContact, type ContactRow } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';
@@ -11,9 +12,9 @@ import { normalizeForumText } from '@/lib/message';
 import { bearerToken } from '@/routes/me';
 
 /**
- * `/contact` — signed-in member private mailbox to 21.gifts. Posts when the
- * account has a display name. Shares the {@link AuthStore} with `/auth` and
- * `/me`. Never listed publicly.
+ * `/contact` — signed-in member private mailbox to 21.gifts. Requires rules
+ * agreement and a display name (`requireAction` `contact.post`). Shares the
+ * {@link AuthStore} with `/auth` and `/me`. Never listed publicly.
  */
 
 /** Collaborators the `/contact` routes need. */
@@ -57,12 +58,15 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     if (account === null) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
+    const gate = requireAction(account, 'contact.post');
+    if (!gate.ok) {
+      return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
+    }
+    /* v8 ignore next -- requireAction already rejected a missing name */
+    const authorName = (account.name ?? '').trim();
     const parsed = textBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
       return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
-    }
-    if (account.name === null || account.name.trim() === '') {
-      return c.json({ error: 'Set a name before posting' }, 400);
     }
     const text = normalizeForumText(parsed.data.text);
     // Forum photo-only posts may be empty; contact has no photo and still
@@ -74,7 +78,7 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     const row: ContactRow = {
       id: crypto.randomUUID(),
       accountId: account.id,
-      name: account.name.trim(),
+      name: authorName,
       text,
       createdAt,
     };

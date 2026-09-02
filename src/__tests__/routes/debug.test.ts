@@ -4,6 +4,8 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -678,9 +680,16 @@ describe('debugRoutes', () => {
 
   it('POST provisions a new account without a passkey', async () => {
     const store = new InMemoryAuthStore();
+    const messageStore = new InMemoryMessageStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+        messageStore,
+        pushStore: new InMemoryPushStore(),
+      }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
@@ -713,12 +722,105 @@ describe('debugRoutes', () => {
       viewKey: body.accounts[0]?.viewKey,
     });
     expect(await store.accountHasPasskey(stored!.id)).toBe(false);
+    expect(stored?.profileMessageId).toEqual(expect.any(String));
+    const profileNote = await messageStore.getById(stored!.profileMessageId as string);
+    expect(profileNote?.text).toBe('Ada');
+    expect(profileNote?.parentId).toBeNull();
     expect(
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'debug.accounts.provisioned' && e['created'] === 1 && e['updated'] === 0,
       ),
     ).toBe(true);
+  });
+
+  it('POST backfills a profile note when an existing named account lacks one', async () => {
+    const store = new InMemoryAuthStore();
+    const messageStore = new InMemoryMessageStore();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        messageStore,
+      }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada Lovelace', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    expect((await messageStore.getById(stored!.profileMessageId as string))?.text).toBe(
+      'Ada Lovelace',
+    );
+  });
+
+  it('POST backfills a profile note after a create race', async () => {
+    class RaceStore extends InMemoryAuthStore {
+      #lookups = 0;
+      override async getAccountByLightningAddress(address: string) {
+        this.#lookups += 1;
+        if (this.#lookups === 1) {
+          return undefined;
+        }
+        return super.getAccountByLightningAddress(address);
+      }
+    }
+    const store = new RaceStore();
+    const messageStore = new InMemoryMessageStore();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Old',
+      lightningAddress: 'guest@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: zapCapableFetch(),
+        messageStore,
+      }),
+    );
+    const res = await app.request('/debug/accounts', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+    expect(stored?.name).toBe('Ada');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    expect(await messageStore.getById(stored!.profileMessageId as string)).toBeDefined();
   });
 
   it('POST updates name idempotently for the same address ignoring case', async () => {

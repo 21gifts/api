@@ -160,6 +160,13 @@ describe('kind0', () => {
       'ada@walletofsatoshi.com',
     );
   });
+
+  it('uses the optional about argument for kind:0 content', () => {
+    expect(JSON.parse(buildKind0Content('Ada', null, null, 'Hello from Ada')).about).toBe(
+      'Hello from Ada',
+    );
+    expect(JSON.parse(buildKind0Event('Ada', null, 1, null, 'Bio').content).about).toBe('Bio');
+  });
 });
 
 describe('kind10002', () => {

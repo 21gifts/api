@@ -226,25 +226,28 @@ export interface Kind0ProfileContent {
  * Build kind:0 `content` JSON (no extra whitespace).
  *
  * Omit `lud16` when the account has no Lightning Address. Always set `picture`
- * to {@link KIND0_PICTURE_URL} and `about` to `21.gifts`. Set `nip05` when a
- * public host is available. Never set `bot`.
+ * to {@link KIND0_PICTURE_URL}. `about` defaults to `21.gifts` and is the
+ * profile-note text when the worker passes it. Set `nip05` when a public host
+ * is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
+ * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
   name: string,
   lightningAddress: string | null,
   nip05: string | null = null,
+  about: string = '21.gifts',
 ): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
     website: 'https://21.gifts',
     picture: KIND0_PICTURE_URL,
-    about: '21.gifts',
+    about,
   };
   if (lightningAddress !== null) {
     body.lud16 = lightningAddress;
@@ -274,6 +277,7 @@ export interface UnsignedKind0 {
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
+ * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
@@ -281,10 +285,11 @@ export function buildKind0Event(
   lightningAddress: string | null,
   createdAtUnix: number,
   nip05: string | null = null,
+  about: string = '21.gifts',
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress, nip05),
+    content: buildKind0Content(name, lightningAddress, nip05, about),
     tags: [],
     created_at: createdAtUnix,
   };

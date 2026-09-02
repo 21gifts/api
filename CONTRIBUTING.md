@@ -35,7 +35,8 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; POST /me/setup/skip; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
@@ -93,7 +94,9 @@ api/
 │   │   ├── nostr/            # Custodial nsec, kind:0/1/10002 worker, NIP-17/kind:4 DMs, NIP-57 zap, write-set relays
 │   │   └── auth/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
-│   │       ├── account-setup.ts # Next owner setup step (name, Lightning Address, rules)
+│   │       ├── account-setup.ts # Next owner setup step + factual missing fields
+│   │       ├── requirements.ts # Action→fields gates (`requireAction`)
+│   │       ├── profile-message.ts # First-name profile forum note (`ensureProfileMessage`)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
@@ -152,6 +155,8 @@ api/
 │       │   └── auth/
 │       │       ├── account-json.test.ts
 │       │       ├── account-setup.test.ts
+│       │       ├── requirements.test.ts
+│       │       ├── profile-message.test.ts
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
@@ -167,6 +172,7 @@ api/
 │           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
+│           ├── members.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
 │           ├── stats.test.ts

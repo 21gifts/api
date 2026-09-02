@@ -236,10 +236,12 @@ describe('auth routes', () => {
         ),
       ).toBe(true);
 
+      const { InMemoryMessageStore } = await import('@/lib/message-store');
       const meApp = new Hono().route(
         '/me',
         meRoutes({
           store,
+          messages: new InMemoryMessageStore(),
           now,
           payer: new UnconfiguredInvoicePayer(),
           fetchImpl: globalThis.fetch,
