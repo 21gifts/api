@@ -158,14 +158,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const withName: Account = { ...current, name };
-      const ensured = await ensureProfileMessage({
+      await ensureProfileMessage({
         auth: deps.store,
         messages: deps.messages,
         account: withName,
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
       });
-      const live = (await deps.store.getAccount(current.id)) ?? ensured;
+      const live = await deps.store.getAccount(current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (live === null || live === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       const named: Account = { ...live, name };
       await deps.store.updateAccount(named);
       logEvent('account.name.set', { accountId: current.id });
