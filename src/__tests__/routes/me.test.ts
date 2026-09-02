@@ -155,6 +155,7 @@ describe('GET /me', () => {
       viewKey: string;
       rulesAgreedAt: number | null;
       setup: 'name' | 'lightning-address' | 'rules' | null;
+      missing: string[];
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -164,11 +165,7 @@ describe('GET /me', () => {
     expect(body.viewKey).toBe(VIEW_KEY);
     expect(body.rulesAgreedAt).toBeNull();
     expect(body.setup).toBe('name');
-    expect((body as { missing: string[] }).missing).toEqual([
-      'name',
-      'lightning-address',
-      'rules',
-    ]);
+    expect(body.missing).toEqual(['name', 'lightning-address', 'rules']);
   });
 });
 
