@@ -44,5 +44,15 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE UNIQUE INDEX IF NOT EXISTS account_is_platform_uidx ON account \(is_platform\) WHERE is_platform/i,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS name_skipped_at timestamptz/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS lightning_address_skipped_at timestamptz/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS profile_message_id uuid/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/account_profile_message_id_fkey/);
   });
 });

@@ -26,9 +26,12 @@ interface AccountRow {
   created_at: Date | string;
   rules_agreed_at: Date | string | null;
   is_platform?: boolean | null;
+  name_skipped_at?: Date | string | null;
+  lightning_address_skipped_at?: Date | string | null;
+  profile_message_id?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -98,8 +101,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -113,6 +116,9 @@ export class PostgresAuthStore implements AuthStore {
           account.viewKey,
           account.rulesAgreedAt,
           account.isPlatform === true,
+          account.nameSkippedAt ?? null,
+          account.lightningAddressSkippedAt ?? null,
+          account.profileMessageId ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -137,7 +143,10 @@ export class PostgresAuthStore implements AuthStore {
              forum_laws_dismissed = $7,
              created_at = to_timestamp($8::double precision / 1000.0), view_key = $9,
              rules_agreed_at = to_timestamp($10::double precision / 1000.0),
-             is_platform = $11
+             is_platform = $11,
+             name_skipped_at = to_timestamp($12::double precision / 1000.0),
+             lightning_address_skipped_at = to_timestamp($13::double precision / 1000.0),
+             profile_message_id = $14
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -158,6 +167,9 @@ export class PostgresAuthStore implements AuthStore {
           account.viewKey,
           account.rulesAgreedAt,
           account.isPlatform === true,
+          account.nameSkippedAt ?? null,
+          account.lightningAddressSkippedAt ?? null,
+          account.profileMessageId ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -506,6 +518,15 @@ function mapAccount(row: AccountRow): Account | undefined {
     createdAt: epochMs(row.created_at),
     rulesAgreedAt: row.rules_agreed_at === null ? null : epochMs(row.rules_agreed_at),
     isPlatform: row.is_platform === true,
+    nameSkippedAt:
+      row.name_skipped_at === null || row.name_skipped_at === undefined
+        ? null
+        : epochMs(row.name_skipped_at),
+    lightningAddressSkippedAt:
+      row.lightning_address_skipped_at === null || row.lightning_address_skipped_at === undefined
+        ? null
+        : epochMs(row.lightning_address_skipped_at),
+    profileMessageId: row.profile_message_id ?? null,
   };
 }
 

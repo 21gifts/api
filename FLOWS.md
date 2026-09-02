@@ -47,10 +47,12 @@ Login is passkey-only. LNURL-auth has been removed.
 
 The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a Lightning Address form, and
-**Sign out**.
+**Sign out**. Name and Lightning Address are each skippable via
+`POST /me/setup/skip`; living-room rules stay required.
 
-After name and address, the app records living-room rules agreement via
-`POST /me/rules-agreement`. `GET /me` carries `rulesAgreedAt` (epoch ms of
+After name/skip and address/skip, the app records living-room rules agreement
+via `POST /me/rules-agreement`. `GET /me` carries `setup` (wizard; skip counts
+as done), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch ms of
 the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -58,7 +60,7 @@ account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/name`, `/me/rules-agreement`.
+`/me`, `/me/setup/skip`, `/me/name`, `/me/rules-agreement`.
 
 ---
 
@@ -73,7 +75,8 @@ or unlink a LUD-16 Lightning Address:
   resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
-- `DELETE /me/lightning-address` — unlink
+- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp
+  so `setup` returns to `lightning-address` when a name is set or name-skipped)
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):
@@ -91,9 +94,13 @@ any pending verification (`SPEC.md`).
 
 ### Identity copy — **Shipped** (name) + **Sketch** (photo / story)
 
-Receiver name is stored on the account (`POST /me/name`). Photo and story
-will become custodial `kind:0` metadata signed server-side. **No HTTP for
-photo/story yet**. Do not invent `POST /me/profile`.
+Receiver name is stored on the account (`POST /me/name`). The first persisted
+non-empty name also creates exactly one top-level profile forum note; rename
+does not create a second note or change its text. Other members read live
+identity plus that note via `GET /members/:accountId` (Bearer; rules required).
+Photo and story beyond that note stay custodial `kind:0` metadata signed
+server-side (`about` is the profile-note text when present, else `21.gifts`).
+**Do not invent** `POST /me/profile`.
 
 ### View-key link — **Shipped**
 
@@ -148,8 +155,10 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 ## 5. Message — **Shipped**
 
 Public comment / encouragement is a v1 surface. The composer POSTs
-`{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`;
-the public thread is listed via `GET /messages` (newest first, name
+`{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
+(requires rules + name; Lightning Address is not required to post — missing
+requirements are **409** `missing_requirements`);
+the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,

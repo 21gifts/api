@@ -374,6 +374,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   ON nostr_zap_ingest (receipt_id)`,
   `CREATE INDEX IF NOT EXISTS nostr_zap_ingest_created_at_idx
   ON nostr_zap_ingest (created_at DESC, id DESC)`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_profile_message_id_fkey`,
+  `ALTER TABLE account ADD CONSTRAINT account_profile_message_id_fkey
+  FOREIGN KEY (profile_message_id) REFERENCES message (id) ON DELETE SET NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS account_profile_message_uidx
+  ON account (profile_message_id) WHERE profile_message_id IS NOT NULL`,
 ];
 
 /**

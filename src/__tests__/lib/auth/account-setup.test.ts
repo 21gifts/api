@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accountSetup } from '@/lib/auth/account-setup';
+import { accountMissing, accountSetup } from '@/lib/auth/account-setup';
 import type { Account } from '@/lib/auth/store';
 
 const base: Account = {
@@ -53,5 +53,65 @@ describe('accountSetup', () => {
         rulesAgreedAt: 2,
       }),
     ).toBeNull();
+  });
+
+  it('treats a skipped name as done and asks for Lightning Address', () => {
+    expect(accountSetup({ ...base, nameSkippedAt: 10 })).toBe('lightning-address');
+  });
+
+  it('asks for rules when name and Lightning Address are skipped', () => {
+    expect(
+      accountSetup({
+        ...base,
+        nameSkippedAt: 10,
+        lightningAddressSkippedAt: 11,
+      }),
+    ).toBe('rules');
+  });
+
+  it('is complete when both steps are skipped and rules are agreed', () => {
+    expect(
+      accountSetup({
+        ...base,
+        nameSkippedAt: 10,
+        lightningAddressSkippedAt: 11,
+        rulesAgreedAt: 12,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('accountMissing', () => {
+  it('lists skipped fields as still missing', () => {
+    expect(
+      accountMissing({
+        ...base,
+        nameSkippedAt: 10,
+        lightningAddressSkippedAt: 11,
+      }),
+    ).toEqual(['name', 'lightning-address', 'rules']);
+  });
+
+  it('omits set fields', () => {
+    expect(
+      accountMissing({
+        ...base,
+        name: 'Ada',
+        lightningAddress: 'ada@walletofsatoshi.com',
+        rulesAgreedAt: 2,
+      }),
+    ).toEqual([]);
+  });
+
+  it('lists lightning-address again after unlink clears the skip', () => {
+    const afterUnlink: Account = {
+      ...base,
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressSkippedAt: null,
+      rulesAgreedAt: 2,
+    };
+    expect(accountSetup(afterUnlink)).toBe('lightning-address');
+    expect(accountMissing(afterUnlink)).toEqual(['lightning-address']);
   });
 });

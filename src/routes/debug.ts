@@ -4,16 +4,19 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { serializeDebugAccount } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { PushStore } from '@/lib/push-store';
 
 /**
  * Operator debug surface for registered accounts.
@@ -36,8 +39,34 @@ export interface DebugRouteDeps {
    * member→platform thread at the new official account.
    */
   conversationStore?: ConversationStore;
+  /** Forum store for profile notes after provisioned name writes. */
+  messageStore?: MessageStore;
+  /** Optional push outbox for profile-note create. */
+  pushStore?: PushStore;
   /** Clock for minted debug sessions. Defaults to `Date.now`. */
   now?: () => number;
+}
+
+/**
+ * Args for {@link ensureProfileMessage} during debug provision.
+ *
+ * @param deps - Debug collaborators (message store required at the call site).
+ * @param account - Account that just received a name.
+ * @param now - Clock.
+ * @returns Helper input, including push when configured.
+ */
+function profileEnsureArgs(
+  deps: DebugRouteDeps & { messageStore: MessageStore },
+  account: Account,
+  now: () => number,
+): Parameters<typeof ensureProfileMessage>[0] {
+  return {
+    auth: deps.store,
+    messages: deps.messageStore,
+    account,
+    now,
+    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+  };
 }
 
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
@@ -157,6 +186,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         viewKey: string;
         created: boolean;
       }> = [];
+      const clock = deps.now ?? Date.now;
       for (const row of classified) {
         if (row.existing !== undefined) {
           const named = await deps.store.updateAccountNameByLightningAddress(
@@ -165,6 +195,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           );
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
+          }
+          if (deps.messageStore !== undefined) {
+            await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+            );
           }
           updated += 1;
           results.push({
@@ -185,8 +220,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           lightningAddressVerified: false,
           forumLawsDismissed: false,
           viewKey,
-          createdAt: Date.now(),
+          createdAt: clock(),
           rulesAgreedAt: null,
+          nameSkippedAt: null,
+          lightningAddressSkippedAt: null,
+          profileMessageId: null,
         });
         const stored = await deps.store.getAccountByLightningAddress(row.lightningAddress);
         if (stored === undefined) {
@@ -194,6 +232,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
         const didCreate = stored.viewKey === viewKey;
         if (didCreate) {
+          if (deps.messageStore !== undefined) {
+            await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, stored, clock),
+            );
+          }
           created += 1;
           results.push({
             name: stored.name ?? row.name,
@@ -208,6 +251,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           );
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
+          }
+          if (deps.messageStore !== undefined) {
+            await ensureProfileMessage(
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+            );
           }
           updated += 1;
           results.push({
@@ -243,6 +291,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.lightningAddress === null) {
         updated.lightningAddress = null;
         updated.lightningAddressVerified = false;
+        updated.lightningAddressSkippedAt = null;
       }
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;

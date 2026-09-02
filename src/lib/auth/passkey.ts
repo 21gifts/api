@@ -235,6 +235,9 @@ export async function finishPasskeyRegistration(
     viewKey: randomHex(32),
     createdAt: now,
     rulesAgreedAt: null,
+    nameSkippedAt: null,
+    lightningAddressSkippedAt: null,
+    profileMessageId: null,
   };
   await store.createAccount(account);
   if (nostr !== undefined) {

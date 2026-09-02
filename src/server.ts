@@ -8,6 +8,7 @@ import { authRoutes } from '@/routes/auth';
 import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
+import { membersRoutes } from '@/routes/members';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
@@ -240,12 +241,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/me',
     meRoutes({
       store,
+      messages: messageStore,
       now,
       payer: invoicePayer,
       fetchImpl,
+      pushStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
+  app.route('/members', membersRoutes({ authStore: store, messageStore, now }));
   app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
@@ -253,7 +257,15 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route(
     '/debug/accounts',
-    debugRoutes({ store, debugToken, fetchImpl, conversationStore, now }),
+    debugRoutes({
+      store,
+      debugToken,
+      fetchImpl,
+      conversationStore,
+      messageStore,
+      pushStore,
+      now,
+    }),
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
