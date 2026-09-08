@@ -586,6 +586,30 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
+    .delete('/:id', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (account.role !== 'founder' && account.role !== 'moderator') {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const removed = await deps.store.deleteById(id);
+        if (!removed) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        logEvent('messages.deleted', { messageId: id, accountId: account.id, role: account.role });
+        return c.body(null, 204);
+      } catch {
+        logEvent('messages.delete.failed', { messageId: id, accountId: account.id });
+        return c.json({ error: 'Could not delete message' }, 503);
+      }
+    })
     .get('/:id', async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {

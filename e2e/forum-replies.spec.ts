@@ -71,6 +71,18 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
     (await list.json()) as { messages: Array<{ id: string; replyCount?: number }> }
   ).messages;
   expect(listedNotes.find((row) => row.id === note.id)?.replyCount).toBe(1);
+  expect((await request.delete('/messages/' + note.id)).status()).toBe(401);
+  expect((await request.delete('/messages/' + note.id, { headers: auth })).status()).toBe(403);
+  const promoted = await request.patch('/debug/accounts/' + ada?.id, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+  expect((await request.delete('/messages/' + note.id, { headers: auth })).status()).toBe(204);
+  expect((await request.get('/messages/' + note.id)).status()).toBe(404);
+  expect((await request.get('/messages/' + note.id + '/replies', { headers: auth })).status()).toBe(
+    404,
+  );
 });
 
 test('Function: issueSession — POST /debug/accounts/:id/session with the e2e token is 200', async ({
@@ -100,4 +112,8 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   const token = ((await session.json()) as { token: string }).token;
   const me = await request.get('/me', { headers: { authorization: `Bearer ${token}` } });
   expect(me.status()).toBe(200);
+});
+
+test('DELETE /messages/:id denies unauthenticated requests', async ({ request }) => {
+  expect((await request.delete('/messages/:id')).status()).toBe(401);
 });

@@ -1954,3 +1954,7 @@ actions. Role values exist on the account model; `GET /debug/accounts` and
 - Internationalization (English only)
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+
+### DELETE /messages/:id
+
+Bearer founder/moderator only (live account role). Deletes the post, direct replies and associated stored media via the existing store; leaves gift records and external relay copies unchanged. Returns 204; unauthorized 401; forbidden 403; invalid/missing UUID 404; storage failure 503. Durable mutations retain the db_change trigger audit trail.

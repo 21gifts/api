@@ -398,3 +398,10 @@
 - **Errors:** 401 without session; 400 for unknown step, `step: "rules"`, or bad JSON.
 - **Used by:** App onboarding skip controls (api-first; app proxy may follow later).
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: DELETE /messages/:id
+
+- **Purpose:** Remove a forum post (or reply) from 21.gifts, with direct replies and stored media, through the existing message store deletion.
+- **Auth:** Bearer session required. Only the live founder or moderator role is allowed; authors with basis/verified roles receive 403 even on their own posts.
+- **Returns:** 204 without a body; 401 without a valid session; 403 for other roles; 404 for invalid or missing ids; 503 on storage failure.
+- **Side effects:** Existing store cleanup removes photos, videos, invoice attempts and zap receipts for deleted rows. Gift records are unchanged. Postgres db_change triggers record durable deletions; structured audit events include the acting account id. Already published copies on external Nostr relays are outside this local deletion.

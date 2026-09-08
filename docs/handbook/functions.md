@@ -602,6 +602,8 @@
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing rows; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public `GET /:id` never includes it.
 - **Used by:** `createApp`.
 
+DELETE /messages/:id permits only a live founder or moderator session, delegates to MessageStore.deleteById, and logs the actor and message id. Returns 204, 401, 403, 404, or 503.
+
 ## Function: contactRoutes
 
 - **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). After auth, `requireAction(account, 'contact.post')` (rules + name). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread. Conversation append failure logs `conversations.contact_sync.failed` and still 200.

@@ -3211,3 +3211,92 @@ describe('forum video', () => {
     }
   });
 });
+
+describe('DELETE /messages/:id moderation', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const childId = '22222222-2222-4222-8222-222222222222';
+
+  it('requires a session', async () => {
+    const app = mount(await namedStore('Ada'));
+    expect((await app.request('/messages/' + id, { method: 'DELETE' })).status).toBe(401);
+  });
+
+  it.each(['basis', 'verified'] as const)('denies %s even for their own note', async (role) => {
+    const auth = await namedStore('Ada');
+    const account = (await auth.getAccount('acc'))!;
+    await auth.updateAccount({ ...account, role });
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    const spy = vi.spyOn(store, 'deleteById');
+    expect((await app.request('/messages/' + id, { method: 'DELETE', headers: AUTH })).status).toBe(
+      403,
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each(['founder', 'moderator'] as const)(
+    'allows %s to delete another author and its replies/photo',
+    async (role) => {
+      const auth = await namedStore('Ada');
+      await auth.updateAccount({ ...(await auth.getAccount('acc'))!, role });
+      const store = new InMemoryMessageStore();
+      const parent = {
+        id,
+        accountId: 'another-author',
+        name: 'Bob',
+        text: 'A post',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      };
+      await store.create(parent, { contentType: 'image/jpeg', bytes: JPEG_BYTES });
+      await store.create({
+        ...parent,
+        id: childId,
+        parentId: id,
+        text: 'A reply',
+        hasPhoto: false,
+      });
+      const app = mount(auth, store);
+      const response = await app.request('/messages/' + id, { method: 'DELETE', headers: AUTH });
+      expect(response.status).toBe(204);
+      expect(await response.text()).toBe('');
+      expect(await store.getById(id)).toBeUndefined();
+      expect(await store.getById(childId)).toBeUndefined();
+      expect(await store.getPhoto(id)).toBeNull();
+      expect((await app.request('/messages/' + id)).status).toBe(404);
+      expect((await app.request('/messages/' + id + '/photo')).status).toBe(404);
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ messageId: id, accountId: 'acc', role }),
+      );
+    },
+  );
+
+  it('rejects a demoted moderator using the same session', async () => {
+    const auth = await namedStore('Ada');
+    const account = (await auth.getAccount('acc'))!;
+    await auth.updateAccount({ ...account, role: 'moderator' });
+    const app = mount(auth);
+    await auth.updateAccount({ ...account, role: 'basis' });
+    expect((await app.request('/messages/' + id, { method: 'DELETE', headers: AUTH })).status).toBe(
+      403,
+    );
+  });
+
+  it('returns 404 for malformed or missing ids and 503 on storage failure', async () => {
+    const auth = await namedStore('Ada');
+    await auth.updateAccount({ ...(await auth.getAccount('acc'))!, role: 'founder' });
+    const store = new InMemoryMessageStore();
+    const app = mount(auth, store);
+    expect(
+      (await app.request('/messages/bad-id', { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(404);
+    expect((await app.request('/messages/' + id, { method: 'DELETE', headers: AUTH })).status).toBe(
+      404,
+    );
+    vi.spyOn(store, 'deleteById').mockRejectedValue(new Error('storage unavailable'));
+    expect((await app.request('/messages/' + id, { method: 'DELETE', headers: AUTH })).status).toBe(
+      503,
+    );
+  });
+});
