@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import type { AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
@@ -16,8 +17,9 @@ import {
 import { logEvent } from '@/lib/log';
 
 /**
- * Spend-worker invoice routes: fetch a recipient BOLT11 via LNURL-pay, then
- * accept the payment preimage as proof. The api does not pay.
+ * Spend-worker invoice routes: check passkey eligibility, fetch a recipient
+ * BOLT11 via LNURL-pay, then accept the payment preimage as proof. The api
+ * does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -26,6 +28,11 @@ export interface InvoiceRouteDeps {
   spendApiToken: string | undefined;
   /** Issued-invoice store. */
   store: InvoiceStore;
+  /**
+   * Auth store for Lightning Address → account and passkey credential lookup.
+   * Distinct from {@link InvoiceStore} (`store`).
+   */
+  authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for LNURL-pay. */
@@ -71,9 +78,25 @@ function authGate(
 }
 
 /**
+ * Whether a normalised Lightning Address belongs to an account that already
+ * has a passkey credential. Missing account → false (fail closed).
+ *
+ * @param authStore - Account and credential lookup.
+ * @param address - Normalised `local@domain`.
+ * @returns `true` only when both account and credential exist.
+ */
+async function addressHasPasskey(
+  authStore: InvoiceRouteDeps['authStore'],
+  address: string,
+): Promise<boolean> {
+  const account = await authStore.getAccountByLightningAddress(address);
+  return account !== undefined && (await authStore.accountHasPasskey(account.id));
+}
+
+/**
  * Build the `/invoices` route group.
  *
- * @param deps - Token, store, clock, fetch, optional gift recorder.
+ * @param deps - Token, invoice store, auth store, clock, fetch, optional gift recorder.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
@@ -96,6 +119,23 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   }
 
   return new Hono()
+    .get('/passkey', async (c) => {
+      const denied = authGate(
+        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
+        (body, status) => c.json(body, status),
+      );
+      if (denied !== null) {
+        return denied;
+      }
+
+      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      if (address === null) {
+        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+
+      const hasPasskey = await addressHasPasskey(deps.authStore, address);
+      return c.json({ hasPasskey }, 200);
+    })
     .post('/', async (c) => {
       const denied = authGate(
         checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
@@ -124,6 +164,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const amountMsat = parsed.data.amountMsat;
       if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
+      }
+
+      const hasPasskey = await addressHasPasskey(deps.authStore, address);
+      if (!hasPasskey) {
+        logEvent('invoice.passkey_required', { address });
+        return c.json({ error: 'Passkey required' }, 403);
       }
 
       const fetchArgs: {
