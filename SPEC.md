@@ -33,12 +33,14 @@ verification payment requires an injected invoice payer; the default
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes (`POST /invoices`, `POST /invoices/proof`) fetch a
-BOLT11 via LNURL-pay and accept a preimage proof. They require
-`SPEND_API_TOKEN`; when it is unset the routes return **503** and the process
-still boots. This service does not pay invoices (no LNDHub client). A matching
-proof inserts an outbound row into `gift` when `DATABASE_URL` is set (no-op
-without it) so `GET /gifts/stats` and `GET /gifts?day=` include the payment. Insert failure logs
+Spend-worker invoice routes (`GET /invoices/passkey`, `POST /invoices`,
+`POST /invoices/proof`) check passkey eligibility, fetch a BOLT11 via
+LNURL-pay, and accept a preimage proof. Issue requires a passkey-backed
+account for the address. They require `SPEND_API_TOKEN`; when it is unset the
+routes return **503** and the process still boots. This service does not pay
+invoices (no LNDHub client). A matching proof inserts an outbound row into
+`gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
+`GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
@@ -104,7 +106,8 @@ Public base URLs used in examples:
 | POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                                        |
 | GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                                   |
 | GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                                        |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay)                                       |
+| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a passkey-backed account                   |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay; passkey required)                     |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                           |
 
 ### `GET /healthz`
@@ -1275,11 +1278,30 @@ call. Rates are ensured only for the selected gifts' UTC days.
 { "error": "Gift stats are unavailable" }
 ```
 
+### `GET /invoices/passkey`
+
+Spend-worker eligibility check. Query `address=name@domain.tld`. Same
+`SPEND_API_TOKEN` Bearer as `POST /invoices` (503 unconfigured / 401
+unauthorized).
+
+Missing or invalid Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+Success is always **200** (never 404 for an unknown address):
+
+```json
+{ "hasPasskey": true }
+```
+
+or `{ "hasPasskey": false }` when there is no account for the address or the
+account has no passkey credential.
+
 ### `POST /invoices`
 
-Spend-worker invoice fetch. The api resolves LUD-16, GETs the LNURL-pay
-callback, decodes the BOLT11, and stores `{ id, pr, paymentHash }` in memory.
-It does not pay.
+Spend-worker invoice fetch. After address and amount validation, the api
+requires a 21.gifts account for `address` that already has a passkey
+credential. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
+the BOLT11, and stores `{ id, pr, paymentHash }` in memory. It does not pay.
 
 **Body:**
 
@@ -1306,6 +1328,13 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, or `comment` longer than
 
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+No account for the address, or the account has no passkey credential →
+**403** (before any LNURL fetch; no invoice is stored):
+
+```json
+{ "error": "Passkey required" }
+```
 
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { createApp } from '@/server';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -58,6 +59,114 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
     .map((arg) => JSON.parse(arg) as Record<string, unknown>);
 }
+
+/**
+ * Seed an account for `address` with a passkey credential so POST /invoices
+ * can reach LNURL / 200.
+ */
+async function seedPasskeyAccount(
+  authStore: InMemoryAuthStore,
+  address: string = ADDRESS,
+): Promise<void> {
+  await authStore.createAccount({
+    id: 'acc-alice',
+    linkingKey: null,
+    role: 'basis',
+    name: 'Ada',
+    lightningAddress: address,
+    lightningAddressVerified: true,
+    forumLawsDismissed: false,
+    viewKey: 'a'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: null,
+  });
+  await authStore.createPasskeyCredential({
+    credentialId: 'cred-alice',
+    publicKey: new Uint8Array([1]),
+    signCount: 0,
+    accountId: 'acc-alice',
+    createdAt: 1,
+  });
+}
+
+describe('GET /invoices/passkey', () => {
+  it('returns 503 when the spend token is not configured', async () => {
+    const res = await createApp({ spendApiToken: '' }).request(
+      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  });
+
+  it('returns 401 when the bearer is missing', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 400 when address is missing', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices/passkey', auth());
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+  });
+
+  it('returns 400 on a bad Lightning Address', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      '/invoices/passkey?address=nope',
+      auth(),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+  });
+
+  it('returns hasPasskey false for an unknown address', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPasskey: false });
+  });
+
+  it('returns hasPasskey false for an account without a credential', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
+      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPasskey: false });
+  });
+
+  it('returns hasPasskey true when the account has a credential', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
+      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPasskey: true });
+  });
+});
 
 describe('POST /invoices', () => {
   let warn: ReturnType<typeof vi.spyOn>;
@@ -135,9 +244,48 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 403 when there is no account for the address', async () => {
+    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Passkey required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
+  });
+
+  it('returns 403 when the account has no passkey credential', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fetchImpl: happyFetch(),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Passkey required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
+  });
+
   it('returns 502 when LNURL-pay cannot issue an invoice', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
     const fetchImpl: FetchFn = async () => jsonResponse({}, 500);
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl }).request(
+    const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
@@ -146,8 +294,14 @@ describe('POST /invoices', () => {
   });
 
   it('returns 502 when bolt11 decode fails', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
     mockedDecode.mockReturnValue(null);
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fetchImpl: happyFetch(),
+    }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
@@ -155,8 +309,14 @@ describe('POST /invoices', () => {
   });
 
   it('returns 502 when the invoice amount does not match', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 999 });
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fetchImpl: happyFetch(),
+    }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
@@ -164,7 +324,13 @@ describe('POST /invoices', () => {
   });
 
   it('returns 200 with id, pr, paymentHash, amountMsat', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fetchImpl: happyFetch(),
+    }).request(
       '/invoices',
       auth({
         method: 'POST',

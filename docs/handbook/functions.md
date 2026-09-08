@@ -464,9 +464,9 @@
 
 ## Function: invoiceRoutes
 
-- **Purpose:** Hono sub-app for spend-worker invoice issue and preimage proof.
-- **Inputs:** `InvoiceRouteDeps`: spend token, store, clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
-- **Returns / side effects:** Hono app mounted at `/invoices`. A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
+- **Purpose:** Hono sub-app for spend-worker passkey eligibility (`GET /passkey`), invoice issue (`POST /`), and preimage proof (`POST /proof`). Issue refuses addresses without a passkey-backed account (403 before LNURL).
+- **Inputs:** `InvoiceRouteDeps`: spend token, invoice `store`, `authStore` (account + passkey lookup), clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
+- **Returns / side effects:** Hono app mounted at `/invoices`. `GET /passkey` returns `{ hasPasskey }` (200 even when false). A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
 - **Used by:** `createApp`.
 
 ## Function: NoopGiftRecorder
@@ -719,7 +719,7 @@
 - **Purpose:** Trims and validates `local@domain` LUD-16 shape. Case is preserved.
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed address or `null`.
-- **Used by:** me lightning-address POST, public resolve, and POST /invoices.
+- **Used by:** me lightning-address POST, public resolve, GET /invoices/passkey, and POST /invoices.
 
 ## Function: parseBindAddr
 
