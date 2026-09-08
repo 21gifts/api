@@ -196,10 +196,17 @@
 - **Used by:** Humans and service catalogs.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
+## Endpoint: GET /invoices/passkey
+
+- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ hasPasskey: boolean }` so spend can filter before preflight. Fail closed: unknown address or account without a passkey credential → `hasPasskey: false` (always HTTP 200 on success; never 404).
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 missing or invalid Lightning Address (`Not a valid Lightning Address (expected name@domain)`).
+- **Used by:** the external spend worker before issuing a gift invoice.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
 ## Endpoint: POST /invoices
 
-- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
-- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 502 provider did not issue a matching invoice.
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Requires a 21.gifts account for `address` that already has a passkey credential. Then resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 403 `{ error: 'Passkey required' }` when there is no account or the account has no passkey (before LNURL); 502 provider did not issue a matching invoice.
 - **Used by:** the external spend worker before paying via lightning.space.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
