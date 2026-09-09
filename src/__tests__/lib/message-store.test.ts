@@ -120,7 +120,7 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception THEN');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("SET nostr_event = (nostr_event #>> '{}')::jsonb");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(

@@ -88,7 +88,7 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain(
       'EXCEPTION WHEN invalid_text_representation',
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception THEN');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
       "SET nostr_event = (nostr_event #>> '{}')::jsonb",
     );
