@@ -1342,6 +1342,49 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
   });
 
+  it('getById maps deleted_at Date and ISO string', async () => {
+    const sql = new MockSql();
+    const deletedAtDate = new Date('2026-09-01T12:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+        deleted_at: deletedAtDate,
+        deleted_by: 'staff-acc',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const mappedDate = await store.getById('m1');
+    expect(mappedDate?.deletedAt?.getTime()).toBe(deletedAtDate.getTime());
+    expect(mappedDate?.deletedBy).toBe('staff-acc');
+
+    const deletedAtIso = '2026-09-02T00:00:00.000Z';
+    sql.nextRows = [
+      {
+        id: 'm2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+        deleted_at: deletedAtIso,
+      },
+    ];
+    const mappedIso = await store.getById('m2');
+    expect(mappedIso?.deletedAt?.getTime()).toBe(Date.parse(deletedAtIso));
+    expect(mappedIso?.deletedBy).toBeNull();
+  });
+
   it('deleteById issues one CTE query for receipts, invoices, and rows', async () => {
     const sql = new MockSql();
     sql.nextRows = [

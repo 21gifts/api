@@ -2678,6 +2678,23 @@ describe('GET /messages/:id/photo', () => {
     expect(await res.json()).toEqual({ error: 'Photo not found' });
   });
 
+  it('returns 404 when a live text-only note has no photo bytes', async () => {
+    const store = new InMemoryMessageStore();
+    const id = '00000000-0000-4000-8000-0000000000a1';
+    await store.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'note',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), store).request(`/messages/${id}/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 404 for a non-UUID id without calling the store', async () => {
     const getPhoto = vi.fn(async () => {
       throw new Error('boom');
