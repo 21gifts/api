@@ -127,6 +127,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     create: boom,
     getPhoto: boom,
     deleteById: boom,
+    markDeleted: boom,
     getById: boom,
     getByEventId: boom,
     claimUnsigned: boom,
@@ -2055,6 +2056,7 @@ describe('POST /messages/:id/invoice', () => {
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
       deleteById: (id) => base.deleteById(id),
+      markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       getByEventId: (id) => base.getByEventId(id),
       claimUnsigned: (...args) => base.claimUnsigned(...args),
       claimUnpublished: (...args) => base.claimUnpublished(...args),
@@ -2676,6 +2678,23 @@ describe('GET /messages/:id/photo', () => {
     expect(await res.json()).toEqual({ error: 'Photo not found' });
   });
 
+  it('returns 404 when a live text-only note has no photo bytes', async () => {
+    const store = new InMemoryMessageStore();
+    const id = '00000000-0000-4000-8000-0000000000a1';
+    await store.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'note',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), store).request(`/messages/${id}/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 404 for a non-UUID id without calling the store', async () => {
     const getPhoto = vi.fn(async () => {
       throw new Error('boom');
@@ -3235,5 +3254,226 @@ describe('forum video', () => {
         process.env['MEDIA_DIR'] = prev;
       }
     }
+  });
+});
+
+describe('DELETE /messages/:id', () => {
+  const NOTE_ID = '11111111-1111-4111-8111-111111111111';
+
+  async function staffStore(
+    role: 'founder' | 'moderator',
+  ): Promise<{ auth: InMemoryAuthStore; messages: InMemoryMessageStore }> {
+    const auth = await namedStore('Ada');
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...account, role });
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    return { auth, messages };
+  }
+
+  it('returns 401 without a bearer', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 for basis including the author', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'mine',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 403 for verified', async () => {
+    const auth = await namedStore('Ada');
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...account, role: 'verified' });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'mine',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const res = await mount(auth, messages).request('/messages/not-a-uuid', {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the note is missing', async () => {
+    const { auth } = await staffStore('founder');
+    const res = await mount(auth, new InMemoryMessageStore()).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 204 for founder and logs messages.deleted without text', async () => {
+    const { auth, messages } = await staffStore('founder');
+    warn.mockClear();
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    const events = parsedEvents(warn);
+    const deleted = events.find((e) => e['event'] === 'messages.deleted');
+    expect(deleted).toMatchObject({
+      messageId: NOTE_ID,
+      accountId: 'acc',
+      role: 'founder',
+    });
+    expect(JSON.stringify(deleted)).not.toContain('hide me');
+    const row = await messages.getById(NOTE_ID);
+    expect(row?.deletedAt).not.toBeNull();
+    expect(await messages.getPhoto(NOTE_ID)).not.toBeNull();
+  });
+
+  it('returns 204 for moderator', async () => {
+    const { auth, messages } = await staffStore('moderator');
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it('returns 204 when already tagged', async () => {
+    const { auth, messages } = await staffStore('founder');
+    expect(await messages.markDeleted(NOTE_ID, new Date(now() - 1_000), 'acc')).toBe(true);
+    const first = await messages.getById(NOTE_ID);
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    const again = await messages.getById(NOTE_ID);
+    expect(again?.deletedAt?.getTime()).toBe(first?.deletedAt?.getTime());
+  });
+
+  it('returns 503 and logs messages.delete.failed when markDeleted throws', async () => {
+    const { auth } = await staffStore('founder');
+    warn.mockClear();
+    const res = await mount(auth, throwingStore()).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.delete.failed')).toBe(true);
+  });
+
+  it('hides the note from public reads, list, invoice, and inReplyTo', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const mp4Bytes = new Uint8Array(32);
+    mp4Bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const videoId = '22222222-2222-4222-8222-222222222222';
+    await messages.create(
+      {
+        id: videoId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4Bytes },
+    );
+    const app = mount(auth, messages);
+    const live = await app.request(`/messages/${NOTE_ID}`);
+    expect(live.status).toBe(200);
+    const liveBody = (await live.json()) as Record<string, unknown>;
+    expect(liveBody).not.toHaveProperty('deletedAt');
+    expect(liveBody).not.toHaveProperty('deletedBy');
+
+    expect(
+      (await app.request(`/messages/${NOTE_ID}`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(204);
+    expect((await app.request(`/messages/${NOTE_ID}`)).status).toBe(404);
+    expect((await app.request(`/messages/${NOTE_ID}/photo`)).status).toBe(404);
+    expect((await app.request(`/messages/${NOTE_ID}/replies`, { headers: AUTH })).status).toBe(404);
+    const list = await app.request('/messages', { headers: AUTH });
+    expect(list.status).toBe(200);
+    expect(
+      ((await list.json()) as { messages: Array<{ id: string }> }).messages.map((row) => row.id),
+    ).not.toContain(NOTE_ID);
+
+    expect(
+      (
+        await app.request(`/messages/${NOTE_ID}/invoice`, {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ text: 'reply', inReplyTo: NOTE_ID }),
+        })
+      ).status,
+    ).toBe(404);
+
+    expect(
+      (await app.request(`/messages/${videoId}`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(204);
+    expect((await app.request(`/messages/${videoId}/video.mp4`)).status).toBe(404);
+    expect(await messages.getById(videoId)).toBeDefined();
   });
 });

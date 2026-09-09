@@ -88,6 +88,16 @@ export interface MessageRow {
   nostrPublishEpoch: string | null;
   /** Sign/publish attempts in the current epoch. */
   nostrAttempts: number;
+  /**
+   * Soft-delete stamp when staff hid this note (or a parent hide tagged it).
+   * `null` while the row is live. Default `null` on create.
+   */
+  deletedAt: Date | null;
+  /**
+   * Account id of the staff member who stamped `deletedAt`, or `null` while
+   * live. Default `null` on create. Not a foreign key.
+   */
+  deletedBy: string | null;
 }
 
 /**
@@ -237,6 +247,8 @@ export function unsignedNostrDefaults(): Pick<
   | 'nostrAttempts'
   | 'parentId'
   | 'authorPubkey'
+  | 'deletedAt'
+  | 'deletedBy'
 > {
   return {
     eventId: null,
@@ -249,6 +261,8 @@ export function unsignedNostrDefaults(): Pick<
     nostrAttempts: 0,
     parentId: null,
     authorPubkey: null,
+    deletedAt: null,
+    deletedBy: null,
   };
 }
 

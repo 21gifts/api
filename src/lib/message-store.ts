@@ -118,6 +118,19 @@ export interface MessageStore {
    */
   deleteById(id: string): Promise<boolean>;
 
+  /**
+   * Soft-hide a note and its direct replies by stamping `deletedAt` /
+   * `deletedBy`. Does not remove rows, media, invoices, or zap receipts.
+   *
+   * @param id - Message id.
+   * @param at - Hide timestamp (cloned onto newly tagged rows).
+   * @param byAccountId - Staff account id recorded as `deletedBy`.
+   * @returns `false` when no row has that id; `true` when the id exists
+   *   (already tagged or newly tagged). An already-tagged target keeps its
+   *   original stamps; untagged direct replies get this call's `at`/`by`.
+   */
+  markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean>;
+
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
@@ -379,6 +392,8 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   FOREIGN KEY (profile_message_id) REFERENCES message (id) ON DELETE SET NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_profile_message_uidx
   ON account (profile_message_id) WHERE profile_message_id IS NOT NULL`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid`,
 ];
 
 /**
@@ -400,6 +415,7 @@ function copyPhoto(photo: ForumPhoto): ForumPhoto {
 
 /** Copy a row so callers cannot mutate store internals. */
 function copyRow(row: MessageRow): MessageRow {
+  const deletedAt = row.deletedAt ?? null;
   return {
     ...row,
     hasPhoto: row.hasPhoto === true,
@@ -409,6 +425,8 @@ function copyRow(row: MessageRow): MessageRow {
     authorPubkey: row.authorPubkey ?? null,
     accountId: row.accountId ?? null,
     createdAt: new Date(row.createdAt.getTime()),
+    deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
+    deletedBy: row.deletedBy ?? null,
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
   };
 }
@@ -462,7 +480,7 @@ export class InMemoryMessageStore implements MessageStore {
    * photo or video bytes (video lives on disk under `MEDIA_DIR`).
    */
   listLatest(limit: number): Promise<MessageListRow[]> {
-    const topLevel = this.#rows.filter((row) => row.parentId === null);
+    const topLevel = this.#rows.filter((row) => row.parentId === null && row.deletedAt === null);
     const sorted = [...topLevel].sort((a, b) => {
       const byTime = b.createdAt.getTime() - a.createdAt.getTime();
       if (byTime !== 0) {
@@ -476,7 +494,9 @@ export class InMemoryMessageStore implements MessageStore {
         copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
         copy.hasVideo = row.hasVideo === true;
         copy.videoContentType = row.videoContentType ?? null;
-        const replyCount = this.#rows.filter((child) => child.parentId === row.id).length;
+        const replyCount = this.#rows.filter(
+          (child) => child.parentId === row.id && child.deletedAt === null,
+        ).length;
         return { ...copy, replyCount };
       }),
     );
@@ -491,7 +511,7 @@ export class InMemoryMessageStore implements MessageStore {
    */
   listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
     const replies = this.#rows
-      .filter((row) => row.parentId === parentId)
+      .filter((row) => row.parentId === parentId && row.deletedAt === null)
       .sort((a, b) => {
         const byTime = a.createdAt.getTime() - b.createdAt.getTime();
         if (byTime !== 0) {
@@ -519,7 +539,7 @@ export class InMemoryMessageStore implements MessageStore {
    */
   listPublishedEventIds(limit: number): Promise<string[]> {
     const ids = this.#rows
-      .filter((row) => row.eventId !== null && row.parentId === null)
+      .filter((row) => row.eventId !== null && row.parentId === null && row.deletedAt === null)
       .sort((a, b) => {
         const byTime = b.createdAt.getTime() - a.createdAt.getTime();
         return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
@@ -591,6 +611,9 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(
       this.#claim(
         (row) => {
+          if (row.deletedAt !== null) {
+            return false;
+          }
           if (row.eventId !== null || row.nostrPublishState !== 'pending') {
             return false;
           }
@@ -617,7 +640,8 @@ export class InMemoryMessageStore implements MessageStore {
   claimUnpublished(limit: number, nowMs: number, leaseMs: number): Promise<MessageRow[]> {
     return Promise.resolve(
       this.#claim(
-        (row) => row.eventId !== null && row.nostrPublishState === 'pending',
+        (row) =>
+          row.deletedAt === null && row.eventId !== null && row.nostrPublishState === 'pending',
         limit,
         nowMs,
         leaseMs,
@@ -629,6 +653,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.deletedAt === null &&
           row.parentId === null &&
           row.eventId !== null &&
           row.nostrPublishState === 'pending' &&
@@ -662,6 +687,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.deletedAt === null &&
           row.parentId === null &&
           row.eventId !== null &&
           row.hasPhoto &&
@@ -684,6 +710,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.deletedAt === null &&
           row.parentId === null &&
           row.eventId !== null &&
           row.hasVideo === true &&
@@ -707,6 +734,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows = this.#rows
       .filter(
         (row) =>
+          row.deletedAt === null &&
           row.parentId === null &&
           row.eventId !== null &&
           row.sats === 0 &&
@@ -848,6 +876,25 @@ export class InMemoryMessageStore implements MessageStore {
     return true;
   }
 
+  markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean> {
+    const target = this.#rows.find((item) => item.id === id);
+    if (target === undefined) {
+      return Promise.resolve(false);
+    }
+    if (target.deletedAt === null) {
+      target.deletedAt = new Date(at.getTime());
+      target.deletedBy = byAccountId;
+    }
+    for (const child of this.#rows) {
+      if (child.parentId !== id || child.deletedAt !== null) {
+        continue;
+      }
+      child.deletedAt = new Date(at.getTime());
+      child.deletedBy = byAccountId;
+    }
+    return Promise.resolve(true);
+  }
+
   #claim(
     predicate: (row: MessageRow) => boolean,
     limit: number,
@@ -891,6 +938,8 @@ interface MessageSqlRow {
   nostr_first_attempt_at?: Date | string | null;
   nostr_publish_epoch?: string | null;
   nostr_attempts?: number | null;
+  deleted_at?: Date | string | null;
+  deleted_by?: string | null;
   reply_count?: string | number | null;
 }
 
@@ -945,6 +994,13 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
     nostrPublishEpoch: row.nostr_publish_epoch ?? defaults.nostrPublishEpoch,
     nostrAttempts: row.nostr_attempts ?? defaults.nostrAttempts,
+    deletedAt:
+      row.deleted_at === null || row.deleted_at === undefined
+        ? null
+        : row.deleted_at instanceof Date
+          ? row.deleted_at
+          : new Date(row.deleted_at),
+    deletedBy: row.deleted_by ?? null,
   };
 }
 
@@ -962,7 +1018,8 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               video_content_type,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats,
-              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts`;
+              nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
+              deleted_at, deleted_by`;
 
 /**
  * Durable {@link MessageStore} backed by Postgres.
@@ -990,9 +1047,10 @@ export class PostgresMessageStore implements MessageStore {
   async listLatest(limit: number): Promise<MessageListRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS},
-              (SELECT COUNT(*)::int FROM message child WHERE child.parent_id = message.id) AS reply_count
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL) AS reply_count
        FROM message
-       WHERE parent_id IS NULL
+       WHERE parent_id IS NULL AND deleted_at IS NULL
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
       [limit],
@@ -1014,7 +1072,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id = $1
+       WHERE parent_id = $1 AND deleted_at IS NULL
        ORDER BY created_at ASC, id ASC
        LIMIT $2`,
       [parentId, limit],
@@ -1031,7 +1089,7 @@ export class PostgresMessageStore implements MessageStore {
   async listPublishedEventIds(limit: number): Promise<string[]> {
     const rows = await this.#sql.query<{ event_id: string }>(
       `SELECT event_id FROM message
-       WHERE event_id IS NOT NULL AND parent_id IS NULL
+       WHERE event_id IS NOT NULL AND parent_id IS NULL AND deleted_at IS NULL
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
       [limit],
@@ -1132,6 +1190,22 @@ export class PostgresMessageStore implements MessageStore {
     return true;
   }
 
+  async markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH target AS (
+         SELECT id FROM message WHERE id = $1
+       ), tagged AS (
+         UPDATE message SET deleted_at = $2, deleted_by = $3
+         WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
+           AND EXISTS (SELECT 1 FROM target)
+         RETURNING id
+       )
+       SELECT id FROM target`,
+      [id, at, byAccountId],
+    );
+    return rows[0] !== undefined;
+  }
+
   async getById(id: string): Promise<MessageRow | undefined> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
@@ -1160,6 +1234,7 @@ export class PostgresMessageStore implements MessageStore {
          SELECT m.id FROM message m
          WHERE m.event_id IS NULL AND m.nostr_publish_state = 'pending'
            AND m.account_id IS NOT NULL
+           AND m.deleted_at IS NULL
            AND (m.claimed_until IS NULL OR m.claimed_until <= $2)
            AND (
              m.parent_id IS NULL
@@ -1185,6 +1260,7 @@ export class PostgresMessageStore implements MessageStore {
        WHERE id IN (
          SELECT id FROM message
          WHERE event_id IS NOT NULL AND nostr_publish_state = 'pending'
+           AND deleted_at IS NULL
            AND (claimed_until IS NULL OR claimed_until <= $2)
          ORDER BY created_at ASC, id ASC
          LIMIT $3
@@ -1201,6 +1277,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
        WHERE parent_id IS NULL
+         AND deleted_at IS NULL
          AND event_id IS NOT NULL AND nostr_publish_state = 'pending'
          AND (
            nostr_event IS NULL
@@ -1236,7 +1313,8 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id IS NULL AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND deleted_at IS NULL
+         AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (video_content_type IS NULL OR video_content_type = '')
@@ -1255,7 +1333,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id IS NULL AND event_id IS NOT NULL
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND event_id IS NOT NULL
          AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
          AND sats = 0
          AND nostr_publish_state = 'published'
@@ -1275,7 +1353,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id IS NULL AND event_id IS NOT NULL AND sats = 0
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND event_id IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (

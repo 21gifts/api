@@ -89,3 +89,7 @@ ALTER TABLE account ADD CONSTRAINT account_profile_message_id_fkey
   FOREIGN KEY (profile_message_id) REFERENCES message (id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS account_profile_message_uidx
   ON account (profile_message_id) WHERE profile_message_id IS NOT NULL;
+
+-- Soft-hide stamps (HTTP DELETE /messages/:id). No FK on deleted_by.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid;
