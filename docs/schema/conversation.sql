@@ -47,3 +47,7 @@ CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
+  ON conversation_message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
