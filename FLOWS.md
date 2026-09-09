@@ -94,13 +94,14 @@ any pending verification (`SPEC.md`).
 
 ### Identity copy — **Shipped** (name) + **Sketch** (photo / story)
 
-Receiver name is stored on the account (`POST /me/name`). The first persisted
-non-empty name also creates exactly one top-level profile forum note; rename
-does not create a second note or change its text. Other members read live
-identity plus that note via `GET /members/:accountId` (Bearer; rules required).
-Photo and story beyond that note stay custodial `kind:0` metadata signed
-server-side (`about` is the profile-note text when present, else `21.gifts`).
-**Do not invent** `POST /me/profile`.
+Receiver name is stored on the account (`POST /me/name`). The profile forum
+note is created when a non-blank name and a non-blank Lightning Address are
+present (`POST /me/name` no-ops without LN; `POST /me/lightning-address`
+creates it). Rename does not create a second note or change its text. Other
+members read live identity plus that note via `GET /members/:accountId`
+(Bearer; rules required). Photo and story beyond that note stay custodial
+`kind:0` metadata signed server-side (`about` is the profile-note text when
+present, else `21.gifts`). **Do not invent** `POST /me/profile`.
 
 ### View-key link — **Shipped**
 
@@ -156,8 +157,8 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name; Lightning Address is not required to post — missing
-requirements are **409** `missing_requirements`);
+(requires rules + name + Lightning Address — missing requirements are
+**409** `missing_requirements`);
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). The shipped UI

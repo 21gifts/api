@@ -459,7 +459,7 @@ describe('POST /me/name', () => {
     expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
   });
 
-  it('trims, stores, and returns the name', async () => {
+  it('trims, stores, and returns the name without a profile note when LN is missing', async () => {
     const store = await seededStore();
     const messages = new InMemoryMessageStore();
     const res = await mount(store, { messages }).request('/me/name', {
@@ -474,17 +474,31 @@ describe('POST /me/name', () => {
     expect(body).not.toHaveProperty('profileMessageId');
     const stored = await store.getAccount('acc');
     expect(stored?.name).toBe('Ada');
-    expect(typeof stored?.profileMessageId).toBe('string');
-    const note = await messages.getById(stored!.profileMessageId!);
-    expect(note?.text).toBe('Ada');
-    expect(note?.parentId).toBeNull();
+    expect(stored?.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'account.name.set' && e['accountId'] === 'acc'),
     ).toBe(true);
   });
 
-  it('enqueues forum pushes when a push store is configured', async () => {
-    const store = await seededStore();
+  it('creates a profile note when setting a name with Lightning Address already linked', async () => {
+    const store = await seededStore({ lightningAddress: ADDRESS });
+    const messages = new InMemoryMessageStore();
+    const res = await mount(store, { messages }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const stored = await store.getAccount('acc');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    const note = await messages.getById(stored!.profileMessageId!);
+    expect(note?.text).toBe('Ada');
+    expect(note?.parentId).toBeNull();
+  });
+
+  it('enqueues forum pushes when a push store is configured and LN is linked', async () => {
+    const store = await seededStore({ lightningAddress: ADDRESS });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
@@ -505,7 +519,7 @@ describe('POST /me/name', () => {
   });
 
   it('does not create a second profile note or change its text on rename', async () => {
-    const store = await seededStore();
+    const store = await seededStore({ lightningAddress: ADDRESS });
     const messages = new InMemoryMessageStore();
     const first = await mount(store, { messages }).request('/me/name', {
       method: 'POST',
@@ -591,6 +605,50 @@ describe('POST /me/lightning-address', () => {
           e['address'] === ADDRESS,
       ),
     ).toBe(true);
+  });
+
+  it('creates a profile note when linking Lightning Address after a name is set', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    const named = await mount(store, { messages }).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(named.status).toBe(200);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+    const res = await mount(store, { messages, pushStore, fetchImpl: happyFetch() }).request(
+      '/me/lightning-address',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ address: ADDRESS }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const stored = await store.getAccount('acc');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    const note = await messages.getById(stored!.profileMessageId!);
+    expect(note?.text).toBe('Ada');
+    expect(note?.parentId).toBeNull();
+  });
+
+  it('does not create a profile note when linking Lightning Address without a name', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore();
+    const res = await mount(store, { messages, fetchImpl: happyFetch() }).request(
+      '/me/lightning-address',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ address: ADDRESS }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
   it('returns 409 when the Lightning Address belongs to another account', async () => {

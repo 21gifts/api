@@ -27,7 +27,7 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (profile notes on first name). */
+  /** Forum persistence (profile notes when name + Lightning Address are set). */
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
@@ -296,11 +296,23 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Lightning Address is already in use' }, 409);
       }
       await deps.store.deleteVerification(current.id);
+      await ensureProfileMessage({
+        auth: deps.store,
+        messages: deps.messages,
+        account: stored,
+        now: deps.now,
+        ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+      });
+      const live = await deps.store.getAccount(current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (live === null || live === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       logEvent('account.lightning_address.linked', {
         accountId: account.id,
         address,
       });
-      return c.json(serializeOwnerAccount(stored), 200);
+      return c.json(serializeOwnerAccount(live), 200);
     })
     .delete('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
