@@ -364,6 +364,8 @@ async function indexInboundForumReplies(
           nostrFirstAttemptAt: null,
           nostrPublishEpoch: null,
           nostrAttempts: 0,
+          deletedAt: null,
+          deletedBy: null,
         });
       } catch {
         logEvent('nostr.reply.inbound.failed', { eventId: event.id });
