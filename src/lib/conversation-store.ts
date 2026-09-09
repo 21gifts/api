@@ -170,15 +170,17 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
      END IF;
 
      FOR repair_row IN
-       SELECT id, nostr_event #>> '{}' AS unwrapped_event
+       SELECT id
        FROM conversation_message
        WHERE nostr_event IS NOT NULL
          AND jsonb_typeof(nostr_event) = 'string'
      LOOP
        BEGIN
          UPDATE conversation_message
-         SET nostr_event = repair_row.unwrapped_event::jsonb
-         WHERE id = repair_row.id;
+         SET nostr_event = (nostr_event #>> '{}')::jsonb
+         WHERE id = repair_row.id
+           AND nostr_event IS NOT NULL
+           AND jsonb_typeof(nostr_event) = 'string';
        EXCEPTION WHEN others THEN
          RAISE WARNING 'Could not unwrap nostr_event for conversation_message id %',
            repair_row.id;

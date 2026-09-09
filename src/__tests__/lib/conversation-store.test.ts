@@ -85,6 +85,13 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN others');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
+      "SET nostr_event = (nostr_event #>> '{}')::jsonb",
+    );
+    expect(
+      CONVERSATION_SCHEMA_SQL.at(-1)?.match(/jsonb_typeof\(nostr_event\) = 'string'/g),
+    ).toHaveLength(2);
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
 

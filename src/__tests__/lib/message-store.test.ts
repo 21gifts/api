@@ -120,6 +120,11 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN others');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("SET nostr_event = (nostr_event #>> '{}')::jsonb");
+    expect(
+      MESSAGE_SCHEMA_SQL.at(-1)?.match(/jsonb_typeof\(nostr_event\) = 'string'/g),
+    ).toHaveLength(2);
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
 
