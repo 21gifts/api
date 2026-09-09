@@ -629,6 +629,37 @@ describe('runNostrWorkerTick', () => {
     expect(JSON.parse(String(kind0?.event['content'])).about).toBe('Ada');
   });
 
+  it('queries kind:9735 zap receipts before publish', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    const querier = new RecordingQuerier();
+    const querySpy = vi.spyOn(querier, 'query');
+    const publishSpy = vi.spyOn(publisher, 'publish');
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        querier,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    expect(publishSpy.mock.calls.length).toBeGreaterThan(0);
+    const zapQueryIndex = querySpy.mock.calls.findIndex((call) => {
+      const filter = call[0] as { kinds?: number[] };
+      return Array.isArray(filter.kinds) && filter.kinds.includes(9735);
+    });
+    expect(zapQueryIndex).toBeGreaterThanOrEqual(0);
+    const zapOrder = querySpy.mock.invocationCallOrder[zapQueryIndex];
+    const publishOrder = publishSpy.mock.invocationCallOrder[0];
+    expect(zapOrder).toBeDefined();
+    expect(publishOrder).toBeDefined();
+    expect(zapOrder!).toBeLessThan(publishOrder!);
+  });
+
   it('publishes kind:10002 with the write-set relays', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();

@@ -7,7 +7,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { messagesRoutes } from '@/routes/messages';
+import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
@@ -49,6 +49,7 @@ const JPEG_B64 = Buffer.from(JPEG_BYTES).toString('base64');
 function mount(
   authStore: InMemoryAuthStore,
   store: MessageStore = new InMemoryMessageStore(),
+  routeDeps: Partial<MessagesRouteDeps> = {},
 ): Hono {
   return new Hono().route(
     '/messages',
@@ -58,6 +59,7 @@ function mount(
       now,
       postLimiter: new PostRateLimiter(),
       invoiceLimiter: new InvoiceRateLimiter(),
+      ...routeDeps,
     }),
   );
 }
@@ -2417,6 +2419,148 @@ describe('GET /messages/:id', () => {
     const body = (await res.json()) as { payable: boolean; role: string };
     expect(body.payable).toBe(false);
     expect(body.role).toBe('basis');
+  });
+
+  it('returns 400 when sinceSats is not a non-negative integer', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore).request(
+      '/messages/2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b?sinceSats=abc',
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected sinceSats to be a non-negative integer',
+    });
+  });
+
+  it('returns immediately when sats already exceed sinceSats', async () => {
+    const noteId = '3c3c3c3c-3c3c-43c3-83c3-3c3c3c3c3c3c';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.addSats(noteId, 21);
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        throw new Error('waitSatsSleep must not be called');
+      },
+    }).request(`/messages/${noteId}?sinceSats=20`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { sats: number }).sats).toBe(21);
+  });
+
+  it('waits until sats increase past sinceSats', async () => {
+    const noteId = '4d4d4d4d-4d4d-44d4-84d4-4d4d4d4d4d4d';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        await messageStore.addSats(noteId, 7);
+      },
+    }).request(`/messages/${noteId}?sinceSats=0`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { sats: number }).sats).toBe(7);
+  });
+
+  it('returns 200 with unchanged sats when the sinceSats wait times out', async () => {
+    const noteId = '5e5e5e5e-5e5e-45e5-85e5-5e5e5e5e5e5e';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsTimeoutMs: 0,
+    }).request(`/messages/${noteId}?sinceSats=0`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { sats: number }).sats).toBe(0);
+  });
+
+  it('awaits defaultWaitSatsSleep before returning on sinceSats timeout', async () => {
+    const noteId = '70707070-7070-4707-8707-707070707070';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const T = 1_700_000_000_000;
+    let nowCalls = 0;
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsTimeoutMs: 30,
+      waitSatsPollMs: 5,
+      now: () => {
+        nowCalls += 1;
+        return nowCalls <= 2 ? T : T + 30;
+      },
+    }).request(`/messages/${noteId}?sinceSats=0`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { sats: number }).sats).toBe(0);
+  });
+
+  it('returns 404 when the note disappears while waiting for sinceSats', async () => {
+    const noteId = '6f6f6f6f-6f6f-46f6-86f6-6f6f6f6f6f6f';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        await messageStore.deleteById(noteId);
+      },
+      waitSatsTimeoutMs: 60_000,
+    }).request(`/messages/${noteId}?sinceSats=0`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
   });
 });
 

@@ -171,6 +171,12 @@ export interface MessagesRouteDeps {
   invoiceLimiter?: InvoiceRateLimiter;
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
+  /** Sleep between `sinceSats` polls (tests inject). */
+  waitSatsSleep?: (ms: number) => Promise<void>;
+  /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
+  waitSatsTimeoutMs?: number;
+  /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
+  waitSatsPollMs?: number;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -195,6 +201,23 @@ function isStaffRole(role: AccountRole): boolean {
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
+export const WAIT_SATS_TIMEOUT_MS = 25_000;
+
+/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
+export const WAIT_SATS_POLL_MS = 250;
+
+/**
+ * Default sleep between `sinceSats` polls when no test inject is provided.
+ *
+ * @param ms - Milliseconds to wait.
+ */
+export async function defaultWaitSatsSleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 /**
  * Public photo bytes for Nostr clients. Same handler for `/photo` and
@@ -631,24 +654,46 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const sinceSatsRaw = c.req.query('sinceSats');
+      let sinceSats: number | undefined;
+      if (sinceSatsRaw !== undefined) {
+        if (!/^\d+$/.test(sinceSatsRaw)) {
+          return c.json({ error: 'Expected sinceSats to be a non-negative integer' }, 400);
+        }
+        sinceSats = Number(sinceSatsRaw);
+      }
+      const started = deps.now();
+      const timeoutMs = deps.waitSatsTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
+      const pollMs = deps.waitSatsPollMs ?? WAIT_SATS_POLL_MS;
+      const sleep = deps.waitSatsSleep ?? defaultWaitSatsSleep;
       try {
-        const row = await deps.store.getById(id);
-        if (row === undefined || row.deletedAt !== null) {
-          return c.json({ error: 'Not found' }, 404);
+        for (;;) {
+          const row = await deps.store.getById(id);
+          if (row === undefined || row.deletedAt !== null) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (
+            sinceSats !== undefined &&
+            row.sats <= sinceSats &&
+            deps.now() - started < timeoutMs
+          ) {
+            await sleep(pollMs);
+            continue;
+          }
+          const author =
+            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+          const payable =
+            row.parentId === null &&
+            row.eventId !== null &&
+            author !== undefined &&
+            author.lightningAddress !== null;
+          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          return c.json(serializeMessage(kept, payable, role), 200);
         }
-        const author =
-          row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-        const payable =
-          row.parentId === null &&
-          row.eventId !== null &&
-          author !== undefined &&
-          author.lightningAddress !== null;
-        const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        const kept = await dropMissingVideoRow(deps.store, row);
-        if (kept === null) {
-          return c.json({ error: 'Not found' }, 404);
-        }
-        return c.json(serializeMessage(kept, payable, role), 200);
       } catch {
         logEvent('messages.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

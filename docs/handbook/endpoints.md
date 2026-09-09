@@ -261,9 +261,9 @@
 
 ## Endpoint: GET /messages/:id
 
-- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`, `deletedAt`, or `deletedBy`. Photo/video bytes are never included. Soft-hidden rows (`deletedAt` set) are 404 before any missing-video cleanup. A live `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404.
-- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID, the row is missing, soft-hidden, or a missing-file video row was dropped; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
-- **Used by:** App deep links / share URLs for one forum note.
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`, `deletedAt`, or `deletedBy`. Photo/video bytes are never included. Soft-hidden rows (`deletedAt` set) are 404 before any missing-video cleanup. A live `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404. Optional query `sinceSats` (non-negative integer) long-polls until `sats` is strictly greater than that value (pay sheet / Lightning zap confirmation); timeout still returns 200 with the current body.
+- **Errors:** 400 `{ error: 'Expected sinceSats to be a non-negative integer' }` when `sinceSats` is present but not a non-negative integer string; 404 `{ error: 'Not found' }` when `:id` is not a UUID, the row is missing, soft-hidden, or a missing-file video row was dropped; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`). Timeout with unchanged sats remains 200.
+- **Used by:** App deep links / share URLs for one forum note; pay sheet / Lightning zap confirmation via `?sinceSats=`.
 - **Auth:** none (public).
 
 ## Endpoint: GET /messages/:id/replies
