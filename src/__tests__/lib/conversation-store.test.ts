@@ -85,12 +85,15 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain(
+      'EXCEPTION WHEN invalid_text_representation',
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
       "SET nostr_event = (nostr_event #>> '{}')::jsonb",
     );
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
-      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'/,
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string';/,
     );
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });

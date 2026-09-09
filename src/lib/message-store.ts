@@ -434,7 +434,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
          WHERE id = repair_row.id
            AND nostr_event IS NOT NULL
            AND jsonb_typeof(nostr_event) = 'string';
-       EXCEPTION WHEN invalid_text_representation THEN
+       EXCEPTION WHEN data_exception THEN
          RAISE WARNING 'Could not unwrap nostr_event for message id %', repair_row.id;
        END;
      END LOOP;
