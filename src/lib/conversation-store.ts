@@ -155,6 +155,9 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
+  ON conversation_message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -181,7 +184,7 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
          WHERE id = repair_row.id
            AND nostr_event IS NOT NULL
            AND jsonb_typeof(nostr_event) = 'string';
-       EXCEPTION WHEN others THEN
+       EXCEPTION WHEN invalid_text_representation THEN
          RAISE WARNING 'Could not unwrap nostr_event for conversation_message id %',
            repair_row.id;
        END;

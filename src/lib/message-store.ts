@@ -404,6 +404,9 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   ON account (profile_message_id) WHERE profile_message_id IS NOT NULL`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid`,
+  `CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
+  ON message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -431,7 +434,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
          WHERE id = repair_row.id
            AND nostr_event IS NOT NULL
            AND jsonb_typeof(nostr_event) = 'string';
-       EXCEPTION WHEN others THEN
+       EXCEPTION WHEN invalid_text_representation THEN
          RAISE WARNING 'Could not unwrap nostr_event for message id %', repair_row.id;
        END;
      END LOOP;

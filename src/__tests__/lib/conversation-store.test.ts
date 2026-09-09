@@ -74,7 +74,7 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(9);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(10);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/conversation_member_member_uidx/);
@@ -84,13 +84,14 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN others');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN invalid_text_representation');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
       "SET nostr_event = (nostr_event #>> '{}')::jsonb",
     );
-    expect(
-      CONVERSATION_SCHEMA_SQL.at(-1)?.match(/jsonb_typeof\(nostr_event\) = 'string'/g),
-    ).toHaveLength(2);
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'/,
+    );
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
