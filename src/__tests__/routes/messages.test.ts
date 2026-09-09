@@ -3254,15 +3254,18 @@ describe('DELETE /messages/:id', () => {
     }
     await auth.updateAccount({ ...account, role });
     const messages = new InMemoryMessageStore();
-    await messages.create({
-      id: NOTE_ID,
-      accountId: 'acc',
-      name: 'Ada',
-      text: 'hide me',
-      createdAt: new Date(now()),
-      hasPhoto: true,
-      ...unsignedNostrDefaults(),
-    }, { contentType: 'image/jpeg', bytes: JPEG_BYTES });
+    await messages.create(
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
     return { auth, messages };
   }
 

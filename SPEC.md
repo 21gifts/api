@@ -57,59 +57,59 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                                                    |
-| ------ | -------------------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                                                   |
-| GET    | `/info`                                      | none                     | Service identity                                                           |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                                       |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                                   |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                                              |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                                            |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                                          |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                                             |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                                            |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` + factual `missing`)                                      |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                            |
-| POST   | `/me/setup/skip`                             | Bearer                   | Skip name or Lightning Address wizard step                                 |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (profile note when name + LN are both set)        |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                                     |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                         |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve + NIP-57 mint probe                  |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address (clears LN skip)                                            |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                                     |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                          |
-| GET    | `/members/:accountId`                        | Bearer                   | Live member identity + profile note                                        |
-| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`); 409 if rules missing          |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing               |
-| GET    | `/messages/:id`                              | none                     | Public single-note JSON                                                    |
-| GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                                     |
-| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                            |
-| GET    | `/messages/:id/video.*`                      | none                     | Fetch forum video bytes (Range / 206)                                      |
-| DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)            |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                        |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                                     |
-| GET    | `/conversations`                             | Bearer                   | List visible private threads                                               |
-| POST   | `/conversations`                             | Bearer                   | Open thread from a forum note (`forumMessageId`)                           |
-| GET    | `/conversations/:id`                         | Bearer                   | Oldest-first messages in one thread                                        |
-| POST   | `/conversations/:id`                         | Bearer                   | Send `{ text }` in a private thread                                        |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                                           |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                                   |
-| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`) |
-| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                           |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                   |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator forum invoice attempts (`DEBUG_TOKEN`)                            |
-| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                              |
-| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`  | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)              |
-| GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                                    |
-| POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                                          |
-| DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                                          |
-| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                                        |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                                   |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                                        |
-| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a passkey-backed account                   |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay; passkey required)                     |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                           |
+| Method | Path                                         | Auth                       | Purpose                                                                    |
+| ------ | -------------------------------------------- | -------------------------- | -------------------------------------------------------------------------- |
+| GET    | `/healthz`                                   | none                       | Liveness                                                                   |
+| GET    | `/info`                                      | none                       | Service identity                                                           |
+| GET    | `/favicon.ico`                               | none                       | Brand mark (favicon)                                                       |
+| GET    | `/favicon.svg`                               | none                       | Brand mark (SVG favicon)                                                   |
+| GET    | `/apple-touch-icon.png`                      | none                       | Brand mark (Apple touch icon)                                              |
+| POST   | `/auth/passkey/register/begin`               | none                       | Issue WebAuthn creation options                                            |
+| POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                          |
+| POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                             |
+| POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                            |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing`)                                      |
+| GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                            |
+| POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                 |
+| POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)        |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                     |
+| POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                         |
+| POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                  |
+| DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                            |
+| POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                     |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                          |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note                                        |
+| GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ `replyCount`); 409 if rules missing          |
+| POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing               |
+| GET    | `/messages/:id`                              | none                       | Public single-note JSON                                                    |
+| GET    | `/messages/:id/replies`                      | Bearer                     | Oldest-first replies for a parent note                                     |
+| GET    | `/messages/:id/photo`                        | none                       | Fetch forum message photo bytes                                            |
+| GET    | `/messages/:id/video.*`                      | none                       | Fetch forum video bytes (Range / 206)                                      |
+| DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)              |
+| POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                        |
+| POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                     |
+| GET    | `/conversations`                             | Bearer                     | List visible private threads                                               |
+| POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                           |
+| GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages in one thread                                        |
+| POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                        |
+| GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                           |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                   |
+| POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`) |
+| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                           |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                   |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                            |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                              |
+| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)              |
+| GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                    |
+| POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                          |
+| DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                          |
+| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                        |
+| GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                   |
+| GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                        |
+| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                   |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey required)                     |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                           |
 
 ### `GET /healthz`
 
