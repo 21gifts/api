@@ -23,7 +23,7 @@ const base: Account = {
 describe('actionRequirements', () => {
   it('lists fields for each action', () => {
     expect(actionRequirements('forum.read')).toEqual(['rules']);
-    expect(actionRequirements('forum.post')).toEqual(['rules', 'name']);
+    expect(actionRequirements('forum.post')).toEqual(['rules', 'name', 'lightning-address']);
     expect(actionRequirements('contact.post')).toEqual(['rules', 'name']);
     expect(actionRequirements('forum.pay')).toEqual(['rules']);
   });
@@ -34,6 +34,7 @@ describe('requireAction', () => {
     const account: Account = {
       ...base,
       name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
       rulesAgreedAt: 2,
     };
     expect(requireAction(account, 'forum.post')).toEqual({ ok: true });
@@ -51,17 +52,29 @@ describe('requireAction', () => {
     expect(accountMissing(account)).toEqual(['name', 'lightning-address']);
     expect(requireAction(account, 'forum.post')).toEqual({
       ok: false,
-      missing: ['name'],
+      missing: ['name', 'lightning-address'],
     });
   });
 
-  it('orders 409 missing as rules then name', () => {
+  it('orders 409 missing as rules, name, then lightning-address', () => {
     const account: Account = { ...base };
     expect(requireAction(account, 'forum.post')).toEqual({
       ok: false,
-      missing: ['rules', 'name'],
+      missing: ['rules', 'name', 'lightning-address'],
     });
     expect(MISSING_REQUIREMENTS_ERROR).toBe('missing_requirements');
+  });
+
+  it('returns only lightning-address when name and rules are set', () => {
+    const account: Account = {
+      ...base,
+      name: 'Ada',
+      rulesAgreedAt: 2,
+    };
+    expect(requireAction(account, 'forum.post')).toEqual({
+      ok: false,
+      missing: ['lightning-address'],
+    });
   });
 
   it('forum.pay only requires rules for the payer', () => {

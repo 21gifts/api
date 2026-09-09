@@ -7,15 +7,16 @@ import { enqueueForumPushes } from '@/lib/push-worker';
 
 /**
  * Ensure the account has exactly one top-level profile forum note when a
- * non-blank display name is present.
+ * non-blank display name and a non-blank Lightning Address are present.
  *
- * First persisted non-empty name inserts one kind:1-pipeline message and
- * stores `profileMessageId`. Rename does not insert a second note and does
- * not change the note text. A successful insert updates the account here,
- * then re-reads the live row so a later writer’s `profileMessageId` wins and
- * this insert is deleted. A failed insert returns the input account (name
- * may still be persisted by the caller; worker backfill creates the missing
- * note).
+ * No-ops (returns the input account, no `messages.create`) when the name or
+ * Lightning Address is null/blank after trim. When both are set, the first
+ * insert creates one kind:1-pipeline message and stores `profileMessageId`.
+ * Rename does not insert a second note and does not change the note text. A
+ * successful insert updates the account here, then re-reads the live row so a
+ * later writer’s `profileMessageId` wins and this insert is deleted. A failed
+ * insert returns the input account (name may still be persisted by the
+ * caller; worker backfill creates the missing note once LN is linked).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional push.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).
@@ -29,6 +30,10 @@ export async function ensureProfileMessage(args: {
 }): Promise<Account> {
   const trimmed = args.account.name === null ? '' : args.account.name.trim();
   if (trimmed === '') {
+    return args.account;
+  }
+  const ln = args.account.lightningAddress === null ? '' : args.account.lightningAddress.trim();
+  if (ln === '') {
     return args.account;
   }
 

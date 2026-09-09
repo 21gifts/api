@@ -88,7 +88,12 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   if (existing === undefined) {
     throw new Error('expected account');
   }
-  await store.updateAccount({ ...existing, name, rulesAgreedAt: now() });
+  await store.updateAccount({
+    ...existing,
+    name,
+    rulesAgreedAt: now(),
+    lightningAddress: 'ada@walletofsatoshi.com',
+  });
   return store;
 }
 
@@ -383,7 +388,7 @@ describe('GET /messages', () => {
   });
 
   it('marks a signed note without a Lightning Address as not payable', async () => {
-    const authStore = await namedStore('Ada');
+    const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'nopay',
@@ -650,14 +655,21 @@ describe('POST /messages', () => {
   });
 
   it('returns 409 when posting without a name after rules and name skip', async () => {
-    const res = await mount(await rulesStore({ name: null, nameSkippedAt: now() })).request(
-      '/messages',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hi' }),
-      },
-    );
+    const store = await rulesStore({ name: null, nameSkippedAt: now() });
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
@@ -678,16 +690,18 @@ describe('POST /messages', () => {
     });
   });
 
-  it('posts without a Lightning Address and returns payable false', async () => {
-    const res = await mount(await namedStore('Ada')).request('/messages', {
+  it('returns 409 when posting with name and rules but no Lightning Address', async () => {
+    const store = await rulesStore({ name: 'Ada' });
+    const res = await mount(store).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { payable: boolean; name: string };
-    expect(body.payable).toBe(false);
-    expect(body.name).toBe('Ada');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['lightning-address'],
+    });
   });
 
   it('rejects invalid JSON', async () => {
@@ -1449,9 +1463,8 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns 400 when the author has no Lightning Address', async () => {
-    const kek = new Uint8Array(32).fill(2);
-    const authStore = await namedStore('Ada');
+  it('returns 400 no_author when the live author has no Lightning Address', async () => {
+    const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '33333333-3333-4333-8333-333333333333',
@@ -1469,7 +1482,7 @@ describe('POST /messages/:id/invoice', () => {
         store: messageStore,
         authStore,
         now,
-        nostrKek: kek,
+        nostrKek: new Uint8Array(32).fill(1),
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -1480,6 +1493,12 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.pr).toBeNull();
   });
 
   it('returns 404 for an unknown message', async () => {
@@ -2317,7 +2336,7 @@ describe('GET /messages/:id', () => {
   });
 
   it('includes the live author role for a 21gifts note', async () => {
-    const authStore = await namedStore('Ada');
+    const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '16161616-1616-4161-8161-161616161616',
@@ -2986,14 +3005,21 @@ describe('forum video', () => {
   it('rejects multipart when the account has no name', async () => {
     const form = new FormData();
     form.set('text', 'clip');
-    const res = await mount(await rulesStore({ name: null, nameSkippedAt: now() })).request(
-      '/messages',
-      {
-        method: 'POST',
-        headers: AUTH,
-        body: form,
-      },
-    );
+    const store = await rulesStore({ name: null, nameSkippedAt: now() });
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',

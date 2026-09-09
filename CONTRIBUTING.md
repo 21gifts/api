@@ -96,7 +96,7 @@ api/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── account-setup.ts # Next owner setup step + factual missing fields
 │   │       ├── requirements.ts # Action→fields gates (`requireAction`)
-│   │       ├── profile-message.ts # First-name profile forum note (`ensureProfileMessage`)
+│   │       ├── profile-message.ts # Profile forum note when name + LN set (`ensureProfileMessage`)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution

@@ -156,8 +156,8 @@ HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name; Lightning Address is not required to post — missing
-requirements are **409** `missing_requirements`);
+(requires rules + name + Lightning Address — missing requirements are
+**409** `missing_requirements`);
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). The shipped UI

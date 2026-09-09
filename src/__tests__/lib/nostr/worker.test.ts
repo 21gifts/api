@@ -587,7 +587,7 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
+      lightningAddress: 'bob@walletofsatoshi.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'c'.repeat(64),

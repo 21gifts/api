@@ -583,7 +583,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage`, forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
+- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `nostrKek` (required to sign the mint probe).
 - **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
 - **Used by:** `createApp`.
@@ -597,7 +597,7 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name; LN not required), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video; public `GET /:id` stays unauthenticated without `accountId`; Bearer `GET /:id/replies`; photo/video byte routes; invoice returns `{ pr, amountSats }` only for NIP-57 invoices (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues on top-level create.
+- **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name + Lightning Address), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, `replyCount`); missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video; public `GET /:id` stays unauthenticated without `accountId`; Bearer `GET /:id/replies`; photo/video byte routes; invoice returns `{ pr, amountSats }` only for NIP-57 invoices (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues on top-level create.
 - **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/invoice; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing rows; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public `GET /:id` never includes it.
 - **Used by:** `createApp`.
@@ -893,7 +893,7 @@
 
 - **Purpose:** Declare which account fields an action needs before it may proceed.
 - **Inputs:** `AccountAction` (`forum.read` \| `forum.post` \| `contact.post` \| `forum.pay`).
-- **Returns / side effects:** Readonly list in 409 order: `forum.read` → `rules`; `forum.post` / `contact.post` → `rules`, `name`; `forum.pay` → `rules`. No I/O.
+- **Returns / side effects:** Readonly list in 409 order: `forum.read` → `rules`; `forum.post` → `rules`, `name`, `lightning-address`; `contact.post` → `rules`, `name`; `forum.pay` → `rules`. No I/O.
 - **Used by:** `requireAction`.
 
 ## Function: requireAction
@@ -905,10 +905,10 @@
 
 ## Function: ensureProfileMessage
 
-- **Purpose:** Ensure a named account has exactly one top-level profile forum note. First non-blank name inserts one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails or a later write wins the live pointer. Optional `pushStore` enqueues forum pushes for a new note.
+- **Purpose:** Ensure a named account with a non-blank Lightning Address has exactly one top-level profile forum note. No-ops when name or Lightning Address is null/blank after trim. When both are set, the first insert creates one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails or a later write wins the live pointer. Optional `pushStore` enqueues forum pushes for a new note.
 - **Inputs:** `{ auth, messages, account, now, pushStore? }`.
 - **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure, a vanished row, or a later `profileMessageId` winner.
-- **Used by:** `meRoutes` (`POST /me/name`), `debugRoutes` provision, Nostr worker backfill.
+- **Used by:** `meRoutes` (`POST /me/name`, `POST /me/lightning-address`), `debugRoutes` provision, Nostr worker backfill.
 
 ## Function: serializeAccount
 

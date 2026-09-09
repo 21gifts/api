@@ -13,14 +13,14 @@ export const MISSING_REQUIREMENTS_ERROR = 'missing_requirements';
 export interface MissingRequirementsBody {
   /** Always {@link MISSING_REQUIREMENTS_ERROR}. */
   error: typeof MISSING_REQUIREMENTS_ERROR;
-  /** Non-empty list in action order: `rules`, then `name`. */
+  /** Non-empty list in action order (e.g. `rules`, `name`, `lightning-address`). */
   missing: AccountMissingField[];
 }
 
 /** Action → required fields. Order is the 409 `missing` order. */
 const ACTION_NEEDS: Record<AccountAction, readonly AccountMissingField[]> = {
   'forum.read': ['rules'],
-  'forum.post': ['rules', 'name'],
+  'forum.post': ['rules', 'name', 'lightning-address'],
   'contact.post': ['rules', 'name'],
   'forum.pay': ['rules'],
 };
