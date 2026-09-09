@@ -143,19 +143,20 @@ function reservedContent(
  * profile cannot win a same-second replaceable-event tie. Zap ingest
  * (`indexOpenZapReceipts`) runs at the **start** of each tick, before
  * resign/sign/publish, so receipt indexing is not delayed by relay publish
- * timeouts. It queries zap relays (space plus the public list, even when
- * `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 receipts and indexes validated
- * ones onto `sats`, even when publish is off. After sign/publish, each tick
- * also REQs kind:1 replies (`#e` = our note event ids) and persists inbound
- * Damus/member replies (even when publish is off). When a conversation store
- * is present, also signs/publishes NIP-17 wraps and REQs inbound kind:1059 /
- * kind:4 to member and platform pubkeys.
+ * timeouts. `nowMs` for sign/publish leases is sampled only after zap ingest
+ * returns, so an overlapping tick cannot reclaim with a later clock while this
+ * tick still signs/publishes under a stale lease time. It queries zap relays
+ * (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for
+ * kind:9735 receipts and indexes validated ones onto `sats`, even when publish
+ * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
+ * note event ids) and persists inbound Damus/member replies (even when publish
+ * is off). When a conversation store is present, also signs/publishes NIP-17
+ * wraps and REQs inbound kind:1059 / kind:4 to member and platform pubkeys.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
-  const nowMs = deps.now();
   const urls = resolveZapRelays(deps.env);
   await indexOpenZapReceipts({
     store: deps.messages,
@@ -168,6 +169,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
   });
+  const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
   await signConversationBatch(deps, nowMs);

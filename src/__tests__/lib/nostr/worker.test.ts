@@ -660,6 +660,37 @@ describe('runNostrWorkerTick', () => {
     expect(zapOrder!).toBeLessThan(publishOrder!);
   });
 
+  it('samples nowMs for sign after zap query returns', async () => {
+    const { auth, messages } = await seed();
+    const T0 = 1_700_000_000_000;
+    const T1 = 1_700_000_030_000;
+    let clock = T0;
+    const querier = new RecordingQuerier();
+    const innerQuery = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(9735)) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        clock = T1;
+      }
+      return innerQuery(filter, urls, timeoutMs);
+    };
+    const claimSpy = vi.spyOn(messages, 'claimUnsigned');
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => clock,
+        env: {},
+      }),
+    );
+    expect(claimSpy).toHaveBeenCalled();
+    expect(claimSpy.mock.calls[0]?.[1]).toBe(T1);
+  });
+
   it('publishes kind:10002 with the write-set relays', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
