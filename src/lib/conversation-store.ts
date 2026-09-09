@@ -155,6 +155,8 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL`,
+  `UPDATE conversation_message SET nostr_event = (nostr_event #>> '{}')::jsonb
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
 ];
 
 const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pubkey, c.created_at, c.last_message_at,
@@ -678,7 +680,7 @@ export class PostgresConversationStore implements ConversationStore {
           row.name,
           row.eventId,
           row.nostrPublishState,
-          row.nostrEvent === null ? null : JSON.stringify(row.nostrEvent),
+          row.nostrEvent,
           row.claimedUntil === null ? null : new Date(row.claimedUntil),
         ],
       );
@@ -751,7 +753,7 @@ export class PostgresConversationStore implements ConversationStore {
     try {
       const rows = await this.#sql.query<{ id: string }>(
         `UPDATE conversation_message SET event_id = $2, nostr_event = $3::jsonb WHERE id = $1 RETURNING id`,
-        [id, eventId, JSON.stringify(nostrEvent)],
+        [id, eventId, nostrEvent],
       );
       return rows[0] !== undefined;
       /* v8 ignore next 3 -- unique_violation on event_id */

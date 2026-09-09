@@ -74,13 +74,17 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(8);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(9);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/conversation_member_member_uidx/);
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toBe(
+      `UPDATE conversation_message SET nostr_event = (nostr_event #>> '{}')::jsonb
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+    );
   });
 });
 
@@ -612,8 +616,17 @@ describe('PostgresConversationStore', () => {
     const row = message({ claimedUntil: 5_000, nostrEvent: { kind: 1059 } });
     const created = await store.appendMessage(row);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation_message/);
+    expect(typeof sql.executes[0]?.params[9]).not.toBe('string');
+    expect(sql.executes[0]?.params[9]).toStrictEqual(row.nostrEvent);
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
+  });
+
+  it('appendMessage binds a null nostrEvent unchanged', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await store.appendMessage(message());
+    expect(sql.executes[0]?.params[9]).toBeNull();
   });
 
   it('appendMessage returns the existing row on event_id unique_violation', async () => {
@@ -660,9 +673,12 @@ describe('PostgresConversationStore', () => {
 
   it('updateSignedEvent returns false when no row matches', async () => {
     const sql = new MockSql();
+    const nostrEvent = { k: 1 };
     expect(
-      await new PostgresConversationStore(sql).updateSignedEvent('m', 'ab'.repeat(32), { k: 1 }),
+      await new PostgresConversationStore(sql).updateSignedEvent('m', 'ab'.repeat(32), nostrEvent),
     ).toBe(false);
+    expect(typeof sql.queries[0]?.params[2]).not.toBe('string');
+    expect(sql.queries[0]?.params[2]).toStrictEqual(nostrEvent);
   });
 
   it('updateSignedEvent returns false on unique_violation', async () => {
