@@ -213,7 +213,7 @@ export const WAIT_SATS_POLL_MS = 250;
  *
  * @param ms - Milliseconds to wait.
  */
-export async function defaultWaitSatsSleep(ms: number): Promise<void> {
+async function defaultWaitSatsSleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });

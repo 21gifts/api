@@ -609,13 +609,6 @@
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/DELETE/invoice; 403 on DELETE when not founder/moderator; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`.
 - **Used by:** `createApp`.
 
-## Function: defaultWaitSatsSleep
-
-- **Purpose:** Default sleep between `sinceSats` polls on `GET /messages/:id` when `MessagesRouteDeps.waitSatsSleep` is omitted.
-- **Inputs:** `ms` — milliseconds to wait.
-- **Returns / side effects:** `Promise<void>` that resolves after `setTimeout(ms)`.
-- **Used by:** `GET /messages/:id` (`messagesRoutes`).
-
 ## Function: contactRoutes
 
 - **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). After auth, `requireAction(account, 'contact.post')` (rules + name). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread. Conversation append failure logs `conversations.contact_sync.failed` and still 200.
