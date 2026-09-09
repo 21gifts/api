@@ -436,16 +436,22 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, `GET /messages/:id/replies`,
- * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`, and
- * `POST /messages/:id/invoice`. Photo, video, replies, and DELETE register
- * before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`)
- * are omitted from lists and 404 on reads; `getById` still returns them for
- * workers.
+ * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`
+ * (optional `?sinceSats=` non-negative integer long-polls until `sats` is
+ * strictly greater; timeout still returns 200 with the current body;
+ * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
+ * replies, and DELETE register before the public single-note `GET /:id`.
+ * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
+ * `getById` still returns them for workers.
  *
- * @param deps - Message store, auth store, clock, and optional `pushStore`.
+ * @param deps - Message store, auth store, clock, optional `pushStore`, and
+ * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
+ * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
+ * `WAIT_SATS_POLL_MS`).
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
- * `GET /:id/replies`, `DELETE /:id`, public `GET /:id`, and `POST /:id/invoice`.
+ * `GET /:id/replies`, `DELETE /:id`, public `GET /:id` (optional
+ * `?sinceSats=`), and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
