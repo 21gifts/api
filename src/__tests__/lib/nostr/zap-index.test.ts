@@ -1106,6 +1106,7 @@ describe('indexOpenZapReceipts', () => {
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
+        markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         getById: (id: string) => base.getById(id),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>

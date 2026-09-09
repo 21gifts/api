@@ -101,3 +101,73 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   const me = await request.get('/me', { headers: { authorization: `Bearer ${token}` } });
   expect(me.status()).toBe(200);
 });
+
+test('Function: markDeleted — DELETE /messages/:id hides the note', async ({ request }) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const hideName = `E2eHide${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name: hideName,
+          lightningAddress: `e2e-hide-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const account = accounts.find((row) => row.name === hideName);
+  expect(account).toBeDefined();
+
+  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
+
+  const posted = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'e2e hide me' },
+  });
+  expect(posted.status()).toBe(200);
+  const note = (await posted.json()) as { id: string };
+
+  const beforeHide = await request.get(`/messages/${note.id}`);
+  expect(beforeHide.status()).toBe(200);
+
+  const basisDenied = await request.delete(`/messages/${note.id}`, { headers: auth });
+  expect(basisDenied.status()).toBe(403);
+  const stillVisible = await request.get(`/messages/${note.id}`);
+  expect(stillVisible.status()).toBe(200);
+
+  const promoted = await request.patch(`/debug/accounts/${account?.id}`, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+
+  const hidden = await request.delete(`/messages/${note.id}`, { headers: auth });
+  expect(hidden.status()).toBe(204);
+  expect(await hidden.text()).toBe('');
+
+  const afterHide = await request.get(`/messages/${note.id}`);
+  expect(afterHide.status()).toBe(404);
+
+  const list = await request.get('/messages', { headers: auth });
+  expect(list.status()).toBe(200);
+  const listedNotes = ((await list.json()) as { messages: Array<{ id: string }> }).messages;
+  expect(listedNotes.some((row) => row.id === note.id)).toBe(false);
+
+  const photo = await request.get(`/messages/${note.id}/photo`);
+  expect(photo.status()).toBe(404);
+
+  const again = await request.delete(`/messages/${note.id}`, { headers: auth });
+  expect(again.status()).toBe(204);
+});

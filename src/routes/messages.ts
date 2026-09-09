@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { logEvent } from '@/lib/log';
@@ -188,6 +188,11 @@ async function authedAccount(
   return resolveSession(deps.authStore, deps.now(), token);
 }
 
+/** True when the live role may soft-hide forum notes. */
+function isStaffRole(role: AccountRole): boolean {
+  return role === 'founder' || role === 'moderator';
+}
+
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -204,6 +209,10 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
     return Response.json({ error: 'Photo not found' }, { status: 404 });
   }
   try {
+    const row = await deps.store.getById(id);
+    if (row === undefined || row.deletedAt !== null) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
     const photo = await deps.store.getPhoto(id);
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
@@ -255,7 +264,7 @@ async function serveForumVideo(
   try {
     const row = await deps.store.getById(id);
     const mime = row?.videoContentType ?? null;
-    if (row === undefined || row.hasVideo !== true || mime === null) {
+    if (row === undefined || row.deletedAt !== null || row.hasVideo !== true || mime === null) {
       return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     if (forumVideoExt(mime) !== ext) {
@@ -404,13 +413,16 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, `GET /messages/:id/replies`,
- * public `GET /messages/:id`, and `POST /messages/:id/invoice`. Photo, video,
- * and replies register before the public single-note `GET /:id`.
+ * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`, and
+ * `POST /messages/:id/invoice`. Photo, video, replies, and DELETE register
+ * before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`)
+ * are omitted from lists and 404 on reads; `getById` still returns them for
+ * workers.
  *
  * @param deps - Message store, auth store, clock, and optional `pushStore`.
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
- * `GET /:id/replies`, public `GET /:id`, and `POST /:id/invoice`.
+ * `GET /:id/replies`, `DELETE /:id`, public `GET /:id`, and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -505,8 +517,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const parent = await deps.store.getById(parsed.data.inReplyTo);
-        // One-level only: replies to replies are not parents.
-        if (parent === undefined || parent.parentId !== null) {
+        // One-level only: replies to replies are not parents. Soft-hidden parents are missing.
+        if (parent === undefined || parent.parentId !== null || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
         parentId = parent.id;
@@ -558,7 +570,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       try {
         const parent = await deps.store.getById(id);
-        if (parent === undefined) {
+        if (parent === undefined || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
@@ -586,6 +598,34 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
+    .delete('/:id', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!isStaffRole(account.role)) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const tagged = await deps.store.markDeleted(id, new Date(deps.now()), account.id);
+        if (!tagged) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        logEvent('messages.deleted', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.body(null, 204);
+      } catch {
+        logEvent('messages.delete.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .get('/:id', async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
@@ -593,7 +633,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       try {
         const row = await deps.store.getById(id);
-        if (row === undefined) {
+        if (row === undefined || row.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
         const author =
@@ -672,7 +712,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
       const row = await deps.store.getById(messageIdParam);
-      if (row === undefined) {
+      if (row === undefined || row.deletedAt !== null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({

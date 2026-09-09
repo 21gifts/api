@@ -9,24 +9,31 @@
 
 ## Endpoint: GET /messages/:id/video.mp4
 
-- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
-- **Errors:** 404 `{ error: 'Video not found' }`; 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
+- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. Soft-hidden rows (`deletedAt` set) are 404 even when the on-disk file remains. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
+- **Errors:** 404 `{ error: 'Video not found' }` (missing / soft-hidden / wrong ext / empty); 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
 - **Used by:** Damus/Primal/Safari kind:1 video URLs.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.webm
 
-- **Purpose:** Same as `video.mp4` for WebM posts (sized body + Range; WebM is not remuxed).
+- **Purpose:** Same as `video.mp4` for WebM posts (sized body + Range; WebM is not remuxed). Soft-hidden rows are 404.
 - **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal/Safari.
 - **Auth:** none.
 
 ## Endpoint: GET /messages/:id/video.mov
 
-- **Purpose:** Same as `video.mp4` for QuickTime posts (sized body + Range + faststart).
+- **Purpose:** Same as `video.mp4` for QuickTime posts (sized body + Range + faststart). Soft-hidden rows are 404.
 - **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal/Safari.
 - **Auth:** none.
+
+## Endpoint: DELETE /messages/:id
+
+- **Purpose:** Bearer required. Founder or moderator soft-hides a forum note: stamps `deleted_at` / `deleted_by` on the target and every untagged **direct** reply via `MessageStore.markDeleted`. Does not hard-delete rows, media, invoices, zap receipts, or gifts; does not call `deleteById`. Already-tagged targets keep original stamps and still return 204. Public JSON never exposes `deletedAt` / `deletedBy`. Logs `messages.deleted` with `messageId`, `accountId`, and staff `role` (never post text).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not founder/moderator (including the author); 404 `{ error: 'Not found' }` for a non-UUID `:id` or missing row; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.delete.failed`).
+- **Used by:** Staff hide controls in the app forum.
+- **Auth:** `Authorization: Bearer` session (founder or moderator).
 
 ## Endpoint: GET /.well-known/nostr.json
 
@@ -233,7 +240,7 @@
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `role`, `lightningAddress`, ISO `createdAt`, and `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note). Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `role`, `lightningAddress`, ISO `createdAt`, and `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -247,29 +254,29 @@
 
 ## Endpoint: GET /messages
 
-- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.read')` (needs rules). Lists **top-level** forum notes only (`parent_id` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount`), capped at 200 (latest-200 window). A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the stored direct-reply count minus those dropped. Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.read')` (needs rules). Lists **top-level** forum notes only (`parent_id` null, `deleted_at` null) newest-first (author name snapshotted at post, `text`, ISO `createdAt`, `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, live author `role`, and `replyCount` of live direct children), capped at 200 (latest-200 window). Soft-hidden top-level notes are omitted. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live direct-reply count minus those dropped. Replies are never listed here. Clients render chronological messenger-group order (oldest top, newest bottom above the composer). Empty list is 200 `{ messages: [] }`. No photo/video bytes in JSON; signed-in list may include `accountId` (21gifts author id; omitted for Damus-only); never includes `deletedAt` / `deletedBy`; `payable` is true when the note has an `eventId` and the author has a Lightning Address; missing author → `role` `"basis"` and `payable` false. `videoContentType` is `null` when `hasVideo` is false.
 - **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid/expired bearer; 409 `{ error: 'missing_requirements', missing: ['rules'] }` when rules are not agreed; 503 `{ error: 'Messages are unavailable' }` if the store throws (`messages.list.failed`).
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id
 
-- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`. Photo/video bytes are never included. A `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404.
-- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID, the row is missing, or a missing-file video row was dropped; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
+- **Purpose:** Public single-note fetch (no Bearer). Returns the public message JSON via `serializeMessage` (`sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; Damus-only `accountId: null` omits `role` and sets `payable` false). Never includes `accountId`, `deletedAt`, or `deletedBy`. Photo/video bytes are never included. Soft-hidden rows (`deletedAt` set) are 404 before any missing-video cleanup. A live `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404.
+- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID, the row is missing, soft-hidden, or a missing-file video row was dropped; 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.get.failed`).
 - **Used by:** App deep links / share URLs for one forum note.
 - **Auth:** none (public).
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the parent is missing; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
+- **Purpose:** Bearer required. Lists direct **live** replies for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Soft-hidden children are omitted. A soft-hidden or missing parent is 404. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; may include `accountId` for 21gifts authors (omitted for Damus-only); Damus-only replies omit `role`; never includes `deletedAt` / `deletedBy`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID, the parent is missing, or the parent is soft-hidden; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
 - **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /messages/:id/photo
 
-- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true.
-- **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
+- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true. Soft-hidden rows 404 even when photo bytes remain in the store (handler checks `getById` / `deletedAt` before `getPhoto`).
+- **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, soft-hidden, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
 - **Used by:** App forum photo display; Damus/Primal via kind:1 photo URLs.
 - **Auth:** none.
 
@@ -304,14 +311,14 @@
 ## Endpoint: POST /messages
 
 - **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.post')` (needs rules + name + Lightning Address; skip timestamps do not satisfy). JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped). New notes have `sats` 0 and `payable` false until signed (and stay `payable` false without author LN). Top-level creates may enqueue push; replies do not.
-- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: [...] }` when rules, name, and/or Lightning Address are missing (order `rules`, then `name`, then `lightning-address`); 400 Expected a JSON body with text and/or photo; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
+- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: [...] }` when rules, name, and/or Lightning Address are missing (order `rules`, then `name`, then `lightning-address`); 400 Expected a JSON body with text and/or photo; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, soft-hidden (`deletedAt` set), or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer and reply composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /messages/:id/invoice
 
-- **Purpose:** Bearer required. After auth, `requireAction(payer, 'forum.pay')` (payer needs rules only — never 409 `lightning-address` for the payer). `:id` is a UUID. Body `{ sats }` (integer 1..10_000_000). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns `{ pr, amountSats }` only when the minted BOLT11 is a NIP-57 `description_hash` invoice (`isNip57Invoice`); otherwise persists `not_zap` (with rejected `pr` for debug) and responds 400 `The author's wallet cannot receive this Bitcoin payment` without `pr` in the body. Same author's-wallet 400 for LNURL `noZap`; other LNURL transport failures (`unreachable`) keep `Could not start the Bitcoin payment`. Author LN / unsigned note stay 400 `This message cannot be paid yet` (resource state, not payer `missing`). After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks (NIP-57 reject still counts, same as other LNURL failures).
-- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: ['rules'] }` when the payer has not agreed to rules; 400 bad body / This message cannot be paid yet / The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found (unknown id or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
+- **Purpose:** Bearer required. After auth, `requireAction(payer, 'forum.pay')` (payer needs rules only — never 409 `lightning-address` for the payer). `:id` is a UUID. Body `{ sats }` (integer 1..10_000_000). Builds a NIP-57 kind:9734 zap request for the note, signs it with the payer's custodial key (ensuring one exists when KEK is present), and returns `{ pr, amountSats }` only when the minted BOLT11 is a NIP-57 `description_hash` invoice (`isNip57Invoice`); otherwise persists `not_zap` (with rejected `pr` for debug) and responds 400 `The author's wallet cannot receive this Bitcoin payment` without `pr` in the body. Same author's-wallet 400 for LNURL `noZap`; other LNURL transport failures (`unreachable`) keep `Could not start the Bitcoin payment`. Author LN / unsigned note stay 400 `This message cannot be paid yet` (resource state, not payer `missing`). Soft-hidden notes are treated as missing (`not_found` persist + 404). After auth, valid-UUID attempts are persisted best-effort (`message_invoice`); persist failures do not change the HTTP response. The invoice rate limit is applied only after auth, amount, payable, and KEK checks (NIP-57 reject still counts, same as other LNURL failures).
+- **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: ['rules'] }` when the payer has not agreed to rules; 400 bad body / This message cannot be paid yet / The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`) / Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found (unknown id, soft-hidden id, or non-UUID `:id`, the latter without a persist row); 429 Too many payments (`Retry-After: 10`, after payable checks); 503 Messages are unavailable (missing KEK before limiter, or keygen/sign failure after).
 - **Used by:** App pay sheet for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
