@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-01 (`PUT /debug/messages/:id/video`).
+**Status**: living document. Last revised 2026-09-09 (`DELETE /messages/:id` soft-hide).
 
 ---
 
@@ -85,6 +85,7 @@ Public base URLs used in examples:
 | GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                                     |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                            |
 | GET    | `/messages/:id/video.*`                      | none                     | Fetch forum video bytes (Range / 206)                                      |
+| DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)            |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                        |
 | POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                                     |
 | GET    | `/conversations`                             | Bearer                   | List visible private threads                                               |
@@ -1690,7 +1691,8 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-`:id` is not a UUID, or the parent is missing → **Response** `404`:
+`:id` is not a UUID, the parent is missing, or the parent is soft-hidden
+→ **Response** `404`:
 
 ```json
 { "error": "Not found" }
@@ -1723,19 +1725,22 @@ Success → **Response** `200`:
 }
 ```
 
-An empty reply thread is **200** with `"messages": []`.
+An empty reply thread is **200** with `"messages": []`. Soft-hidden
+children are omitted from the list.
 
 ### `GET /messages/:id`
 
 Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
-**after** photo, video, and `GET /messages/:id/replies` so those paths are
-not captured as `:id`. Returns the public message JSON (`sats`, `payable`,
-`hasPhoto`, `hasVideo`, `videoContentType`; live `role` for 21gifts
-authors). Never includes `accountId`. Damus-only notes (`accountId` null)
-omit `role` and set `payable` false. `replyCount` is omitted. Photo and
-video bytes are never included.
+**after** photo, video, `GET /messages/:id/replies`, and
+`DELETE /messages/:id` so those paths are not captured as `:id`. Returns
+the public message JSON (`sats`, `payable`, `hasPhoto`, `hasVideo`,
+`videoContentType`; live `role` for 21gifts authors). Never includes
+`accountId`, `deletedAt`, or `deletedBy`. Damus-only notes (`accountId`
+null) omit `role` and set `payable` false. `replyCount` is omitted. Photo
+and video bytes are never included. Soft-hidden rows (`deletedAt` set)
+are treated as missing (404) before any missing-video hard-delete cleanup.
 
-Non-UUID `:id` or missing row → **Response** `404`:
+Non-UUID `:id`, missing row, or soft-hidden row → **Response** `404`:
 
 ```json
 { "error": "Not found" }
@@ -1763,6 +1768,48 @@ Success → **Response** `200`:
   "role": "basis"
 }
 ```
+
+### `DELETE /messages/:id`
+
+Staff soft-hide. Bearer session required. Live role must be `founder` or
+`moderator` (authors with `basis` / `verified` get 403 even on their own
+post). Stamps `deleted_at` / `deleted_by` on the target row and every
+**direct** reply that is not yet tagged. Does **not** hard-delete the
+Postgres row, photo bytes, on-disk video, invoices, zap receipts, or gift
+records; does **not** call `deleteById` / `DELETE FROM message`. Already
+tagged targets keep their original stamps and still return 204.
+`getById` continues to return tagged rows for workers; public/member HTTP
+reads treat them as missing.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Live role is not founder and not moderator → **Response** `403`:
+
+```json
+{ "error": "Forbidden" }
+```
+
+`:id` is not a UUID, or no row with that id → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Success (including already tagged) → **Response** `204` empty body.
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+On success the process logs `messages.deleted` with `messageId`,
+`accountId`, and the staff `role` (never the post text). On store throw
+it logs `messages.delete.failed`.
 
 ### `POST /contact`
 
@@ -1948,8 +1995,10 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 `GET /lightning-address` is in-memory only. Gift statistics read Postgres
 when `DATABASE_URL` is set.
 
-**Moderator-only endpoints.** Content hide/unhide and related Moderator
-actions. Role values exist on the account model; `GET /debug/accounts` and
+**Moderator-only endpoints.** Soft-hide is implemented as
+`DELETE /messages/:id` (founder/moderator session). Content **unhide** /
+UNDELETE and other Moderator actions are not HTTP routes yet. Role values
+exist on the account model; `GET /debug/accounts` and
 `PATCH /debug/accounts/:id` are operator token routes, not a moderator session.
 
 ---

@@ -138,6 +138,44 @@ describe('GET /members/:accountId', () => {
     expect(body.profileMessage).toBeNull();
   });
 
+  it('returns profileMessage null when the profile note is soft-deleted but keeps profileMessageId', async () => {
+    const authStore = await seededCaller();
+    const messageStore = new InMemoryMessageStore();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      profileMessageId: noteId,
+    });
+    await messageStore.create({
+      id: noteId,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    expect(await messageStore.markDeleted(noteId, new Date(now()), 'staff')).toBe(true);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { profileMessage: null };
+    expect(body.profileMessage).toBeNull();
+    const account = await authStore.getAccount(ACCOUNT_ID);
+    expect(account?.profileMessageId).toBe(noteId);
+  });
+
   it('returns 503 when getAccount throws', async () => {
     const authStore = await seededCaller();
     const original = authStore.getAccount.bind(authStore);

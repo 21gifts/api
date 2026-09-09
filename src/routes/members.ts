@@ -65,7 +65,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
       const profileId = account.profileMessageId;
       if (typeof profileId === 'string' && profileId.trim() !== '') {
         const row = await deps.messageStore.getById(profileId);
-        if (row !== undefined) {
+        if (row !== undefined && row.deletedAt === null) {
           const payable =
             row.eventId !== null &&
             account.lightningAddress !== null &&

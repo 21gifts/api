@@ -107,6 +107,11 @@ test('GET /messages/:id without bearer is 404 on default boot', async ({ request
   expect(res.status()).toBe(404);
 });
 
+test('DELETE /messages/:id without bearer is 401', async ({ request }) => {
+  const res = await request.delete('/messages/:id');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/:id/replies without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/:id/replies');
   expect(res.status()).toBe(401);
