@@ -410,6 +410,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
+     unwrapped jsonb;
    BEGIN
      IF NOT EXISTS (
        SELECT 1
@@ -422,21 +423,25 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
      END IF;
 
      FOR repair_row IN
-       SELECT id
+       SELECT id, nostr_event
        FROM message
        WHERE nostr_event IS NOT NULL
          AND jsonb_typeof(nostr_event) = 'string'
      LOOP
        BEGIN
-         UPDATE message
-         SET nostr_event = (nostr_event #>> '{}')::jsonb,
-             nostr_attempts = 0
-         WHERE id = repair_row.id
-           AND nostr_event IS NOT NULL
-           AND jsonb_typeof(nostr_event) = 'string';
-       EXCEPTION WHEN data_exception THEN
+         unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;
+       EXCEPTION WHEN data_exception OR statement_too_complex THEN
          RAISE WARNING 'Could not unwrap nostr_event for message id %', repair_row.id;
+         CONTINUE;
        END;
+
+       UPDATE message
+       SET nostr_event = unwrapped,
+           nostr_attempts = 0
+       WHERE id = repair_row.id
+         AND nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+         AND nostr_event = repair_row.nostr_event;
      END LOOP;
    END;
    $unwrap$;`,

@@ -88,12 +88,17 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain(
       'EXCEPTION WHEN invalid_text_representation',
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception THEN');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
-      "SET nostr_event = (nostr_event #>> '{}')::jsonb",
+      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
     );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
+      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
-      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string';/,
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });

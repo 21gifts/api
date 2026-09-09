@@ -120,11 +120,18 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN data_exception THEN');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("SET nostr_event = (nostr_event #>> '{}')::jsonb");
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
-      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string';/,
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
