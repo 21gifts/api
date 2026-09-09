@@ -115,7 +115,7 @@ export interface ConversationStore {
   updatePublishState(id: string, state: NostrPublishState): Promise<void>;
 }
 
-/** Idempotent DDL for conversation tables (matches `docs/schema/conversation.sql`). */
+/** Idempotent SQL for conversation tables (DDL plus one-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; matches `docs/schema/conversation.sql`). */
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,

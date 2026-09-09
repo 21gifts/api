@@ -1,6 +1,10 @@
 -- Private messaging threads and messages (member↔member, member↔platform,
 -- member↔Damus). Covered by db_change attach-all-public-tables. Plaintext is
 -- not a listed secret. Dedupe outbound/inbound by conversation_message.event_id.
+-- migrateConversationSchema also runs a one-time, idempotent UPDATE unwrapping
+-- conversation_message.nostr_event values stored as jsonb string scalars
+-- (jsonb_typeof(nostr_event) = 'string'); that statement lives in the store's
+-- CONVERSATION_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,

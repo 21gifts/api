@@ -188,6 +188,8 @@ export interface MessageStore {
    * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row that can
+   * never satisfy a repair scan is not reset forever.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
@@ -200,6 +202,8 @@ export interface MessageStore {
    * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row that can
+   * never satisfy a repair scan is not reset forever.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
@@ -214,7 +218,9 @@ export interface MessageStore {
    * valid. `sats = 0` only (zapped rows keep
    * their event id). Pending rows are left for fan-out — resetting them
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
-   * first. Includes `nostrEvent === null` and non-string content.
+   * first. Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row
+   * that can never satisfy a repair scan is not reset forever. Includes
+   * `nostrEvent === null` and non-string content.
    *
    * @param limit - Max rows.
    */
@@ -224,6 +230,8 @@ export interface MessageStore {
    * Clear the signed event and park the row `pending` so it is signed again.
    * No-op unless `eventId` still matches `expectedEventId`, `sats` is 0, and
    * the note has no child replies.
+   * A successful reset increments `nostrAttempts` and stamps
+   * `nostrFirstAttemptAt` once when it is still unset.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -318,7 +326,7 @@ export interface ZapIngestRow {
   receipt: Record<string, unknown>;
 }
 
-/** Idempotent DDL for the forum table (matches `docs/schema/message.sql`). */
+/** Idempotent SQL for the forum table (DDL plus one-time unwrap of `nostr_event` values stored as jsonb string scalars; matches `docs/schema/message.sql`). */
 export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
