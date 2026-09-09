@@ -531,8 +531,9 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 }
 
 /**
- * Create a profile forum note for named accounts that lack one (or whose
- * stored id no longer points at a message row).
+ * Create a profile forum note for named accounts with a non-blank Lightning
+ * Address that lack one (or whose stored id no longer points at a message
+ * row). `ensureProfileMessage` no-ops without LN.
  *
  * @param deps - Auth and message stores (and optional push).
  */

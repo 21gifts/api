@@ -7,6 +7,8 @@ import { InMemoryPushStore } from '@/lib/push-store';
 
 const now = (): number => 1_700_000_000_000;
 
+const TEST_LN = 'ada@walletofsatoshi.com';
+
 async function seededAccount(
   overrides: Partial<Account> = {},
 ): Promise<{ auth: InMemoryAuthStore; account: Account }> {
@@ -16,7 +18,7 @@ async function seededAccount(
     linkingKey: null,
     role: 'basis',
     name: 'Ada',
-    lightningAddress: null,
+    lightningAddress: TEST_LN,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
@@ -31,6 +33,26 @@ async function seededAccount(
 describe('ensureProfileMessage', () => {
   it('returns the account without inserting when name is blank', async () => {
     const { auth, account } = await seededAccount({ name: null });
+    const messages = new InMemoryMessageStore();
+    const create = vi.spyOn(messages, 'create');
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns the account without inserting when Lightning Address is blank', async () => {
+    const { auth, account } = await seededAccount({ lightningAddress: null });
+    const messages = new InMemoryMessageStore();
+    const create = vi.spyOn(messages, 'create');
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns the account without inserting when Lightning Address is whitespace', async () => {
+    const { auth, account } = await seededAccount({ lightningAddress: '   ' });
     const messages = new InMemoryMessageStore();
     const create = vi.spyOn(messages, 'create');
     const result = await ensureProfileMessage({ auth, messages, account, now });

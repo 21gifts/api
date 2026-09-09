@@ -71,7 +71,7 @@ Public base URLs used in examples:
 | GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` + factual `missing`)                                      |
 | GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                            |
 | POST   | `/me/setup/skip`                             | Bearer                   | Skip name or Lightning Address wizard step                                 |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (first name creates profile note)                 |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (profile note when name + LN are both set)        |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                                     |
 | POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                         |
 | POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve + NIP-57 mint probe                  |
@@ -80,7 +80,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                          |
 | GET    | `/members/:accountId`                        | Bearer                   | Live member identity + profile note                                        |
 | GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ `replyCount`); 409 if rules missing          |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name missing; LN not required to post        |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing               |
 | GET    | `/messages/:id`                              | none                     | Public single-note JSON                                                    |
 | GET    | `/messages/:id/replies`                      | Bearer                   | Oldest-first replies for a parent note                                     |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                            |
@@ -388,10 +388,13 @@ control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 ```
 
 Success → **Response** `200` with the updated account (same shape as
-`GET /me`). The stored value is trimmed. Names are not unique. The first
-persisted non-empty name also creates exactly one top-level profile forum
-note and stores `profileMessageId` (not on owner JSON). Rename does not
-create a second note and does not change the note text.
+`GET /me`). The stored value is trimmed. Names are not unique. When a
+non-blank Lightning Address is already linked, the first persisted
+non-empty name also creates exactly one top-level profile forum note and
+stores `profileMessageId` (not on owner JSON). Without a Lightning
+Address the name is stored and no profile note is inserted (linking the
+address later creates it). Rename does not create a second note and does
+not change the note text.
 
 ### `POST /me/forum-laws-dismissed`
 
@@ -481,8 +484,10 @@ Another account already owns the address (including a unique-index race)
 
 Success → **Response** `200` with the updated account (same shape as
 `GET /me`). `lightningAddressVerified` is always reset to `false`, and any
-pending verification for the account is cleared. There is no proof-of-control
-in this step — use `POST /me/lightning-address/verification` for that.
+pending verification for the account is cleared. After the address is
+stored, `ensureProfileMessage` runs so a non-blank display name that was
+set earlier gets its profile forum note. There is no proof-of-control in
+this step — use `POST /me/lightning-address/verification` for that.
 
 ### `DELETE /me/lightning-address`
 
@@ -1485,15 +1490,15 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
-After auth, `requireAction(account, 'forum.post')` requires rules agreement
-and a non-blank display name (Lightning Address is **not** required to post).
-The api stores a **name snapshot** (trimmed account name at post time),
-normalised text (possibly `""` for photo-only), optional JPEG/PNG/WebP bytes
-(≤ 1 MiB; MIME from magic bytes), `parentId` (null for top-level notes), and a
-timestamp. Text longer than **500** after trim, or with disallowed C0/DEL
-controls, is rejected. Newlines (`\n`, `\r`) are allowed. The **200** body
-is the public message object itself (not wrapped in `{ messages }`),
-including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
+After auth, `requireAction(account, 'forum.post')` requires rules agreement,
+a non-blank display name, and a non-blank Lightning Address (skip timestamps
+do not satisfy). The api stores a **name snapshot** (trimmed account name at
+post time), normalised text (possibly `""` for photo-only), optional
+JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
+top-level notes), and a timestamp. Text longer than **500** after trim, or
+with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
+allowed. The **200** body is the public message object itself (not wrapped
+in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
@@ -1513,10 +1518,12 @@ Missing/invalid/expired bearer → **Response** `401`:
 Missing required fields → **Response** `409`:
 
 ```json
-{ "error": "missing_requirements", "missing": ["rules", "name"] }
+{ "error": "missing_requirements", "missing": ["rules", "name", "lightning-address"] }
 ```
 
-(`missing` is never empty; order is `rules`, then `name`.)
+(`missing` is never empty; order is `rules`, then `name`, then
+`lightning-address`. A named, rules-agreed account with null LN yields
+`["lightning-address"]` only.)
 
 Body is not JSON with `text` and/or `photo` → **Response** `400`:
 
