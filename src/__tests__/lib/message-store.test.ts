@@ -115,10 +115,11 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid/,
     );
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toBe(
-      `UPDATE message SET nostr_event = (nostr_event #>> '{}')::jsonb
-  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
-    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN others');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
   });
 });
 

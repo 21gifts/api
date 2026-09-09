@@ -6,9 +6,11 @@
 -- SELECT the photo column — use (photo IS NOT NULL) AS has_photo only.
 -- Optional video_content_type; bytes on disk under MEDIA_DIR (not bytea).
 -- ALTER ADD COLUMN IF NOT EXISTS keeps existing databases additive.
--- migrateMessageSchema also runs a one-time, idempotent UPDATE unwrapping
--- nostr_event values stored as jsonb string scalars
--- (jsonb_typeof(nostr_event) = 'string'); that statement lives in the store's
+-- On every boot, migrateMessageSchema runs an idempotent repair unwrapping
+-- nostr_event values stored as jsonb string scalars; it matches no rows once
+-- complete. The repair is skipped until the db_change audit trigger is attached
+-- and retried on the next boot. A value that cannot be parsed is skipped with a
+-- warning instead of failing the migration. The statement lives in the store's
 -- MESSAGE_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS message (

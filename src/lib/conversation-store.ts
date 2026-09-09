@@ -115,7 +115,7 @@ export interface ConversationStore {
   updatePublishState(id: string, state: NostrPublishState): Promise<void>;
 }
 
-/** Idempotent SQL for conversation tables (DDL plus one-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; matches `docs/schema/conversation.sql`). */
+/** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; matches `docs/schema/conversation.sql`). */
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
@@ -155,8 +155,37 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL`,
-  `UPDATE conversation_message SET nostr_event = (nostr_event #>> '{}')::jsonb
-  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `DO $unwrap$
+   DECLARE
+     repair_row RECORD;
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+       FROM pg_trigger
+       WHERE tgrelid = 'conversation_message'::regclass
+         AND tgname = 'trg_db_change'
+         AND NOT tgisinternal
+     ) THEN
+       RETURN;
+     END IF;
+
+     FOR repair_row IN
+       SELECT id, nostr_event #>> '{}' AS unwrapped_event
+       FROM conversation_message
+       WHERE nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+     LOOP
+       BEGIN
+         UPDATE conversation_message
+         SET nostr_event = repair_row.unwrapped_event::jsonb
+         WHERE id = repair_row.id;
+       EXCEPTION WHEN others THEN
+         RAISE WARNING 'Could not unwrap nostr_event for conversation_message id %',
+           repair_row.id;
+       END;
+     END LOOP;
+   END;
+   $unwrap$;`,
 ];
 
 const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pubkey, c.created_at, c.last_message_at,

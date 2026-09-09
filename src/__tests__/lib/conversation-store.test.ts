@@ -81,10 +81,10 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toBe(
-      `UPDATE conversation_message SET nostr_event = (nostr_event #>> '{}')::jsonb
-  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
-    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('EXCEPTION WHEN others');
   });
 });
 

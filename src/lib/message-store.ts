@@ -326,7 +326,7 @@ export interface ZapIngestRow {
   receipt: Record<string, unknown>;
 }
 
-/** Idempotent SQL for the forum table (DDL plus one-time unwrap of `nostr_event` values stored as jsonb string scalars; matches `docs/schema/message.sql`). */
+/** Idempotent SQL for the forum table (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars; matches `docs/schema/message.sql`). */
 export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -404,8 +404,37 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   ON account (profile_message_id) WHERE profile_message_id IS NOT NULL`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid`,
-  `UPDATE message SET nostr_event = (nostr_event #>> '{}')::jsonb
-  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `DO $unwrap$
+   DECLARE
+     repair_row RECORD;
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+       FROM pg_trigger
+       WHERE tgrelid = 'message'::regclass
+         AND tgname = 'trg_db_change'
+         AND NOT tgisinternal
+     ) THEN
+       RETURN;
+     END IF;
+
+     FOR repair_row IN
+       SELECT id, nostr_event #>> '{}' AS unwrapped_event
+       FROM message
+       WHERE nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+     LOOP
+       BEGIN
+         UPDATE message
+         SET nostr_event = repair_row.unwrapped_event::jsonb,
+             nostr_attempts = 0
+         WHERE id = repair_row.id;
+       EXCEPTION WHEN others THEN
+         RAISE WARNING 'Could not unwrap nostr_event for message id %', repair_row.id;
+       END;
+     END LOOP;
+   END;
+   $unwrap$;`,
 ];
 
 /**
