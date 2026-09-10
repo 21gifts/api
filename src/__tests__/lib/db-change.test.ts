@@ -59,6 +59,34 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/tablename <> 'db_change'/);
     expect(joined).toMatch(/EXECUTE PROCEDURE/);
   });
+
+  it('replaces unchanged bytea columns on UPDATE with a hashed reference', () => {
+    const logFn = DB_CHANGE_SCHEMA_SQL[5] ?? '';
+    expect(logFn).toContain('CREATE OR REPLACE FUNCTION log_db_change()');
+    expect(logFn).toContain('a.attrelid = TG_RELID');
+    expect(logFn).toContain("a.atttypid = 'bytea'::regtype");
+    expect(logFn).toContain('NOT a.attisdropped');
+    expect(logFn).toContain("'unchanged', true");
+    expect(logFn).toContain("encode(digest(convert_to(rawold ->> k, 'UTF8'), 'sha256'), 'hex')");
+    expect(logFn).toContain('octet_length(rawold ->> k)');
+    expect(logFn).toContain('rawold -> k = rawnew -> k');
+    expect(logFn).toContain('beforej -> k = rawold -> k');
+    const noopAt = logFn.indexOf('rawold IS NOT DISTINCT FROM rawnew');
+    const redactAt = logFn.indexOf('db_change_redact(rawold)');
+    expect(noopAt).toBeGreaterThan(-1);
+    expect(redactAt).toBeGreaterThan(noopAt);
+    const insertBranch = logFn.slice(
+      logFn.indexOf("IF TG_OP = 'INSERT'"),
+      logFn.indexOf("ELSIF TG_OP = 'UPDATE'"),
+    );
+    const deleteBranch = logFn.slice(
+      logFn.indexOf("ELSIF TG_OP = 'DELETE'"),
+      logFn.indexOf('RETURN NULL;'),
+    );
+    expect(insertBranch).not.toContain('unchanged');
+    expect(deleteBranch).not.toContain('unchanged');
+    expect(logFn.split('pg_attribute').length - 1).toBe(1);
+  });
 });
 
 describe('migrateDbChangeSchema', () => {

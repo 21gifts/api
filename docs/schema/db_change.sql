@@ -2,7 +2,14 @@
 -- public table (except db_change) write redacted before/after JSON. Secret
 -- columns token, challenge, nostr_nsec_ciphertext, nonce, view_key, endpoint,
 -- p256dh, auth, and delivered_endpoints are stored as SHA-256 hex; other columns including name stay
--- plaintext. The log itself
+-- plaintext. On UPDATE, every bytea column (found via pg_attribute on TG_RELID)
+-- whose value is unchanged and was not hashed by db_change_redact is stored in
+-- both before and after as an object with unchanged true, sha256 as the hex
+-- digest of the column text, and bytes as the octet_length of that text.
+-- INSERT, DELETE and the UPDATE that changes the bytes keep the full value, so
+-- any row state is reconstructable by chaining to the latest earlier full image.
+-- Secret columns keep their sha256 hash. The no-op comparison still happens on
+-- the raw images before redaction. The log itself
 -- rejects UPDATE, DELETE, and TRUNCATE at runtime. migrateDbChangeSchema may
 -- drop that trigger once to hash view_key values that still match a live
 -- account.view_key, then recreates it. Non-matching rows stay unchanged.
@@ -48,17 +55,52 @@ $dbch$;
 
 CREATE OR REPLACE FUNCTION log_db_change() RETURNS trigger
 LANGUAGE plpgsql AS $dbch$
+DECLARE
+  rawold jsonb;
+  rawnew jsonb;
+  beforej jsonb;
+  afterj jsonb;
+  k text;
+  ref jsonb;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     INSERT INTO db_change (table_name, op, before, after)
       VALUES (TG_TABLE_NAME, 'INSERT', NULL, db_change_redact(to_jsonb(NEW)));
     RETURN NEW;
   ELSIF TG_OP = 'UPDATE' THEN
-    IF to_jsonb(OLD) IS NOT DISTINCT FROM to_jsonb(NEW) THEN
+    rawold := to_jsonb(OLD);
+    rawnew := to_jsonb(NEW);
+    IF rawold IS NOT DISTINCT FROM rawnew THEN
       RETURN NEW;
     END IF;
+    beforej := db_change_redact(rawold);
+    afterj := db_change_redact(rawnew);
+    -- A bytea column whose value did not change is logged once, on the
+    -- INSERT/UPDATE/DELETE that carries a different value. In between, both
+    -- images hold {unchanged, sha256, bytes} so the row stays reconstructable
+    -- by chaining. Columns db_change_redact hashed keep their hash.
+    FOR k IN
+      SELECT a.attname::text
+      FROM pg_attribute a
+      WHERE a.attrelid = TG_RELID
+        AND a.atttypid = 'bytea'::regtype
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    LOOP
+      IF jsonb_typeof(rawold -> k) = 'string'
+         AND rawold -> k = rawnew -> k
+         AND beforej -> k = rawold -> k THEN
+        ref := jsonb_build_object(
+          'unchanged', true,
+          'sha256', encode(digest(convert_to(rawold ->> k, 'UTF8'), 'sha256'), 'hex'),
+          'bytes', octet_length(rawold ->> k)
+        );
+        beforej := jsonb_set(beforej, ARRAY[k], ref);
+        afterj := jsonb_set(afterj, ARRAY[k], ref);
+      END IF;
+    END LOOP;
     INSERT INTO db_change (table_name, op, before, after)
-      VALUES (TG_TABLE_NAME, 'UPDATE', db_change_redact(to_jsonb(OLD)), db_change_redact(to_jsonb(NEW)));
+      VALUES (TG_TABLE_NAME, 'UPDATE', beforej, afterj);
     RETURN NEW;
   ELSIF TG_OP = 'DELETE' THEN
     INSERT INTO db_change (table_name, op, before, after)

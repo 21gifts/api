@@ -74,13 +74,37 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(8);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(10);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/conversation_member_member_uidx/);
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
+    expect(joined).toMatch(/conversation_message_nostr_event_unrepaired_idx/);
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain(
+      'EXCEPTION WHEN invalid_text_representation',
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
+      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
+      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
+      /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE conversation_message/,
+    );
+    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
 
@@ -612,8 +636,17 @@ describe('PostgresConversationStore', () => {
     const row = message({ claimedUntil: 5_000, nostrEvent: { kind: 1059 } });
     const created = await store.appendMessage(row);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation_message/);
+    expect(typeof sql.executes[0]?.params[9]).not.toBe('string');
+    expect(sql.executes[0]?.params[9]).toStrictEqual(row.nostrEvent);
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
+  });
+
+  it('appendMessage binds a null nostrEvent unchanged', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await store.appendMessage(message());
+    expect(sql.executes[0]?.params[9]).toBeNull();
   });
 
   it('appendMessage returns the existing row on event_id unique_violation', async () => {
@@ -660,9 +693,12 @@ describe('PostgresConversationStore', () => {
 
   it('updateSignedEvent returns false when no row matches', async () => {
     const sql = new MockSql();
+    const nostrEvent = { k: 1 };
     expect(
-      await new PostgresConversationStore(sql).updateSignedEvent('m', 'ab'.repeat(32), { k: 1 }),
+      await new PostgresConversationStore(sql).updateSignedEvent('m', 'ab'.repeat(32), nostrEvent),
     ).toBe(false);
+    expect(typeof sql.queries[0]?.params[2]).not.toBe('string');
+    expect(sql.queries[0]?.params[2]).toStrictEqual(nostrEvent);
   });
 
   it('updateSignedEvent returns false on unique_violation', async () => {

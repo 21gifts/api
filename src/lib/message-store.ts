@@ -25,6 +25,8 @@ import {
   type ForumVideoContentType,
 } from '@/lib/video';
 
+const MAX_PUBLISH_ATTEMPTS = 5;
+
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
   if (event === null) {
     return true;
@@ -186,6 +188,8 @@ export interface MessageStore {
    * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row that can
+   * never satisfy a repair scan is not reset forever.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
@@ -198,6 +202,8 @@ export interface MessageStore {
    * Parents that already have a child row are skipped for the same reason.
    * `sats = 0` only (zapped rows keep their event id). Pending rows are left
    * for fan-out — resetting them renews the sign lease and they never EVENT.
+   * Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row that can
+   * never satisfy a repair scan is not reset forever.
    * Oldest `createdAt` then `id` first.
    *
    * @param limit - Max rows.
@@ -212,7 +218,9 @@ export interface MessageStore {
    * valid. `sats = 0` only (zapped rows keep
    * their event id). Pending rows are left for fan-out — resetting them
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
-   * first. Includes `nostrEvent === null` and non-string content.
+   * first. Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row
+   * that can never satisfy a repair scan is not reset forever. Includes
+   * `nostrEvent === null` and non-string content.
    *
    * @param limit - Max rows.
    */
@@ -222,6 +230,8 @@ export interface MessageStore {
    * Clear the signed event and park the row `pending` so it is signed again.
    * No-op unless `eventId` still matches `expectedEventId`, `sats` is 0, and
    * the note has no child replies.
+   * A successful reset increments `nostrAttempts` and stamps
+   * `nostrFirstAttemptAt` once when it is still unset.
    *
    * @param id - Message id.
    * @param expectedEventId - Event id observed when the row was listed.
@@ -316,7 +326,7 @@ export interface ZapIngestRow {
   receipt: Record<string, unknown>;
 }
 
-/** Idempotent DDL for the forum table (matches `docs/schema/message.sql`). */
+/** Idempotent SQL for the forum table (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars; matches `docs/schema/message.sql`). */
 export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -394,6 +404,47 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   ON account (profile_message_id) WHERE profile_message_id IS NOT NULL`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid`,
+  `CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
+  ON message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `DO $unwrap$
+   DECLARE
+     repair_row RECORD;
+     unwrapped jsonb;
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+       FROM pg_trigger
+       WHERE tgrelid = 'message'::regclass
+         AND tgname = 'trg_db_change'
+         AND NOT tgisinternal
+     ) THEN
+       RETURN;
+     END IF;
+
+     FOR repair_row IN
+       SELECT id, nostr_event
+       FROM message
+       WHERE nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+     LOOP
+       BEGIN
+         unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;
+       EXCEPTION WHEN data_exception OR statement_too_complex THEN
+         RAISE WARNING 'Could not unwrap nostr_event for message id %', repair_row.id;
+         CONTINUE;
+       END;
+
+       UPDATE message
+       SET nostr_event = unwrapped,
+           nostr_attempts = 0
+       WHERE id = repair_row.id
+         AND nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+         AND nostr_event = repair_row.nostr_event;
+     END LOOP;
+   END;
+   $unwrap$;`,
 ];
 
 /**
@@ -694,6 +745,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.hasVideo !== true &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingPhotoUrl(row.nostrEvent, row.id),
       )
@@ -718,6 +770,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.videoContentType !== undefined &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingVideoUrl(row.nostrEvent, row.id),
       )
@@ -739,6 +792,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.eventId !== null &&
           row.sats === 0 &&
           row.nostrPublishState === 'published' &&
+          row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
           kind1MissingHashtags(row.nostrEvent),
       )
@@ -763,6 +817,8 @@ export class InMemoryMessageStore implements MessageStore {
       row.nostrEvent = null;
       row.claimedUntil = null;
       row.nostrPublishState = 'pending';
+      row.nostrAttempts += 1;
+      row.nostrFirstAttemptAt = row.nostrFirstAttemptAt ?? Date.now();
       row.nostrPublishEpoch = null;
     }
     return Promise.resolve();
@@ -1142,7 +1198,7 @@ export class PostgresMessageStore implements MessageStore {
           stored.parentId,
           stored.authorPubkey,
           stored.eventId,
-          stored.nostrEvent === null ? null : JSON.stringify(stored.nostrEvent),
+          stored.nostrEvent,
         ],
       );
     } catch (err) {
@@ -1316,6 +1372,7 @@ export class PostgresMessageStore implements MessageStore {
        WHERE parent_id IS NULL AND deleted_at IS NULL
          AND event_id IS NOT NULL AND photo IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND nostr_attempts < ${MAX_PUBLISH_ATTEMPTS}
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (video_content_type IS NULL OR video_content_type = '')
          AND (
@@ -1337,6 +1394,7 @@ export class PostgresMessageStore implements MessageStore {
          AND video_content_type IN ('video/mp4', 'video/webm', 'video/quicktime')
          AND sats = 0
          AND nostr_publish_state = 'published'
+         AND nostr_attempts < ${MAX_PUBLISH_ATTEMPTS}
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
@@ -1355,6 +1413,7 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL AND event_id IS NOT NULL AND sats = 0
          AND nostr_publish_state = 'published'
+         AND nostr_attempts < ${MAX_PUBLISH_ATTEMPTS}
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)
          AND (
            nostr_event IS NULL
@@ -1372,7 +1431,9 @@ export class PostgresMessageStore implements MessageStore {
   async resetSignedEvent(id: string, expectedEventId: string | null): Promise<void> {
     await this.#sql.execute(
       `UPDATE message SET event_id = NULL, nostr_event = NULL, claimed_until = NULL,
-         nostr_publish_state = 'pending', nostr_publish_epoch = NULL
+         nostr_publish_state = 'pending', nostr_publish_epoch = NULL,
+         nostr_attempts = message.nostr_attempts + 1,
+         nostr_first_attempt_at = COALESCE(message.nostr_first_attempt_at, now())
        WHERE id = $1 AND event_id IS NOT DISTINCT FROM $2 AND sats = 0
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
@@ -1387,7 +1448,7 @@ export class PostgresMessageStore implements MessageStore {
     try {
       const rows = await this.#sql.query<{ id: string }>(
         `UPDATE message SET event_id = $2, nostr_event = $3::jsonb WHERE id = $1 RETURNING id`,
-        [id, eventId, JSON.stringify(nostrEvent)],
+        [id, eventId, nostrEvent],
       );
       return rows[0] !== undefined;
       /* v8 ignore next 3 -- unique_violation on event_id */
@@ -1450,7 +1511,7 @@ export class PostgresMessageStore implements MessageStore {
         row.authorAccountId,
         row.amountSats,
         row.lightningAddress,
-        row.zapRequest === null ? null : JSON.stringify(row.zapRequest),
+        row.zapRequest,
         row.result,
         row.httpStatus,
         row.pr,
@@ -1458,7 +1519,7 @@ export class PostgresMessageStore implements MessageStore {
         row.description,
         row.descriptionHash,
         row.isNip57Invoice,
-        row.lnurlResponse === null ? null : JSON.stringify(row.lnurlResponse),
+        row.lnurlResponse,
       ],
     );
   }
@@ -1495,7 +1556,7 @@ export class PostgresMessageStore implements MessageStore {
         row.reason,
         row.amountSats,
         row.receiptPubkey,
-        JSON.stringify(row.receipt),
+        row.receipt,
       ],
     );
   }
