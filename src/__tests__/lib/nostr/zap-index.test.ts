@@ -1221,7 +1221,7 @@ describe('indexOpenZapReceipts', () => {
     }
   });
 
-  it('skips a second identical non-terminal ingest write without re-validating terminal ones', async () => {
+  it('skips a second identical non-terminal ingest write', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     await seedStore({

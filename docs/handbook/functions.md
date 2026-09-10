@@ -109,7 +109,7 @@
 
 - **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), `parent_id uuid REFERENCES message (id)`, `author_pubkey text`, then `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL` and `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`, then `message_invoice` and `nostr_zap_ingest` without FKs plus `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb` and their `created_at`/`message_id` and `receipt_id` indexes). After `message` exists, adds `account_profile_message_id_fkey` (`ON DELETE SET NULL`) and unique partial index `account_profile_message_uidx`, then soft-hide columns `deleted_at timestamptz` and `deleted_by uuid`. The partial index `message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array also runs an idempotent repair unwrapping `nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`), which matches no rows once complete. It is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. Successfully repaired rows have `nostr_attempts` cleared for a fresh repair budget.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent SQL execute matching `docs/schema/message.sql`.
+- **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/message.sql` mirrors the DDL and documents the boot repair statement by comment (the `DO $unwrap$` block lives only in `MESSAGE_SCHEMA_SQL`).
 - **Used by:** `openBootStores` when SQL opens.
 
 ## Function: migrateContactSchema
@@ -123,7 +123,7 @@
 
 - **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` tables and unique indexes). The partial index `conversation_message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The repair is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent SQL matching `docs/schema/conversation.sql`.
+- **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment (the `DO $unwrap$` block lives only in `CONVERSATION_SCHEMA_SQL`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
 
 ## Function: migratePushSchema
@@ -1253,8 +1253,7 @@
 ## Function: indexZapReceipt
 
 - **Purpose:** Validate provider pubkey (case-insensitive hex) and add sats once per receipt id. Callers verify the Nostr signature first. Persists a `nostr_zap_ingest` row (`indexed`, or `rejected` with reason `pubkey` / `amount` / `duplicate`); store throw logs `nostr.zap.ingest.record_failed` and does not change the boolean result.
-- **Ingest dedupe:** One `nostr_zap_ingest` row is written per receipt per decision change per process (memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt). A repeated identical `outcome:reason` is not written again.
-- **Terminal skip:** A receipt whose remembered decision on this store instance is `indexed` or `rejected`/`duplicate` is skipped before validation - no signature check, no account or LNURL lookup, no `nostr_zap_ingest` row.
+- **Ingest dedupe:** One `nostr_zap_ingest` row is written per receipt per decision change per process (memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt). A repeated identical `outcome:reason` is not written again. Receipts whose remembered decision is already terminal never reach this function: `indexOpenZapReceipts` skips them before validation.
 - **Inputs:** store, messageId, receipt, providerPubkey, amountSats; optional receiptEvent / noteEventId for debug rows.
 - **Returns / side effects:** boolean; logs indexed/rejected; records ingest.
 - **Used by:** `indexOpenZapReceipts` (worker tick).
