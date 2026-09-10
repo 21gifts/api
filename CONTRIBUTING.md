@@ -347,8 +347,14 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   longer matches a live account are left unchanged.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
   `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, and `delivered_endpoints` are SHA-256 hex of the column text. All other columns, including
-  `name`, stay plaintext. Do not omit those secret keys from the JSON (rotation
+  `name`, stay plaintext except unchanged bytea columns on UPDATE, see below. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
+- On UPDATE, a bytea column whose value did not change (for example `message.photo`)
+  is logged in both `before` and `after` as
+  `{ "unchanged": true, "sha256": "<hex>", "bytes": <octet_length> }`; the full
+  value stays on INSERT, DELETE and the UPDATE that changes it, so the row remains
+  reconstructable from the latest earlier full image. Secret columns keep their
+  hash.
 - Compare OLD vs NEW **before** redaction
   (`to_jsonb(OLD) IS NOT DISTINCT FROM to_jsonb(NEW)`). No-op UPDATEs skip the
   log row.
