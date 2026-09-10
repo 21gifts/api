@@ -381,21 +381,20 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     const fp = forumContentFingerprint('cap', JPEG.bytes);
     const first = await store.create({ ...EARLY, id: 'm-photo', text: 'cap' }, JPEG);
-    expect(
-      await store.findLiveByAccountContent('acc', null, fp),
-    ).toMatchObject({ id: first.id });
+    expect(await store.findLiveByAccountContent('acc', null, fp)).toMatchObject({ id: first.id });
     expect(await store.findLiveByAccountContent('acc', null, 'ff'.repeat(32))).toBeUndefined();
     expect(await store.findLiveByAccountContent('other', null, fp)).toBeUndefined();
-    await store.create({
-      ...LATE,
-      id: 'm-reply',
-      parentId: 'm-photo',
-      text: 'cap',
-    }, JPEG);
+    await store.create(
+      {
+        ...LATE,
+        id: 'm-reply',
+        parentId: 'm-photo',
+        text: 'cap',
+      },
+      JPEG,
+    );
     const replyFp = forumContentFingerprint('cap', JPEG.bytes);
-    expect(
-      (await store.findLiveByAccountContent('acc', 'm-photo', replyFp))?.id,
-    ).toBe('m-reply');
+    expect((await store.findLiveByAccountContent('acc', 'm-photo', replyFp))?.id).toBe('m-reply');
     expect(await store.findLiveByAccountContent('acc', null, replyFp)).toMatchObject({
       id: first.id,
     });
@@ -437,18 +436,24 @@ describe('InMemoryMessageStore', () => {
 
   it('create with accountId null and a photo does not collapse', async () => {
     const store = new InMemoryMessageStore();
-    const first = await store.create({
-      ...EARLY,
-      id: 'damus-1',
-      accountId: null,
-      text: 'pic',
-    }, JPEG);
-    const second = await store.create({
-      ...EARLY,
-      id: 'damus-2',
-      accountId: null,
-      text: 'pic',
-    }, JPEG);
+    const first = await store.create(
+      {
+        ...EARLY,
+        id: 'damus-1',
+        accountId: null,
+        text: 'pic',
+      },
+      JPEG,
+    );
+    const second = await store.create(
+      {
+        ...EARLY,
+        id: 'damus-2',
+        accountId: null,
+        text: 'pic',
+      },
+      JPEG,
+    );
     expect(second.id).not.toBe(first.id);
     expect(await store.getById('damus-1')).toBeDefined();
     expect(await store.getById('damus-2')).toBeDefined();
@@ -456,18 +461,24 @@ describe('InMemoryMessageStore', () => {
 
   it('create with distinct non-null eventIds does not collapse the same media', async () => {
     const store = new InMemoryMessageStore();
-    const first = await store.create({
-      ...EARLY,
-      id: 'n',
-      text: 'same',
-      eventId: '11'.repeat(32),
-    }, JPEG);
-    const second = await store.create({
-      ...EARLY,
-      id: 'z',
-      text: 'same',
-      eventId: '22'.repeat(32),
-    }, JPEG);
+    const first = await store.create(
+      {
+        ...EARLY,
+        id: 'n',
+        text: 'same',
+        eventId: '11'.repeat(32),
+      },
+      JPEG,
+    );
+    const second = await store.create(
+      {
+        ...EARLY,
+        id: 'z',
+        text: 'same',
+        eventId: '22'.repeat(32),
+      },
+      JPEG,
+    );
     expect(first.id).toBe('n');
     expect(second.id).toBe('z');
     expect(await store.getById('n')).toBeDefined();

@@ -691,9 +691,7 @@ export class InMemoryMessageStore implements MessageStore {
       }
     }
     const contentFp =
-      (photo !== undefined || video !== undefined) &&
-      row.accountId !== null &&
-      row.eventId === null
+      (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
         ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
         : null;
     if (contentFp !== null && row.accountId !== null) {
@@ -1301,9 +1299,7 @@ export class PostgresMessageStore implements MessageStore {
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const contentFp =
-      (photo !== undefined || video !== undefined) &&
-      row.accountId !== null &&
-      row.eventId === null
+      (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
         ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
         : null;
     const stored = copyRow({
