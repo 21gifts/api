@@ -989,6 +989,8 @@ describe('indexOpenZapReceipts', () => {
       listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
       listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
       create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+      findLiveByAccountContent: (...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>) =>
+        base.findLiveByAccountContent(...args),
       getPhoto: (id: string) => base.getPhoto(id),
       deleteById: (id: string) => base.deleteById(id),
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1143,6 +1145,8 @@ describe('indexOpenZapReceipts', () => {
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+        findLiveByAccountContent: (...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>) =>
+          base.findLiveByAccountContent(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1394,6 +1398,8 @@ describe('indexOpenZapReceipts', () => {
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+        findLiveByAccountContent: (...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>) =>
+          base.findLiveByAccountContent(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),

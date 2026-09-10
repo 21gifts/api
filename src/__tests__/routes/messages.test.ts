@@ -949,7 +949,7 @@ describe('POST /messages', () => {
     });
     expect(second.status).toBe(200);
     const secondJson = (await second.json()) as Record<string, unknown>;
-    expect(secondJson.id).toBe(firstJson.id);
+    expect(secondJson['id']).toBe(firstJson.id);
     expect(secondJson).not.toHaveProperty('contentFp');
     expect(await store.listLatest(10)).toHaveLength(1);
   });
