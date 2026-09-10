@@ -101,8 +101,8 @@ export interface MessageRow {
   deletedBy: string | null;
   /**
    * Store-internal fingerprint for live media dedupe (`forumContentFingerprint`).
-   * Set when a photo or video is stored and `accountId` is not null; otherwise
-   * `null` / omitted. Never included in {@link PublicMessage}.
+   * Set only when media is stored, `accountId` is not null, and `eventId` is
+   * null; otherwise `null` / omitted. Never included in {@link PublicMessage}.
    */
   contentFp?: string | null;
 }
@@ -224,7 +224,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * (`row.accountId !== null`). Public GET leaves this unset.
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
  * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
- * when requested); `createdAt` ISO-8601. Never includes photo or video bytes.
+ * when requested); `createdAt` ISO-8601. Never includes photo or video bytes,
+ * and never includes `contentFp`.
  */
 export function serializeMessage(
   row: MessageRow,

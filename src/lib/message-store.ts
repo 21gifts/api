@@ -433,6 +433,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   ON message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text`,
+  `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
   `UPDATE message
 SET content_fp = encode(
   digest(
@@ -714,20 +715,10 @@ export class InMemoryMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
     });
-    this.#rows.push(stored);
     if (video !== undefined) {
-      /* v8 ignore start -- disk write failure rolls the in-memory row back */
-      try {
-        await writeForumVideo(stored.id, video);
-      } catch (err) {
-        const idx = this.#rows.findIndex((item) => item.id === stored.id);
-        if (idx !== -1) {
-          this.#rows.splice(idx, 1);
-        }
-        throw err;
-      }
-      /* v8 ignore stop */
+      await writeForumVideo(stored.id, video);
     }
+    this.#rows.push(stored);
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }

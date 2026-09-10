@@ -87,7 +87,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(39);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(40);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -123,6 +123,7 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_nostr_event_unrepaired_idx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE EXTENSION IF NOT EXISTS pgcrypto/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/digest\(photo, 'sha256'\)/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /digest\(photo, 'sha256'\)[\s\S]*?video_content_type IS NULL/,

@@ -368,7 +368,8 @@ async function persistForumPost(
     try {
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
-        return c.json(serializeMessage(existing, false, account.role, undefined, true), 200);
+        const payable = existing.eventId !== null && account.lightningAddress !== null;
+        return c.json(serializeMessage(existing, payable, account.role, undefined, true), 200);
       }
     } catch {
       logEvent('messages.create.failed');

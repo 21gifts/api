@@ -941,7 +941,8 @@ describe('POST /messages', () => {
       body,
     });
     expect(first.status).toBe(200);
-    const firstJson = (await first.json()) as { id: string };
+    const firstJson = (await first.json()) as { id: string; payable: boolean };
+    expect(firstJson.payable).toBe(false);
     const second = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -950,7 +951,42 @@ describe('POST /messages', () => {
     expect(second.status).toBe(200);
     const secondJson = (await second.json()) as Record<string, unknown>;
     expect(secondJson['id']).toBe(firstJson.id);
+    expect(secondJson['payable']).toBe(false);
     expect(secondJson).not.toHaveProperty('contentFp');
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('collapses onto a signed note as payable when the account has a Lightning Address', async () => {
+    const store = new InMemoryMessageStore();
+    const seeded = await store.create(
+      {
+        id: 'signed-collapse',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'signed caption',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const eventId = 'ee'.repeat(32);
+    expect(await store.updateSignedEvent(seeded.id, eventId, { id: eventId, kind: 1 })).toBe(
+      true,
+    );
+    const app = mount(await namedStore('Ada'), store);
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'signed caption',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; payable: boolean };
+    expect(body.id).toBe(seeded.id);
+    expect(body.payable).toBe(true);
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
