@@ -751,13 +751,7 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return row.parentId === parentId;
     });
-    matches.sort((a, b) => {
-      const byTime = a.createdAt.getTime() - b.createdAt.getTime();
-      if (byTime !== 0) {
-        return byTime;
-      }
-      return a.id.localeCompare(b.id);
-    });
+    // Live media collapse keeps at most one match; append order is oldest-first.
     const first = matches[0];
     return Promise.resolve(first === undefined ? undefined : copyRow(first));
   }
