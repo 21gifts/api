@@ -102,3 +102,58 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid;
 CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
   ON message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
+
+-- Live media dedupe fingerprint (photo/video POST collapse). Not selected on list/get.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text;
+
+-- Backfill live photo rows (pgcrypto digest already enabled via db_change).
+-- Do not hash old on-disk videos in SQL (no bytea). Those stay content_fp null
+-- unless they also have a photo/poster.
+UPDATE message
+SET content_fp = encode(
+  digest(
+    convert_to(text, 'UTF8') || decode('00', 'hex') || digest(photo, 'sha256'),
+    'sha256'
+  ),
+  'hex'
+)
+WHERE photo IS NOT NULL AND content_fp IS NULL;
+
+-- Salt extra live duplicates so the unique index can be created (keep oldest).
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY account_id, content_fp
+    ORDER BY created_at ASC, id ASC
+  ) AS rn
+  FROM message
+  WHERE deleted_at IS NULL AND parent_id IS NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL
+)
+UPDATE message
+SET content_fp = content_fp || ':' || id::text
+FROM ranked
+WHERE message.id = ranked.id AND ranked.rn > 1;
+
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY account_id, parent_id, content_fp
+    ORDER BY created_at ASC, id ASC
+  ) AS rn
+  FROM message
+  WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL
+)
+UPDATE message
+SET content_fp = content_fp || ':' || id::text
+FROM ranked
+WHERE message.id = ranked.id AND ranked.rn > 1;
+
+CREATE UNIQUE INDEX IF NOT EXISTS message_live_top_content_fp_uidx
+  ON message (account_id, content_fp)
+  WHERE deleted_at IS NULL AND parent_id IS NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS message_live_reply_content_fp_uidx
+  ON message (account_id, parent_id, content_fp)
+  WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL;

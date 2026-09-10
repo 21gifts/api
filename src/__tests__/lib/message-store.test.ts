@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import type { SqlClient } from '@/lib/auth/sql';
-import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
+import {
+  forumContentFingerprint,
+  unsignedNostrDefaults,
+  type ForumPhoto,
+  type MessageRow,
+} from '@/lib/message';
 import {
   InMemoryMessageStore,
   MESSAGE_SCHEMA_SQL,
@@ -82,7 +87,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(33);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(39);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -117,6 +122,11 @@ describe('MESSAGE_SCHEMA_SQL', () => {
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_nostr_event_unrepaired_idx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/digest\(photo, 'sha256'\)/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp \|\| ':' \|\| id/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_top_content_fp_uidx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_reply_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -365,6 +375,83 @@ describe('InMemoryMessageStore', () => {
     expect(second.id).toBe(first.id);
     expect(second.text).toBe(first.text);
     expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('findLiveByAccountContent hits, misses, skips deleted, and scopes parentId', async () => {
+    const store = new InMemoryMessageStore();
+    const fp = forumContentFingerprint('cap', JPEG.bytes);
+    const first = await store.create({ ...EARLY, id: 'm-photo', text: 'cap' }, JPEG);
+    expect(
+      await store.findLiveByAccountContent('acc', null, fp),
+    ).toMatchObject({ id: first.id });
+    expect(await store.findLiveByAccountContent('acc', null, 'ff'.repeat(32))).toBeUndefined();
+    expect(await store.findLiveByAccountContent('other', null, fp)).toBeUndefined();
+    await store.create({
+      ...LATE,
+      id: 'm-reply',
+      parentId: 'm-photo',
+      text: 'cap',
+    }, JPEG);
+    const replyFp = forumContentFingerprint('cap', JPEG.bytes);
+    expect(
+      (await store.findLiveByAccountContent('acc', 'm-photo', replyFp))?.id,
+    ).toBe('m-reply');
+    expect(await store.findLiveByAccountContent('acc', null, replyFp)).toMatchObject({
+      id: first.id,
+    });
+    await store.markDeleted('m-photo', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    expect(await store.findLiveByAccountContent('acc', null, fp)).toBeUndefined();
+  });
+
+  it('create collapses the same live media to the first row', async () => {
+    const store = new InMemoryMessageStore();
+    const first = await store.create({ ...EARLY, id: 'm1', text: 'same' }, JPEG);
+    const second = await store.create({ ...EARLY, id: 'm2', text: 'same' }, JPEG);
+    expect(second.id).toBe(first.id);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('create does not write a second video file on media collapse', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const video = { contentType: 'video/mp4' as const, bytes: mp4 };
+    const first = await store.create({ ...EARLY, id: 'v1', text: 'clip' }, undefined, video);
+    const path = videoFilePath(resolveMediaDir(), first.id, 'video/mp4');
+    await readFile(path);
+    const second = await store.create({ ...EARLY, id: 'v2', text: 'clip' }, undefined, video);
+    expect(second.id).toBe(first.id);
+    expect(await store.listLatest(10)).toHaveLength(1);
+    await readFile(path);
+    await expect(
+      readFile(videoFilePath(resolveMediaDir(), 'v2', 'video/mp4')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('create keeps text-only posts as separate rows', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 't1', text: 'hi' });
+    await store.create({ ...EARLY, id: 't2', text: 'hi' });
+    expect(await store.listLatest(10)).toHaveLength(2);
+  });
+
+  it('create with accountId null and a photo does not collapse', async () => {
+    const store = new InMemoryMessageStore();
+    const first = await store.create({
+      ...EARLY,
+      id: 'damus-1',
+      accountId: null,
+      text: 'pic',
+    }, JPEG);
+    const second = await store.create({
+      ...EARLY,
+      id: 'damus-2',
+      accountId: null,
+      text: 'pic',
+    }, JPEG);
+    expect(second.id).not.toBe(first.id);
+    expect(await store.getById('damus-1')).toBeDefined();
+    expect(await store.getById('damus-2')).toBeDefined();
   });
 
   it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
@@ -1272,7 +1359,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.hasVideo).toBe(false);
   });
 
-  it('create binds fourteen params including video_content_type, parent_id and author_pubkey', async () => {
+  it('create binds fifteen params including content_fp, video_content_type, parent_id and author_pubkey', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -1286,8 +1373,9 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
     );
+    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15/);
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
       'm1',
@@ -1304,7 +1392,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
+    expect(sql.executes[0]?.params).toHaveLength(15);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created).not.toBe(row);
@@ -1325,6 +1415,78 @@ describe('PostgresMessageStore', () => {
     await store.create(row, JPEG);
     expect(sql.executes[0]?.params[4]).toEqual(JPEG.bytes);
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
+    expect(sql.executes[0]?.params[14]).toBe(forumContentFingerprint('', JPEG.bytes));
+  });
+
+  it('findLiveByAccountContent SQL matches account, parent, and content_fp', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.findLiveByAccountContent('acc', null, 'ab'.repeat(32))).toBeUndefined();
+    expect(sql.queries[0]?.text).toMatch(/content_fp = \$3/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::uuid IS NULL AND parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT DISTINCT FROM \$2/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null, 'ab'.repeat(32)]);
+  });
+
+  it('create on 23505 returns the existing live row and unlinks the new video', async () => {
+    const sql = new MockSql();
+    const existingId = 'existing-id';
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [
+      {
+        id: existingId,
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        video_content_type: 'video/mp4',
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const created = await new PostgresMessageStore(sql).create(
+      {
+        id: 'm-new',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date(0),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    expect(created.id).toBe(existingId);
+    await expect(
+      readFile(videoFilePath(resolveMediaDir(), 'm-new', 'video/mp4')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [];
+    await expect(
+      new PostgresMessageStore(sql).create(
+        {
+          id: 'm1',
+          accountId: 'acc',
+          name: 'Ada',
+          text: '',
+          createdAt: new Date(0),
+          hasPhoto: true,
+          ...unsignedNostrDefaults(),
+        },
+        JPEG,
+      ),
+    ).rejects.toMatchObject({ code: '23505' });
   });
 
   it('create binds the nostrEvent object when present', async () => {

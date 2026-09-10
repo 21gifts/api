@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { AccountRole } from '@/lib/auth/store';
 import type { ForumVideoContentType } from '@/lib/video';
 
@@ -98,6 +99,12 @@ export interface MessageRow {
    * live. Default `null` on create. Not a foreign key.
    */
   deletedBy: string | null;
+  /**
+   * Store-internal fingerprint for live media dedupe (`forumContentFingerprint`).
+   * Set when a photo or video is stored and `accountId` is not null; otherwise
+   * `null` / omitted. Never included in {@link PublicMessage}.
+   */
+  contentFp?: string | null;
 }
 
 /**
@@ -138,6 +145,25 @@ export interface PublicMessage {
    * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
    */
   replyCount?: number;
+}
+
+/**
+ * SHA-256 hex of utf8(text) + 0x00 + SHA-256(mediaBytes). Media required.
+ *
+ * Matches the SQL photo backfill (`digest(photo, 'sha256')` with a 0x00
+ * separator after the UTF-8 text).
+ *
+ * @param text - Already-normalised forum text (may be empty).
+ * @param mediaBytes - Photo or video bytes (video wins when both exist).
+ * @returns Lowercase hex SHA-256 (64 characters).
+ */
+export function forumContentFingerprint(text: string, mediaBytes: Uint8Array): string {
+  const mediaDigest = createHash('sha256').update(mediaBytes).digest();
+  return createHash('sha256')
+    .update(Buffer.from(text, 'utf8'))
+    .update(Buffer.from([0x00]))
+    .update(mediaDigest)
+    .digest('hex');
 }
 
 /**
