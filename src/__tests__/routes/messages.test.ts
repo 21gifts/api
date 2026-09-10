@@ -1057,7 +1057,9 @@ describe('POST /messages', () => {
       body,
     });
     expect(second.status).toBe(200);
-    expect(((await second.json()) as { id: string }).id).toBe(firstId);
+    const secondJson = (await second.json()) as { id: string; payable: boolean };
+    expect(secondJson.id).toBe(firstId);
+    expect(secondJson.payable).toBe(false);
     expect(await messageStore.listReplies(parentId)).toHaveLength(1);
     const listed = await messageStore.listLatest(10);
     expect(listed.find((row) => row.id === parentId)?.replyCount).toBe(1);

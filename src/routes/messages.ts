@@ -362,14 +362,18 @@ async function persistForumPost(
   photo?: ForumPhoto,
   video?: ForumVideo,
 ): Promise<Response> {
+  const payableOf = (row: MessageRow): boolean =>
+    (row.parentId ?? null) === null && row.eventId !== null && account.lightningAddress !== null;
   if (photo !== undefined || video !== undefined) {
     const mediaBytes = video?.bytes ?? photo!.bytes;
     const fp = forumContentFingerprint(text, mediaBytes);
     try {
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
-        const payable = existing.eventId !== null && account.lightningAddress !== null;
-        return c.json(serializeMessage(existing, payable, account.role, undefined, true), 200);
+        return c.json(
+          serializeMessage(existing, payableOf(existing), account.role, undefined, true),
+          200,
+        );
       }
     } catch {
       logEvent('messages.create.failed');
@@ -407,7 +411,10 @@ async function persistForumPost(
         logEvent('push.enqueue.failed');
       }
     }
-    return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
+    return c.json(
+      serializeMessage(created, payableOf(created), account.role, undefined, true),
+      200,
+    );
   } catch {
     logEvent('messages.create.failed');
     return c.json({ error: 'Messages are unavailable' }, 503);
