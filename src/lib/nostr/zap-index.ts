@@ -162,6 +162,10 @@ function zapIngestRow(args: {
  * The provider pubkey check is case-insensitive hex. Callers must already
  * have verified the Nostr signature (`verifyEvent`).
  *
+ * Each decision is persisted at most once per receipt id per store instance
+ * in this process, so re-validating a known receipt writes no further ingest
+ * row.
+ *
  * @param store - Forum store.
  * @param messageId - Forum row id.
  * @param receipt - Kind 9735.
@@ -264,6 +268,10 @@ export async function indexZapReceipt(args: {
  * Query zap relays for kind:9735 receipts on recent forum notes and index
  * validated ones.
  *
+ * Receipts whose terminal decision this process already persisted are skipped,
+ * so a steady state writes no ingest rows at all. The memory is process-local,
+ * so the first tick after a restart may rewrite one row per known receipt.
+ *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch.
  * @returns Resolves when the tick's ingest pass finishes.
  */
@@ -336,6 +344,10 @@ export async function indexOpenZapReceipts(args: {
 
 /**
  * Validate and index one candidate receipt event.
+ *
+ * Returns right after id validation when this process already persisted a
+ * terminal decision for the receipt id on this store instance, that is
+ * `indexed`, or `rejected` with reason `duplicate`.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.

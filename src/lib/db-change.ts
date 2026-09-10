@@ -13,7 +13,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 
-/** Idempotent SQL for the append-only change log (DDL plus one-time live `view_key` rewrite; matches `docs/schema/db_change.sql`). */
+/** Idempotent SQL for the append-only change log (DDL, the `log_db_change` trigger body that stores an unchanged bytea column as a `sha256` reference instead of the full value, and the one-time live `view_key` rewrite; matches `docs/schema/db_change.sql`). */
 export const DB_CHANGE_SCHEMA_SQL: readonly string[] = [
   `CREATE EXTENSION IF NOT EXISTS pgcrypto;`,
   `CREATE TABLE IF NOT EXISTS db_change (
