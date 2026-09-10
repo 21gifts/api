@@ -971,9 +971,7 @@ describe('POST /messages', () => {
       { contentType: 'image/jpeg', bytes: JPEG_BYTES },
     );
     const eventId = 'ee'.repeat(32);
-    expect(await store.updateSignedEvent(seeded.id, eventId, { id: eventId, kind: 1 })).toBe(
-      true,
-    );
+    expect(await store.updateSignedEvent(seeded.id, eventId, { id: eventId, kind: 1 })).toBe(true);
     const app = mount(await namedStore('Ada'), store);
     const res = await app.request('/messages', {
       method: 'POST',
