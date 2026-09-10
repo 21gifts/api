@@ -12,6 +12,7 @@ import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
+  forumContentFingerprint,
   normalizeForumText,
   serializeMessage,
   unsignedNostrDefaults,
@@ -336,16 +337,105 @@ async function serveForumVideo(
 }
 
 /**
+ * Media collapse → burst limiter → create → optional top-level push.
+ * Shared by JSON and multipart after body parse / normalize / decode.
+ *
+ * @param deps - Store, clock, optional push.
+ * @param postLimiter - Per-account burst limiter.
+ * @param c - Request context (JSON / headers).
+ * @param account - Authenticated account.
+ * @param authorName - Display name snapshot.
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level (multipart is always null).
+ * @param photo - Optional decoded photo / poster.
+ * @param video - Optional decoded video.
+ * @returns 200 / 429 / 503.
+ */
+async function persistForumPost(
+  deps: MessagesRouteDeps,
+  postLimiter: PostRateLimiter,
+  c: Context,
+  account: Account,
+  authorName: string,
+  text: string,
+  parentId: string | null,
+  photo?: ForumPhoto,
+  video?: ForumVideo,
+): Promise<Response> {
+  const payableOf = (row: MessageRow): boolean =>
+    (row.parentId ?? null) === null && row.eventId !== null && account.lightningAddress !== null;
+  if (photo !== undefined || video !== undefined) {
+    const mediaBytes = video?.bytes ?? photo!.bytes;
+    const fp = forumContentFingerprint(text, mediaBytes);
+    try {
+      const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
+      if (existing !== undefined) {
+        return c.json(
+          serializeMessage(existing, payableOf(existing), account.role, undefined, true),
+          200,
+        );
+      }
+    } catch {
+      logEvent('messages.create.failed');
+      return c.json({ error: 'Messages are unavailable' }, 503);
+    }
+  }
+  if (!postLimiter.allow(account.id, deps.now())) {
+    logEvent('messages.rate_limited', { accountId: account.id });
+    c.header('Retry-After', '10');
+    return c.json({ error: 'Too many messages' }, 429);
+  }
+  const id = crypto.randomUUID();
+  const row: MessageRow = {
+    id,
+    accountId: account.id,
+    name: authorName,
+    text,
+    createdAt: new Date(deps.now()),
+    hasPhoto: photo !== undefined,
+    hasVideo: video !== undefined,
+    videoContentType: video === undefined ? null : video.contentType,
+    ...unsignedNostrDefaults(),
+    parentId,
+  };
+  try {
+    const created =
+      photo === undefined && video === undefined
+        ? await deps.store.create(row)
+        : await deps.store.create(row, photo, video);
+    const isReplay = created.id !== id;
+    if (!isReplay && deps.pushStore !== undefined && parentId === null) {
+      try {
+        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
+    }
+    return c.json(
+      serializeMessage(created, payableOf(created), account.role, undefined, true),
+      200,
+    );
+  } catch {
+    logEvent('messages.create.failed');
+    return c.json({ error: 'Messages are unavailable' }, 503);
+  }
+}
+
+/**
  * `POST /messages` as multipart (`video` file + optional `poster` + `text`).
- * The caller applies `postLimiter` (429 + `Retry-After: 10`) before invoking this helper.
+ * Always top-level (`parentId` null). Applies media collapse and `postLimiter`
+ * after form parse (same order as JSON).
  *
  * @param deps - Store and clock.
+ * @param postLimiter - Per-account burst limiter.
  * @param c - Request.
  * @param account - Authenticated account (already named).
- * @returns 200 / 400 / 503.
+ * @param authorName - Display name snapshot.
+ * @returns 200 / 400 / 429 / 503.
  */
 async function postMultipartMessage(
   deps: MessagesRouteDeps,
+  postLimiter: PostRateLimiter,
   c: Context,
   account: Account,
   authorName: string,
@@ -385,31 +475,7 @@ async function postMultipartMessage(
   if (text === '' && photo === undefined && video === undefined) {
     return c.json({ error: 'Text must be 1–500 characters or include a photo or video' }, 400);
   }
-  const row: MessageRow = {
-    id: crypto.randomUUID(),
-    accountId: account.id,
-    name: authorName,
-    text,
-    createdAt: new Date(deps.now()),
-    hasPhoto: photo !== undefined,
-    hasVideo: video !== undefined,
-    videoContentType: video === undefined ? null : video.contentType,
-    ...unsignedNostrDefaults(),
-  };
-  try {
-    const created = await deps.store.create(row, photo, video);
-    if (deps.pushStore !== undefined) {
-      try {
-        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
-      } catch {
-        logEvent('push.enqueue.failed');
-      }
-    }
-    return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
-  } catch {
-    logEvent('messages.create.failed');
-    return c.json({ error: 'Messages are unavailable' }, 503);
-  }
+  return persistForumPost(deps, postLimiter, c, account, authorName, text, null, photo, video);
 }
 
 /** Body schema for posting a forum message (text and/or photo; optional reply). */
@@ -510,15 +576,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       /* v8 ignore next -- requireAction already rejected a missing name */
       const authorName = (account.name ?? '').trim();
-      if (!postLimiter.allow(account.id, deps.now())) {
-        logEvent('messages.rate_limited', { accountId: account.id });
-        c.header('Retry-After', '10');
-        return c.json({ error: 'Too many messages' }, 429);
-      }
       /* v8 ignore next -- missing content-type is JSON parse 400 */
       const requestType = c.req.header('content-type') ?? '';
       if (requestType.toLowerCase().includes('multipart/form-data')) {
-        return postMultipartMessage(deps, c, account, authorName);
+        return postMultipartMessage(deps, postLimiter, c, account, authorName);
       }
       const parsed = postBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
@@ -552,33 +613,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         parentId = parent.id;
       }
-      const row: MessageRow = {
-        id: crypto.randomUUID(),
-        accountId: account.id,
-        name: authorName,
-        text,
-        createdAt: new Date(deps.now()),
-        hasPhoto: photo !== undefined,
-        hasVideo: false,
-        videoContentType: null,
-        ...unsignedNostrDefaults(),
-        parentId,
-      };
-      try {
-        const created =
-          photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
-        if (deps.pushStore !== undefined && parentId === null) {
-          try {
-            await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
-          } catch {
-            logEvent('push.enqueue.failed');
-          }
-        }
-        return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
-      } catch {
-        logEvent('messages.create.failed');
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
+      return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
     })
     .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c.req.param('id')))
     .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c.req.param('id')))

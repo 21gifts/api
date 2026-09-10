@@ -127,6 +127,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listReplies: boom,
     listPublishedEventIds: boom,
     create: boom,
+    findLiveByAccountContent: boom,
     getPhoto: boom,
     deleteById: boom,
     markDeleted: boom,
@@ -915,6 +916,322 @@ describe('POST /messages', () => {
     expect(photo.status).toBe(200);
     expect(photo.headers.get('content-type')).toBe('image/jpeg');
     expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('collapses a repeated photo+text post to the same id without 429', async () => {
+    const limiter = new PostRateLimiter();
+    const store = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore: await namedStore('Ada'),
+        now,
+        postLimiter: limiter,
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const body = JSON.stringify({
+      text: 'same caption',
+      photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+    });
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { id: string; payable: boolean };
+    expect(firstJson.payable).toBe(false);
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    const secondJson = (await second.json()) as Record<string, unknown>;
+    expect(secondJson['id']).toBe(firstJson.id);
+    expect(secondJson['payable']).toBe(false);
+    expect(secondJson).not.toHaveProperty('contentFp');
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('collapses onto a signed note as payable when the account has a Lightning Address', async () => {
+    const store = new InMemoryMessageStore();
+    const seeded = await store.create(
+      {
+        id: 'signed-collapse',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'signed caption',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const eventId = 'ee'.repeat(32);
+    expect(await store.updateSignedEvent(seeded.id, eventId, { id: eventId, kind: 1 })).toBe(true);
+    const app = mount(await namedStore('Ada'), store);
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'signed caption',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; payable: boolean };
+    expect(body.id).toBe(seeded.id);
+    expect(body.payable).toBe(true);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('creates a new row when the same photo has a different caption', async () => {
+    let clock = now();
+    const store = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore: await namedStore('Ada'),
+        now: () => clock,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'caption-a',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { id: string }).id;
+    clock += 11_000;
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'caption-b',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(second.status).toBe(200);
+    const secondId = ((await second.json()) as { id: string }).id;
+    expect(secondId).not.toBe(firstId);
+    expect(await store.listLatest(10)).toHaveLength(2);
+  });
+
+  it('collapses a repeated reply photo to the same id with replyCount 1', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(await namedStore('Ada'), messageStore);
+    const body = JSON.stringify({
+      text: 'reply pic',
+      inReplyTo: parentId,
+      photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+    });
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { id: string }).id;
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    const secondJson = (await second.json()) as { id: string; payable: boolean };
+    expect(secondJson.id).toBe(firstId);
+    expect(secondJson.payable).toBe(false);
+    expect(await messageStore.listReplies(parentId)).toHaveLength(1);
+    const listed = await messageStore.listLatest(10);
+    expect(listed.find((row) => row.id === parentId)?.replyCount).toBe(1);
+  });
+
+  it('does not enqueue a second forum push on photo replay', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const body = JSON.stringify({
+      text: 'push photo',
+      photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+    });
+    expect(
+      (
+        await app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body,
+        })
+      ).status,
+    ).toBe(200);
+    const claimed = await pushStore.claimPending(20, now() + 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.type).toBe('forum');
+  });
+
+  it('returns 503 when findLiveByAccountContent throws', async () => {
+    const base = new InMemoryMessageStore();
+    const store: MessageStore = {
+      ...base,
+      listLatest: (limit) => base.listLatest(limit),
+      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      create: (row, photo, video) => base.create(row, photo, video),
+      findLiveByAccountContent: async () => {
+        throw new Error('find boom');
+      },
+      getPhoto: (id) => base.getPhoto(id),
+      deleteById: (id) => base.deleteById(id),
+      markDeleted: (id, at, by) => base.markDeleted(id, at, by),
+      getById: (id) => base.getById(id),
+      getByEventId: (eventId) => base.getByEventId(eventId),
+      listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
+      claimUnsigned: (limit, nowMs, leaseMs) => base.claimUnsigned(limit, nowMs, leaseMs),
+      claimUnpublished: (limit, nowMs, leaseMs) => base.claimUnpublished(limit, nowMs, leaseMs),
+      listPendingSigned: (limit) => base.listPendingSigned(limit),
+      clearSignedEvent: (id, expected) => base.clearSignedEvent(id, expected),
+      listSignedMissingPhoto: (limit) => base.listSignedMissingPhoto(limit),
+      listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
+      listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
+      resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateSignedEvent: (id, eventId, nostrEvent) =>
+        base.updateSignedEvent(id, eventId, nostrEvent),
+      updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
+      addSats: (id, extra) => base.addSats(id, extra),
+      recordZapReceipt: (receiptId, messageId, sats) =>
+        base.recordZapReceipt(receiptId, messageId, sats),
+      recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
+      listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      recordZapIngest: (row) => base.recordZapIngest(row),
+      listZapIngests: (limit) => base.listZapIngests(limit),
+    };
+    const res = await mount(await namedStore('Ada'), store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'x',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('skips push when create collapses to an existing id', async () => {
+    const authStore = await namedStore('Ada');
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const existing = {
+      id: 'existing-collapsed',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'x',
+      createdAt: new Date(now()),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    const base = new InMemoryMessageStore();
+    const store: MessageStore = {
+      ...base,
+      listLatest: (limit) => base.listLatest(limit),
+      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      findLiveByAccountContent: async () => undefined,
+      create: async () => ({ ...existing, createdAt: new Date(existing.createdAt.getTime()) }),
+      getPhoto: (id) => base.getPhoto(id),
+      deleteById: (id) => base.deleteById(id),
+      markDeleted: (id, at, by) => base.markDeleted(id, at, by),
+      getById: (id) => base.getById(id),
+      getByEventId: (eventId) => base.getByEventId(eventId),
+      listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
+      claimUnsigned: (limit, nowMs, leaseMs) => base.claimUnsigned(limit, nowMs, leaseMs),
+      claimUnpublished: (limit, nowMs, leaseMs) => base.claimUnpublished(limit, nowMs, leaseMs),
+      listPendingSigned: (limit) => base.listPendingSigned(limit),
+      clearSignedEvent: (id, expected) => base.clearSignedEvent(id, expected),
+      listSignedMissingPhoto: (limit) => base.listSignedMissingPhoto(limit),
+      listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
+      listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
+      resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateSignedEvent: (id, eventId, nostrEvent) =>
+        base.updateSignedEvent(id, eventId, nostrEvent),
+      updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
+      addSats: (id, extra) => base.addSats(id, extra),
+      recordZapReceipt: (receiptId, messageId, sats) =>
+        base.recordZapReceipt(receiptId, messageId, sats),
+      recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
+      listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      recordZapIngest: (row) => base.recordZapIngest(row),
+      listZapIngests: (limit) => base.listZapIngests(limit),
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore,
+        now,
+        pushStore,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'x',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { id: string }).id).toBe('existing-collapsed');
+    expect(await pushStore.claimPending(20, now() + 1, 60_000)).toHaveLength(0);
   });
 
   it('rejects a bad photo payload', async () => {
@@ -2055,6 +2372,7 @@ describe('POST /messages/:id/invoice', () => {
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
+      findLiveByAccountContent: (...args) => base.findLiveByAccountContent(...args),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
       deleteById: (id) => base.deleteById(id),
@@ -2925,6 +3243,44 @@ describe('forum video', () => {
     }
     return types;
   };
+
+  it('collapses a repeated multipart video+text post to the same id', async () => {
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    const limiter = new PostRateLimiter();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore: auth,
+        now,
+        postLimiter: limiter,
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const buildForm = (): FormData => {
+      const form = new FormData();
+      form.set('text', 'clip');
+      form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+      form.set('poster', new File([JPEG_BYTES], 'poster.jpg', { type: 'image/jpeg' }));
+      return form;
+    };
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: buildForm(),
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { id: string }).id;
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: buildForm(),
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { id: string }).id).toBe(firstId);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
 
   it('accepts multipart video and serves Range', async () => {
     const auth = await namedStore('Ada');

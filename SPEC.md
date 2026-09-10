@@ -1506,9 +1506,12 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 author LN). `role` is the posting session account's live `account.role`. Web
 Push is enqueued **only** when `parentId` is null (top-level notes); replies
 do not push. Over-limit posters get **429** `{ "error": "Too many messages" }`
-with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). The worker signs a top-level
-kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`; forum
-`text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
+with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
+POST with the same account, parent, normalised text, and media bytes returns
+**200** with the existing row (no extra burst slot, no second top-level push).
+Text-only posts are unchanged (still **429** on burst). The worker signs a
+top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`;
+forum `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

@@ -10,6 +10,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  forumContentFingerprint,
   unsignedNostrDefaults,
   type ForumPhoto,
   type ForumPhotoContentType,
@@ -95,13 +96,37 @@ export interface MessageStore {
   /**
    * Persist a new message row and optional photo and video.
    *
+   * When `photo` or `video` is present, `row.accountId` is not null, and
+   * `row.eventId` is null, stores `content_fp` from
+   * {@link forumContentFingerprint} (video bytes win when both exist). A live
+   * unique-index hit returns the existing row instead of inserting a second
+   * note. Rows that already carry an `eventId` leave `content_fp` null.
+   *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
    * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo` and
-   *   `hasVideo` / `videoContentType` from `video`.
+   *   `hasVideo` / `videoContentType` from `video`. On media collapse, the
+   *   existing live row (possibly a different id than `row.id`).
    */
   create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow>;
+
+  /**
+   * Oldest live row for the same account, parent, and content fingerprint.
+   *
+   * Top-level: `parentId === null` matches `parent_id IS NULL`. Soft-deleted
+   * rows are ignored. Order is `created_at ASC, id ASC`.
+   *
+   * @param accountId - Author account id.
+   * @param parentId - Parent note id, or `null` for top-level.
+   * @param contentFp - {@link forumContentFingerprint} hex.
+   * @returns The oldest matching live row, or `undefined`.
+   */
+  findLiveByAccountContent(
+    accountId: string,
+    parentId: string | null,
+    contentFp: string,
+  ): Promise<MessageRow | undefined>;
 
   /**
    * Load photo bytes for a message id.
@@ -407,6 +432,51 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
   ON message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text`,
+  `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
+  `UPDATE message
+SET content_fp = encode(
+  digest(
+    convert_to(text, 'UTF8') || decode('00', 'hex') || digest(photo, 'sha256'),
+    'sha256'
+  ),
+  'hex'
+)
+WHERE photo IS NOT NULL AND content_fp IS NULL AND video_content_type IS NULL`,
+  `WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY account_id, content_fp
+    ORDER BY created_at ASC, id ASC
+  ) AS rn
+  FROM message
+  WHERE deleted_at IS NULL AND parent_id IS NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL
+)
+UPDATE message
+SET content_fp = content_fp || ':' || id::text
+FROM ranked
+WHERE message.id = ranked.id AND ranked.rn > 1`,
+  `WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY account_id, parent_id, content_fp
+    ORDER BY created_at ASC, id ASC
+  ) AS rn
+  FROM message
+  WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL
+)
+UPDATE message
+SET content_fp = content_fp || ':' || id::text
+FROM ranked
+WHERE message.id = ranked.id AND ranked.rn > 1`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_live_top_content_fp_uidx
+  ON message (account_id, content_fp)
+  WHERE deleted_at IS NULL AND parent_id IS NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_live_reply_content_fp_uidx
+  ON message (account_id, parent_id, content_fp)
+  WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+    AND account_id IS NOT NULL AND content_fp IS NOT NULL`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -604,6 +674,9 @@ export class InMemoryMessageStore implements MessageStore {
    * Append a copy of `row` and optional photo and video; return a copy.
    * A non-null `eventId` that already exists returns the stored row (same
    * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
+   * Live unsigned media (`eventId` null) with the same account, parent, and
+   * fingerprint returns the existing row without appending or writing a
+   * second video file.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -618,6 +691,20 @@ export class InMemoryMessageStore implements MessageStore {
         return copyRow(existing);
       }
     }
+    const contentFp =
+      (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
+        ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
+        : null;
+    if (contentFp !== null && row.accountId !== null) {
+      const existing = await this.findLiveByAccountContent(
+        row.accountId,
+        row.parentId ?? null,
+        contentFp,
+      );
+      if (existing !== undefined) {
+        return existing;
+      }
+    }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const stored = copyRow({
@@ -626,6 +713,7 @@ export class InMemoryMessageStore implements MessageStore {
       hasPhoto,
       hasVideo,
       videoContentType: video === undefined ? null : video.contentType,
+      contentFp,
     });
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
@@ -635,6 +723,36 @@ export class InMemoryMessageStore implements MessageStore {
       this.#photos.set(stored.id, copyPhoto(photo));
     }
     return copyRow(stored);
+  }
+
+  /**
+   * Oldest live row for the same account, parent, and content fingerprint.
+   *
+   * @param accountId - Author account id.
+   * @param parentId - Parent note id, or `null` for top-level.
+   * @param contentFp - Content fingerprint hex.
+   * @returns A copy of the oldest matching live row, or `undefined`.
+   */
+  findLiveByAccountContent(
+    accountId: string,
+    parentId: string | null,
+    contentFp: string,
+  ): Promise<MessageRow | undefined> {
+    const matches = this.#rows.filter((row) => {
+      if (row.accountId !== accountId || row.deletedAt !== null) {
+        return false;
+      }
+      if ((row.contentFp ?? null) !== contentFp) {
+        return false;
+      }
+      if (parentId === null) {
+        return row.parentId === null;
+      }
+      return row.parentId === parentId;
+    });
+    // Live media collapse keeps at most one match; append order is oldest-first.
+    const first = matches[0];
+    return Promise.resolve(first === undefined ? undefined : copyRow(first));
   }
 
   /**
@@ -1068,6 +1186,16 @@ function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
   return Uint8Array.from(value);
 }
 
+/** True when `error` is a Postgres unique-violation (`code === '23505'`). */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === '23505'
+  );
+}
+
 /** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
 const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               (photo IS NOT NULL) AS has_photo,
@@ -1156,6 +1284,11 @@ export class PostgresMessageStore implements MessageStore {
   /**
    * Insert `row` (and optional photo and video) into `message` and return it.
    *
+   * Writes `content_fp` when media is present, `accountId` is not null, and
+   * `eventId` is null. On unique violation (`23505`), unlinks any video
+   * written for the new id and returns the existing live row from
+   * {@link findLiveByAccountContent}.
+   *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
@@ -1166,12 +1299,17 @@ export class PostgresMessageStore implements MessageStore {
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
+    const contentFp =
+      (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
+        ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
+        : null;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
       hasPhoto,
       hasVideo,
       videoContentType: video === undefined ? null : video.contentType,
+      contentFp,
     });
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
@@ -1180,9 +1318,9 @@ export class PostgresMessageStore implements MessageStore {
       await this.#sql.execute(
         `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
          )`,
         [
           stored.id,
@@ -1199,15 +1337,57 @@ export class PostgresMessageStore implements MessageStore {
           stored.authorPubkey,
           stored.eventId,
           stored.nostrEvent,
+          contentFp,
         ],
       );
     } catch (err) {
       if (video !== undefined) {
         await removeForumVideo(stored.id, video.contentType);
       }
+      if (isUniqueViolation(err) && contentFp !== null && stored.accountId !== null) {
+        const existing = await this.findLiveByAccountContent(
+          stored.accountId,
+          stored.parentId ?? null,
+          contentFp,
+        );
+        if (existing !== undefined) {
+          return existing;
+        }
+      }
       throw err;
     }
     return stored;
+  }
+
+  /**
+   * Oldest live row for the same account, parent, and content fingerprint.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param parentId - Parent note id, or `null` for top-level (`$2`).
+   * @param contentFp - Content fingerprint hex (`$3`).
+   * @returns The oldest matching live row, or `undefined`.
+   */
+  async findLiveByAccountContent(
+    accountId: string,
+    parentId: string | null,
+    contentFp: string,
+  ): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE account_id = $1
+         AND content_fp = $3
+         AND deleted_at IS NULL
+         AND (
+           ($2::uuid IS NULL AND parent_id IS NULL)
+           OR parent_id IS NOT DISTINCT FROM $2
+         )
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+      [accountId, parentId, contentFp],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
   }
 
   async deleteById(id: string): Promise<boolean> {
