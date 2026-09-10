@@ -33,7 +33,13 @@ const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 
 /**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
- * Empty after process restart; first tick may rewrite one row per known receipt.
+ * Empty after process restart; the first tick then re-persists the decisions it
+ * has forgotten.
+ *
+ * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
+ * the receipt id when the message goes away and would record it again, but this
+ * map does not, so a terminal decision here keeps suppressing that write until
+ * the process restarts.
  */
 const zapDecisions = new WeakMap<MessageStore, Map<string, string>>();
 
@@ -162,9 +168,9 @@ function zapIngestRow(args: {
  * The provider pubkey check is case-insensitive hex. Callers must already
  * have verified the Nostr signature (`verifyEvent`).
  *
- * Each decision is persisted at most once per receipt id per store instance
- * in this process, so re-validating a known receipt writes no further ingest
- * row.
+ * The same `outcome:reason` is persisted at most once per receipt id per store
+ * instance in this process. A later, different decision for that receipt does
+ * write another ingest row.
  *
  * @param store - Forum store.
  * @param messageId - Forum row id.
@@ -269,8 +275,11 @@ export async function indexZapReceipt(args: {
  * validated ones.
  *
  * Receipts whose terminal decision this process already persisted are skipped,
- * so a steady state writes no ingest rows at all. The memory is process-local,
- * so the first tick after a restart may rewrite one row per known receipt.
+ * that is `indexed`, or `rejected` with reason `duplicate`. Every other
+ * rejection reason is re-validated on each tick and writes again whenever the
+ * decision changes, so a steady state writes no ingest rows only while the
+ * decisions themselves are stable. The memory is process-local, so the first
+ * tick after a restart re-persists the decisions it has forgotten.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch.
  * @returns Resolves when the tick's ingest pass finishes.
@@ -347,7 +356,8 @@ export async function indexOpenZapReceipts(args: {
  *
  * Returns right after id validation when this process already persisted a
  * terminal decision for the receipt id on this store instance, that is
- * `indexed`, or `rejected` with reason `duplicate`.
+ * `indexed`, or `rejected` with reason `duplicate`. Every other rejection
+ * reason is re-validated on each call.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.
