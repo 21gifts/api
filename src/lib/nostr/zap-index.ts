@@ -114,8 +114,9 @@ function receiptFrame(event: NostrEventFrame): Record<string, unknown> {
 
 /**
  * Persist an ingest decision without failing the tick.
- * Skips the write when this process already persisted the same outcome:reason
- * for the receipt id on this store instance.
+ * Skips the write when the memory already holds the same outcome:reason for the
+ * receipt id on this store instance. The memory is set only after the write
+ * resolves, so two overlapping ticks can both pass this check.
  *
  * @param store - Forum store.
  * @param row - Ingest row.
