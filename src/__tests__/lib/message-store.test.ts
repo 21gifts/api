@@ -454,6 +454,27 @@ describe('InMemoryMessageStore', () => {
     expect(await store.getById('damus-2')).toBeDefined();
   });
 
+  it('create with distinct non-null eventIds does not collapse the same media', async () => {
+    const store = new InMemoryMessageStore();
+    const first = await store.create({
+      ...EARLY,
+      id: 'n',
+      text: 'same',
+      eventId: '11'.repeat(32),
+    }, JPEG);
+    const second = await store.create({
+      ...EARLY,
+      id: 'z',
+      text: 'same',
+      eventId: '22'.repeat(32),
+    }, JPEG);
+    expect(first.id).toBe('n');
+    expect(second.id).toBe('z');
+    expect(await store.getById('n')).toBeDefined();
+    expect(await store.getById('z')).toBeDefined();
+    expect(await store.listLatest(10)).toHaveLength(2);
+  });
+
   it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({

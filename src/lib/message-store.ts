@@ -96,10 +96,11 @@ export interface MessageStore {
   /**
    * Persist a new message row and optional photo and video.
    *
-   * When `photo` or `video` is present and `row.accountId` is not null, stores
-   * `content_fp` from {@link forumContentFingerprint} (video bytes win when
-   * both exist). A live unique-index hit returns the existing row instead of
-   * inserting a second note.
+   * When `photo` or `video` is present, `row.accountId` is not null, and
+   * `row.eventId` is null, stores `content_fp` from
+   * {@link forumContentFingerprint} (video bytes win when both exist). A live
+   * unique-index hit returns the existing row instead of inserting a second
+   * note. Rows that already carry an `eventId` leave `content_fp` null.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
@@ -672,8 +673,9 @@ export class InMemoryMessageStore implements MessageStore {
    * Append a copy of `row` and optional photo and video; return a copy.
    * A non-null `eventId` that already exists returns the stored row (same
    * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
-   * Live media with the same account, parent, and fingerprint returns the
-   * existing row without appending or writing a second video file.
+   * Live unsigned media (`eventId` null) with the same account, parent, and
+   * fingerprint returns the existing row without appending or writing a
+   * second video file.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -689,7 +691,9 @@ export class InMemoryMessageStore implements MessageStore {
       }
     }
     const contentFp =
-      (photo !== undefined || video !== undefined) && row.accountId !== null
+      (photo !== undefined || video !== undefined) &&
+      row.accountId !== null &&
+      row.eventId === null
         ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
         : null;
     if (contentFp !== null && row.accountId !== null) {
@@ -1287,9 +1291,10 @@ export class PostgresMessageStore implements MessageStore {
   /**
    * Insert `row` (and optional photo and video) into `message` and return it.
    *
-   * Writes `content_fp` when media is present and `accountId` is not null.
-   * On unique violation (`23505`), unlinks any video written for the new id
-   * and returns the existing live row from {@link findLiveByAccountContent}.
+   * Writes `content_fp` when media is present, `accountId` is not null, and
+   * `eventId` is null. On unique violation (`23505`), unlinks any video
+   * written for the new id and returns the existing live row from
+   * {@link findLiveByAccountContent}.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
@@ -1302,7 +1307,9 @@ export class PostgresMessageStore implements MessageStore {
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const contentFp =
-      (photo !== undefined || video !== undefined) && row.accountId !== null
+      (photo !== undefined || video !== undefined) &&
+      row.accountId !== null &&
+      row.eventId === null
         ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
         : null;
     const stored = copyRow({
