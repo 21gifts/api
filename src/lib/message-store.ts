@@ -453,7 +453,7 @@ WHERE photo IS NOT NULL AND content_fp IS NULL AND video_content_type IS NULL`,
     AND account_id IS NOT NULL AND content_fp IS NOT NULL
 )
 UPDATE message
-SET content_fp = content_fp || ':' || id::text
+SET content_fp = content_fp || ':' || message.id::text
 FROM ranked
 WHERE message.id = ranked.id AND ranked.rn > 1`,
   `WITH ranked AS (
@@ -466,7 +466,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
     AND account_id IS NOT NULL AND content_fp IS NOT NULL
 )
 UPDATE message
-SET content_fp = content_fp || ':' || id::text
+SET content_fp = content_fp || ':' || message.id::text
 FROM ranked
 WHERE message.id = ranked.id AND ranked.rn > 1`,
   `CREATE UNIQUE INDEX IF NOT EXISTS message_live_top_content_fp_uidx

@@ -132,7 +132,7 @@ WITH ranked AS (
     AND account_id IS NOT NULL AND content_fp IS NOT NULL
 )
 UPDATE message
-SET content_fp = content_fp || ':' || id::text
+SET content_fp = content_fp || ':' || message.id::text
 FROM ranked
 WHERE message.id = ranked.id AND ranked.rn > 1;
 
@@ -146,7 +146,7 @@ WITH ranked AS (
     AND account_id IS NOT NULL AND content_fp IS NOT NULL
 )
 UPDATE message
-SET content_fp = content_fp || ':' || id::text
+SET content_fp = content_fp || ':' || message.id::text
 FROM ranked
 WHERE message.id = ranked.id AND ranked.rn > 1;
 

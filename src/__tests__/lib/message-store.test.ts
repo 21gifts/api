@@ -128,7 +128,13 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /digest\(photo, 'sha256'\)[\s\S]*?video_content_type IS NULL/,
     );
-    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp \|\| ':' \|\| id/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp \|\| ':' \|\| message\.id::text/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).not.toMatch(/content_fp \|\| ':' \|\| id::text/);
+    expect(
+      MESSAGE_SCHEMA_SQL.filter((s) => s.includes('WITH ranked')).every((s) =>
+        s.includes('message.id::text'),
+      ),
+    ).toBe(true);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_top_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_reply_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
