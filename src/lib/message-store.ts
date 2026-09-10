@@ -441,7 +441,7 @@ SET content_fp = encode(
   ),
   'hex'
 )
-WHERE photo IS NOT NULL AND content_fp IS NULL`,
+WHERE photo IS NOT NULL AND content_fp IS NULL AND video_content_type IS NULL`,
   `WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER (
     PARTITION BY account_id, content_fp
@@ -714,10 +714,20 @@ export class InMemoryMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
     });
-    if (video !== undefined) {
-      await writeForumVideo(stored.id, video);
-    }
     this.#rows.push(stored);
+    if (video !== undefined) {
+      /* v8 ignore start -- disk write failure rolls the in-memory row back */
+      try {
+        await writeForumVideo(stored.id, video);
+      } catch (err) {
+        const idx = this.#rows.findIndex((item) => item.id === stored.id);
+        if (idx !== -1) {
+          this.#rows.splice(idx, 1);
+        }
+        throw err;
+      }
+      /* v8 ignore stop */
+    }
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }

@@ -106,9 +106,9 @@ CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
 -- Live media dedupe fingerprint (photo/video POST collapse). Not selected on list/get.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text;
 
--- Backfill live photo rows (pgcrypto digest already enabled via db_change).
--- Do not hash old on-disk videos in SQL (no bytea). Those stay content_fp null
--- unless they also have a photo/poster.
+-- Backfill live photo-only rows (pgcrypto digest already enabled via db_change).
+-- Do not hash poster-on-video rows; those stay content_fp null (runtime
+-- fingerprints video bytes, not the poster). On-disk videos have no bytea.
 UPDATE message
 SET content_fp = encode(
   digest(
@@ -117,7 +117,7 @@ SET content_fp = encode(
   ),
   'hex'
 )
-WHERE photo IS NOT NULL AND content_fp IS NULL;
+WHERE photo IS NOT NULL AND content_fp IS NULL AND video_content_type IS NULL;
 
 -- Salt extra live duplicates so the unique index can be created (keep oldest).
 WITH ranked AS (
