@@ -33,8 +33,9 @@ const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 
 /**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
- * Empty after process restart; the first tick then re-persists the decisions it
- * has forgotten.
+ * Empty after process restart; the first tick may then re-persist a forgotten
+ * decision, but only for the receipts that tick still queries. A receipt whose
+ * message has aged out of `listLatest` is never asked for again.
  *
  * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
  * the receipt id when the message goes away and would record it again, but this
@@ -168,9 +169,12 @@ function zapIngestRow(args: {
  * The provider pubkey check is case-insensitive hex. Callers must already
  * have verified the Nostr signature (`verifyEvent`).
  *
- * The same `outcome:reason` is persisted at most once per receipt id per store
- * instance in this process. A later, different decision for that receipt does
- * write another ingest row.
+ * A repeated identical `outcome:reason` is normally not written again, because
+ * the memory is consulted before the write. That is not a guarantee: the memory
+ * is set only after the write resolves, worker ticks are not serialised, and a
+ * failed write leaves the memory untouched, so two overlapping ticks or a retry
+ * can still produce a second identical row. A later, different decision for that
+ * receipt always writes another ingest row.
  *
  * @param store - Forum store.
  * @param messageId - Forum row id.
@@ -279,7 +283,9 @@ export async function indexZapReceipt(args: {
  * rejection reason is re-validated on each tick and writes again whenever the
  * decision changes, so a steady state writes no ingest rows only while the
  * decisions themselves are stable. The memory is process-local, so the first
- * tick after a restart re-persists the decisions it has forgotten.
+ * tick after a restart may re-persist decisions it has forgotten, bounded by the
+ * receipts that tick queries at all. Ticks are not serialised, so the bound is
+ * per tick, not per receipt across concurrent ticks.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch.
  * @returns Resolves when the tick's ingest pass finishes.
