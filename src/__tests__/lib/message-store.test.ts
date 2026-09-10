@@ -133,6 +133,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+      /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
+    );
     expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
