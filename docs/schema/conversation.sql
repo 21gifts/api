@@ -1,6 +1,12 @@
 -- Private messaging threads and messages (member↔member, member↔platform,
 -- member↔Damus). Covered by db_change attach-all-public-tables. Plaintext is
 -- not a listed secret. Dedupe outbound/inbound by conversation_message.event_id.
+-- On every boot, migrateConversationSchema runs an idempotent repair unwrapping
+-- conversation_message.nostr_event values stored as jsonb string scalars; it
+-- matches no rows once complete. The repair is skipped until the db_change audit
+-- trigger is attached and retried on the next boot. A value that cannot be parsed
+-- is skipped with a warning instead of failing the migration. The statement
+-- lives in the store's CONVERSATION_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
@@ -41,3 +47,7 @@ CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
+  ON conversation_message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';

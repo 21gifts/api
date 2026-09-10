@@ -115,7 +115,7 @@ export interface ConversationStore {
   updatePublishState(id: string, state: NostrPublishState): Promise<void>;
 }
 
-/** Idempotent DDL for conversation tables (matches `docs/schema/conversation.sql`). */
+/** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; matches `docs/schema/conversation.sql`). */
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
@@ -155,6 +155,47 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
   ON conversation_message (event_id)
   WHERE event_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
+  ON conversation_message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `DO $unwrap$
+   DECLARE
+     repair_row RECORD;
+     unwrapped jsonb;
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+       FROM pg_trigger
+       WHERE tgrelid = 'conversation_message'::regclass
+         AND tgname = 'trg_db_change'
+         AND NOT tgisinternal
+     ) THEN
+       RETURN;
+     END IF;
+
+     FOR repair_row IN
+       SELECT id, nostr_event
+       FROM conversation_message
+       WHERE nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+     LOOP
+       BEGIN
+         unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;
+       EXCEPTION WHEN data_exception OR statement_too_complex THEN
+         RAISE WARNING 'Could not unwrap nostr_event for conversation_message id %',
+           repair_row.id;
+         CONTINUE;
+       END;
+
+       UPDATE conversation_message
+       SET nostr_event = unwrapped
+       WHERE id = repair_row.id
+         AND nostr_event IS NOT NULL
+         AND jsonb_typeof(nostr_event) = 'string'
+         AND nostr_event = repair_row.nostr_event;
+     END LOOP;
+   END;
+   $unwrap$;`,
 ];
 
 const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pubkey, c.created_at, c.last_message_at,
@@ -678,7 +719,7 @@ export class PostgresConversationStore implements ConversationStore {
           row.name,
           row.eventId,
           row.nostrPublishState,
-          row.nostrEvent === null ? null : JSON.stringify(row.nostrEvent),
+          row.nostrEvent,
           row.claimedUntil === null ? null : new Date(row.claimedUntil),
         ],
       );
@@ -751,7 +792,7 @@ export class PostgresConversationStore implements ConversationStore {
     try {
       const rows = await this.#sql.query<{ id: string }>(
         `UPDATE conversation_message SET event_id = $2, nostr_event = $3::jsonb WHERE id = $1 RETURNING id`,
-        [id, eventId, JSON.stringify(nostrEvent)],
+        [id, eventId, nostrEvent],
       );
       return rows[0] !== undefined;
       /* v8 ignore next 3 -- unique_violation on event_id */

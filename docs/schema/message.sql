@@ -6,6 +6,12 @@
 -- SELECT the photo column — use (photo IS NOT NULL) AS has_photo only.
 -- Optional video_content_type; bytes on disk under MEDIA_DIR (not bytea).
 -- ALTER ADD COLUMN IF NOT EXISTS keeps existing databases additive.
+-- On every boot, migrateMessageSchema runs an idempotent repair unwrapping
+-- nostr_event values stored as jsonb string scalars; it matches no rows once
+-- complete. The repair is skipped until the db_change audit trigger is attached
+-- and retried on the next boot. A value that cannot be parsed is skipped with a
+-- warning instead of failing the migration. The statement lives in the store's
+-- MESSAGE_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -93,3 +99,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS account_profile_message_uidx
 -- Soft-hide stamps (HTTP DELETE /messages/:id). No FK on deleted_by.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid;
+CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
+  ON message (id)
+  WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
