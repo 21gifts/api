@@ -926,7 +926,7 @@ describe('indexOpenZapReceipts', () => {
     expect(ingests[0]?.receiptId).toBe('r-ok');
   });
 
-  it('records duplicate ingest when the same receipt is seen again', async () => {
+  it('records one ingest when the same receipt is seen again', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
@@ -968,11 +968,301 @@ describe('indexOpenZapReceipts', () => {
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
     const ingests = await store.listZapIngests(10);
-    expect(ingests).toHaveLength(2);
-    expect(ingests.some((row) => row.outcome === 'indexed' && row.reason === null)).toBe(true);
-    expect(ingests.some((row) => row.outcome === 'rejected' && row.reason === 'duplicate')).toBe(
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('indexed');
+    expect(ingests[0]?.reason).toBeNull();
+  });
+
+  it('persists one rejected/duplicate for a known receipt then skips validation', async () => {
+    const base = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store: base,
+      auth,
+      accountId: 'acc-known-dup',
+      lightningAddress: 'zap-known-dup@example.com',
+    });
+    await base.recordZapReceipt('r-known-dup', messageId, 21);
+    let getByEventIdCalls = 0;
+    const store = {
+      listLatest: (limit: number) => base.listLatest(limit),
+      listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+      listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
+      create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+      getPhoto: (id: string) => base.getPhoto(id),
+      deleteById: (id: string) => base.deleteById(id),
+      markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
+      getById: (id: string) => base.getById(id),
+      getByEventId: async (id: string) => {
+        getByEventIdCalls += 1;
+        return base.getByEventId(id);
+      },
+      claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
+        base.claimUnsigned(...args),
+      claimUnpublished: (...args: Parameters<InMemoryMessageStore['claimUnpublished']>) =>
+        base.claimUnpublished(...args),
+      listPendingSigned: (limit: number) => base.listPendingSigned(limit),
+      listSignedMissingPhoto: (limit: number) => base.listSignedMissingPhoto(limit),
+      listSignedMissingVideo: (limit: number) => base.listSignedMissingVideo(limit),
+      listSignedMissingHashtags: (limit: number) => base.listSignedMissingHashtags(limit),
+      clearSignedEvent: (...args: Parameters<InMemoryMessageStore['clearSignedEvent']>) =>
+        base.clearSignedEvent(...args),
+      resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
+        base.resetSignedEvent(...args),
+      updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
+        base.updateSignedEvent(...args),
+      updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
+        base.updatePublishState(...args),
+      addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
+        base.recordZapReceipt(...args),
+      recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
+        base.recordInvoiceAttempt(...args),
+      listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+      recordZapIngest: (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) =>
+        base.recordZapIngest(...args),
+      listZapIngests: (limit: number) => base.listZapIngests(limit),
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-known-dup',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-known-dup'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listZapIngests(10)).toHaveLength(1);
+    expect((await store.listZapIngests(10))[0]?.outcome).toBe('rejected');
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('duplicate');
+    const callsAfterFirst = getByEventIdCalls;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listZapIngests(10)).toHaveLength(1);
+    expect(getByEventIdCalls).toBe(callsAfterFirst);
+  });
+
+  it('persists again when a non-terminal decision later becomes indexed', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const accountId = 'acc-decision-change';
+    await seedStore({
+      store,
+      auth,
+      accountId,
+      lightningAddress: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-decision-change',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-decision-change'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const afterAddress = await store.listZapIngests(10);
+    expect(afterAddress).toHaveLength(1);
+    expect(afterAddress[0]?.outcome).toBe('rejected');
+    expect(afterAddress[0]?.reason).toBe('address');
+    const account = await auth.getAccount(accountId);
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...account,
+      lightningAddress: 'zap-decision-change@example.com',
+    });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const afterIndexed = await store.listZapIngests(10);
+    expect(afterIndexed).toHaveLength(2);
+    expect(afterIndexed.some((row) => row.outcome === 'rejected' && row.reason === 'address')).toBe(
       true,
     );
+    expect(afterIndexed.some((row) => row.outcome === 'indexed' && row.reason === null)).toBe(true);
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+  });
+
+  it('does not remember a decision when recordZapIngest throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const base = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await seedStore({
+        store: base,
+        auth,
+        accountId: 'acc-remember-fail',
+        lightningAddress: 'zap-remember-fail@example.com',
+      });
+      let ingestCalls = 0;
+      const store = {
+        listLatest: (limit: number) => base.listLatest(limit),
+        listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+        listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
+        create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
+        getPhoto: (id: string) => base.getPhoto(id),
+        deleteById: (id: string) => base.deleteById(id),
+        markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
+        getById: (id: string) => base.getById(id),
+        getByEventId: (id: string) => base.getByEventId(id),
+        claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
+          base.claimUnsigned(...args),
+        claimUnpublished: (...args: Parameters<InMemoryMessageStore['claimUnpublished']>) =>
+          base.claimUnpublished(...args),
+        listPendingSigned: (limit: number) => base.listPendingSigned(limit),
+        listSignedMissingPhoto: (limit: number) => base.listSignedMissingPhoto(limit),
+        listSignedMissingVideo: (limit: number) => base.listSignedMissingVideo(limit),
+        listSignedMissingHashtags: (limit: number) => base.listSignedMissingHashtags(limit),
+        clearSignedEvent: (...args: Parameters<InMemoryMessageStore['clearSignedEvent']>) =>
+          base.clearSignedEvent(...args),
+        resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
+          base.resetSignedEvent(...args),
+        updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
+          base.updateSignedEvent(...args),
+        updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
+          base.updatePublishState(...args),
+        addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
+          base.recordZapReceipt(...args),
+        recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
+          base.recordInvoiceAttempt(...args),
+        listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        recordZapIngest: async (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) => {
+          ingestCalls += 1;
+          if (ingestCalls === 1) {
+            throw new Error('ingest persist boom');
+          }
+          return base.recordZapIngest(...args);
+        },
+        listZapIngests: (limit: number) => base.listZapIngests(limit),
+      };
+      const querier = new RecordingQuerier();
+      querier.events = [
+        {
+          id: 'r-remember-fail',
+          pubkey: PROVIDER_PUBKEY,
+          kind: 9735,
+          tags: [
+            ['e', NOTE_EVENT_ID],
+            ['bolt11', 'lnbc-remember-fail'],
+          ],
+        },
+      ];
+      mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      });
+      expect(ingestCalls).toBe(1);
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      });
+      expect(ingestCalls).toBe(2);
+      const ingests = await store.listZapIngests(10);
+      expect(ingests).toHaveLength(1);
+      expect(ingests[0]?.outcome).toBe('rejected');
+      expect(ingests[0]?.reason).toBe('duplicate');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips a second identical non-terminal ingest write', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-same-reject',
+      lightningAddress: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-same-reject',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-same-reject'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listZapIngests(10)).toHaveLength(1);
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('address');
   });
 
   it('caches provider pubkey within TTL and refreshes after expiry', async () => {

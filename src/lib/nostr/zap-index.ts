@@ -31,6 +31,39 @@ interface ProviderCacheRow {
 
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 
+/**
+ * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
+ * Empty after process restart; first tick may rewrite one row per known receipt.
+ */
+const zapDecisions = new WeakMap<MessageStore, Map<string, string>>();
+
+/**
+ * Get-or-create the per-store map of last persisted ingest decisions.
+ *
+ * @param store - Forum store instance.
+ * @returns Mutable map from receipt id to `outcome:reason`.
+ */
+function decisionsFor(store: MessageStore): Map<string, string> {
+  const existing = zapDecisions.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, string>();
+  zapDecisions.set(store, created);
+  return created;
+}
+
+/**
+ * Stable key for an ingest outcome and optional reason.
+ *
+ * @param outcome - `indexed` or `rejected`.
+ * @param reason - Rejection reason, or null/undefined when indexed / unset.
+ * @returns Template string `outcome:reason` (empty reason segment when nullish).
+ */
+function decisionKey(outcome: string, reason: string | null | undefined): string {
+  return `${outcome}:${reason ?? ''}`;
+}
+
 const QUERY_CHUNK = 20;
 
 /**
@@ -74,13 +107,20 @@ function receiptFrame(event: NostrEventFrame): Record<string, unknown> {
 
 /**
  * Persist an ingest decision without failing the tick.
+ * Skips the write when this process already persisted the same outcome:reason
+ * for the receipt id on this store instance.
  *
  * @param store - Forum store.
  * @param row - Ingest row.
  */
 async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise<void> {
+  const key = decisionKey(row.outcome, row.reason);
+  if (decisionsFor(store).get(row.receiptId) === key) {
+    return;
+  }
   try {
     await store.recordZapIngest(row);
+    decisionsFor(store).set(row.receiptId, key);
   } catch {
     logEvent('nostr.zap.ingest.record_failed');
   }
@@ -315,6 +355,13 @@ async function ingestOneReceipt(
     return;
   }
   if (typeof event.id !== 'string' || event.id === '') {
+    return;
+  }
+  const remembered = decisionsFor(args.store).get(event.id);
+  if (
+    remembered === decisionKey('indexed', null) ||
+    remembered === decisionKey('rejected', 'duplicate')
+  ) {
     return;
   }
   if (typeof event.pubkey !== 'string' || event.pubkey === '') {

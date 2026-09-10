@@ -82,6 +82,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(33);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -115,6 +116,29 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid/,
     );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_nostr_event_unrepaired_idx/);
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+      /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+      /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
   });
 });
 
@@ -504,6 +528,115 @@ describe('InMemoryMessageStore', () => {
     await store.updatePublishState('a', 'published', 'space');
     await store.clearSignedEvent('a', 'cd'.repeat(32));
     expect((await store.getById('a'))?.eventId).toBe('cd'.repeat(32));
+  });
+
+  it('listSignedMissingPhoto excludes rows at the publish-attempt cap', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'below-cap',
+        hasPhoto: true,
+        eventId: '11'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 4,
+      },
+      {
+        ...EARLY,
+        id: 'at-cap',
+        hasPhoto: true,
+        eventId: '22'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 5,
+      },
+    ]);
+
+    expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual(['below-cap']);
+  });
+
+  it('listSignedMissingVideo excludes rows at the publish-attempt cap', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'below-cap',
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        eventId: '11'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 4,
+      },
+      {
+        ...EARLY,
+        id: 'at-cap',
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        eventId: '22'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 5,
+      },
+    ]);
+
+    expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).toEqual(['below-cap']);
+  });
+
+  it('listSignedMissingHashtags excludes rows at the publish-attempt cap', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'below-cap',
+        eventId: '11'.repeat(32),
+        nostrEvent: { content: 'missing hashtags' },
+        nostrPublishState: 'published',
+        nostrAttempts: 4,
+      },
+      {
+        ...EARLY,
+        id: 'at-cap',
+        eventId: '22'.repeat(32),
+        nostrEvent: { content: 'missing hashtags' },
+        nostrPublishState: 'published',
+        nostrAttempts: 5,
+      },
+    ]);
+
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual(['below-cap']);
+  });
+
+  it('resetSignedEvent counts attempts and preserves the first-attempt time', async () => {
+    const existingFirstAttemptAt = 1_234_567;
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'without-first-attempt',
+        eventId: '11'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 2,
+        nostrFirstAttemptAt: null,
+      },
+      {
+        ...EARLY,
+        id: 'with-first-attempt',
+        eventId: '22'.repeat(32),
+        nostrEvent: { content: '' },
+        nostrPublishState: 'published',
+        nostrAttempts: 3,
+        nostrFirstAttemptAt: existingFirstAttemptAt,
+      },
+    ]);
+
+    await store.resetSignedEvent('without-first-attempt', '11'.repeat(32));
+    await store.resetSignedEvent('with-first-attempt', '22'.repeat(32));
+
+    const withoutFirstAttempt = await store.getById('without-first-attempt');
+    expect(withoutFirstAttempt?.nostrAttempts).toBe(3);
+    expect(withoutFirstAttempt?.nostrFirstAttemptAt).toEqual(expect.any(Number));
+    const withFirstAttempt = await store.getById('with-first-attempt');
+    expect(withFirstAttempt?.nostrAttempts).toBe(4);
+    expect(withFirstAttempt?.nostrFirstAttemptAt).toBe(existingFirstAttemptAt);
   });
 
   it('listSignedMissingPhoto and resetSignedEvent re-queue photo posts', async () => {
@@ -1194,7 +1327,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
   });
 
-  it('create binds JSON-stringified nostrEvent when present', async () => {
+  it('create binds the nostrEvent object when present', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const nostrEvent = { id: 'evt', kind: 1 };
@@ -1209,7 +1342,8 @@ describe('PostgresMessageStore', () => {
       nostrEvent,
     };
     await store.create(row);
-    expect(sql.executes[0]?.params[13]).toBe(JSON.stringify(nostrEvent));
+    expect(typeof sql.executes[0]?.params[13]).not.toBe('string');
+    expect(sql.executes[0]?.params[13]).toStrictEqual(nostrEvent);
   });
 
   it('create writes video bytes then binds video_content_type', async () => {
@@ -1336,7 +1470,10 @@ describe('PostgresMessageStore', () => {
     expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
     expect(await store.claimUnpublished(5, 1_000, 60_000)).toEqual([]);
     expect(sql.queries.some((q) => /claimed_until <= \$2/.test(q.text))).toBe(true);
-    expect(await store.updateSignedEvent('m1', 'ee'.repeat(32), { id: 'x' })).toBe(false);
+    const nostrEvent = { id: 'x' };
+    expect(await store.updateSignedEvent('m1', 'ee'.repeat(32), nostrEvent)).toBe(false);
+    expect(typeof sql.queries.at(-1)?.params[2]).not.toBe('string');
+    expect(sql.queries.at(-1)?.params[2]).toStrictEqual(nostrEvent);
     await store.updatePublishState('m1', 'published', 'public');
     await store.addSats('m1', 7);
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
@@ -1610,12 +1747,18 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toMatch(/photo IS NOT NULL/);
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
+    expect(listSql).toMatch(/nostr_attempts < 5/);
     expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/photo\./);
     await store.resetSignedEvent('m1', 'ab'.repeat(32));
     expect(sql.executes.at(-1)?.text).toMatch(/nostr_publish_state = 'pending'/);
+    expect(sql.executes.at(-1)?.text).toMatch(/nostr_attempts = message\.nostr_attempts \+ 1/);
+    expect(sql.executes.at(-1)?.text).toMatch(
+      /nostr_first_attempt_at = COALESCE\(message\.nostr_first_attempt_at, now\(\)\)/,
+    );
     expect(sql.executes.at(-1)?.text).toMatch(/event_id IS NOT DISTINCT FROM/);
     expect(sql.executes.at(-1)?.text).toMatch(/sats = 0/);
     expect(sql.executes.at(-1)?.text).toMatch(/NOT EXISTS/);
+    expect(sql.executes.at(-1)?.params).toEqual(['m1', 'ab'.repeat(32)]);
   });
 
   it('listSignedMissingVideo hits Postgres', async () => {
@@ -1645,6 +1788,7 @@ describe('PostgresMessageStore', () => {
     );
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
+    expect(listSql).toMatch(/nostr_attempts < 5/);
     expect(listSql).toMatch(/\/messages\/' \|\| id::text \|\| '\/video\./);
   });
 
@@ -1670,6 +1814,7 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toMatch(/sats = 0/);
     expect(listSql).toMatch(/NOT EXISTS/);
     expect(listSql).toMatch(/nostr_publish_state = 'published'/);
+    expect(listSql).toMatch(/nostr_attempts < 5/);
     expect(listSql).toMatch(/jsonb_typeof\(nostr_event->'content'\) IS DISTINCT FROM 'string'/);
     expect(listSql).toContain('#21gifts([^a-z0-9_]|$)');
     expect(listSql).toContain('#bitcoin([^a-z0-9_]|$)');
@@ -1734,9 +1879,11 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_invoice/);
     expect(sql.executes[0]?.text).toMatch(/zap_request/);
     expect(sql.executes[0]?.text).toMatch(/lnurl_response/);
-    expect(sql.executes[0]?.params[7]).toBe(JSON.stringify({ kind: 9734 }));
+    expect(typeof sql.executes[0]?.params[7]).not.toBe('string');
+    expect(sql.executes[0]?.params[7]).toStrictEqual(row.zapRequest);
     expect(sql.executes[0]?.params[14]).toBe(true);
-    expect(sql.executes[0]?.params[15]).toBe(JSON.stringify({ pr: 'lnbc1', status: 'OK' }));
+    expect(typeof sql.executes[0]?.params[15]).not.toBe('string');
+    expect(sql.executes[0]?.params[15]).toStrictEqual(row.lnurlResponse);
   });
 
   it('recordInvoiceAttempt binds null zap_request when the attempt has none', async () => {
@@ -1900,7 +2047,8 @@ describe('PostgresMessageStore', () => {
     await store.recordZapIngest(row);
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO nostr_zap_ingest/);
-    expect(sql.executes[0]?.params[9]).toBe(JSON.stringify({ id: 'r1', kind: 9735 }));
+    expect(typeof sql.executes[0]?.params[9]).not.toBe('string');
+    expect(sql.executes[0]?.params[9]).toStrictEqual(row.receipt);
   });
 
   it('listZapIngests maps receipt JSON string, non-indexed outcome, and null amount', async () => {
