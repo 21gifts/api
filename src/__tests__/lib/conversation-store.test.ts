@@ -81,6 +81,7 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
+    expect(joined).toMatch(/conversation_message_nostr_event_unrepaired_idx/);
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
