@@ -171,6 +171,12 @@ export interface MessagesRouteDeps {
   invoiceLimiter?: InvoiceRateLimiter;
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
+  /** Sleep between `sinceSats` polls (tests inject). */
+  waitSatsSleep?: (ms: number) => Promise<void>;
+  /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
+  waitSatsTimeoutMs?: number;
+  /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
+  waitSatsPollMs?: number;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -195,6 +201,23 @@ function isStaffRole(role: AccountRole): boolean {
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
+export const WAIT_SATS_TIMEOUT_MS = 25_000;
+
+/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
+export const WAIT_SATS_POLL_MS = 250;
+
+/**
+ * Default sleep between `sinceSats` polls when no test inject is provided.
+ *
+ * @param ms - Milliseconds to wait.
+ */
+async function defaultWaitSatsSleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 /**
  * Public photo bytes for Nostr clients. Same handler for `/photo` and
@@ -413,16 +436,22 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, `GET /messages/:id/replies`,
- * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`, and
- * `POST /messages/:id/invoice`. Photo, video, replies, and DELETE register
- * before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`)
- * are omitted from lists and 404 on reads; `getById` still returns them for
- * workers.
+ * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`
+ * (optional `?sinceSats=` non-negative integer long-polls until `sats` is
+ * strictly greater; timeout still returns 200 with the current body;
+ * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
+ * replies, and DELETE register before the public single-note `GET /:id`.
+ * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
+ * `getById` still returns them for workers.
  *
- * @param deps - Message store, auth store, clock, and optional `pushStore`.
+ * @param deps - Message store, auth store, clock, optional `pushStore`, and
+ * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
+ * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
+ * `WAIT_SATS_POLL_MS`).
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
- * `GET /:id/replies`, `DELETE /:id`, public `GET /:id`, and `POST /:id/invoice`.
+ * `GET /:id/replies`, `DELETE /:id`, public `GET /:id` (optional
+ * `?sinceSats=`), and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -631,24 +660,46 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const sinceSatsRaw = c.req.query('sinceSats');
+      let sinceSats: number | undefined;
+      if (sinceSatsRaw !== undefined) {
+        if (!/^\d+$/.test(sinceSatsRaw)) {
+          return c.json({ error: 'Expected sinceSats to be a non-negative integer' }, 400);
+        }
+        sinceSats = Number(sinceSatsRaw);
+      }
+      const started = deps.now();
+      const timeoutMs = deps.waitSatsTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
+      const pollMs = deps.waitSatsPollMs ?? WAIT_SATS_POLL_MS;
+      const sleep = deps.waitSatsSleep ?? defaultWaitSatsSleep;
       try {
-        const row = await deps.store.getById(id);
-        if (row === undefined || row.deletedAt !== null) {
-          return c.json({ error: 'Not found' }, 404);
+        for (;;) {
+          const row = await deps.store.getById(id);
+          if (row === undefined || row.deletedAt !== null) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (
+            sinceSats !== undefined &&
+            row.sats <= sinceSats &&
+            deps.now() - started < timeoutMs
+          ) {
+            await sleep(pollMs);
+            continue;
+          }
+          const author =
+            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+          const payable =
+            row.parentId === null &&
+            row.eventId !== null &&
+            author !== undefined &&
+            author.lightningAddress !== null;
+          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          return c.json(serializeMessage(kept, payable, role), 200);
         }
-        const author =
-          row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-        const payable =
-          row.parentId === null &&
-          row.eventId !== null &&
-          author !== undefined &&
-          author.lightningAddress !== null;
-        const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        const kept = await dropMissingVideoRow(deps.store, row);
-        if (kept === null) {
-          return c.json({ error: 'Not found' }, 404);
-        }
-        return c.json(serializeMessage(kept, payable, role), 200);
       } catch {
         logEvent('messages.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

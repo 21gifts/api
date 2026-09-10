@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-09 (`DELETE /messages/:id` soft-hide).
+**Status**: living document. Last revised 2026-09-09 (`DELETE /messages/:id` soft-hide; `GET /messages/:id?sinceSats=` wait).
 
 ---
 
@@ -1740,10 +1740,27 @@ null) omit `role` and set `payable` false. `replyCount` is omitted. Photo
 and video bytes are never included. Soft-hidden rows (`deletedAt` set)
 are treated as missing (404) before any missing-video hard-delete cleanup.
 
+Optional query `sinceSats` (non-negative integer string, `/^\d+$/`):
+long-polls until that note's `sats` is **strictly greater than** `n`, then
+returns the same **200** public JSON as an immediate GET. First read may
+return immediately when `sats` is already higher. `sats === n` keeps
+waiting. Timeout (~25s) still returns **200** with the current body (never
+204/202/304); the client retries. Absent `sinceSats` is unchanged
+immediate GET. Invalid `sinceSats` (`-1`, `1.5`, `abc`, empty, `+1`,
+whitespace) → **400** after the UUID check (non-UUID `:id` stays **404**
+even when `sinceSats` is present). Soft-hidden / missing during the wait
+(including the first read) → **404**. Store throw on any read → **503**.
+
 Non-UUID `:id`, missing row, or soft-hidden row → **Response** `404`:
 
 ```json
 { "error": "Not found" }
+```
+
+Invalid `sinceSats` → **Response** `400`:
+
+```json
+{ "error": "Expected sinceSats to be a non-negative integer" }
 ```
 
 Store failure → **Response** `503`:
@@ -1752,7 +1769,8 @@ Store failure → **Response** `503`:
 { "error": "Messages are unavailable" }
 ```
 
-Success → **Response** `200`:
+Success (including `sinceSats` timeout with unchanged sats) → **Response**
+`200`:
 
 ```json
 {
