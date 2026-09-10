@@ -48,6 +48,12 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   expect(publicRead.status()).toBe(200);
   expect(((await publicRead.json()) as { text: string }).text).toBe('e2e parent note');
 
+  const sinceSatsInvalid = await request.get(`/messages/${note.id}?sinceSats=nope`);
+  expect(sinceSatsInvalid.status()).toBe(400);
+  expect(((await sinceSatsInvalid.json()) as { error: string }).error).toBe(
+    'Expected sinceSats to be a non-negative integer',
+  );
+
   await new Promise((resolve) => {
     setTimeout(resolve, 11_000);
   });

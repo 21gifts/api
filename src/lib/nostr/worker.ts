@@ -121,7 +121,7 @@ function reservedContent(
 }
 
 /**
- * Sign unsigned rows, optionally fan out to relays, then ingest zap receipts.
+ * Ingest zap receipts, then sign unsigned rows and optionally fan out to relays.
  *
  * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
  * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
@@ -140,18 +140,35 @@ function reservedContent(
  * relay list. Kind:1 photo and video posts include the public media URL and
  * an `imeta` tag (video may add poster `image`). Kind:0
  * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
- * profile cannot win a same-second replaceable-event tie. Each tick also queries
- * zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is
- * off) for kind:9735 receipts and indexes validated ones onto `sats`, even
- * when publish is off. Each tick also REQs kind:1 replies (`#e` = our note
- * event ids) and persists inbound Damus/member replies (even when publish is
- * off). When a conversation store is present, also signs/publishes NIP-17
+ * profile cannot win a same-second replaceable-event tie. Zap ingest
+ * (`indexOpenZapReceipts`) runs at the **start** of each tick, before
+ * resign/sign/publish, so receipt indexing is not delayed by relay publish
+ * timeouts. `nowMs` for sign/publish leases is sampled only after zap ingest
+ * returns, so an overlapping tick cannot reclaim with a later clock while this
+ * tick still signs/publishes under a stale lease time. It queries zap relays
+ * (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for
+ * kind:9735 receipts and indexes validated ones onto `sats`, even when publish
+ * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
+ * note event ids) and persists inbound Damus/member replies (even when publish
+ * is off). When a conversation store is present, also signs/publishes NIP-17
  * wraps and REQs inbound kind:1059 / kind:4 to member and platform pubkeys.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  */
 export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
+  const urls = resolveZapRelays(deps.env);
+  await indexOpenZapReceipts({
+    store: deps.messages,
+    auth: deps.auth,
+    querier: deps.querier,
+    urls,
+    timeoutMs: RELAY_TIMEOUT_MS,
+    now: deps.now,
+    fetchImpl: deps.fetchImpl,
+    ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
+    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+  });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
@@ -165,18 +182,6 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     await publishBatch(deps, writeSet, nowMs);
     await publishConversationBatch(deps, writeSet, nowMs);
   }
-  const urls = resolveZapRelays(deps.env);
-  await indexOpenZapReceipts({
-    store: deps.messages,
-    auth: deps.auth,
-    querier: deps.querier,
-    urls,
-    timeoutMs: RELAY_TIMEOUT_MS,
-    now: deps.now,
-    fetchImpl: deps.fetchImpl,
-    ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
-    ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-  });
   await indexInboundForumReplies(deps, urls);
   await indexInboundDirectMessages(deps, urls);
   await backfillProfileMessages(deps);
