@@ -2597,7 +2597,7 @@ describe('GET /messages/:id', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
   });
 
-  it('omits role for a Damus-only note and is not payable', async () => {
+  it('returns 404 for a Damus-only reply', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '14141414-1414-4141-8141-141414141414',
@@ -2986,7 +2986,7 @@ describe('GET /messages/:id/replies', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
   });
 
-  it('omits role on Damus-only replies and includes live role for members', async () => {
+  it('omits Damus-only replies and includes roles for member replies', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
