@@ -1371,19 +1371,25 @@ describe('InMemoryMessageStore', () => {
       amountSats: 21,
       receipt: { id: 'r2', kind: 9735 },
     };
+    const tieHigh: ZapIngestRow = {
+      ...late,
+      id: 'zi-z',
+      receipt: { id: 'r3', kind: 9735 },
+    };
     await store.recordZapIngest(early);
     await store.recordZapIngest(late);
+    await store.recordZapIngest(tieHigh);
     const listed = await store.listZapIngests(1);
     expect(listed).toHaveLength(1);
-    expect(listed[0]?.id).toBe('zi-b');
+    expect(listed[0]?.id).toBe('zi-z');
     if (listed[0] !== undefined) {
       listed[0].outcome = 'rejected';
       listed[0].receipt['mutated'] = true;
     }
     const again = await store.listZapIngests(10);
-    expect(again.map((row) => row.id)).toEqual(['zi-b', 'zi-a']);
+    expect(again.map((row) => row.id)).toEqual(['zi-z', 'zi-b', 'zi-a']);
     expect(again[0]?.outcome).toBe('indexed');
-    expect(again[0]?.receipt).toEqual({ id: 'r2', kind: 9735 });
+    expect(again[0]?.receipt).toEqual({ id: 'r3', kind: 9735 });
   });
 });
 
