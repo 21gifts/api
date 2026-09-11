@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-09 (`DELETE /messages/:id` soft-hide; `GET /messages/:id?sinceSats=` wait).
+**Status**: living document. Last revised 2026-09-11 (forum replies and `replyCount` are 21.gifts authors only).
 
 ---
 
@@ -79,10 +79,10 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                     |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                          |
 | GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note                                        |
-| GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ `replyCount`); 409 if rules missing          |
+| GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing               |
-| GET    | `/messages/:id`                              | none                       | Public single-note JSON                                                    |
-| GET    | `/messages/:id/replies`                      | Bearer                     | Oldest-first replies for a parent note                                     |
+| GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                       |
+| GET    | `/messages/:id/replies`                      | Bearer                     | Oldest-first 21.gifts-author replies for a parent note                     |
 | GET    | `/messages/:id/photo`                        | none                       | Fetch forum message photo bytes                                            |
 | GET    | `/messages/:id/video.*`                      | none                       | Fetch forum video bytes (Range / 206)                                      |
 | DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)              |
@@ -1412,9 +1412,11 @@ display. Each message exposes the author **name snapshotted at post time**,
 Address), `hasPhoto`, `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for Damus-only authors), and
-`replyCount` (direct `parent_id` children). List JSON never includes photo
+`replyCount` of live 21.gifts-author children (`parent_id` match,
+`deleted_at` null, `account_id IS NOT NULL`). Damus-only children do not
+increment it. List JSON never includes photo
 or video bytes. Signed-in list/replies/create may include `accountId`
-(21gifts author id; omitted for Damus-only); public GET `/messages/:id`
+(21gifts author id; omitted for Damus-only top-level notes); public GET `/messages/:id`
 never includes it. Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -1461,7 +1463,8 @@ An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`. List queries select top-level rows only
 (`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
-`replyCount` of direct children, and must not select the `photo` bytea
+`replyCount` of live 21.gifts-author children (`account_id IS NOT NULL`),
+and must not select the `photo` bytea
 column.
 
 The nostr worker, each tick, queries zap relays (space plus the public
@@ -1471,7 +1474,9 @@ indexed when the signer pubkey matches the author's LNURL-pay
 `nostrPubkey`, the bolt11 amount is at least 1 sat, and the receipt id
 is new. Indexed receipts increment that row's `sats` (GET /messages then
 returns the new total). Kind:1 EVENT frames published to relays are JSON
-objects, not JSON strings.
+objects, not JSON strings. Inbound kind:1 `#e` replies are persisted only
+when the pubkey maps to a 21.gifts account; unknown npubs are skipped
+(they stay on Nostr).
 
 ### `POST /messages`
 
@@ -1681,11 +1686,12 @@ Success → **Response** `200` or `206`: raw video body,
 
 ### `GET /messages/:id/replies`
 
-Bearer session required. Lists **direct replies** for parent `:id`
-oldest-first (`createdAt` then `id` ascending), capped at **200**. Each
-item is the public message JSON with `payable` false and no `replyCount`.
-Signed-in replies may include `accountId` (21gifts author id; omitted for
-Damus-only). Damus-only replies (`accountId` null) omit `role`. Photo and
+Bearer session required. Lists **direct live 21.gifts-author replies**
+(`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt`
+then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
+children are omitted. Each item is the public message JSON with
+`payable` false and no `replyCount`. Signed-in replies always include
+`accountId` (21gifts author id). Photo and
 video bytes are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -1729,7 +1735,7 @@ Success → **Response** `200`:
 ```
 
 An empty reply thread is **200** with `"messages": []`. Soft-hidden
-children are omitted from the list.
+and Damus-only children (`accountId` null) are omitted from the list.
 
 ### `GET /messages/:id`
 
@@ -1738,10 +1744,13 @@ Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
 `DELETE /messages/:id` so those paths are not captured as `:id`. Returns
 the public message JSON (`sats`, `payable`, `hasPhoto`, `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Never includes
-`accountId`, `deletedAt`, or `deletedBy`. Damus-only notes (`accountId`
-null) omit `role` and set `payable` false. `replyCount` is omitted. Photo
-and video bytes are never included. Soft-hidden rows (`deletedAt` set)
-are treated as missing (404) before any missing-video hard-delete cleanup.
+`accountId`, `deletedAt`, or `deletedBy`. Top-level Damus-only notes
+(`accountId` null, `parentId` null) omit `role` and set `payable` false.
+A live Damus-only **reply** (`parentId` set, `accountId` null) is **404**
+`{ "error": "Not found" }` (same body as missing/hidden). `replyCount` is
+omitted. Photo and video bytes are never included. Soft-hidden rows
+(`deletedAt` set) are treated as missing (404) before any missing-video
+hard-delete cleanup.
 
 Optional query `sinceSats` (non-negative integer string, `/^\d+$/`):
 long-polls until that note's `sats` is **strictly greater than** `n`, then
@@ -1754,7 +1763,8 @@ whitespace) → **400** after the UUID check (non-UUID `:id` stays **404**
 even when `sinceSats` is present). Soft-hidden / missing during the wait
 (including the first read) → **404**. Store throw on any read → **503**.
 
-Non-UUID `:id`, missing row, or soft-hidden row → **Response** `404`:
+Non-UUID `:id`, missing row, soft-hidden row, or live Damus-only reply →
+**Response** `404`:
 
 ```json
 { "error": "Not found" }

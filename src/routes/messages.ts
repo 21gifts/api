@@ -508,7 +508,10 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
  * replies, and DELETE register before the public single-note `GET /:id`.
  * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
- * `getById` still returns them for workers.
+ * `getById` still returns them for workers. Public `GET /:id` of a live
+ * Damus-only reply (`parentId` set, `accountId` null) is 404; top-level
+ * Damus-only notes stay 200. `GET /:id/replies` lists 21.gifts-author
+ * children only (`accountId` set).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
@@ -640,15 +643,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          if (row.accountId === null) {
-            const keptDamus = await dropMissingVideoRow(deps.store, row);
-            if (keptDamus === null) {
-              continue;
-            }
-            messages.push(serializeMessage(keptDamus, false, undefined, undefined, true));
-            continue;
-          }
-          const author = await deps.authStore.getAccount(row.accountId);
+          const author = await deps.authStore.getAccount(row.accountId!);
           const role = author?.role ?? 'basis';
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -710,7 +705,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         for (;;) {
           const row = await deps.store.getById(id);
-          if (row === undefined || row.deletedAt !== null) {
+          if (
+            row === undefined ||
+            row.deletedAt !== null ||
+            (row.parentId !== null && row.accountId === null)
+          ) {
             return c.json({ error: 'Not found' }, 404);
           }
           if (

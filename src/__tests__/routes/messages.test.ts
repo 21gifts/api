@@ -2616,10 +2616,32 @@ describe('GET /messages/:id', () => {
     const res = await mount(new InMemoryAuthStore(), messageStore).request(
       '/messages/14141414-1414-4141-8141-141414141414',
     );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('omits role for a top-level Damus-only note and is not payable', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '19191919-1919-4191-8191-191919191919',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(new InMemoryAuthStore(), messageStore).request(
+      '/messages/19191919-1919-4191-8191-191919191919',
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
-      id: '14141414-1414-4141-8141-141414141414',
+      id: '19191919-1919-4191-8191-191919191919',
       name: 'aabbccdd…8899',
       text: 'from damus',
       createdAt: new Date(now()).toISOString(),
@@ -2900,16 +2922,15 @@ describe('GET /messages/:id/replies', () => {
       },
       {
         id: '15151515-1515-4151-8151-151515151515',
-        accountId: null,
-        name: 'aabbccdd…8899',
-        text: 'damus clip',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'member clip a',
         createdAt: new Date(now()),
         ...unsignedNostrDefaults(),
         parentId,
         hasPhoto: false,
         hasVideo: true,
         videoContentType: 'video/mp4',
-        authorPubkey: 'ab'.repeat(32),
       },
       {
         id: '16161616-1616-4161-8161-161616161616',
@@ -3024,17 +3045,13 @@ describe('GET /messages/:id/replies', () => {
     const body = (await res.json()) as {
       messages: Array<{ text: string; role?: string; accountId?: string; hasVideo: boolean }>;
     };
-    expect(body.messages).toHaveLength(3);
-    expect(body.messages[0]?.text).toBe('from damus');
-    expect(body.messages[0]).not.toHaveProperty('role');
-    expect(body.messages[0]).not.toHaveProperty('accountId');
-    expect(body.messages[0]?.hasVideo).toBe(false);
-    expect(body.messages[1]?.text).toBe('member reply');
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]?.text).toBe('member reply');
+    expect(body.messages[0]?.role).toBe('basis');
+    expect(body.messages[0]?.accountId).toBe('acc');
+    expect(body.messages[1]?.text).toBe('orphan reply');
     expect(body.messages[1]?.role).toBe('basis');
-    expect(body.messages[1]?.accountId).toBe('acc');
-    expect(body.messages[2]?.text).toBe('orphan reply');
-    expect(body.messages[2]?.role).toBe('basis');
-    expect(body.messages[2]?.accountId).toBe('gone');
+    expect(body.messages[1]?.accountId).toBe('gone');
   });
 });
 

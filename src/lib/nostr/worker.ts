@@ -149,8 +149,9 @@ function reservedContent(
  * (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for
  * kind:9735 receipts and indexes validated ones onto `sats`, even when publish
  * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
- * note event ids) and persists inbound Damus/member replies (even when publish
- * is off). When a conversation store is present, also signs/publishes NIP-17
+ * note event ids) and persists inbound replies whose pubkey maps to a
+ * 21.gifts account (even when publish is off). Unknown npubs are skipped.
+ * When a conversation store is present, also signs/publishes NIP-17
  * wraps and REQs inbound kind:1059 / kind:4 to member and platform pubkeys.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
@@ -268,11 +269,15 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
 }
 
 /**
- * REQ kind:1 replies referencing our published top-level notes and persist them.
+ * REQ kind:1 replies referencing our published top-level notes and persist
+ * those whose pubkey maps to a 21.gifts account.
  *
  * Runs every tick (even when `NOSTR_PUBLISH` is off). Does not require
  * `t=21gifts`. Skips invalid signatures, already-stored event ids, empty /
- * over-long content, and events that equal the parent note id.
+ * over-long content, events that equal the parent note id, and unknown
+ * npubs (same silent skip as an empty event id). Member replies posted
+ * from Damus with the custodial key still persist (named, or nameless via
+ * {@link truncatePubkeyDisplay}).
  *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
@@ -336,15 +341,12 @@ async function indexInboundForumReplies(
         continue;
       }
       const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
-      let accountId: string | null = null;
-      let name: string;
-      if (matched !== undefined) {
-        accountId = matched.id;
-        const accountName = matched.name?.trim() ?? '';
-        name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
-      } else {
-        name = truncatePubkeyDisplay(event.pubkey);
+      if (matched === undefined) {
+        continue;
       }
+      const accountId = matched.id;
+      const accountName = matched.name?.trim() ?? '';
+      const name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
       const createdAt =
         typeof event.created_at === 'number'
           ? new Date(event.created_at * 1000)
