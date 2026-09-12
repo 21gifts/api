@@ -68,6 +68,10 @@ describe('buildTrustChain', () => {
     expect(chain.nodes[0]).not.toHaveProperty('lightningAddress');
     expect(chain.nodes[0]).not.toHaveProperty('viewKey');
     expect(chain.nodes[0]).not.toHaveProperty('linkingKey');
+    const early = account({ id: 'va', role: 'verified', createdAt: 2 });
+    const lateId = account({ id: 'vz', role: 'verified', createdAt: 2 });
+    expect(buildTrustChain([lateId, early], []).nodes.map((node) => node.id)).toEqual(['va', 'vz']);
+    expect(buildTrustChain([early, lateId], []).nodes.map((node) => node.id)).toEqual(['va', 'vz']);
     expect(chain.edges).toEqual([]);
   });
 
