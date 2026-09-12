@@ -12,6 +12,7 @@ import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
+  forumContentFingerprint,
   normalizeForumText,
   serializeMessage,
   unsignedNostrDefaults,
@@ -28,8 +29,10 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueForumPushes } from '@/lib/push-worker';
+import { enqueueForumPushes, enqueueReplyPush } from '@/lib/push-worker';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -171,6 +174,11 @@ export interface MessagesRouteDeps {
   invoiceLimiter?: InvoiceRateLimiter;
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
+  /**
+   * Optional inbox store. A 21.gifts-author reply opens a member thread with
+   * the parent author and copies non-empty reply text into it.
+   */
+  conversationStore?: ConversationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
   waitSatsSleep?: (ms: number) => Promise<void>;
   /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
@@ -336,16 +344,171 @@ async function serveForumVideo(
 }
 
 /**
+ * Open an inbox thread with the parent-note author and enqueue a reply push.
+ * No-op when the parent is missing, Damus-only, or the replier themselves.
+ * Conversation/push failures are logged by the caller.
+ *
+ * @param deps - Message, conversation, and push collaborators.
+ * @param account - Reply author.
+ * @param created - Persisted reply row.
+ * @param parentId - Parent forum note id.
+ */
+async function notifyParentOfReply(
+  deps: MessagesRouteDeps,
+  account: Account,
+  created: MessageRow,
+  parentId: string,
+): Promise<void> {
+  const parent = await deps.store.getById(parentId);
+  const parentAccountId = parent?.accountId;
+  if (
+    parent === undefined ||
+    parentAccountId === null ||
+    parentAccountId === undefined ||
+    parentAccountId === account.id
+  ) {
+    return;
+  }
+  let thread: ConversationThread | undefined;
+  if (deps.conversationStore !== undefined) {
+    thread = await deps.conversationStore.openMemberMember(
+      account.id,
+      parentAccountId,
+      created.createdAt,
+    );
+    const text = created.text.trim();
+    if (text !== '') {
+      await deps.conversationStore.appendMessage({
+        id: crypto.randomUUID(),
+        conversationId: thread.id,
+        text,
+        createdAt: created.createdAt,
+        senderAccountId: account.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(account.id)) ?? null,
+        name: created.name,
+        ...unsignedConversationDefaults(),
+      });
+    }
+  }
+  if (deps.pushStore !== undefined && thread !== undefined) {
+    await enqueueReplyPush(
+      deps.pushStore,
+      parentAccountId,
+      created.id,
+      thread.id,
+      created.createdAt.getTime(),
+    );
+  }
+}
+
+/**
+ * Media collapse → burst limiter → create → optional top-level push, or
+ * a targeted inbox+push notify when `parentId` is a 21.gifts-author note.
+ * Shared by JSON and multipart after body parse / normalize / decode.
+ *
+ * @param deps - Store, clock, optional push.
+ * @param postLimiter - Per-account burst limiter.
+ * @param c - Request context (JSON / headers).
+ * @param account - Authenticated account.
+ * @param authorName - Display name snapshot.
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level (multipart is always null).
+ * @param photo - Optional decoded photo / poster.
+ * @param video - Optional decoded video.
+ * @returns 200 / 429 / 503.
+ */
+async function persistForumPost(
+  deps: MessagesRouteDeps,
+  postLimiter: PostRateLimiter,
+  c: Context,
+  account: Account,
+  authorName: string,
+  text: string,
+  parentId: string | null,
+  photo?: ForumPhoto,
+  video?: ForumVideo,
+): Promise<Response> {
+  const payableOf = (row: MessageRow): boolean =>
+    (row.parentId ?? null) === null && row.eventId !== null && account.lightningAddress !== null;
+  if (photo !== undefined || video !== undefined) {
+    const mediaBytes = video?.bytes ?? photo!.bytes;
+    const fp = forumContentFingerprint(text, mediaBytes);
+    try {
+      const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
+      if (existing !== undefined) {
+        return c.json(
+          serializeMessage(existing, payableOf(existing), account.role, undefined, true),
+          200,
+        );
+      }
+    } catch {
+      logEvent('messages.create.failed');
+      return c.json({ error: 'Messages are unavailable' }, 503);
+    }
+  }
+  if (!postLimiter.allow(account.id, deps.now())) {
+    logEvent('messages.rate_limited', { accountId: account.id });
+    c.header('Retry-After', '10');
+    return c.json({ error: 'Too many messages' }, 429);
+  }
+  const id = crypto.randomUUID();
+  const row: MessageRow = {
+    id,
+    accountId: account.id,
+    name: authorName,
+    text,
+    createdAt: new Date(deps.now()),
+    hasPhoto: photo !== undefined,
+    hasVideo: video !== undefined,
+    videoContentType: video === undefined ? null : video.contentType,
+    ...unsignedNostrDefaults(),
+    parentId,
+  };
+  try {
+    const created =
+      photo === undefined && video === undefined
+        ? await deps.store.create(row)
+        : await deps.store.create(row, photo, video);
+    const isReplay = created.id !== id;
+    if (!isReplay && parentId === null && deps.pushStore !== undefined) {
+      try {
+        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
+    }
+    if (!isReplay && parentId !== null) {
+      try {
+        await notifyParentOfReply(deps, account, created, parentId);
+      } catch {
+        logEvent('messages.reply.notify.failed');
+      }
+    }
+    return c.json(
+      serializeMessage(created, payableOf(created), account.role, undefined, true),
+      200,
+    );
+  } catch {
+    logEvent('messages.create.failed');
+    return c.json({ error: 'Messages are unavailable' }, 503);
+  }
+}
+
+/**
  * `POST /messages` as multipart (`video` file + optional `poster` + `text`).
- * The caller applies `postLimiter` (429 + `Retry-After: 10`) before invoking this helper.
+ * Always top-level (`parentId` null). Applies media collapse and `postLimiter`
+ * after form parse (same order as JSON).
  *
  * @param deps - Store and clock.
+ * @param postLimiter - Per-account burst limiter.
  * @param c - Request.
  * @param account - Authenticated account (already named).
- * @returns 200 / 400 / 503.
+ * @param authorName - Display name snapshot.
+ * @returns 200 / 400 / 429 / 503.
  */
 async function postMultipartMessage(
   deps: MessagesRouteDeps,
+  postLimiter: PostRateLimiter,
   c: Context,
   account: Account,
   authorName: string,
@@ -385,31 +548,7 @@ async function postMultipartMessage(
   if (text === '' && photo === undefined && video === undefined) {
     return c.json({ error: 'Text must be 1–500 characters or include a photo or video' }, 400);
   }
-  const row: MessageRow = {
-    id: crypto.randomUUID(),
-    accountId: account.id,
-    name: authorName,
-    text,
-    createdAt: new Date(deps.now()),
-    hasPhoto: photo !== undefined,
-    hasVideo: video !== undefined,
-    videoContentType: video === undefined ? null : video.contentType,
-    ...unsignedNostrDefaults(),
-  };
-  try {
-    const created = await deps.store.create(row, photo, video);
-    if (deps.pushStore !== undefined) {
-      try {
-        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
-      } catch {
-        logEvent('push.enqueue.failed');
-      }
-    }
-    return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
-  } catch {
-    logEvent('messages.create.failed');
-    return c.json({ error: 'Messages are unavailable' }, 503);
-  }
+  return persistForumPost(deps, postLimiter, c, account, authorName, text, null, photo, video);
 }
 
 /** Body schema for posting a forum message (text and/or photo; optional reply). */
@@ -442,9 +581,13 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
  * replies, and DELETE register before the public single-note `GET /:id`.
  * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
- * `getById` still returns them for workers.
+ * `getById` still returns them for workers. Public `GET /:id` of a live
+ * Damus-only reply (`parentId` set, `accountId` null) is 404; top-level
+ * Damus-only notes stay 200. `GET /:id/replies` lists 21.gifts-author
+ * children only (`accountId` set).
  *
- * @param deps - Message store, auth store, clock, optional `pushStore`, and
+ * @param deps - Message store, auth store, clock, optional `pushStore` /
+ * `conversationStore`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
@@ -510,15 +653,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       /* v8 ignore next -- requireAction already rejected a missing name */
       const authorName = (account.name ?? '').trim();
-      if (!postLimiter.allow(account.id, deps.now())) {
-        logEvent('messages.rate_limited', { accountId: account.id });
-        c.header('Retry-After', '10');
-        return c.json({ error: 'Too many messages' }, 429);
-      }
       /* v8 ignore next -- missing content-type is JSON parse 400 */
       const requestType = c.req.header('content-type') ?? '';
       if (requestType.toLowerCase().includes('multipart/form-data')) {
-        return postMultipartMessage(deps, c, account, authorName);
+        return postMultipartMessage(deps, postLimiter, c, account, authorName);
       }
       const parsed = postBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
@@ -552,33 +690,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         parentId = parent.id;
       }
-      const row: MessageRow = {
-        id: crypto.randomUUID(),
-        accountId: account.id,
-        name: authorName,
-        text,
-        createdAt: new Date(deps.now()),
-        hasPhoto: photo !== undefined,
-        hasVideo: false,
-        videoContentType: null,
-        ...unsignedNostrDefaults(),
-        parentId,
-      };
-      try {
-        const created =
-          photo === undefined ? await deps.store.create(row) : await deps.store.create(row, photo);
-        if (deps.pushStore !== undefined && parentId === null) {
-          try {
-            await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
-          } catch {
-            logEvent('push.enqueue.failed');
-          }
-        }
-        return c.json(serializeMessage(created, false, account.role, undefined, true), 200);
-      } catch {
-        logEvent('messages.create.failed');
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
+      return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
     })
     .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c.req.param('id')))
     .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c.req.param('id')))
@@ -605,15 +717,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          if (row.accountId === null) {
-            const keptDamus = await dropMissingVideoRow(deps.store, row);
-            if (keptDamus === null) {
-              continue;
-            }
-            messages.push(serializeMessage(keptDamus, false, undefined, undefined, true));
-            continue;
-          }
-          const author = await deps.authStore.getAccount(row.accountId);
+          const author = await deps.authStore.getAccount(row.accountId!);
           const role = author?.role ?? 'basis';
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -675,7 +779,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         for (;;) {
           const row = await deps.store.getById(id);
-          if (row === undefined || row.deletedAt !== null) {
+          if (
+            row === undefined ||
+            row.deletedAt !== null ||
+            (row.parentId !== null && row.accountId === null)
+          ) {
             return c.json({ error: 'Not found' }, 404);
           }
           if (

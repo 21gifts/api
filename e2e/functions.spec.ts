@@ -375,6 +375,15 @@ test('Function: normalizeForumText — POST /messages without bearer is 401', as
   expect(res.status()).toBe(401);
 });
 
+test('Function: forumContentFingerprint — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: detectImageContentType — GET /messages without bearer is 401', async ({
   request,
 }) => {
@@ -534,6 +543,14 @@ test('Function: buildZapPushPayload — POST /me/push-subscriptions without bear
   expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
 });
 test('Function: enqueueForumPushes — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: buildReplyPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
+test('Function: enqueueReplyPush — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });
 test('Function: enqueueZapPush — GET /push/vapid-public without bearer is 401', async ({

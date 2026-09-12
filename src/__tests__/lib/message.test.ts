@@ -6,6 +6,7 @@ import {
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
   detectImageContentType,
+  forumContentFingerprint,
   normalizeForumText,
   serializeMessage,
   truncatePubkeyDisplay,
@@ -83,6 +84,30 @@ describe('truncatePubkeyDisplay', () => {
   it('truncates longer hex with an ellipsis', () => {
     const hex = 'aabbccddeeff00112233445566778899';
     expect(truncatePubkeyDisplay(hex)).toBe('aabbccdd…8899');
+  });
+});
+
+describe('forumContentFingerprint', () => {
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+
+  it('returns the same 64-char hex for the same text and bytes', () => {
+    const a = forumContentFingerprint('hello', bytes);
+    const b = forumContentFingerprint('hello', bytes);
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('differs when the text differs', () => {
+    expect(forumContentFingerprint('hello', bytes)).not.toBe(
+      forumContentFingerprint('hello!', bytes),
+    );
+  });
+
+  it('differs when the media bytes differ', () => {
+    const other = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+    expect(forumContentFingerprint('hello', bytes)).not.toBe(
+      forumContentFingerprint('hello', other),
+    );
   });
 });
 
@@ -182,6 +207,20 @@ describe('serializeMessage', () => {
     expect(serializeMessage(damusOnly, false, undefined, undefined, true)).not.toHaveProperty(
       'accountId',
     );
+  });
+
+  it('omits store-internal contentFp from public JSON', () => {
+    const row: MessageRow = {
+      id: 'msg-fp',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      contentFp: 'ab'.repeat(32),
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis', undefined, true)).not.toHaveProperty('contentFp');
   });
 });
 

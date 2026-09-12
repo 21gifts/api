@@ -102,3 +102,19 @@ export function buildZapPushPayload(messageId: string): PushPayload {
     tag: `zap:${messageId}`,
   };
 }
+
+/**
+ * Targeted notification when someone replies to the recipient's forum note.
+ *
+ * @param conversationId - Inbox thread to open (`/messages?c=`).
+ * @returns Payload object; callers `JSON.stringify`.
+ */
+export function buildReplyPushPayload(conversationId: string): PushPayload {
+  return {
+    type: 'forum',
+    title: 'Reply on your post',
+    body: 'Someone replied in the living room.',
+    url: `/messages?c=${conversationId}`,
+    tag: `reply:${conversationId}`,
+  };
+}
