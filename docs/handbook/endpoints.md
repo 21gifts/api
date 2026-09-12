@@ -331,14 +331,14 @@
 
 ## Endpoint: GET /conversations
 
-- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, name, lastText, lastAt }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `DEBUG_TOKEN` cannot read this inbox.
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `DEBUG_TOKEN` cannot read this inbox.
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /conversations
 
-- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object.
+- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "forumMessageId" string; 400 `{ error: 'Cannot message yourself' }` when the author is the session account; 404 `{ error: 'Not found' }` for a non-UUID / missing note / Damus note without pubkey; 503 Conversations are unavailable.
 - **Used by:** App "message the author" from a forum note.
 - **Auth:** `Authorization: Bearer` session.

@@ -38,6 +38,7 @@ describe('serializeConversation', () => {
     const json = serializeConversation(THREAD);
     expect(json).toEqual({
       id: 'c-1',
+      kind: 'member_member',
       name: 'Ada',
       lastText: 'hello',
       lastAt: '2026-08-29T13:00:00.000Z',
@@ -46,6 +47,17 @@ describe('serializeConversation', () => {
     expect(json).not.toHaveProperty('accountId');
     expect(json).not.toHaveProperty('eventId');
     expect(json).not.toHaveProperty('npub');
+  });
+
+  it('copies counterpart kind for a platform thread', () => {
+    const json = serializeConversation({ ...THREAD, kind: 'member_platform' });
+    expect(json).toEqual({
+      id: 'c-1',
+      kind: 'member_platform',
+      name: 'Ada',
+      lastText: 'hello',
+      lastAt: '2026-08-29T13:00:00.000Z',
+    });
   });
 });
 

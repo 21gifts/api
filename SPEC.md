@@ -1947,6 +1947,7 @@ Success → **Response** `200`:
   "conversations": [
     {
       "id": "<uuid>",
+      "kind": "member_member",
       "name": "Ada",
       "lastText": "Hello",
       "lastAt": "2026-08-29T12:00:00.000Z"
