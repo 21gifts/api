@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
-import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
+import { MESSAGE_MAX_LENGTH, truncatePubkeyDisplay, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -3315,6 +3315,285 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[1]?.text).toBe('orphan reply');
     expect(body.messages[1]?.role).toBe('basis');
     expect(body.messages[1]?.accountId).toBe('gone');
+  });
+
+  it('returns 200 with an empty-name member reply coerced to a display name', async () => {
+    const parentId = '19191919-1919-4191-8191-191919191919';
+    const firstId = '1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a';
+    const secondId = '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c';
+    const authorPubkey = 'ab'.repeat(32);
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: firstId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'first reply',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: secondId,
+        accountId: 'acc',
+        name: '',
+        text: 'empty name reply',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        authorPubkey,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; name: string; text: string }>;
+    };
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]?.id).toBe(firstId);
+    expect(body.messages[0]?.name).toBe('Ada');
+    expect(body.messages[0]?.text).toBe('first reply');
+    expect(body.messages[1]?.id).toBe(secondId);
+    expect(body.messages[1]?.name).toBe(truncatePubkeyDisplay(authorPubkey));
+    expect(body.messages[1]?.text).toBe('empty name reply');
+  });
+
+  it('returns 200 skipping a reply whose createdAt is invalid', async () => {
+    const parentId = '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d';
+    const badId = '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e';
+    const goodId = '1f1f1f1f-1f1f-41f1-81f1-1f1f1f1f1f1f';
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: badId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'bad date',
+        createdAt: new Date(NaN),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goodId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'good date',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; text: string }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(goodId);
+    expect(body.messages[0]?.text).toBe('good date');
+  });
+
+  it('returns 200 skipping a reply whose author lookup throws', async () => {
+    const parentId = '25252525-2525-4252-8252-252525252525';
+    const throwId = '26262626-2626-4262-8262-262626262626';
+    const goodId = '27272727-2727-4272-8272-272727272727';
+    const auth = await namedStore('Ada');
+    await auth.createAccount({
+      id: 'thrower',
+      linkingKey: `02${'c'.repeat(64)}`,
+      role: 'basis',
+      name: 'Thrower',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const original = auth.getAccount.bind(auth);
+    vi.spyOn(auth, 'getAccount').mockImplementation(async (id: string) => {
+      if (id === 'thrower') {
+        throw new Error('store down');
+      }
+      return original(id);
+    });
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: throwId,
+        accountId: 'thrower',
+        name: 'Thrower',
+        text: 'throwing lookup',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goodId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'good sibling',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; text: string }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(goodId);
+    expect(body.messages[0]?.text).toBe('good sibling');
+  });
+
+  it('skips a listed reply whose accountId is null', async () => {
+    const parentId = '20202020-2020-4202-8202-202020202020';
+    const memberId = '21212121-2121-4212-8212-212121212121';
+    const auth = await namedStore('Ada');
+    const parent = {
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    };
+    const member = {
+      id: memberId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'member reply',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    };
+    const damusOnly = {
+      id: '22222222-2222-4222-8222-222222222222',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now() + 1),
+      ...unsignedNostrDefaults(),
+      parentId,
+      authorPubkey: 'ab'.repeat(32),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    };
+    const base = new InMemoryMessageStore([parent, member]);
+    const store = throwingStore({
+      getById: (id) => base.getById(id),
+      listReplies: async () => [member, damusOnly],
+      deleteById: (id) => base.deleteById(id),
+    });
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; text: string }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(memberId);
+    expect(body.messages[0]?.text).toBe('member reply');
+  });
+
+  it('returns 503 when deleting a missing-video reply throws', async () => {
+    const parentId = '23232323-2323-4232-8232-232323232323';
+    const replyId = '24242424-2424-4242-8242-242424242424';
+    const auth = await namedStore('Ada');
+    const parent = {
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    };
+    const missingVideo = {
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'missing clip',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4' as const,
+    };
+    const base = new InMemoryMessageStore([parent, missingVideo]);
+    const store = throwingStore({
+      getById: (id) => base.getById(id),
+      listReplies: async () => [missingVideo],
+    });
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
   });
 });
 

@@ -216,16 +216,24 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
 /**
  * Project a store row to its public JSON shape.
  *
+ * When `row.name` is empty after trim, JSON `name` is
+ * {@link truncatePubkeyDisplay} of `row.authorPubkey` (`'npub'` when the
+ * pubkey is missing). Non-empty names are unchanged. Invalid `createdAt`
+ * is not guarded here: `toISOString()` still throws. The replies route omits
+ * that child; list and public GET return 503.
+ *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
  * @param replyCount - Optional reply count for top-level list rows.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
+ *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
  * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
  * when requested); `createdAt` ISO-8601. Never includes photo or video bytes,
  * and never includes `contentFp`.
+ * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
   row: MessageRow,
@@ -236,7 +244,7 @@ export function serializeMessage(
 ): PublicMessage {
   const body: PublicMessage = {
     id: row.id,
-    name: row.name,
+    name: row.name.trim() === '' ? truncatePubkeyDisplay(row.authorPubkey ?? '') : row.name,
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
