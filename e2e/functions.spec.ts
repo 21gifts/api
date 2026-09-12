@@ -613,10 +613,12 @@ test('Function: usdCentsToString — empty stats totalUsd is 2 dp', async ({ req
   expect(((await res.json()) as { totalUsd: string }).totalUsd).toBe('0.00');
 });
 
-test('Function: usdCentsToFiatCents — empty stats totalChf is 2 dp', async ({ request }) => {
+test('Function: usdCentsToFiatCents — empty stats skip fiat conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
-  expect(((await res.json()) as { totalChf: string }).totalChf).toBe('0.00');
+  const body = (await res.json()) as { giftCount: number; totalChf: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalChf).toBe('0.00');
 });
 
 test('Function: InMemoryFiatStore — GET /gifts/stats is empty on default boot', async ({
