@@ -2042,7 +2042,7 @@ Success → **Response** `200`:
       "readAt": null
     }
   ],
-  "unreadCount": 0
+  "unreadCount": 1
 }
 ```
 
