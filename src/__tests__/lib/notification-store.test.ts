@@ -339,17 +339,23 @@ describe('PostgresNotificationStore', () => {
 
   it('markRead UPDATEs then returns the updated row', async () => {
     const sql = new MockSql();
-    sql.nextRows = [sqlRow()];
+    sql.nextRows = [sqlRow({ read_at: READ_AT })];
     const marked = await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT);
-    expect(sql.executes).toHaveLength(1);
-    expect(sql.executes[0]?.text).toMatch(/UPDATE notification SET read_at/);
-    expect(sql.executes[0]?.params).toEqual(['n-1', 'parent', READ_AT]);
+    expect(sql.executes).toHaveLength(0);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE notification SET read_at/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['n-1', 'parent', READ_AT]);
     expect(marked?.readAt).toEqual(READ_AT);
   });
 
-  it('markRead already-read skips execute', async () => {
+  it('markRead already-read returns the stored readAt', async () => {
     const sql = new MockSql();
-    sql.nextRows = [sqlRow({ read_at: READ_AT })];
+    sql.queryImpl = (text) => {
+      if (text.includes('RETURNING')) {
+        return [];
+      }
+      return [sqlRow({ read_at: READ_AT })];
+    };
     const marked = await new PostgresNotificationStore(sql).markRead(
       'n-1',
       'parent',

@@ -346,18 +346,17 @@ export class PostgresNotificationStore implements NotificationStore {
     accountId: string,
     readAt: Date,
   ): Promise<NotificationRow | undefined> {
-    const existing = await this.getByIdForRecipient(id, accountId);
-    if (existing === undefined) {
-      return undefined;
-    }
-    if (existing.readAt !== null) {
-      return existing;
-    }
-    await this.#sql.execute(
-      `UPDATE notification SET read_at = $3 WHERE id = $1 AND recipient_account_id = $2 AND read_at IS NULL`,
+    const updated = await this.#sql.query<NotificationSqlRow>(
+      `UPDATE notification SET read_at = $3
+       WHERE id = $1 AND recipient_account_id = $2 AND read_at IS NULL
+       RETURNING ${NOTIFICATION_SELECT}`,
       [id, accountId, readAt],
     );
-    return { ...existing, readAt: new Date(readAt.getTime()) };
+    const stamped = updated[0];
+    if (stamped !== undefined) {
+      return mapNotificationRow(stamped);
+    }
+    return this.getByIdForRecipient(id, accountId);
   }
 
   /**
