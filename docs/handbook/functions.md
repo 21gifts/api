@@ -1288,7 +1288,7 @@
 ## Function: indexZapReceipt
 
 - **Purpose:** Validate provider pubkey (case-insensitive hex) and add sats once per receipt id. Callers verify the Nostr signature first. Persists a `nostr_zap_ingest` row (`indexed`, or `rejected` with reason `pubkey` / `amount` / `duplicate`); store throw logs `nostr.zap.ingest.record_failed` and does not change the boolean result.
-- **Ingest dedupe:** One `nostr_zap_ingest` row is written per receipt per decision change per process (memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt). A repeated identical `outcome:reason` is not written again. Receipts whose remembered decision is already terminal never reach this function: `indexOpenZapReceipts` skips them before validation.
+- **Ingest dedupe:** One `nostr_zap_ingest` row is written per receipt per decision change per process (memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt). A repeated identical `outcome:reason` is normally not written again, because the memory is consulted before the write; that is not a guarantee, since the memory is set only after the write resolves, worker ticks are not serialised, and a failed write leaves it untouched. Receipts whose remembered decision is already terminal never reach this function: `indexOpenZapReceipts` skips them before validation.
 - **Inputs:** store, messageId, receipt, providerPubkey, amountSats; optional receiptEvent / noteEventId for debug rows.
 - **Returns / side effects:** boolean; logs indexed/rejected; records ingest.
 - **Used by:** `indexOpenZapReceipts` (worker tick).

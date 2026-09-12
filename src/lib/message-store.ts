@@ -368,7 +368,7 @@ export interface ZapIngestRow {
   receipt: Record<string, unknown>;
 }
 
-/** Idempotent SQL for the forum table (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars; matches `docs/schema/message.sql`). */
+/** Idempotent SQL for the forum table (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars; `docs/schema/message.sql` mirrors the DDL and documents the boot repair statement by comment, the `DO $unwrap$` block lives only in this array). */
 export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
