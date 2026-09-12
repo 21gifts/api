@@ -175,6 +175,45 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore().listLatest(10)).toEqual([]);
   });
 
+  it('accountHasLivePost is false on an empty store', async () => {
+    expect(await new InMemoryMessageStore().accountHasLivePost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLivePost is true for a live top-level row by that account', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('acc', null)).toBe(true);
+  });
+
+  it('accountHasLivePost is true for a live reply by that account', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, parentId: 'parent' }]);
+    expect(await store.accountHasLivePost('acc', null)).toBe(true);
+  });
+
+  it('accountHasLivePost is false when only the excluded profile id is live', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('acc', 'a')).toBe(false);
+  });
+
+  it('accountHasLivePost is true when the profile id plus a second live row exist', async () => {
+    const store = new InMemoryMessageStore([EARLY, LATE]);
+    expect(await store.accountHasLivePost('acc', 'a')).toBe(true);
+  });
+
+  it('accountHasLivePost is false when only a soft-deleted row exists', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, deletedAt: new Date('2026-08-02T00:00:00.000Z') },
+    ]);
+    expect(await store.accountHasLivePost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLivePost is false for a Damus-only row', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, accountId: null }]);
+    expect(await store.accountHasLivePost('acc', null)).toBe(false);
+    expect(await store.accountHasLivePost('other', null)).toBe(false);
+  });
+
+  it('accountHasLivePost is false for another account live row', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('other', null)).toBe(false);
+  });
+
   it('deleteById removes the row and returns false when missing', async () => {
     const store = new InMemoryMessageStore([EARLY, LATE]);
     expect(await store.deleteById('missing')).toBe(false);
@@ -1394,6 +1433,21 @@ describe('InMemoryMessageStore', () => {
 });
 
 describe('PostgresMessageStore', () => {
+  it('accountHasLivePost queries live message rows for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasLivePost('acc', null)).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null]);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasLivePost('acc', null)).toBe(true);
+    expect(await store.accountHasLivePost('acc', 'prof')).toBe(true);
+    expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
   it('maps rows with has_photo and uses list SQL without selecting photo bytes', async () => {
     const sql = new MockSql();
     sql.nextRows = [

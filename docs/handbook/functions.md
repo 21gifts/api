@@ -486,9 +486,9 @@
 
 ## Function: invoiceRoutes
 
-- **Purpose:** Hono sub-app for spend-worker passkey eligibility (`GET /passkey`), invoice issue (`POST /`), and preimage proof (`POST /proof`). Issue refuses addresses without a passkey-backed account (403 before LNURL).
-- **Inputs:** `InvoiceRouteDeps`: spend token, invoice `store`, `authStore` (account + passkey lookup), clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
-- **Returns / side effects:** Hono app mounted at `/invoices`. `GET /passkey` returns `{ hasPasskey }` (200 even when false). A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
+- **Purpose:** Hono sub-app for spend-worker passkey eligibility (`GET /passkey`), live forum-post eligibility (`GET /posted`), invoice issue (`POST /`), and preimage proof (`POST /proof`). Issue refuses addresses without a passkey-backed account (403 before LNURL) and without a live non-profile forum post (403 after passkey, before LNURL).
+- **Inputs:** `InvoiceRouteDeps`: spend token, invoice `store`, `authStore` (account + passkey lookup), `messageStore` (live-post lookup), clock, fetch, optional `giftRecorder` (default `NoopGiftRecorder`).
+- **Returns / side effects:** Hono app mounted at `/invoices`. `GET /passkey` returns `{ hasPasskey }` (200 even when false). `GET /posted` returns `{ hasPosted }` (200 even when false). A matching proof (including the same-preimage idempotent 200) calls `recordOutbound`. Insert failures log `gifts.record_failed` and still return 200.
 - **Used by:** `createApp`.
 
 ## Function: NoopGiftRecorder
