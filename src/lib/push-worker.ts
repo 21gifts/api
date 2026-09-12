@@ -69,8 +69,8 @@ export async function enqueueForumPushes(
 }
 
 /**
- * Enqueue one reply notification for the parent-note author when they have a
- * subscription. Opens the inbox thread (`/messages?c=`).
+ * Enqueue one targeted reply notification for the parent-note author when they
+ * have a subscription. Payload URL is `/messages?c=<conversationId>`.
  *
  * @param store - Push store.
  * @param authorId - Parent-note author to notify.
