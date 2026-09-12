@@ -130,6 +130,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listPublishedEventIds: boom,
     create: boom,
     findLiveByAccountContent: boom,
+    accountHasLivePost: boom,
     getPhoto: boom,
     deleteById: boom,
     markDeleted: boom,
@@ -1394,6 +1395,7 @@ describe('POST /messages', () => {
       findLiveByAccountContent: async () => {
         throw new Error('find boom');
       },
+      accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       getPhoto: (id) => base.getPhoto(id),
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
@@ -1456,6 +1458,7 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       findLiveByAccountContent: async () => undefined,
+      accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       create: async () => ({ ...existing, createdAt: new Date(existing.createdAt.getTime()) }),
       getPhoto: (id) => base.getPhoto(id),
       deleteById: (id) => base.deleteById(id),
@@ -2646,6 +2649,7 @@ describe('POST /messages/:id/invoice', () => {
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
       findLiveByAccountContent: (...args) => base.findLiveByAccountContent(...args),
+      accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       getPhoto: (id) => base.getPhoto(id),
       getById: (id) => base.getById(id),
       deleteById: (id) => base.deleteById(id),

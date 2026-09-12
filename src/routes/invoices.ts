@@ -7,6 +7,7 @@ import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { MessageStore } from '@/lib/message-store';
 import { preimageMatchesHash } from '@/lib/proof';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
@@ -17,9 +18,9 @@ import {
 import { logEvent } from '@/lib/log';
 
 /**
- * Spend-worker invoice routes: check passkey eligibility, fetch a recipient
- * BOLT11 via LNURL-pay, then accept the payment preimage as proof. The api
- * does not pay.
+ * Spend-worker invoice routes: check passkey eligibility and a live forum
+ * post, fetch a recipient BOLT11 via LNURL-pay, then accept the payment
+ * preimage as proof. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -33,6 +34,11 @@ export interface InvoiceRouteDeps {
    * Distinct from {@link InvoiceStore} (`store`).
    */
   authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
+  /**
+   * Forum store for Lightning Address → live non-profile post lookup.
+   * Distinct from {@link InvoiceStore} (`store`).
+   */
+  messageStore: Pick<MessageStore, 'accountHasLivePost'>;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for LNURL-pay. */
@@ -94,9 +100,32 @@ async function addressHasPasskey(
 }
 
 /**
+ * Whether a normalised Lightning Address belongs to an account that has at
+ * least one live forum row that is not the auto-created profile note.
+ * Missing account → false (fail closed).
+ *
+ * @param authStore - Account lookup.
+ * @param messageStore - Live-post lookup.
+ * @param address - Normalised `local@domain`.
+ * @returns `true` only when the account has a live non-profile forum row.
+ */
+async function addressHasPosted(
+  authStore: InvoiceRouteDeps['authStore'],
+  messageStore: InvoiceRouteDeps['messageStore'],
+  address: string,
+): Promise<boolean> {
+  const account = await authStore.getAccountByLightningAddress(address);
+  return (
+    account !== undefined &&
+    (await messageStore.accountHasLivePost(account.id, account.profileMessageId ?? null))
+  );
+}
+
+/**
  * Build the `/invoices` route group.
  *
- * @param deps - Token, invoice store, auth store, clock, fetch, optional gift recorder.
+ * @param deps - Token, invoice store, auth store, message store, clock, fetch,
+ *   optional gift recorder.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
@@ -136,6 +165,23 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const hasPasskey = await addressHasPasskey(deps.authStore, address);
       return c.json({ hasPasskey }, 200);
     })
+    .get('/posted', async (c) => {
+      const denied = authGate(
+        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
+        (body, status) => c.json(body, status),
+      );
+      if (denied !== null) {
+        return denied;
+      }
+
+      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      if (address === null) {
+        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+
+      const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
+      return c.json({ hasPosted }, 200);
+    })
     .post('/', async (c) => {
       const denied = authGate(
         checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
@@ -170,6 +216,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (!hasPasskey) {
         logEvent('invoice.passkey_required', { address });
         return c.json({ error: 'Passkey required' }, 403);
+      }
+
+      const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
+      if (!hasPosted) {
+        logEvent('invoice.forum_post_required', { address });
+        return c.json({ error: 'Forum post required' }, 403);
       }
 
       const fetchArgs: {
