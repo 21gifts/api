@@ -88,21 +88,21 @@ describe('enqueueReplyPush', () => {
   it('enqueues when the parent author has subscriptions', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_A);
-    await enqueueReplyPush(store, 'author', 'reply-1', 'conv-9', 5);
+    await enqueueReplyPush(store, 'author', 'reply-1', 'parent-9', 5);
     const claimed = await store.claimPending(10, 5, 1000);
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('author');
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.messageId).toBe('reply-1');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      url: '/messages?c=conv-9',
-      tag: 'reply:conv-9',
+      url: '/notifications',
+      tag: 'forum_reply:parent-9',
     });
   });
 
   it('does nothing when the parent author has no subscriptions', async () => {
     const store = new InMemoryPushStore();
-    await enqueueReplyPush(store, 'author', 'reply-1', 'conv-9', 5);
+    await enqueueReplyPush(store, 'author', 'reply-1', 'parent-9', 5);
     expect(await store.claimPending(10, 5, 1000)).toEqual([]);
   });
 });

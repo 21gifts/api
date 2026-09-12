@@ -11,6 +11,7 @@ import {
   unsignedNostrDefaults,
 } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
@@ -109,6 +110,8 @@ async function inboundTick(
   messages: InMemoryMessageStore,
   conversations: InMemoryConversationStore,
   querier: RecordingQuerier,
+  notificationStore?: InMemoryNotificationStore,
+  pushStore?: InMemoryPushStore,
 ): Promise<void> {
   await runNostrWorkerTick(
     deps({
@@ -121,6 +124,8 @@ async function inboundTick(
       env: {},
       conversations,
       verifyKind1: () => true,
+      ...(notificationStore === undefined ? {} : { notificationStore }),
+      ...(pushStore === undefined ? {} : { pushStore }),
     }),
   );
 }
@@ -4357,6 +4362,135 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.getByEventId('77'.repeat(32))).toBeUndefined();
     expect(await messages.getByEventId(memberReplyId)).toBeDefined();
     expect(await messages.getByEventId('66'.repeat(32))).toBeDefined();
+  });
+
+  it('notifies the parent author when another member replies inbound', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'e'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const bobPubkey = (await auth.getNostrPublicKey('bob')) as string;
+    const replyEventId = 'b0'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: bobPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bob reply',
+        created_at: 1_700_000_000,
+        sig: 'cc'.repeat(32),
+      },
+    ];
+    const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await inboundTick(
+      auth,
+      messages,
+      new InMemoryConversationStore(),
+      querier,
+      notificationStore,
+      pushStore,
+    );
+    const forAcc = await notificationStore.listByRecipient('acc', 10);
+    expect(forAcc).toHaveLength(1);
+    expect(forAcc[0]?.type).toBe('forum_reply');
+    expect(forAcc[0]?.parentId).toBe('m1');
+    expect(forAcc[0]?.text).toBe('bob reply');
+    expect(forAcc[0]?.name).toBe('Bob');
+    expect(await notificationStore.listByRecipient('bob', 10)).toHaveLength(0);
+  });
+
+  it('does not notify when inbound kind:1 is a self-reply', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const replyEventId = 'b1'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: accPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'self',
+        created_at: 1_700_000_000,
+        sig: 'cc'.repeat(32),
+      },
+    ];
+    const notificationStore = new InMemoryNotificationStore();
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier, notificationStore);
+    expect(await notificationStore.listByRecipient('acc', 10)).toHaveLength(0);
+    expect(await messages.getByEventId(replyEventId)).toBeDefined();
+  });
+
+  it('persists inbound kind:1 when notificationStore.create throws', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'aa'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'e'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const bobPubkey = (await auth.getNostrPublicKey('bob')) as string;
+    const replyEventId = 'b2'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: bobPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'bob reply',
+        created_at: 1_700_000_000,
+        sig: 'cc'.repeat(32),
+      },
+    ];
+    const notificationStore = new InMemoryNotificationStore();
+    notificationStore.create = async () => {
+      throw new Error('boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await inboundTick(
+        auth,
+        messages,
+        new InMemoryConversationStore(),
+        querier,
+        notificationStore,
+      );
+      expect(await messages.getByEventId(replyEventId)).toBeDefined();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'nostr.reply.notify.failed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('skips inbound kind:1 when verifyKind1 returns false', async () => {

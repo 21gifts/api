@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { MESSAGE_MAX_LENGTH, truncatePubkeyDisplay, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
@@ -816,7 +816,7 @@ describe('POST /messages', () => {
     expect(replies[0]?.text).toBe('child');
   });
 
-  it('copies a reply into the parent author inbox and enqueues a targeted push', async () => {
+  it('creates a notification for the parent author and enqueues a targeted push', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -843,7 +843,7 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const conversations = new InMemoryConversationStore();
+    const notificationStore = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/parent',
@@ -853,7 +853,7 @@ describe('POST /messages', () => {
       createdAt: new Date(now()),
     });
     const res = await mount(authStore, messageStore, {
-      conversationStore: conversations,
+      notificationStore,
       pushStore,
     }).request('/messages', {
       method: 'POST',
@@ -861,16 +861,17 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
     expect(res.status).toBe(200);
-    const threads = await conversations.listVisible('parent', false, null, 10);
-    expect(threads).toHaveLength(1);
-    const messages = await conversations.listMessages(threads[0]!.id, 10);
-    expect(messages.map((row) => row.text)).toEqual(['child']);
+    const listed = await notificationStore.listByRecipient('parent', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_reply');
+    expect(listed[0]?.text).toBe('child');
     const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('parent');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       title: 'Reply on your post',
-      url: `/messages?c=${threads[0]!.id}`,
+      url: '/notifications',
+      tag: `forum_reply:${parentId}`,
     });
   });
 
@@ -888,7 +889,7 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const conversations = new InMemoryConversationStore();
+    const notificationStore = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/acc',
@@ -898,7 +899,7 @@ describe('POST /messages', () => {
       createdAt: new Date(now()),
     });
     const res = await mount(await namedStore('Ada'), messageStore, {
-      conversationStore: conversations,
+      notificationStore,
       pushStore,
     }).request('/messages', {
       method: 'POST',
@@ -906,7 +907,7 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
     expect(res.status).toBe(200);
-    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
     expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
   });
 
@@ -937,12 +938,12 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const conversations = new InMemoryConversationStore();
-    conversations.openMemberMember = async () => {
-      throw new Error('inbox boom');
+    const notificationStore = new InMemoryNotificationStore();
+    notificationStore.create = async () => {
+      throw new Error('boom');
     };
     const res = await mount(authStore, messageStore, {
-      conversationStore: conversations,
+      notificationStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -968,7 +969,7 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const conversations = new InMemoryConversationStore();
+    const notificationStore = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/acc',
@@ -978,7 +979,7 @@ describe('POST /messages', () => {
       createdAt: new Date(now()),
     });
     const res = await mount(await namedStore('Ada'), messageStore, {
-      conversationStore: conversations,
+      notificationStore,
       pushStore,
     }).request('/messages', {
       method: 'POST',
@@ -986,11 +987,11 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
     expect(res.status).toBe(200);
-    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
     expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
   });
 
-  it('does not enqueue a reply push without a conversation store', async () => {
+  it('enqueues a reply push without a notification store', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -1031,10 +1032,15 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
     expect(res.status).toBe(200);
-    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      url: '/notifications',
+      tag: `forum_reply:${parentId}`,
+    });
   });
 
-  it('opens an inbox thread for a photo-only reply without copying empty text', async () => {
+  it('creates a notification for a photo-only reply with empty text', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -1061,9 +1067,9 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const conversations = new InMemoryConversationStore();
+    const notificationStore = new InMemoryNotificationStore();
     const res = await mount(authStore, messageStore, {
-      conversationStore: conversations,
+      notificationStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -1073,9 +1079,9 @@ describe('POST /messages', () => {
       }),
     });
     expect(res.status).toBe(200);
-    const threads = await conversations.listVisible('parent', false, null, 10);
-    expect(threads).toHaveLength(1);
-    expect(await conversations.listMessages(threads[0]!.id, 10)).toEqual([]);
+    const listed = await notificationStore.listByRecipient('parent', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.text).toBe('');
   });
 
   it('returns 404 when inReplyTo is a nested reply', async () => {

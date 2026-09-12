@@ -19,6 +19,7 @@ import { messagesRoutes } from '@/routes/messages';
 import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
 import { conversationRoutes } from '@/routes/conversations';
+import { notificationRoutes } from '@/routes/notifications';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
@@ -35,6 +36,8 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
+import type { NotificationStore } from '@/lib/notification-store';
 import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { resolveAllowedOrigins } from '@/lib/config';
@@ -138,6 +141,11 @@ export interface AppDeps {
    */
   conversationStore?: ConversationStore;
   /**
+   * In-app notifications (default: empty {@link InMemoryNotificationStore}).
+   * Boot injects {@link PostgresNotificationStore} when `DATABASE_URL` is set.
+   */
+  notificationStore?: NotificationStore;
+  /**
    * Web Push subscriptions and outbox (default: empty
    * {@link InMemoryPushStore}). Boot injects
    * {@link PostgresPushStore} when `DATABASE_URL` is set.
@@ -158,12 +166,12 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
  * public `GET /view/:viewKey` alongside `/me`, Web Push subscription routes,
- * and the rest of the surface.
+ * `/notifications`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, message store, contact store, conversation
- *   store, push store,
+ *   store, notification store, push store,
  *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
@@ -182,6 +190,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
+  const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
@@ -291,7 +300,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       pushStore,
-      conversationStore,
+      notificationStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -307,6 +316,10 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
     }),
+  );
+  app.route(
+    '/notifications',
+    notificationRoutes({ store: notificationStore, authStore: store, now }),
   );
   app.route(
     '/invoices',
