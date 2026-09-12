@@ -691,7 +691,7 @@
 
 - **Purpose:** Project a stored thread to its public list JSON shape.
 - **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
-- **Returns / side effects:** `{ id, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
+- **Returns / side effects:** `{ id, kind, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeConversationMessage

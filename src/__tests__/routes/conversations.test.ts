@@ -115,11 +115,17 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string; lastText: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; name: string; lastText: string }>;
+    };
     expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('member_member');
     expect(body.conversations[0]?.name).toBe('Bob');
     expect(body.conversations[0]?.lastText).toBe('hi');
+    expect(body.conversations[0]).not.toHaveProperty('accountA');
     expect(body.conversations[0]).not.toHaveProperty('accountId');
+    expect(body.conversations[0]).not.toHaveProperty('eventId');
+    expect(body.conversations[0]).not.toHaveProperty('npub');
   });
 
   it('lets staff see platform threads they are not in', async () => {
@@ -357,9 +363,14 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string; name: string };
+    const body = (await res.json()) as { id: string; kind: string; name: string };
     expect(body.name).toBe('Bob');
+    expect(body.kind).toBe('member_member');
     expect(body.id.length).toBeGreaterThan(8);
+    expect(body).not.toHaveProperty('accountA');
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('eventId');
+    expect(body).not.toHaveProperty('npub');
   });
 
   it('opens a platform thread when the note author is the platform account', async () => {
@@ -384,7 +395,9 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { name: string }).name).toBe('21.gifts');
+    const body = (await res.json()) as { kind: string; name: string };
+    expect(body.name).toBe('21.gifts');
+    expect(body.kind).toBe('member_platform');
   });
 
   it('opens a Damus thread from a note without a 21gifts account', async () => {
@@ -409,8 +422,9 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string };
+    const body = (await res.json()) as { kind: string; name: string };
     expect(body.name).toMatch(/aa/);
+    expect(body.kind).toBe('member_damus');
   });
 
   it('returns 404 when a Damus note has no author pubkey', async () => {

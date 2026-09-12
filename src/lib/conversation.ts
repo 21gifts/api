@@ -72,6 +72,8 @@ export interface ConversationMessageRow {
 export interface PublicConversation {
   /** Opaque unique conversation id. */
   id: string;
+  /** Counterpart kind. */
+  kind: ConversationKind;
   /** Counterpart display name (or truncated npub for Damus-only). */
   name: string;
   /** Last message text. */
@@ -101,6 +103,7 @@ export interface PublicConversationMessage {
 export function serializeConversation(thread: ConversationThread): PublicConversation {
   return {
     id: thread.id,
+    kind: thread.kind,
     name: thread.name,
     lastText: thread.lastText,
     lastAt: thread.lastMessageAt.toISOString(),
