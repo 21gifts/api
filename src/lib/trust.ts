@@ -216,6 +216,7 @@ function compareChainAccounts(a: Account, b: Account): number {
   if (a.id > b.id) {
     return 1;
   }
+  /* v8 ignore next 3 — chain account ids are unique */
   return 0;
 }
 
