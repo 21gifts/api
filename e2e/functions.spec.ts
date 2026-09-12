@@ -1149,6 +1149,36 @@ test('Function: serializeConversation — GET /conversations without bearer is 4
 }) => {
   expect((await request.get('/conversations')).status()).toBe(401);
 });
+test('Function: serializeNotification — GET /notifications without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/notifications')).status()).toBe(401);
+});
+test('Function: notifyForumReply — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: migrateNotificationSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemoryNotificationStore — GET /notifications without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/notifications')).status()).toBe(401);
+});
+test('Function: PostgresNotificationStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: notificationRoutes — GET /notifications without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/notifications')).status()).toBe(401);
+  expect((await request.post('/notifications/read-all')).status()).toBe(401);
+  expect((await request.post('/notifications/:id/read')).status()).toBe(401);
+});
 test('Function: serializeConversationMessage — GET /conversations/:id without bearer is 401', async ({
   request,
 }) => {

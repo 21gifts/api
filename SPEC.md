@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-12 (forum replies notify the parent author in inbox + Web Push).
+**Status**: living document. Last revised 2026-09-12 (forum replies notify via in-app Notifications + Web Push `/notifications`, not inbox copy).
 
 ---
 
@@ -92,6 +92,9 @@ Public base URLs used in examples:
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                  |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages in one thread                                               |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                               |
+| GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                        |
+| POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                       |
+| POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                        |
 | GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                  |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                          |
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                       |
@@ -1508,13 +1511,14 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web
-Push for a **top-level** note notifies every other subscribed account. A
-**reply** to a 21.gifts-author parent (not the replier themselves) opens or
-reuses the member↔member inbox thread, copies non-empty reply text into it,
-and enqueues one targeted push to the parent author (`url` `/messages?c=`
-that thread; `tag` `reply:<conversationId>`). Conversation or push failure
-does not fail the **200**. Over-limit posters get **429** `{ "error": "Too many messages" }`
+author LN). `role` is the posting session account's live `account.role`. Web Push for a
+**top-level** note notifies every other subscribed account. A **reply** to a
+21.gifts-author parent (not the replier themselves) inserts one
+`forum_reply` notification for that author and enqueues one targeted push
+(`url` `/notifications`, `tag` `forum_reply:<parentId>`). Photo-only empty
+text still notifies. Self-replies and Damus-only parents do not notify.
+Notification or push failure does not fail the **200**. Over-limit posters
+get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
@@ -2003,6 +2007,69 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message).
+
+### `GET /notifications`
+
+Bearer session required. Lists the recipient's notifications newest-first
+(cap **200**) plus the total unread count (not the page length). Member
+JSON never includes recipient or actor account ids.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Notifications are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "notifications": [
+    {
+      "id": "<uuid>",
+      "type": "forum_reply",
+      "parentId": "<uuid>",
+      "replyId": "<uuid>",
+      "name": "Bob",
+      "text": "bob reply",
+      "createdAt": "2026-09-12T12:00:00.000Z",
+      "readAt": null
+    }
+  ],
+  "unreadCount": 0
+}
+```
+
+`unreadCount` is the total unread, not the page length.
+
+### `POST /notifications/read-all`
+
+Bearer session required. Marks every unread notification for the session
+account read.
+
+Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
+Store failure → **503** `{ "error": "Notifications are unavailable" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true }
+```
+
+### `POST /notifications/:id/read`
+
+Bearer session required. `:id` is a UUID. Marks one notification read and
+returns that `PublicNotification` with `readAt` set. Unknown id, another
+account's notification, or a non-uuid `:id` → **404**
+`{ "error": "Not found" }`. Same **401** / **503** as list.
+
+Success → **Response** `200` (one public notification with `readAt` set).
 
 ---
 

@@ -133,6 +133,13 @@
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
 
+## Function: migrateNotificationSchema
+
+- **Purpose:** Applies `NOTIFICATION_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS notification` with recipient/actor FKs, unique `(recipient_account_id, type, reply_id)`, and newest-first recipient index).
+- **Inputs:** `SqlClient` already opened by boot.
+- **Returns / side effects:** Void; idempotent DDL matching `docs/schema/notification.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
+- **Used by:** `openBootStores` when SQL opens, after `migratePushSchema` and before `migrateDbChangeSchema`.
+
 ## Function: migrateDbChangeSchema
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods). On UPDATE, every bytea column (found via `pg_attribute` on `TG_RELID`) whose value is unchanged and was not hashed by `db_change_redact` is stored in both `before` and `after` as an object with `unchanged` true, `sha256` as the hex digest of the column text, and `bytes` as the `octet_length` of that text; INSERT, DELETE and the UPDATE that changes the bytes keep the full value, so any row state is reconstructable by chaining to the latest earlier full image; secret columns keep their sha256 hash; the no-op comparison still happens on the raw images before redaction.
@@ -220,9 +227,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, conversationStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateDbChangeSchema`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, conversationStore, notificationStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateDbChangeSchema`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -309,11 +316,25 @@
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
 
+## Function: InMemoryNotificationStore
+
+- **Purpose:** Process-local `NotificationStore` for in-app forum-reply notifications. Default empty so the process boots without a database.
+- **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only.
+- **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
+- **Used by:** `createApp` default `notificationStore`; memory `openBootStores` omits it.
+
 ## Function: PostgresPushStore
 
 - **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: PostgresNotificationStore
+
+- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migrateNotificationSchema`).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `NotificationRow`. Unique violation re-selects the existing row. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: enqueueForumPushes
@@ -325,10 +346,10 @@
 
 ## Function: enqueueReplyPush
 
-- **Purpose:** Enqueue one targeted reply notification for the parent-note author when they have a push subscription. Payload URL is `/messages?c=<conversationId>`.
-- **Inputs:** `PushStore`, `authorId` (parent author), `messageId` (reply row), `conversationId`, `nowMs`. Payload from `buildReplyPushPayload`.
-- **Returns / side effects:** Zero or one pending `type: 'forum'` outbox row (`tag` `reply:<conversationId>`). No-op when the author has no subscriptions.
-- **Used by:** `messagesRoutes` after a successful 21.gifts-author reply `POST /messages`.
+- **Purpose:** Enqueue one targeted reply notification for the parent-note author when they have a push subscription. Payload URL is `/notifications`.
+- **Inputs:** `PushStore`, `authorId` (parent author), `messageId` (reply row), `parentId`, `nowMs`. Payload from `buildReplyPushPayload`.
+- **Returns / side effects:** Zero or one pending `type: 'forum'` outbox row (`tag` `forum_reply:<parentId>`). No-op when the author has no subscriptions.
+- **Used by:** `notifyForumReply`.
 
 ## Function: enqueueZapPush
 
@@ -374,8 +395,8 @@
 
 ## Function: buildReplyPushPayload
 
-- **Purpose:** Targeted English payload when someone replies to the recipient's forum note (`type: 'forum'`, url `/messages?c=<conversationId>`, tag `reply:<conversationId>`).
-- **Inputs:** `conversationId` string.
+- **Purpose:** Targeted English payload when someone replies to the recipient's forum note (`type: 'forum'`, url `/notifications`, tag `forum_reply:<parentId>`).
+- **Inputs:** `parentId` string.
 - **Returns / side effects:** `PushPayload` object; callers `JSON.stringify`.
 - **Used by:** `enqueueReplyPush`.
 
@@ -570,8 +591,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, `/notifications`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, and parsed KEK. `messagesRoutes` receives `notificationStore`, not `conversationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -619,9 +640,9 @@
 
 ## Function: messagesRoutes
 
-- **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name + Lightning Address), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **live top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, live `replyCount` of 21.gifts-author children); soft-hidden rows are omitted; missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video after parse/normalize/decode — identical live media from the same account+parent collapses to the existing row (200, no limiter, no second push); text-only still uses the 1/10s burst then inserts; soft-hidden `inReplyTo` parents are 404; public `GET /:id` stays unauthenticated without `accountId` (Damus-only **reply** 404; top-level Damus-only notes stay 200); optional `?sinceSats=` (non-negative integer) long-polls until `sats` is strictly greater (timeout still 200 with the current body; invalid value 400); soft-hidden rows still 404; Bearer `GET /:id/replies` lists 21.gifts-author children only (`accountId` set; null `accountId` skipped); 404s soft-hidden/missing parents; a child whose author lookup or serialize throws (invalid `createdAt`, author lookup) is omitted and siblings still 200 `{ messages }`; 503 `messages.replies.failed` only for `getById` / `listReplies` throws and for `dropMissingVideoRow` store/I/O (non-ENOENT video I/O or `deleteById`); missing-file drop (`null` → omit) still 200; photo/video byte routes 404 soft-hidden ids; staff `DELETE /:id` soft-hides via `markDeleted` (founder/moderator → 204; basis/verified → 403); invoice returns `{ pr, amountSats }` only for NIP-57 invoices and 404s soft-hidden notes (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues a broadcast on true top-level inserts (not media replays). A reply to a 21.gifts-author parent (not the replier, not a Damus-only parent) opens the member inbox thread via `conversationStore` and enqueues one targeted push to the parent author; conversation or push failure still returns 200.
-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `conversationStore` (reply inbox copy), optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`).
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/DELETE/invoice; 403 on DELETE when not founder/moderator; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`. Reply notify writes an inbox message and outbox row best-effort (failure still 200).
+- **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name + Lightning Address), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **live top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, live `replyCount` of 21.gifts-author children); soft-hidden rows are omitted; missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video after parse/normalize/decode — identical live media from the same account+parent collapses to the existing row (200, no limiter, no second push); text-only still uses the 1/10s burst then inserts; soft-hidden `inReplyTo` parents are 404; public `GET /:id` stays unauthenticated without `accountId` (Damus-only **reply** 404; top-level Damus-only notes stay 200); optional `?sinceSats=` (non-negative integer) long-polls until `sats` is strictly greater (timeout still 200 with the current body; invalid value 400); soft-hidden rows still 404; Bearer `GET /:id/replies` lists 21.gifts-author children only (`accountId` set; null `accountId` skipped); 404s soft-hidden/missing parents; a child whose author lookup or serialize throws (invalid `createdAt`, author lookup) is omitted and siblings still 200 `{ messages }`; 503 `messages.replies.failed` only for `getById` / `listReplies` throws and for `dropMissingVideoRow` store/I/O (non-ENOENT video I/O or `deleteById`); missing-file drop (`null` → omit) still 200; photo/video byte routes 404 soft-hidden ids; staff `DELETE /:id` soft-hides via `markDeleted` (founder/moderator → 204; basis/verified → 403); invoice returns `{ pr, amountSats }` only for NIP-57 invoices and 404s soft-hidden notes (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues a broadcast on true top-level inserts (not media replays). A reply to a 21.gifts-author parent (not the replier, not a Damus-only parent) calls `notifyForumReply` with optional `notificationStore` (no inbox copy); notification or push failure still returns 200.
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `notificationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`).
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/DELETE/invoice; 403 on DELETE when not founder/moderator; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`. Reply notify calls `notifyForumReply` best-effort (notification row and/or push only when those stores are set; failure still 200).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -636,6 +657,13 @@
 - **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec.
 - **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public JSON omits `accountId`, event ids, and npubs (Damus-only `name` may be a truncated npub).
+- **Used by:** `createApp`.
+
+## Function: notificationRoutes
+
+- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (cap 200; `unreadCount` is total unread, not page length), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list.
+- **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id`; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed`).
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -693,6 +721,20 @@
 - **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
 - **Returns / side effects:** `{ id, kind, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
 - **Used by:** `conversationRoutes`.
+
+## Function: serializeNotification
+
+- **Purpose:** Project a stored notification row to its public JSON shape (`type: 'forum_reply'`).
+- **Inputs:** `NotificationRow` (includes recipient/actor account ids).
+- **Returns / side effects:** `{ id, type, parentId, replyId, name, text, createdAt, readAt }` with ISO-8601 dates; `readAt` null stays null. Omits recipient and actor account ids. No I/O.
+- **Used by:** `notificationRoutes`.
+
+## Function: notifyForumReply
+
+- **Purpose:** Persist a `forum_reply` notification for the parent-note author and enqueue one targeted Web Push (`url` `/notifications`, tag `forum_reply:<parentId>`). No-op when the parent is missing, Damus-only, or authored by the replier. Photo-only empty text still notifies. May throw; callers wrap so persist still succeeds.
+- **Inputs:** `{ messages, notifications?, pushStore?, account, created, parentId }`.
+- **Returns / side effects:** Void. Writes one notification row when `notifications` is set (`create` unique on recipient/type/reply); calls `enqueueReplyPush` when `pushStore` is set. Does not copy into the member↔member inbox.
+- **Used by:** `messagesRoutes` after a 21.gifts-author reply `POST /messages`; `runNostrWorkerTick` after inbound member reply persist.
 
 ## Function: serializeConversationMessage
 
@@ -1256,12 +1298,12 @@
 
 ## Function: runNostrWorkerTick
 
-- **Purpose:** Each tick starts with zap ingest (`indexOpenZapReceipts`) before resign/sign/publish, so receipt indexing is not delayed by relay publish timeouts: queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off. `nowMs` for sign/publish leases is sampled only after `indexOpenZapReceipts` returns, so an overlapping tick cannot reclaim with a later clock while this tick still signs/publishes under a stale lease time. Then signs unsigned rows and fans out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos; `profileMessageId` rows are skipped so a name note is not rewritten with those hashtags). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. Each tick runs `backfillProfileMessages` for named accounts with a non-blank Lightning Address missing a profile note. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`, `about` from the profile-note text or `21.gifts`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick also runs `signConversationBatch` (NIP-17 wraps when a conversation store is present) and, when `NOSTR_PUBLISH=1`, `publishConversationBatch`. After publish, `indexInboundForumReplies` (REQ kind:1 `#e` our published note ids; persist replies whose pubkey maps to a 21.gifts account even when publish is off; skip unknown-npub kind:1 inbound) and `indexInboundDirectMessages` (REQ kind:1059 / kind:4 to member and platform pubkeys when a conversation store is present).
+- **Purpose:** Each tick starts with zap ingest (`indexOpenZapReceipts`) before resign/sign/publish, so receipt indexing is not delayed by relay publish timeouts: queries zap relays (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 and indexes validated receipts onto `sats`, even when `NOSTR_PUBLISH` is off. `nowMs` for sign/publish leases is sampled only after `indexOpenZapReceipts` returns, so an overlapping tick cannot reclaim with a later clock while this tick still signs/publishes under a stale lease time. Then signs unsigned rows and fans out when `NOSTR_PUBLISH=1`. Space-only ACK is terminal `published`/`space`. With `NOSTR_PUBLISH_PUBLIC=1`, space-only parks `pending` until a public ACK. Pending kind:1 JSON without `t=bitcoin` is dropped and re-signed, then unsigned rows are signed. After that, published unpaid notes missing a photo URL, a video URL, or Damus `#bitcoin`/`#21gifts` in content are reset for the next tick (`PUBLIC_BASE_URL` set for media URLs; video posters are not treated as missing photos; `profileMessageId` rows are skipped so a name note is not rewritten with those hashtags). Pending rows EVENT as-is so a reset cannot renew the 60s sign lease. Zapped rows keep `eventId`. An empty API base skips photo/video-URL resign. Sign looks up photo bytes even when `hasPhoto` is stale. Each tick runs `backfillProfileMessages` for named accounts with a non-blank Lightning Address missing a profile note. When publishing, also fans out kind:0 profiles (`name` / `display_name` / `picture` / optional `nip05`, `about` from the profile-note text or `21.gifts`) and NIP-65 kind:10002 relay lists. Kind:1 photo/video posts include the public media URL and `imeta`. Each tick also runs `signConversationBatch` (NIP-17 wraps when a conversation store is present) and, when `NOSTR_PUBLISH=1`, `publishConversationBatch`. After publish, `indexInboundForumReplies` (REQ kind:1 `#e` our published note ids; persist replies whose pubkey maps to a 21.gifts account even when publish is off; skip unknown-npub kind:1 inbound; after inbound member reply persist, `notifyForumReply` when a notification store is wired; failure logs `nostr.reply.notify.failed` and persist stands) and `indexInboundDirectMessages` (REQ kind:1059 / kind:4 to member and platform pubkeys when a conversation store is present).
 - **Zap ingest dedupe:** One `nostr_zap_ingest` row is written per receipt per decision change per process (the memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt). Receipts whose remembered decision is terminal (`indexed` or `rejected`/`duplicate`) are skipped before validation.
 - **Kind:0 cache:** Unchanged content is not resent for the life of the AuthStore instance. After the live account row is read, the worker stores a reservation object and treats only that object as owner after each await. A nack or throw deletes the reservation only when it is still that object; the last issued `created_at` watermark is kept so a retry in the same second still increments. Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an in-flight older profile cannot win a same-second replaceable-event tie.
 - **Kind:0 batch:** At most `WORKER_BATCH` keyed attempts run per tick, including nacks. With public fan-out on, a space-only ACK is a nack and the profile is retried.
 - **Inputs:** worker deps.
-- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack` / `nostr.dm.sign.failed` / `nostr.dm.publish.*`. Event-id collision retries once with `created_at + 1`.
+- **Returns / side effects:** Store updates; logs `nostr.sign.failed` / `nostr.publish.*` / `nostr.profile.ok` / `nostr.profile.nack` / `nostr.relays.ok` / `nostr.relays.nack` / `nostr.dm.sign.failed` / `nostr.dm.publish.*` / `nostr.reply.notify.failed`. Event-id collision retries once with `created_at + 1`.
 - **Used by:** `startNostrWorker`.
 
 ## Function: startNostrWorker
