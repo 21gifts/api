@@ -155,9 +155,10 @@ function reservedContent(
  * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
  * note event ids) and persists inbound replies whose pubkey maps to a
  * 21.gifts account (even when publish is off). Unknown npubs are skipped.
- * After a member reply is stored, `notifyForumReply` writes a notification
- * and enqueues a `/notifications` push; failures log `nostr.reply.notify.failed`
- * and do not undo persist. When a conversation store is present, also
+ * After a member reply is stored, `notifyForumReply` always runs; it writes a
+ * notification only when `notificationStore` is set and enqueues a
+ * `/notifications` push only when `pushStore` is set. Failures log
+ * `nostr.reply.notify.failed` and do not undo persist. When a conversation store is present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *
