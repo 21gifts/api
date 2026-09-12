@@ -435,3 +435,44 @@ test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ re
   });
   expect(res.status()).toBe(503);
 });
+
+test('GET /trust-chain is empty on default boot', async ({ request }) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
+  expect(body.nodes).toEqual([]);
+  expect(body.edges).toEqual([]);
+});
+
+test('POST /trust/verify without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/verify', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /trust/propose-moderator without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/propose-moderator', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /trust/confirm-moderator without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/confirm-moderator', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /trust/appoint-moderator without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/appoint-moderator', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/trust-edges without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /debug/trust-edges with the e2e token and a bad body is 400', async ({ request }) => {
+  const res = await request.post('/debug/trust-edges', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: {},
+  });
+  expect(res.status()).toBe(400);
+});

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
-#               and forum-video restore for 21.gifts
+#               forum-video restore, and trust-edge backfill for 21.gifts
 #               (GET /debug/accounts, PATCH /debug/accounts/:id,
-#               PUT /debug/messages/:id/video). No raw SQL.
+#               PUT /debug/messages/:id/video, POST /debug/trust-edges).
+#               No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL
@@ -15,6 +16,10 @@
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
+#   gifts-debug trust-edge <subject-id> <actor-id> <kind>
+#                                      # POST a stored trust edge; print edge JSON
+#                                      # kind: verify | moderator_propose |
+#                                      #       moderator_confirm | moderator_appoint
 #
 # Example:
 #   gifts-debug accounts
@@ -22,6 +27,7 @@
 #   gifts-debug role <account-id> moderator
 #   gifts-debug unlink <account-id>
 #   gifts-debug video-put <message-id> ./clip.mp4
+#   gifts-debug trust-edge <subject-id> <actor-id> verify
 #
 set -euo pipefail
 
@@ -137,6 +143,29 @@ cmd_unlink() {
   printf '%s\n' "$body"
 }
 
+cmd_trust_edge() {
+  local subject="${1:-}" actor="${2:-}" kind="${3:-}" tmp status body
+  [ -n "$subject" ] || die "usage: gifts-debug trust-edge <subject-id> <actor-id> <kind>"
+  [ -n "$actor" ] || die "usage: gifts-debug trust-edge <subject-id> <actor-id> <kind>"
+  [ -n "$kind" ] || die "usage: gifts-debug trust-edge <subject-id> <actor-id> <kind>"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"subjectId\":\"${subject}\",\"actorId\":\"${actor}\",\"kind\":\"${kind}\"}" \
+    "${DEBUG_API_URL}/debug/trust-edges") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
 cmd_video_put() {
   local id="${1:-}" path="${2:-}" tmp status body
   [ -n "$id" ] || die "usage: gifts-debug video-put <message-id> <file>"
@@ -177,6 +206,7 @@ case "${1:-}" in
   role) shift; cmd_role "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
+  trust-edge) shift; cmd_trust_edge "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

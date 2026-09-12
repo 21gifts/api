@@ -23,8 +23,9 @@ import {
 } from '@/lib/conversation-store';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
+import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 
-/** Auth, gift, forum, contact, conversation, push, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, contact, conversation, push, trust, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -62,6 +63,11 @@ export interface BootStores {
    * opened so the entry point keeps an in-memory default.
    */
   pushStore: PushStore | undefined;
+  /**
+   * Postgres-backed trust-edge store, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  trustStore: TrustStore | undefined;
 }
 
 /** Optional FX wiring so tests never hit the network. */
@@ -75,24 +81,28 @@ export interface BootFxOptions {
 }
 
 /**
- * Open auth, optional gift, forum, contact, conversation, and push persistence, and the
- * BTC-USD rate book from `DATABASE_URL`.
+ * Open auth, optional gift, forum, contact, conversation, push, and trust
+ * persistence, and the BTC-USD rate book from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `contactStore: undefined`, `conversationStore: undefined`,
- * `pushStore: undefined`, `nostrKek: undefined`,
+ * `pushStore: undefined`, `trustStore: undefined`, `nostrKek: undefined`,
  * and an empty {@link InMemoryBtcUsdStore}. A set URL asks `createClient`
  * for one `SqlClient`, migrates auth (via `openAuthStore`) then the FX,
- * `message`, `contact`, `conversation`, `push`, and `db_change` schemas, builds a
+ * `message`, `contact`, `conversation`, `push`, `trust_edge`, and `db_change`
+ * schemas, builds a
  * {@link QueryGiftStore}, {@link SqlGiftRecorder},
  * {@link PostgresMessageStore}, {@link PostgresContactStore},
- * {@link PostgresConversationStore}, and
- * {@link PostgresPushStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
+ * {@link PostgresConversationStore},
+ * {@link PostgresPushStore}, and {@link PostgresTrustStore}, parses
+ * `NOSTR_NSEC_KEK` into `nostrKek`,
  * constructs {@link PostgresBtcUsdStore}, and best-effort fills rates for
  * the outbound gift day range (failures log `gifts.fx.boot_fill.failed` and
  * do not throw). Memory boots leave `nostrKek` undefined and do not run
- * the `db_change` migrate.
+ * the `db_change` migrate. `migrateTrustSchema` runs after auth/`account`
+ * exists and before `migrateDbChangeSchema` so `trg_db_change` attaches to
+ * `trust_edge`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -127,6 +137,7 @@ export async function openBootStores(
       contactStore: undefined,
       conversationStore: undefined,
       pushStore: undefined,
+      trustStore: undefined,
     };
   }
 
@@ -137,6 +148,7 @@ export async function openBootStores(
   await migrateContactSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
+  await migrateTrustSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
@@ -169,6 +181,7 @@ export async function openBootStores(
   const contactStore = new PostgresContactStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);
+  const trustStore = new PostgresTrustStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -179,5 +192,6 @@ export async function openBootStores(
     contactStore,
     conversationStore,
     pushStore,
+    trustStore,
   };
 }

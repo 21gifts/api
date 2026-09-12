@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-12 (forum replies notify the parent author in inbox + Web Push).
+**Status**: living document. Last revised 2026-09-12 (trust edges, public `GET /trust-chain`, staff trust POSTs, debug backfill).
 
 ---
 
@@ -78,7 +78,12 @@ Public base URLs used in examples:
 | DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                   |
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
-| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note                                               |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + `trust`                                     |
+| GET    | `/trust-chain`                               | none                       | Public stored trust graph (`nodes` + `edges`)                                     |
+| POST   | `/trust/verify`                              | Bearer                     | Staff: confirm a person in real life (`verified`)                                 |
+| POST   | `/trust/propose-moderator`                   | Bearer                     | Staff: propose a verified member as moderator                                     |
+| POST   | `/trust/confirm-moderator`                   | Bearer                     | Staff: second, independent confirmation → `moderator`                             |
+| POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                             |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
@@ -101,6 +106,7 @@ Public base URLs used in examples:
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                                   |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                     |
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
+| POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`              |
 | GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
 | POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
 | DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                 |
@@ -335,7 +341,92 @@ Bearer required. `:accountId` must be a UUID. After auth,
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
 Success → live `id` / `name` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
-`replyCount`, or `null`). Never `viewKey` / `eventId`.
+`replyCount`, or `null`) and `trust` (`verifiedBy` / `proposedBy` /
+`confirmedBy` / `appointedBy`, each `{ id, name }` or `null`). Default
+`trust` is all-null when no stored edges exist. Never `viewKey` / `eventId`.
+
+### `GET /trust-chain`
+
+Public stored trust graph. No auth. Nodes are accounts whose `role` is
+`founder`, `moderator`, or `verified` (never `basis`), sorted founder then
+moderator then verified, then oldest `createdAt`, then `id`. Edges are
+**stored** rows whose kind is `verify`, `moderator_confirm`, or
+`moderator_appoint` and whose actor and subject are both in the node set.
+`moderator_propose` is omitted. No synthetic or inferred edges — a node
+with no stored incoming edge stays disconnected. Lightning addresses, view
+keys, and linking keys are omitted.
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Trust chain is unavailable" }
+```
+
+Logged as `trust.chain.failed`.
+
+**Response** `200` (empty arrays when none):
+
+```json
+{
+  "nodes": [{ "id": "<uuid>", "name": "Ada", "role": "verified" }],
+  "edges": [{ "from": "<actor-uuid>", "to": "<subject-uuid>", "kind": "verify" }]
+}
+```
+
+### `POST /trust/verify`
+
+Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
+or `moderator`. Sets `account.role` to `verified` and inserts a `verify`
+edge from the caller to the subject. `verified` is a real-life confirmation
+(forum badge), not Lightning-Address proof.
+
+Missing/invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Caller not staff → **403** `{ "error": "Forbidden" }`.
+Body is not JSON with an `accountId` string → **400**
+`{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+`accountId` is not a UUID or the subject is missing → **404**
+`{ "error": "Not found" }`.
+Subject is the caller, subject role is not `basis`, or a verify edge
+already exists → **409** `{ "error": "Conflict" }`.
+
+Idempotent **200** when the subject is already `verified` and the existing
+verify edge's actor is the caller (no second insert).
+
+Otherwise update role, insert the edge, log `trust.verified`
+`{ subjectId, actorId }`.
+
+**Response** `200`:
+
+```json
+{ "id": "<uuid>", "name": "Ada", "role": "verified" }
+```
+
+### `POST /trust/propose-moderator`
+
+Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. Subject role
+must be `verified`, not self, and must not already have
+`moderator_propose` / `moderator_confirm` / `moderator_appoint` or be
+`moderator`/`founder`. Inserts `moderator_propose` without changing role.
+Logs `trust.moderator_proposed`. Same 401/403/400/404/409 shapes as
+`POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
+
+### `POST /trust/confirm-moderator`
+
+Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
+`moderator_propose` must exist; the caller id must not equal the proposer's
+actor id (independent second staff member). Subject must still be
+`verified`. Sets role to `moderator`, inserts `moderator_confirm`, logs
+`trust.moderator_confirmed`. Same error JSON shapes. **200**
+`{ id, name, role }` with `role: "moderator"`.
+
+### `POST /trust/appoint-moderator`
+
+Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
+(moderators → **403**). Subject must not be self, not `founder`, and not
+already `moderator`; subject may be `basis` or `verified`. Sets role to
+`moderator`, inserts `moderator_appoint`, logs `trust.moderator_appointed`.
+Same 401/400/404/409 shapes. **200** `{ id, name, role }` with
+`role: "moderator"`.
 
 ### `GET /view/:viewKey`
 
@@ -777,7 +868,9 @@ name is already stored, so any client that follows `setup` (or a missing
 `lightningAddress`) shows the address form. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it is not
 `lightningAddressVerified`. New passkey accounts stay `basis` until an
-operator changes them here.
+operator changes them here. This route does **not** write trust edges;
+use `POST /debug/trust-edges` to backfill stored grants without changing
+`role`.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -821,6 +914,44 @@ with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>
 Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
 the other debug account routes. Not a member login path; for e2e and
 operator debugging.
+
+### `POST /debug/trust-edges`
+
+Operator backfill of a stored trust edge. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
+other debug routes). Does **not** change `account.role`.
+
+**Request**:
+
+```json
+{
+  "subjectId": "<uuid>",
+  "actorId": "<uuid>",
+  "kind": "verify"
+}
+```
+
+`kind` is one of `verify`, `moderator_propose`, `moderator_confirm`,
+`moderator_appoint`.
+
+Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\", \"actorId\", and \"kind\" strings" }`.
+Missing subject or actor (or a non-UUID id) → **404** `{ "error": "Not found" }`.
+Duplicate `(subjectId, kind)` or `subjectId === actorId` → **409**
+`{ "error": "Conflict" }`.
+
+**Response** `200`:
+
+```json
+{
+  "id": "<uuid>",
+  "subjectId": "<uuid>",
+  "actorId": "<uuid>",
+  "kind": "verify",
+  "createdAt": "2026-09-12T00:00:00.000Z"
+}
+```
+
+`createdAt` is ISO-8601.
 
 ### `GET /debug/contacts`
 

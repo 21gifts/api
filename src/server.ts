@@ -24,6 +24,9 @@ import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
+import { debugTrustRoutes } from '@/routes/debug-trust';
+import { trustChainRoutes } from '@/routes/trust-chain';
+import { trustRoutes } from '@/routes/trust';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
@@ -37,6 +40,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
+import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -82,7 +86,8 @@ export interface AppDeps {
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
    * `GET /debug/contacts`, `GET /debug/invoices`,
-   * `GET /debug/zap-ingests`, and `PUT /debug/messages/:id/video`
+   * `GET /debug/zap-ingests`, `PUT /debug/messages/:id/video`,
+   * and `POST /debug/trust-edges`
    * return 503.
    */
   debugToken?: string;
@@ -148,6 +153,13 @@ export interface AppDeps {
    * `resolveVapidConfig(process.env)?.publicKey`). Missing → push HTTP 503.
    */
   vapidPublicKey?: string;
+  /**
+   * Stored trust edges for the public chain and staff POSTs (default: empty
+   * {@link InMemoryTrustStore}). Boot injects {@link PostgresTrustStore}
+   * when `DATABASE_URL` is set. `PATCH /debug/accounts/:id` does not write
+   * this store.
+   */
+  trustStore?: TrustStore;
 }
 
 /**
@@ -163,7 +175,7 @@ export interface AppDeps {
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, message store, contact store, conversation
- *   store, push store,
+ *   store, push store, trust store,
  *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
@@ -183,6 +195,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
+  const trustStore = deps.trustStore ?? new InMemoryTrustStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
@@ -250,7 +263,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
-  app.route('/members', membersRoutes({ authStore: store, messageStore, now }));
+  app.route('/members', membersRoutes({ authStore: store, messageStore, trustStore, now }));
   app.route('/view', viewRoutes({ store }));
   app.route(
     '/lightning-address',
@@ -281,6 +294,9 @@ export function createApp(deps: AppDeps = {}): Hono {
       vapidPublicKey,
     }),
   );
+  app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore }));
+  app.route('/trust', trustRoutes({ authStore: store, trustStore, now }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
   app.route(

@@ -220,9 +220,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX table, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateTrustSchema`, `PostgresTrustStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore`/`trustStore` undefined, `nostrKek` undefined, and empty `InMemoryBtcUsdStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, now }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, conversationStore, pushStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, and `PostgresPushStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateDbChangeSchema`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, messageStore, contactStore, conversationStore, pushStore, trustStore, nostrKek }`. Migrates `btc_usd_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), then `trust_edge` (via `migrateTrustSchema`) after auth/`account` and before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, and `PostgresTrustStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`pushStore`/`trustStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateTrustSchema` / `migrateDbChangeSchema`.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -570,8 +570,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), `pushStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / appoint-moderator), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -969,8 +969,8 @@
 
 ## Function: membersRoutes
 
-- **Purpose:** Hono sub-app for `GET /members/:accountId`. Bearer + `requireAction(forum.read)`; UUID path; live identity plus optional `profileMessage` via `serializeMessage`.
-- **Inputs:** `MembersRouteDeps` (`authStore`, `messageStore`, `now`).
+- **Purpose:** Hono sub-app for `GET /members/:accountId`. Bearer + `requireAction(forum.read)`; UUID path; live identity plus `trust` via `accountTrust` and optional `profileMessage` via `serializeMessage`.
+- **Inputs:** `MembersRouteDeps` (`authStore`, `messageStore`, required `trustStore`, `now`).
 - **Returns / side effects:** Hono app mounted at `/members`. Logs `members.get.failed` on 503.
 - **Used by:** `createApp`.
 
@@ -1447,3 +1447,73 @@
 - **Inputs:** message id, video, env.
 - **Returns / side effects:** mkdir, write UUID sibling temp, `rename` onto the public path so readers never see a partial file.
 - **Used by:** `MessageStore.create`; `debugMessagesRoutes`.
+
+## Function: isStaffRole
+
+- **Purpose:** True when `account.role` may run staff trust POSTs. Founder and moderator return true; `basis` and `verified` return false. Used before `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately).
+- **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `founder`).
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `trustRoutes`.
+
+## Function: buildTrustChain
+
+- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_confirm` / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; never includes `moderator_propose`; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
+- **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
+- **Returns / side effects:** `{ nodes, edges }` (`TrustChain`). No I/O.
+- **Used by:** `trustChainRoutes` (`GET /trust-chain`).
+
+## Function: accountTrust
+
+- **Purpose:** Latest grant actors for one subject (`verifiedBy`, `proposedBy`, `confirmedBy`, `appointedBy`). When several edges share a kind, highest `createdAt` wins, then `id`. Actor names come from the live account map; a missing actor is `{ id, name: null }`. All four slots are `null` when the subject has no edges of that kind.
+- **Inputs:** `subjectId`, `accounts` (name lookup), `edges` (any subjects; filtered to `subjectId`).
+- **Returns / side effects:** `AccountTrust`. No I/O.
+- **Used by:** `membersRoutes` (`GET /members/:accountId` always includes `trust`).
+
+## Function: serializeTrustEdge
+
+- **Purpose:** JSON projection of a stored trust edge for operator backfill responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
+- **Inputs:** `TrustEdge` (epoch-ms `createdAt`).
+- **Returns / side effects:** `TrustEdgeJson`. No I/O.
+- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` 200 body).
+
+## Function: migrateTrustSchema
+
+- **Purpose:** Applies `TRUST_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS trust_edge` with FKs to `account`, kind CHECK, `subject_id <> actor_id`, unique `(subject_id, kind)` index, actor index). Idempotent. Runs after auth/`account` exists and before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/trust_edge.sql` (comment header allowed in the `.sql` file only).
+- **Used by:** `openBootStores` when SQL opens.
+
+## Function: InMemoryTrustStore
+
+- **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists.
+- **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
+- **Used by:** `createApp` default `trustStore`.
+
+## Function: PostgresTrustStore
+
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
+- **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: trustChainRoutes
+
+- **Purpose:** Hono sub-app for public `GET /trust-chain`. No auth. Loads `listAccounts` + `listEdges`, then `buildTrustChain`. Empty arrays when none. Store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`.
+- **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
+- **Used by:** `createApp`.
+
+## Function: trustRoutes
+
+- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`.
+- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`.
+- **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; 200 `{ id, name, role }`.
+- **Used by:** `createApp`.
+
+## Function: debugTrustRoutes
+
+- **Purpose:** Operator backfill `POST /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. Body `{ subjectId, actorId, kind }` (four `TrustKind` values). Inserts a stored edge and returns `serializeTrustEdge` (ISO `createdAt`). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`).
+- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. 400 bad body; 404 missing subject/actor; 409 duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 on unexpected store throw (`debug.trust_edges.failed`).
+- **Used by:** `createApp`; operator `gifts-debug trust-edge`.
