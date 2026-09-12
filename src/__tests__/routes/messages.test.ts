@@ -3581,7 +3581,7 @@ describe('GET /messages/:id/replies', () => {
       parentId,
       hasPhoto: false,
       hasVideo: true,
-      videoContentType: 'video/mp4',
+      videoContentType: 'video/mp4' as const,
     };
     const base = new InMemoryMessageStore([parent, missingVideo]);
     const store = throwingStore({
