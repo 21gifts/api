@@ -10,6 +10,14 @@ import {
   type BtcUsdRateBook,
 } from '@/lib/btc-usd-store';
 import { resolveCandlesUrl, type FetchFn } from '@/lib/btc-usd-candles';
+import { resolveFrankfurterUrl } from '@/lib/usd-fiat-candles';
+import {
+  InMemoryFiatStore,
+  PostgresFiatStore,
+  fillFiatRatesForGiftRange,
+  migrateFiatSchema,
+  type FiatRateBook,
+} from '@/lib/usd-fiat-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
@@ -45,6 +53,8 @@ export interface BootStores {
   giftRecorder: GiftRecorder | undefined;
   /** BTC-USD rate book (memory when no SQL; Postgres otherwise). */
   btcUsdRates: BtcUsdRateBook;
+  /** USD→CHF/EUR/PHP rate book (memory when no SQL; Postgres otherwise). */
+  fiatRates: FiatRateBook;
   /**
    * Postgres-backed forum store, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -79,29 +89,35 @@ export interface BootFxOptions {
   fetchImpl?: FetchFn;
   /** Candles URL (default: `resolveCandlesUrl(process.env)`). */
   candlesUrl?: string;
+  /** Frankfurter ECB rates URL (default: `resolveFrankfurterUrl(process.env)`). */
+  frankfurterUrl?: string;
   /** Clock for boot range-fill (default: `Date.now`). */
   now?: () => number;
 }
 
 /**
  * Open auth, optional gift, forum, contact, conversation, notification, and
- * push persistence, and the BTC-USD rate book from `DATABASE_URL`.
+ * push persistence, and the BTC-USD and USD-fiat rate books from
+ * `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `contactStore: undefined`, `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `nostrKek: undefined`, and an empty {@link InMemoryBtcUsdStore}. A set
- * URL asks `createClient` for one `SqlClient`, migrates auth (via
- * `openAuthStore`) then the FX, `message`, `contact`, `conversation`,
- * `push`, `notification`, and `db_change` schemas (notification after push
- * before `db_change`), builds a {@link QueryGiftStore},
- * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
- * {@link PostgresContactStore}, {@link PostgresConversationStore},
- * {@link PostgresNotificationStore}, and {@link PostgresPushStore}, parses
- * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore},
- * and best-effort fills rates for the outbound gift day range (failures log
- * `gifts.fx.boot_fill.failed` and do not throw). Memory boots omit
+ * `nostrKek: undefined`, an empty {@link InMemoryBtcUsdStore}, and an empty
+ * {@link InMemoryFiatStore}. A set URL asks `createClient` for one
+ * `SqlClient`, migrates auth (via `openAuthStore`) then the FX tables
+ * (`btc_usd_daily` then `usd_fiat_daily`), `message`, `contact`,
+ * `conversation`, `push`, `notification`, and `db_change` schemas
+ * (notification after push before `db_change`), builds a
+ * {@link QueryGiftStore}, {@link SqlGiftRecorder},
+ * {@link PostgresMessageStore}, {@link PostgresContactStore},
+ * {@link PostgresConversationStore}, {@link PostgresNotificationStore}, and
+ * {@link PostgresPushStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
+ * constructs {@link PostgresBtcUsdStore} and {@link PostgresFiatStore}, and
+ * best-effort fills rates for the outbound gift day range (BTC-USD failures
+ * log `gifts.fx.boot_fill.failed`; fiat failures log
+ * `gifts.fx.fiat_boot_fill.failed`; neither throws). Memory boots omit
  * `notificationStore`, leave `nostrKek` undefined, and do not run the
  * `db_change` migrate. SQL boots return {@link PostgresNotificationStore}.
  *
@@ -133,6 +149,7 @@ export async function openBootStores(
       giftStore: undefined,
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
+      fiatRates: new InMemoryFiatStore(),
       messageStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
@@ -145,6 +162,7 @@ export async function openBootStores(
   const nostrKek = parseNostrKek(process.env['NOSTR_NSEC_KEK']);
 
   await migrateBtcUsdSchema(sqlClient);
+  await migrateFiatSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
@@ -154,13 +172,21 @@ export async function openBootStores(
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
+  const frankfurterUrl = fx?.frankfurterUrl ?? resolveFrankfurterUrl(process.env);
   const now = fx?.now ?? Date.now;
   const btcUsdRates = new PostgresBtcUsdStore({ sql: sqlClient, fetchImpl, candlesUrl });
+  const fiatRates = new PostgresFiatStore({ sql: sqlClient, fetchImpl, ratesUrl: frankfurterUrl });
 
   try {
     await fillRatesForGiftRange(sqlClient, btcUsdRates, now());
   } catch {
     logEvent('gifts.fx.boot_fill.failed');
+  }
+
+  try {
+    await fillFiatRatesForGiftRange(sqlClient, fiatRates, now());
+  } catch {
+    logEvent('gifts.fx.fiat_boot_fill.failed');
   }
 
   const giftSql = sqlClient;
@@ -188,6 +214,7 @@ export async function openBootStores(
     giftStore,
     giftRecorder,
     btcUsdRates,
+    fiatRates,
     messageStore,
     nostrKek,
     contactStore,

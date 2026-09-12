@@ -1,7 +1,7 @@
 /**
- * Satoshi / BTC / USD money helpers for gift statistics.
+ * Satoshi / BTC / USD / fiat money helpers for gift statistics.
  *
- * All USD math uses BigInt scaled integers — no IEEE division for money.
+ * All USD and fiat math uses BigInt scaled integers — no IEEE division for money.
  */
 
 /** Satoshis in one bitcoin. */
@@ -9,6 +9,9 @@ export const SATS_PER_BTC = 100_000_000;
 
 /** `sats * usd_scaled_8 / 10^14` yields USD cents before rounding. */
 const CENTS_DIVISOR = 100_000_000_000_000n; // 10^14
+
+/** `usdCents * rate_scaled_8 / 10^8` yields quote cents before rounding. */
+const FIAT_CENTS_DIVISOR = 100_000_000n; // 10^8
 
 /**
  * Format whole satoshis as a BTC string with eight decimal places.
@@ -88,7 +91,36 @@ export function satsToUsdCents(sats: number, usdPerBtc: string): number {
 }
 
 /**
+ * Convert USD cents to quote cents at a quote-per-USD rate (half-up).
+ *
+ * Formula: `round_half_up(usdCents * rate_scaled_8 / 10^8)` using BigInt
+ * only. `rate_scaled_8` is {@link parseUsdPerBtc} (same decimal grammar).
+ *
+ * @param usdCents - Non-negative integer USD cents.
+ * @param quotePerUsd - Quote per 1 USD decimal string (e.g. `"0.80"` CHF).
+ * @returns Quote cents as a number.
+ * @throws If `usdCents` is invalid, the rate cannot be parsed, or rounded
+ *   cents exceed `Number.MAX_SAFE_INTEGER`.
+ */
+export function usdCentsToFiatCents(usdCents: number, quotePerUsd: string): number {
+  if (!Number.isInteger(usdCents) || usdCents < 0) {
+    throw new Error('cents must be a non-negative integer');
+  }
+  const rateScaled8 = parseUsdPerBtc(quotePerUsd);
+  const numer = BigInt(usdCents) * rateScaled8;
+  const quot = numer / FIAT_CENTS_DIVISOR;
+  const rem = numer % FIAT_CENTS_DIVISOR;
+  const rounded = rem * 2n >= FIAT_CENTS_DIVISOR ? quot + 1n : quot;
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('fiat cents overflow');
+  }
+  return Number(rounded);
+}
+
+/**
  * Format integer USD cents as a dollar string with two decimal places.
+ *
+ * Also used for CHF/EUR/PHP display strings (all two decimal places).
  *
  * @param cents - Non-negative integer cents.
  * @returns Dollar amount, e.g. `"1234.56"`.
