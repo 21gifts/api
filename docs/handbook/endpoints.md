@@ -98,6 +98,27 @@
 - **Used by:** Operators debugging zap receipt indexing.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: GET /debug/messages
+
+- **Purpose:** Operator listing of every persisted forum row newest-first (cap 200): top-level notes **and** replies, live **and** soft-hidden (`deletedAt` set). Public hide does **not** apply. JSON via `serializeDebugMessage` (`id`, `name`, `text`, ISO `createdAt`, `sats`, `hasPhoto`, `hasVideo`, `videoContentType`, `parentId`, `eventId`, `nostrPublishState`, ISO-or-null `deletedAt`, `deletedBy`, `authorPubkey`, `nostrAttempts`, and `accountId` as a string or JSON `null` for Damus-only). Never includes `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.messages.list_failed`).
+- **Used by:** Operators inspecting hidden forum notes (`gifts-debug messages`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/messages/:id
+
+- **Purpose:** Operator single-note fetch (Bearer `DEBUG_TOKEN`). Returns the debug JSON object (not wrapped) via `serializeDebugMessage`. Soft-hidden rows (`deletedAt` set) are **200** with `deletedAt` / `deletedBy` / `text`. Public `GET /messages/:id` hide does **not** apply. Unknown or non-UUID `:id` is 404. Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when `getById` or serialize throws (`debug.messages.get_failed`).
+- **Used by:** Operators fetching one forum note including hidden rows (`gifts-debug message <id>`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/messages/:id/photo
+
+- **Purpose:** Operator JPEG/PNG/WebP bytes for a forum note, **including** soft-hidden rows. Same `Content-Type` / `Content-Disposition` / CORS as public `GET /messages/:id/photo`. Public hide does **not** apply: a hidden note with a photo is 200. Missing row, no photo, or non-UUID `:id` is 404. Never returns photo bytes inside JSON.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Photo not found' }` when `:id` is not a UUID, the row is missing, or `getPhoto` returns null; 503 `{ error: 'Messages are unavailable' }` when the store throws (`debug.messages.photo.get_failed`).
+- **Used by:** Operators viewing a hidden forum photo without SSH.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: PUT /debug/messages/:id/video
 
 - **Purpose:** Operator restore of missing forum-video bytes for an existing message with `hasVideo`. Raw body is validated (`decodeForumVideo`), must match the stored MIME extension, and is written under `MEDIA_DIR` so public `GET /messages/:id/video.*` can serve it. Does not create a new message id or change the DB row.

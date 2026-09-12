@@ -8,6 +8,7 @@ import {
   detectImageContentType,
   forumContentFingerprint,
   normalizeForumText,
+  serializeDebugMessage,
   serializeMessage,
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
@@ -262,6 +263,72 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
     };
     expect(serializeMessage(row, false, 'basis').name).toBe('Ada');
+  });
+});
+
+describe('serializeDebugMessage', () => {
+  it('includes hide stamps, null accountId, and omits nostrEvent and contentFp', () => {
+    const deletedAt = new Date('2026-09-01T12:00:00.000Z');
+    const row: MessageRow = {
+      id: 'msg-debug',
+      accountId: null,
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      contentFp: 'ab'.repeat(32),
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      eventId: 'ee'.repeat(32),
+      nostrPublishState: 'published',
+      sats: 21,
+      nostrEvent: { id: 'ee'.repeat(32) },
+      deletedAt,
+      deletedBy: 'staff',
+      authorPubkey: 'aa'.repeat(32),
+      nostrAttempts: 2,
+    };
+    expect(serializeDebugMessage(row)).toEqual({
+      id: 'msg-debug',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: '2026-08-28T12:00:00.000Z',
+      sats: 21,
+      hasPhoto: true,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      parentId: 'parent-1',
+      eventId: 'ee'.repeat(32),
+      nostrPublishState: 'published',
+      deletedAt: '2026-09-01T12:00:00.000Z',
+      deletedBy: 'staff',
+      authorPubkey: 'aa'.repeat(32),
+      nostrAttempts: 2,
+      accountId: null,
+    });
+    expect(serializeDebugMessage(row)).not.toHaveProperty('nostrEvent');
+    expect(serializeDebugMessage(row)).not.toHaveProperty('claimedUntil');
+    expect(serializeDebugMessage(row)).not.toHaveProperty('contentFp');
+  });
+
+  it('emits live null deletedAt and a string accountId', () => {
+    const row: MessageRow = {
+      id: 'msg-live',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const body = serializeDebugMessage(row);
+    expect(body['accountId']).toBe('acc-1');
+    expect(body['deletedAt']).toBeNull();
+    expect(body['deletedBy']).toBeNull();
+    expect(body['hasVideo']).toBe(false);
+    expect(body['parentId']).toBeNull();
   });
 });
 
