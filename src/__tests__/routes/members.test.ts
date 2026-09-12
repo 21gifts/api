@@ -23,10 +23,7 @@ function mount(
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
   trustStore: InMemoryTrustStore = new InMemoryTrustStore(),
 ): Hono {
-  return new Hono().route(
-    '/members',
-    membersRoutes({ authStore, messageStore, trustStore, now }),
-  );
+  return new Hono().route('/members', membersRoutes({ authStore, messageStore, trustStore, now }));
 }
 
 async function seededCaller(

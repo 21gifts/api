@@ -54,14 +54,16 @@ function mount(
 }
 
 function post(app: Hono, token: string | undefined, body: unknown): Promise<Response> {
-  return Promise.resolve(app.request('/debug/trust-edges', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  }));
+  return Promise.resolve(
+    app.request('/debug/trust-edges', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
 }
 
 describe('POST /debug/trust-edges', () => {
@@ -197,7 +199,7 @@ describe('POST /debug/trust-edges', () => {
     expect(body.createdAt).toBe('2026-09-12T12:00:00.000Z');
     expect(body.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect((await store.getAccount(SUBJECT))?.role).toBe('basis');
-    expect((await trustStore.listEdges())).toHaveLength(1);
+    expect(await trustStore.listEdges()).toHaveLength(1);
     expect(
       parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.inserted'),
     ).toBe(true);

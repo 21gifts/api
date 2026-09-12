@@ -35,7 +35,7 @@ export interface TrustStore {
    *
    * @param edge - Fully formed edge (id, subject, actor, kind, time).
    * @returns The stored edge (a copy is fine).
-   * @throws {Error} whose message is {@link DUPLICATE_TRUST_EDGE}.
+   * @throws Error whose message is {@link DUPLICATE_TRUST_EDGE}.
    */
   insertEdge(edge: TrustEdge): Promise<TrustEdge>;
 }
@@ -106,7 +106,7 @@ export class InMemoryTrustStore implements TrustStore {
    *
    * @param edge - Edge to store.
    * @returns A copy of the stored edge.
-   * @throws {Error} {@link DUPLICATE_TRUST_EDGE} when `(subjectId, kind)` exists.
+   * @throws Error with message {@link DUPLICATE_TRUST_EDGE} when that pair exists.
    */
   insertEdge(edge: TrustEdge): Promise<TrustEdge> {
     const duplicate = this.#edges.some(
@@ -185,7 +185,7 @@ export class PostgresTrustStore implements TrustStore {
    *
    * @param edge - Fully formed edge.
    * @returns The input edge after a successful insert (a copy).
-   * @throws {Error} {@link DUPLICATE_TRUST_EDGE} on unique violation (`23505`).
+   * @throws Error with message {@link DUPLICATE_TRUST_EDGE} on unique violation (23505).
    */
   async insertEdge(edge: TrustEdge): Promise<TrustEdge> {
     try {

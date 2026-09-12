@@ -54,44 +54,42 @@ function requireDebugToken(deps: DebugTrustRouteDeps): MiddlewareHandler {
  */
 export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
   const now = deps.now ?? Date.now;
-  return new Hono()
-    .use('*', requireDebugToken(deps))
-    .post('/', async (c) => {
-      const parsed = insertBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json(
-          { error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' },
-          400,
-        );
-      }
-      const { subjectId, actorId, kind } = parsed.data;
-      if (!MESSAGE_ID_RE.test(subjectId) || !MESSAGE_ID_RE.test(actorId)) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      const subject = await deps.store.getAccount(subjectId);
-      const actor = await deps.store.getAccount(actorId);
-      if (subject === undefined || actor === undefined) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      if (subjectId === actorId) {
+  return new Hono().use('*', requireDebugToken(deps)).post('/', async (c) => {
+    const parsed = insertBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' },
+        400,
+      );
+    }
+    const { subjectId, actorId, kind } = parsed.data;
+    if (!MESSAGE_ID_RE.test(subjectId) || !MESSAGE_ID_RE.test(actorId)) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const subject = await deps.store.getAccount(subjectId);
+    const actor = await deps.store.getAccount(actorId);
+    if (subject === undefined || actor === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    if (subjectId === actorId) {
+      return c.json({ error: 'Conflict' }, 409);
+    }
+    try {
+      const stored = await deps.trustStore.insertEdge({
+        id: crypto.randomUUID(),
+        subjectId,
+        actorId,
+        kind,
+        createdAt: now(),
+      });
+      logEvent('debug.trust_edges.inserted', { subjectId, actorId, kind });
+      return c.json(serializeTrustEdge(stored), 200);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'duplicate trust edge') {
         return c.json({ error: 'Conflict' }, 409);
       }
-      try {
-        const stored = await deps.trustStore.insertEdge({
-          id: crypto.randomUUID(),
-          subjectId,
-          actorId,
-          kind,
-          createdAt: now(),
-        });
-        logEvent('debug.trust_edges.inserted', { subjectId, actorId, kind });
-        return c.json(serializeTrustEdge(stored), 200);
-      } catch (error) {
-        if (error instanceof Error && error.message === 'duplicate trust edge') {
-          return c.json({ error: 'Conflict' }, 409);
-        }
-        logEvent('debug.trust_edges.failed');
-        return c.json({ error: 'Trust chain is unavailable' }, 503);
-      }
-    });
+      logEvent('debug.trust_edges.failed');
+      return c.json({ error: 'Trust chain is unavailable' }, 503);
+    }
+  });
 }
