@@ -954,6 +954,130 @@ describe('POST /messages', () => {
     );
   });
 
+  it('does not notify when the parent note is Damus-only', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore, {
+      conversationStore: conversations,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+  });
+
+  it('does not enqueue a reply push without a conversation store', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, { pushStore }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+  });
+
+  it('opens an inbox thread for a photo-only reply without copying empty text', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const res = await mount(authStore, messageStore, {
+      conversationStore: conversations,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        inReplyTo: parentId,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const threads = await conversations.listVisible('parent', false, null, 10);
+    expect(threads).toHaveLength(1);
+    expect(await conversations.listMessages(threads[0]!.id, 10)).toEqual([]);
+  });
+
   it('returns 404 when inReplyTo is a nested reply', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
