@@ -65,7 +65,10 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 
 /** Top-level list row with computed reply count. */
 export interface MessageListRow extends MessageRow {
-  /** Direct children with this note as `parentId`. */
+  /**
+   * Live 21.gifts-author children (`parentId` match, `deletedAt` null,
+   * `accountId` not null).
+   */
   replyCount: number;
 }
 
@@ -75,7 +78,8 @@ export interface MessageListRow extends MessageRow {
 export interface MessageStore {
   /**
    * Newest **top-level** notes first (`parent_id IS NULL`, `createdAt` desc,
-   * then `id` desc), capped at `limit`. Each row includes `replyCount`.
+   * then `id` desc), capped at `limit`. Each row includes `replyCount` of
+   * live 21.gifts-author children (`deletedAt` null, `accountId` not null).
    * Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but never
    * photo or video bytes. Replies are never listed.
    *
@@ -85,7 +89,9 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageListRow[]>;
 
   /**
-   * Oldest replies first for a parent note id.
+   * Oldest live 21.gifts-author replies first for a parent note id
+   * (`deletedAt` null, `accountId` not null). Damus-only children
+   * (`accountId` null) are omitted; `getById` still returns them.
    *
    * @param parentId - Parent message id.
    * @param limit - Maximum rows (default 200).
@@ -593,7 +599,8 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Newest-first top-level notes only, capped at `limit`, with `replyCount`.
+   * Newest-first top-level notes only, capped at `limit`, with `replyCount`
+   * of live 21.gifts-author children (`deletedAt` null, `accountId` not null).
    *
    * @param limit - Maximum rows.
    * @returns A new array of list row copies; mutating it does not change the store.
@@ -616,7 +623,8 @@ export class InMemoryMessageStore implements MessageStore {
         copy.hasVideo = row.hasVideo === true;
         copy.videoContentType = row.videoContentType ?? null;
         const replyCount = this.#rows.filter(
-          (child) => child.parentId === row.id && child.deletedAt === null,
+          (child) =>
+            child.parentId === row.id && child.deletedAt === null && child.accountId !== null,
         ).length;
         return { ...copy, replyCount };
       }),
@@ -624,7 +632,8 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first replies for `parentId`.
+   * Oldest-first live 21.gifts-author replies for `parentId` (`deletedAt`
+   * null, `accountId` not null).
    *
    * @param parentId - Parent note id.
    * @param limit - Max rows (default 200).
@@ -632,7 +641,9 @@ export class InMemoryMessageStore implements MessageStore {
    */
   listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
     const replies = this.#rows
-      .filter((row) => row.parentId === parentId && row.deletedAt === null)
+      .filter(
+        (row) => row.parentId === parentId && row.deletedAt === null && row.accountId !== null,
+      )
       .sort((a, b) => {
         const byTime = a.createdAt.getTime() - b.createdAt.getTime();
         if (byTime !== 0) {
@@ -1220,8 +1231,9 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first top-level notes from `message`, capped at `limit`, with
-   * `replyCount`. Selects `(photo IS NOT NULL) AS has_photo` and
-   * `video_content_type` (`hasVideo` / `videoContentType`) — never the
+   * `replyCount` of live 21.gifts-author children (`deleted_at IS NULL`
+   * and `account_id IS NOT NULL`). Selects `(photo IS NOT NULL) AS has_photo`
+   * and `video_content_type` (`hasVideo` / `videoContentType`) — never the
    * `photo` bytea column; video bytes live on disk under `MEDIA_DIR`, not as
    * bytea. Replies (`parent_id IS NOT NULL`) are excluded.
    *
@@ -1232,7 +1244,8 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS},
               (SELECT COUNT(*)::int FROM message child
-               WHERE child.parent_id = message.id AND child.deleted_at IS NULL) AS reply_count
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND child.account_id IS NOT NULL) AS reply_count
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
        ORDER BY created_at DESC, id DESC
@@ -1246,7 +1259,8 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first replies for a parent note.
+   * Oldest-first live 21.gifts-author replies for a parent note
+   * (`deleted_at IS NULL` and `account_id IS NOT NULL`).
    *
    * @param parentId - Parent message id (`$1`).
    * @param limit - Max rows (`$2`, default 200).
@@ -1256,7 +1270,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id = $1 AND deleted_at IS NULL
+       WHERE parent_id = $1 AND deleted_at IS NULL AND account_id IS NOT NULL
        ORDER BY created_at ASC, id ASC
        LIMIT $2`,
       [parentId, limit],

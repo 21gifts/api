@@ -12,7 +12,7 @@ import {
 } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
-import { decryptNostrSecret, ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
@@ -4205,7 +4205,7 @@ describe('runNostrWorkerTick', () => {
     }
   });
 
-  it('persists inbound kind:1 replies from members and Damus authors', async () => {
+  it('persists inbound kind:1 replies from members only and skips unknown npubs', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
@@ -4343,15 +4343,8 @@ describe('runNostrWorkerTick', () => {
     ];
     await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
     const replies = await messages.listReplies('m1');
-    expect(replies.map((row) => row.text).sort()).toEqual([
-      'damus reply',
-      'member reply',
-      'nameless member',
-      'root reply',
-    ]);
+    expect(replies.map((row) => row.text).sort()).toEqual(['member reply', 'nameless member']);
     expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
-    expect(replies.find((row) => row.text === 'damus reply')?.accountId).toBeNull();
-    expect(replies.find((row) => row.text === 'root reply')?.accountId).toBeNull();
     expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
     expect(replies.find((row) => row.text === 'nameless member')?.name).toBe(
       truncatePubkeyDisplay(namelessPubkey),
@@ -4360,6 +4353,10 @@ describe('runNostrWorkerTick', () => {
     const namelessEvent = replies.find((row) => row.text === 'nameless member')?.nostrEvent;
     expect(namelessEvent?.['sig']).toBe('');
     expect(namelessEvent?.['content']).toBe('nameless member');
+    expect(await messages.getByEventId('dd'.repeat(32))).toBeUndefined();
+    expect(await messages.getByEventId('77'.repeat(32))).toBeUndefined();
+    expect(await messages.getByEventId(memberReplyId)).toBeDefined();
+    expect(await messages.getByEventId('66'.repeat(32))).toBeDefined();
   });
 
   it('skips inbound kind:1 when verifyKind1 returns false', async () => {
@@ -4405,11 +4402,12 @@ describe('runNostrWorkerTick', () => {
       }
       return origCreate(row, photo, video);
     };
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: 'bb'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'x',
@@ -4432,14 +4430,15 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: 'dd'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
-        content: 'damus reply',
+        content: 'member reply',
         sig: 'ff'.repeat(32),
       },
     ];
@@ -4457,12 +4456,13 @@ describe('runNostrWorkerTick', () => {
     const noteEventId = 'aa'.repeat(32);
     const eventId = 'dd'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const frame = {
       id: eventId,
-      pubkey: 'ee'.repeat(32),
+      pubkey: accPubkey,
       kind: 1,
       tags: [['e', noteEventId]],
-      content: 'damus reply',
+      content: 'member reply',
       created_at: 1_700_000_000,
       sig: 'ff'.repeat(32),
     };
@@ -4526,7 +4526,11 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
-    const secret = generateSecretKey();
+    const secret = await decryptNostrSecret(
+      (await auth.getNostrSecret('acc')) as Uint8Array,
+      KEK,
+      'acc',
+    );
     const signed = finalizeEvent(
       {
         kind: 1,
@@ -4536,6 +4540,18 @@ describe('runNostrWorkerTick', () => {
       },
       secret,
     );
+    zeroizeSecret(secret);
+    const foreignSecret = generateSecretKey();
+    const foreignSigned = finalizeEvent(
+      {
+        kind: 1,
+        content: 'foreign reply',
+        created_at: 1_700_000_000,
+        tags: [['e', noteEventId, '', 'reply']],
+      },
+      foreignSecret,
+    );
+    zeroizeSecret(foreignSecret);
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -4546,6 +4562,15 @@ describe('runNostrWorkerTick', () => {
         content: signed.content,
         created_at: signed.created_at,
         sig: signed.sig,
+      },
+      {
+        id: foreignSigned.id,
+        pubkey: foreignSigned.pubkey,
+        kind: foreignSigned.kind,
+        tags: foreignSigned.tags,
+        content: foreignSigned.content,
+        created_at: foreignSigned.created_at,
+        sig: foreignSigned.sig,
       },
       {
         id: 'cc'.repeat(32),
@@ -4586,6 +4611,10 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     expect((await messages.listReplies('m1')).map((row) => row.text)).toEqual(['signed reply']);
+    expect((await messages.listReplies('m1')).some((row) => row.text === 'foreign reply')).toBe(
+      false,
+    );
+    expect(await messages.getByEventId(foreignSigned.id)).toBeUndefined();
   });
 
   it('skips inbound frames that are not a signed kind:1 note', async () => {
@@ -4713,14 +4742,15 @@ describe('runNostrWorkerTick', () => {
     const noteEventId = 'aa'.repeat(32);
     const replyEventId = 'dd'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: replyEventId,
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
-        content: 'damus reply',
+        content: 'member reply',
         sig: 'ff'.repeat(32),
       },
     ];

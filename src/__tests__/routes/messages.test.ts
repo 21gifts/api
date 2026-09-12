@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
@@ -813,6 +814,268 @@ describe('POST /messages', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]?.parentId).toBe(parentId);
     expect(replies[0]?.text).toBe('child');
+  });
+
+  it('copies a reply into the parent author inbox and enqueues a targeted push', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, {
+      conversationStore: conversations,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    const threads = await conversations.listVisible('parent', false, null, 10);
+    expect(threads).toHaveLength(1);
+    const messages = await conversations.listMessages(threads[0]!.id, 10);
+    expect(messages.map((row) => row.text)).toEqual(['child']);
+    const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('parent');
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Reply on your post',
+      url: `/messages?c=${threads[0]!.id}`,
+    });
+  });
+
+  it('does not notify when the replier owns the parent note', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore, {
+      conversationStore: conversations,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+  });
+
+  it('still returns 200 when reply notify throws', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    conversations.openMemberMember = async () => {
+      throw new Error('inbox boom');
+    };
+    const res = await mount(authStore, messageStore, {
+      conversationStore: conversations,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.reply.notify.failed')).toBe(
+      true,
+    );
+  });
+
+  it('does not notify when the parent note is Damus-only', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore, {
+      conversationStore: conversations,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await conversations.listVisible('acc', false, null, 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+  });
+
+  it('does not enqueue a reply push without a conversation store', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, { pushStore }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
+  });
+
+  it('opens an inbox thread for a photo-only reply without copying empty text', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const conversations = new InMemoryConversationStore();
+    const res = await mount(authStore, messageStore, {
+      conversationStore: conversations,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        inReplyTo: parentId,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const threads = await conversations.listVisible('parent', false, null, 10);
+    expect(threads).toHaveLength(1);
+    expect(await conversations.listMessages(threads[0]!.id, 10)).toEqual([]);
   });
 
   it('returns 404 when inReplyTo is a nested reply', async () => {
@@ -2597,7 +2860,7 @@ describe('GET /messages/:id', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
   });
 
-  it('omits role for a Damus-only note and is not payable', async () => {
+  it('returns 404 for a Damus-only reply', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '14141414-1414-4141-8141-141414141414',
@@ -2616,10 +2879,32 @@ describe('GET /messages/:id', () => {
     const res = await mount(new InMemoryAuthStore(), messageStore).request(
       '/messages/14141414-1414-4141-8141-141414141414',
     );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('omits role for a top-level Damus-only note and is not payable', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '19191919-1919-4191-8191-191919191919',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'from damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(new InMemoryAuthStore(), messageStore).request(
+      '/messages/19191919-1919-4191-8191-191919191919',
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
-      id: '14141414-1414-4141-8141-141414141414',
+      id: '19191919-1919-4191-8191-191919191919',
       name: 'aabbccdd…8899',
       text: 'from damus',
       createdAt: new Date(now()).toISOString(),
@@ -2900,16 +3185,15 @@ describe('GET /messages/:id/replies', () => {
       },
       {
         id: '15151515-1515-4151-8151-151515151515',
-        accountId: null,
-        name: 'aabbccdd…8899',
-        text: 'damus clip',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'member clip a',
         createdAt: new Date(now()),
         ...unsignedNostrDefaults(),
         parentId,
         hasPhoto: false,
         hasVideo: true,
         videoContentType: 'video/mp4',
-        authorPubkey: 'ab'.repeat(32),
       },
       {
         id: '16161616-1616-4161-8161-161616161616',
@@ -2965,7 +3249,7 @@ describe('GET /messages/:id/replies', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
   });
 
-  it('omits role on Damus-only replies and includes live role for members', async () => {
+  it('omits Damus-only replies and includes roles for member replies', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -3024,17 +3308,13 @@ describe('GET /messages/:id/replies', () => {
     const body = (await res.json()) as {
       messages: Array<{ text: string; role?: string; accountId?: string; hasVideo: boolean }>;
     };
-    expect(body.messages).toHaveLength(3);
-    expect(body.messages[0]?.text).toBe('from damus');
-    expect(body.messages[0]).not.toHaveProperty('role');
-    expect(body.messages[0]).not.toHaveProperty('accountId');
-    expect(body.messages[0]?.hasVideo).toBe(false);
-    expect(body.messages[1]?.text).toBe('member reply');
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]?.text).toBe('member reply');
+    expect(body.messages[0]?.role).toBe('basis');
+    expect(body.messages[0]?.accountId).toBe('acc');
+    expect(body.messages[1]?.text).toBe('orphan reply');
     expect(body.messages[1]?.role).toBe('basis');
-    expect(body.messages[1]?.accountId).toBe('acc');
-    expect(body.messages[2]?.text).toBe('orphan reply');
-    expect(body.messages[2]?.role).toBe('basis');
-    expect(body.messages[2]?.accountId).toBe('gone');
+    expect(body.messages[1]?.accountId).toBe('gone');
   });
 });
 

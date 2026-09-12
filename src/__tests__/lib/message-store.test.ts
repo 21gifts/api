@@ -519,6 +519,35 @@ describe('InMemoryMessageStore', () => {
     expect(replies.map((r) => r.id)).toEqual(['r1', 'r2']);
   });
 
+  it('listReplies and replyCount omit Damus-only children', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-member',
+      parentId: 'a',
+      text: 'member child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-damus',
+      parentId: 'a',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'damus child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-hidden',
+      parentId: 'a',
+      text: 'hidden member',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    const listed = await store.listLatest(10);
+    expect(listed.find((row) => row.id === 'a')?.replyCount).toBe(1);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-member']);
+  });
+
   it('breaks reply ties by id when createdAt matches', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     const same = new Date('2026-08-01T12:00:00.000Z');
@@ -1342,19 +1371,25 @@ describe('InMemoryMessageStore', () => {
       amountSats: 21,
       receipt: { id: 'r2', kind: 9735 },
     };
+    const tieHigh: ZapIngestRow = {
+      ...late,
+      id: 'zi-z',
+      receipt: { id: 'r3', kind: 9735 },
+    };
     await store.recordZapIngest(early);
     await store.recordZapIngest(late);
+    await store.recordZapIngest(tieHigh);
     const listed = await store.listZapIngests(1);
     expect(listed).toHaveLength(1);
-    expect(listed[0]?.id).toBe('zi-b');
+    expect(listed[0]?.id).toBe('zi-z');
     if (listed[0] !== undefined) {
       listed[0].outcome = 'rejected';
       listed[0].receipt['mutated'] = true;
     }
     const again = await store.listZapIngests(10);
-    expect(again.map((row) => row.id)).toEqual(['zi-b', 'zi-a']);
+    expect(again.map((row) => row.id)).toEqual(['zi-z', 'zi-b', 'zi-a']);
     expect(again[0]?.outcome).toBe('indexed');
-    expect(again[0]?.receipt).toEqual({ id: 'r2', kind: 9735 });
+    expect(again[0]?.receipt).toEqual({ id: 'r3', kind: 9735 });
   });
 });
 
@@ -1388,6 +1423,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL AND deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(/child\.deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/child\.account_id IS NOT NULL/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     expect(sql.queries[0]?.params).toEqual([50]);
@@ -2036,8 +2072,8 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [
       {
         id: 'r1',
-        account_id: null,
-        name: 'aabbccdd…8899',
+        account_id: 'acc',
+        name: 'Ada',
         text: 'hi',
         created_at: new Date(0),
         has_photo: false,
@@ -2048,7 +2084,10 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const replies = await store.listReplies('m1', 50);
     expect(replies[0]?.parentId).toBe('m1');
+    expect(replies[0]?.accountId).toBe('acc');
     expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NOT NULL/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.params).toEqual(['m1', 50]);
     sql.nextRows = [{ event_id: 'ee'.repeat(32) }];

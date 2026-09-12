@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildForumPushPayload, buildZapPushPayload, parsePushSubscription } from '@/lib/push';
+import {
+  buildForumPushPayload,
+  buildReplyPushPayload,
+  buildZapPushPayload,
+  parsePushSubscription,
+} from '@/lib/push';
 
 describe('parsePushSubscription', () => {
   const validKeys = { p256dh: 'abcABC123_-', auth: 'xyzXYZ789_-' };
@@ -78,6 +83,18 @@ describe('buildForumPushPayload', () => {
       body: 'Someone posted in the living room.',
       url: '/welcome',
       tag: 'forum',
+    });
+  });
+});
+
+describe('buildReplyPushPayload', () => {
+  it('points at the inbox thread', () => {
+    expect(buildReplyPushPayload('conv-1')).toEqual({
+      type: 'forum',
+      title: 'Reply on your post',
+      body: 'Someone replied in the living room.',
+      url: '/messages?c=conv-1',
+      tag: 'reply:conv-1',
     });
   });
 });

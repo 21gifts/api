@@ -29,8 +29,10 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueForumPushes } from '@/lib/push-worker';
+import { enqueueForumPushes, enqueueReplyPush } from '@/lib/push-worker';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -172,6 +174,11 @@ export interface MessagesRouteDeps {
   invoiceLimiter?: InvoiceRateLimiter;
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
+  /**
+   * Optional inbox store. A 21.gifts-author reply opens a member thread with
+   * the parent author and copies non-empty reply text into it.
+   */
+  conversationStore?: ConversationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
   waitSatsSleep?: (ms: number) => Promise<void>;
   /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
@@ -337,7 +344,66 @@ async function serveForumVideo(
 }
 
 /**
- * Media collapse → burst limiter → create → optional top-level push.
+ * Open an inbox thread with the parent-note author and enqueue a reply push.
+ * No-op when the parent is missing, Damus-only, or the replier themselves.
+ * Conversation/push failures are logged by the caller.
+ *
+ * @param deps - Message, conversation, and push collaborators.
+ * @param account - Reply author.
+ * @param created - Persisted reply row.
+ * @param parentId - Parent forum note id.
+ */
+async function notifyParentOfReply(
+  deps: MessagesRouteDeps,
+  account: Account,
+  created: MessageRow,
+  parentId: string,
+): Promise<void> {
+  const parent = await deps.store.getById(parentId);
+  const parentAccountId = parent?.accountId;
+  if (
+    parent === undefined ||
+    parentAccountId === null ||
+    parentAccountId === undefined ||
+    parentAccountId === account.id
+  ) {
+    return;
+  }
+  let thread: ConversationThread | undefined;
+  if (deps.conversationStore !== undefined) {
+    thread = await deps.conversationStore.openMemberMember(
+      account.id,
+      parentAccountId,
+      created.createdAt,
+    );
+    const text = created.text.trim();
+    if (text !== '') {
+      await deps.conversationStore.appendMessage({
+        id: crypto.randomUUID(),
+        conversationId: thread.id,
+        text,
+        createdAt: created.createdAt,
+        senderAccountId: account.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(account.id)) ?? null,
+        name: created.name,
+        ...unsignedConversationDefaults(),
+      });
+    }
+  }
+  if (deps.pushStore !== undefined && thread !== undefined) {
+    await enqueueReplyPush(
+      deps.pushStore,
+      parentAccountId,
+      created.id,
+      thread.id,
+      created.createdAt.getTime(),
+    );
+  }
+}
+
+/**
+ * Media collapse → burst limiter → create → optional top-level push, or
+ * a targeted inbox+push notify when `parentId` is a 21.gifts-author note.
  * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push.
@@ -404,11 +470,18 @@ async function persistForumPost(
         ? await deps.store.create(row)
         : await deps.store.create(row, photo, video);
     const isReplay = created.id !== id;
-    if (!isReplay && deps.pushStore !== undefined && parentId === null) {
+    if (!isReplay && parentId === null && deps.pushStore !== undefined) {
       try {
         await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
       } catch {
         logEvent('push.enqueue.failed');
+      }
+    }
+    if (!isReplay && parentId !== null) {
+      try {
+        await notifyParentOfReply(deps, account, created, parentId);
+      } catch {
+        logEvent('messages.reply.notify.failed');
       }
     }
     return c.json(
@@ -508,9 +581,13 @@ const invoiceBody = z.object({ sats: z.number().int().positive() });
  * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
  * replies, and DELETE register before the public single-note `GET /:id`.
  * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
- * `getById` still returns them for workers.
+ * `getById` still returns them for workers. Public `GET /:id` of a live
+ * Damus-only reply (`parentId` set, `accountId` null) is 404; top-level
+ * Damus-only notes stay 200. `GET /:id/replies` lists 21.gifts-author
+ * children only (`accountId` set).
  *
- * @param deps - Message store, auth store, clock, optional `pushStore`, and
+ * @param deps - Message store, auth store, clock, optional `pushStore` /
+ * `conversationStore`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
@@ -640,15 +717,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          if (row.accountId === null) {
-            const keptDamus = await dropMissingVideoRow(deps.store, row);
-            if (keptDamus === null) {
-              continue;
-            }
-            messages.push(serializeMessage(keptDamus, false, undefined, undefined, true));
-            continue;
-          }
-          const author = await deps.authStore.getAccount(row.accountId);
+          const author = await deps.authStore.getAccount(row.accountId!);
           const role = author?.role ?? 'basis';
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -710,7 +779,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         for (;;) {
           const row = await deps.store.getById(id);
-          if (row === undefined || row.deletedAt !== null) {
+          if (
+            row === undefined ||
+            row.deletedAt !== null ||
+            (row.parentId !== null && row.accountId === null)
+          ) {
             return c.json({ error: 'Not found' }, 404);
           }
           if (
