@@ -54,6 +54,7 @@ if (import.meta.main) {
     contactStore,
     conversationStore,
     notificationStore,
+    trustStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
@@ -79,6 +80,7 @@ if (import.meta.main) {
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
     ...(notificationStore === undefined ? {} : { notificationStore }),
+    ...(trustStore === undefined ? {} : { trustStore }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });

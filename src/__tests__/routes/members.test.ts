@@ -3,6 +3,8 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import type { TrustEdge } from '@/lib/trust';
+import { InMemoryTrustStore } from '@/lib/trust-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { membersRoutes } from '@/routes/members';
 
@@ -25,11 +27,22 @@ function loggedEvents(warn: ReturnType<typeof vi.spyOn>): string[] {
     .filter((event): event is string => typeof event === 'string');
 }
 
+const NULL_TRUST = {
+  verifiedBy: null,
+  proposedBy: null,
+  confirmedBy: null,
+  appointedBy: null,
+};
+
 function mount(
   authStore: InMemoryAuthStore,
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
+  trustStore: InMemoryTrustStore = new InMemoryTrustStore(),
 ): Hono {
-  return new Hono().route('/members', membersRoutes({ authStore, messageStore, now }));
+  return new Hono().route(
+    '/members',
+    membersRoutes({ authStore, messageStore, trustStore, now }),
+  );
 }
 
 async function seededCaller(
@@ -159,6 +172,7 @@ describe('GET /members/:accountId', () => {
     expect(profile['accountId']).toBe(ACCOUNT_ID);
     expect(profile['payable']).toBe(true);
     expect(profile).not.toHaveProperty('eventId');
+    expect(body['trust']).toEqual(NULL_TRUST);
   });
 
   it('returns profileMessage null when no note exists', async () => {
@@ -183,11 +197,71 @@ describe('GET /members/:accountId', () => {
       profileMessage: null;
       postCount: number;
       replyCount: number;
+      trust: typeof NULL_TRUST;
     };
     expect(body.location).toBeNull();
     expect(body.profileMessage).toBeNull();
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
+    expect(body.trust).toEqual(NULL_TRUST);
+  });
+
+  it('returns populated trust actors from stored edges', async () => {
+    const authStore = await seededCaller();
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: now(),
+    });
+    const actorId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    await authStore.createAccount({
+      id: actorId,
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mod',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: now(),
+    });
+    const edges: TrustEdge[] = [
+      {
+        id: 'e-verify',
+        subjectId: ACCOUNT_ID,
+        actorId,
+        kind: 'verify',
+        createdAt: 1,
+      },
+      {
+        id: 'e-propose',
+        subjectId: ACCOUNT_ID,
+        actorId,
+        kind: 'moderator_propose',
+        createdAt: 2,
+      },
+    ];
+    const res = await mount(
+      authStore,
+      new InMemoryMessageStore(),
+      new InMemoryTrustStore(edges),
+    ).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { trust: typeof NULL_TRUST & { verifiedBy: unknown } };
+    expect(body.trust).toEqual({
+      verifiedBy: { id: actorId, name: 'Mod' },
+      proposedBy: { id: actorId, name: 'Mod' },
+      confirmedBy: null,
+      appointedBy: null,
+    });
   });
 
   it('returns profileMessage null when the profile note is soft-deleted but keeps profileMessageId', async () => {
