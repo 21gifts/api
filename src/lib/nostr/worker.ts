@@ -13,6 +13,8 @@ import {
   type MessageRow,
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { notifyForumReply } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
 import { logEvent } from '@/lib/log';
 import { decryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import {
@@ -82,6 +84,8 @@ export interface NostrWorkerDeps {
   verifyKind1?: (event: NostrEventFrame) => boolean;
   /** Optional private-message store (skip DMs when omitted). */
   conversations?: ConversationStore;
+  /** Optional in-app notification store (inbound member replies). */
+  notificationStore?: NotificationStore;
 }
 
 type Kind0Reservation = {
@@ -277,7 +281,9 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
  * over-long content, events that equal the parent note id, and unknown
  * npubs (same silent skip as an empty event id). Member replies posted
  * from Damus with the custodial key still persist (named, or nameless via
- * {@link truncatePubkeyDisplay}).
+ * {@link truncatePubkeyDisplay}). After a successful persist, notifies the
+ * parent author via {@link notifyForumReply}; notify failure logs
+ * `nostr.reply.notify.failed` and does not fail persist.
  *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
@@ -352,7 +358,7 @@ async function indexInboundForumReplies(
           ? new Date(event.created_at * 1000)
           : new Date(deps.now());
       try {
-        await deps.messages.create({
+        const created = await deps.messages.create({
           id: crypto.randomUUID(),
           accountId,
           name,
@@ -374,6 +380,20 @@ async function indexInboundForumReplies(
           deletedAt: null,
           deletedBy: null,
         });
+        try {
+          await notifyForumReply({
+            messages: deps.messages,
+            account: { id: accountId },
+            created,
+            parentId: parentNote.id,
+            ...(deps.notificationStore === undefined
+              ? {}
+              : { notifications: deps.notificationStore }),
+            ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          });
+        } catch {
+          logEvent('nostr.reply.notify.failed', { eventId: event.id });
+        }
       } catch {
         logEvent('nostr.reply.inbound.failed', { eventId: event.id });
       }

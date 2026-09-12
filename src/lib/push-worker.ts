@@ -70,19 +70,19 @@ export async function enqueueForumPushes(
 
 /**
  * Enqueue one targeted reply notification for the parent-note author when they
- * have a subscription. Payload URL is `/messages?c=<conversationId>`.
+ * have a subscription. Payload URL is `/notifications`.
  *
  * @param store - Push store.
  * @param authorId - Parent-note author to notify.
  * @param messageId - Reply forum message id (stored on the outbox row).
- * @param conversationId - Inbox conversation id for the payload URL/tag.
+ * @param parentId - Forum note that was replied to (payload URL/tag).
  * @param nowMs - Enqueue clock.
  */
 export async function enqueueReplyPush(
   store: PushStore,
   authorId: string,
   messageId: string,
-  conversationId: string,
+  parentId: string,
   nowMs: number,
 ): Promise<void> {
   const subs = await store.listByAccount(authorId);
@@ -94,7 +94,7 @@ export async function enqueueReplyPush(
     accountId: authorId,
     type: 'forum',
     messageId,
-    payload: JSON.stringify(buildReplyPushPayload(conversationId)),
+    payload: JSON.stringify(buildReplyPushPayload(parentId)),
     status: 'pending',
     attempts: 0,
     claimedUntil: null,
