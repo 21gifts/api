@@ -90,6 +90,8 @@ export function serializeNotification(row: NotificationRow): PublicNotification 
  * callers wrap it.
  *
  * @param args - Message store, optional notification/push stores, actor, reply, parent id.
+ * @returns Resolves after the optional persist and push enqueue (including no-ops).
+ * @throws If parent lookup, notification `create`, or `enqueueReplyPush` rejects.
  */
 export async function notifyForumReply(args: {
   /** Forum persistence (parent lookup). */
