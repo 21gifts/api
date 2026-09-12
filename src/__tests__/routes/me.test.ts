@@ -5,6 +5,7 @@ import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -159,6 +160,7 @@ describe('GET /me', () => {
       rulesAgreedAt: number | null;
       setup: 'name' | 'lightning-address' | 'rules' | null;
       missing: string[];
+      hasPosted: boolean;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -169,6 +171,46 @@ describe('GET /me', () => {
     expect(body.rulesAgreedAt).toBeNull();
     expect(body.setup).toBe('name');
     expect(body.missing).toEqual(['name', 'lightning-address', 'rules']);
+    expect(body.hasPosted).toBe(false);
+  });
+
+  it('returns hasPosted false when the only live row is the profile note', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, profileMessageId: 'post-alice' });
+    const messages = new InMemoryMessageStore([
+      {
+        id: 'post-alice',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'first',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await mount(store, { messages }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { hasPosted: boolean }).hasPosted).toBe(false);
+  });
+
+  it('returns hasPosted true when the account has an extra live message', async () => {
+    const store = await seededStore();
+    const messages = new InMemoryMessageStore([
+      {
+        id: 'post-alice',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'first',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await mount(store, { messages }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { hasPosted: boolean }).hasPosted).toBe(true);
   });
 });
 

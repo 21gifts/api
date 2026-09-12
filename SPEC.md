@@ -70,7 +70,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                 |
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
-| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing`)                                             |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
@@ -249,12 +249,13 @@ ID).
     "createdAt": 0,
     "rulesAgreedAt": null,
     "setup": "name",
-    "missing": ["name", "lightning-address", "rules"]
+    "missing": ["name", "lightning-address", "rules"],
+    "hasPosted": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, and `missing`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, and `hasPosted`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -299,7 +300,8 @@ Missing or invalid bearer → **Response** `401`:
   "createdAt": 0,
   "rulesAgreedAt": null,
   "setup": "name",
-  "missing": ["name", "lightning-address", "rules"]
+  "missing": ["name", "lightning-address", "rules"],
+  "hasPosted": false
 }
 ```
 
@@ -317,6 +319,7 @@ Missing or invalid bearer → **Response** `401`:
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                     |
 | `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence. |
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
 
 ### `POST /me/setup/skip`
 

@@ -543,7 +543,7 @@
 ## Function: authRoutes
 
 - **Purpose:** Hono sub-app for passkey register and authenticate. Register begin accepts an optional `{ viewKey }` to claim a provisioned account; empty begin still mints a pending new account. Passes optional `nostrKek` / `nostrKeygen` into finish so new logins get a custodial nsec.
-- **Inputs:** `AuthRouteDeps`: store, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony, optional `nostrKek` and `nostrKeygen`.
+- **Inputs:** `AuthRouteDeps`: store, `messages`, now, allowedOrigins, webAuthnRpId, webAuthnRpName, passkeyCeremony, optional `nostrKek` and `nostrKeygen`.
 - **Returns / side effects:** Hono app mounted at `/auth`. Begin with viewKey maps claim errors to 404/409; unwraps `{ challengeId, options }` on success.
 - **Used by:** `createApp`.
 
@@ -607,7 +607,7 @@
 
 - **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `nostrKek` (required to sign the mint probe).
-- **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
+- **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
 - **Used by:** `createApp`.
 
 ## Function: viewRoutes
@@ -962,10 +962,17 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, `setup`, and `missing`, so the owner can copy the capability URL and the client can route onboarding and action gates. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement` and `POST /me/setup/skip`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
-- **Inputs:** `Account`.
-- **Returns / side effects:** `OwnerAccountResponse` (twelve fields including `setup` and `missing`). No I/O.
-- **Used by:** `meRoutes`, `authRoutes`.
+- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, `setup`, `missing`, and `hasPosted`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement` and `POST /me/setup/skip`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Inputs:** `Account` plus `hasPosted: boolean`.
+- **Returns / side effects:** `OwnerAccountResponse` (thirteen fields including `hasPosted`). No I/O. Does not expose `profileMessageId`.
+- **Used by:** `serializeOwnerAccountWithPosts`.
+
+## Function: serializeOwnerAccountWithPosts
+
+- **Purpose:** Async owner JSON with live-post lookup. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)` then `serializeOwnerAccount` so HTTP callers cannot drift on the spend predicate.
+- **Inputs:** `Account`, `Pick<MessageStore, 'accountHasLivePost'>`.
+- **Returns / side effects:** `OwnerAccountResponse` including `hasPosted`. Store throw is unhandled (same as GET /invoices/posted).
+- **Used by:** `meRoutes` and `authRoutes`.
 
 ## Function: membersRoutes
 

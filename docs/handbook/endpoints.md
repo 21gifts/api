@@ -142,7 +142,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -156,7 +156,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
@@ -240,7 +240,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
