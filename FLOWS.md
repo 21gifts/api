@@ -209,7 +209,7 @@ The api enqueues (does not send inline):
 
 - a **forum** payload when someone else posts (`tag: forum`)
 - a **zap** payload when a zap receipt is newly indexed onto the author's note
-- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`), after a `forum_reply` notification row is stored
+- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`), independent of whether a notification row was stored
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. A reply push opens `/notifications`.

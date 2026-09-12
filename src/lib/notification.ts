@@ -82,12 +82,12 @@ export function serializeNotification(row: NotificationRow): PublicNotification 
 }
 
 /**
- * Persist a forum-reply notification for the parent author and enqueue a
- * targeted Web Push to `/notifications`. No-op when the parent is missing,
- * Damus-only, or authored by the replier. Photo-only empty text still
- * notifies. Unique duplicate create is fine (`create` returns the existing
- * row). Push does not require a notification store. This helper may throw;
- * callers wrap it.
+ * Notify the parent author of a forum reply: persist a notification when
+ * `notifications` is set, and enqueue a `/notifications` Web Push when
+ * `pushStore` is set. No-op when the parent is missing, Damus-only, or
+ * authored by the replier. Photo-only empty text still notifies. Unique
+ * duplicate create is fine (`create` returns the existing row). Push does
+ * not require a notification store. This helper may throw; callers wrap it.
  *
  * @param args - Message store, optional notification/push stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
