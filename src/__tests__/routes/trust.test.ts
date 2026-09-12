@@ -58,14 +58,16 @@ function post(
   token: string | undefined,
   body: unknown,
 ): Promise<Response> {
-  return Promise.resolve(app.request(path, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  }));
+  return Promise.resolve(
+    app.request(path, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
 }
 
 const throwingList: TrustStore = {
@@ -445,9 +447,14 @@ describe('POST /trust/*', () => {
       const self = await pending();
       expect(
         (
-          await post(mount(self.authStore, self.trustStore), '/trust/confirm-moderator', 'founder', {
-            accountId: FOUNDER,
-          })
+          await post(
+            mount(self.authStore, self.trustStore),
+            '/trust/confirm-moderator',
+            'founder',
+            {
+              accountId: FOUNDER,
+            },
+          )
         ).status,
       ).toBe(409);
       const notVerified = await staffed();
@@ -475,9 +482,14 @@ describe('POST /trust/*', () => {
       const same = await pending();
       expect(
         (
-          await post(mount(same.authStore, same.trustStore), '/trust/confirm-moderator', 'founder', {
-            accountId: SUBJECT,
-          })
+          await post(
+            mount(same.authStore, same.trustStore),
+            '/trust/confirm-moderator',
+            'founder',
+            {
+              accountId: SUBJECT,
+            },
+          )
         ).status,
       ).toBe(409);
     });

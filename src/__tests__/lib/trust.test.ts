@@ -92,10 +92,7 @@ describe('buildTrustChain', () => {
       edge({ id: 'e-basis-actor', subjectId: 'v', actorId: 'b', kind: 'verify' }),
       edge({ id: 'e-basis-subject', subjectId: 'b', actorId: 'f', kind: 'verify' }),
     ];
-    const chain = buildTrustChain(
-      [founder, moderator, verified, basis, disconnected],
-      edges,
-    );
+    const chain = buildTrustChain([founder, moderator, verified, basis, disconnected], edges);
     expect(chain.nodes.map((node) => node.id)).toEqual(['f', 'm', 'd', 'v']);
     expect(chain.edges).toEqual([
       { from: 'm', to: 'v', kind: 'verify' },
@@ -128,7 +125,13 @@ describe('accountTrust', () => {
       edge({ id: 'p-a', subjectId: 's', actorId: 'ada', kind: 'moderator_propose', createdAt: 5 }),
       edge({ id: 'p-b', subjectId: 's', actorId: 'bob', kind: 'moderator_propose', createdAt: 5 }),
       edge({ id: 'c1', subjectId: 's', actorId: 'u', kind: 'moderator_confirm', createdAt: 3 }),
-      edge({ id: 'a1', subjectId: 's', actorId: 'missing', kind: 'moderator_appoint', createdAt: 4 }),
+      edge({
+        id: 'a1',
+        subjectId: 's',
+        actorId: 'missing',
+        kind: 'moderator_appoint',
+        createdAt: 4,
+      }),
       edge({ id: 'other', subjectId: 'x', actorId: 'ada', kind: 'verify', createdAt: 9 }),
     ];
     expect(accountTrust('s', [subject, ada, bob, unnamed], edges)).toEqual({

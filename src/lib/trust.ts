@@ -10,11 +10,7 @@
 import type { Account, AccountRole } from '@/lib/auth/store';
 
 /** Stored grant kind. `moderator_propose` is private to staff flows. */
-export type TrustKind =
-  | 'verify'
-  | 'moderator_propose'
-  | 'moderator_confirm'
-  | 'moderator_appoint';
+export type TrustKind = 'verify' | 'moderator_propose' | 'moderator_confirm' | 'moderator_appoint';
 
 /** Edge kinds that appear on the public trust chain. */
 export type TrustChainKind = 'verify' | 'moderator_confirm' | 'moderator_appoint';
@@ -130,10 +126,7 @@ export function buildTrustChain(
   accounts: readonly Account[],
   edges: readonly TrustEdge[],
 ): TrustChain {
-  const chainAccounts = accounts
-    .filter(isChainAccount)
-    .slice()
-    .sort(compareChainAccounts);
+  const chainAccounts = accounts.filter(isChainAccount).slice().sort(compareChainAccounts);
   const nodeIds = new Set(chainAccounts.map((account) => account.id));
   const nodes: TrustChainNode[] = chainAccounts.map((account) => ({
     id: account.id,
@@ -197,9 +190,7 @@ export function serializeTrustEdge(edge: TrustEdge): TrustEdgeJson {
 }
 
 /** True when `account.role` appears on the public chain. */
-function isChainAccount(
-  account: Account,
-): account is Account & { role: TrustChainNode['role'] } {
+function isChainAccount(account: Account): account is Account & { role: TrustChainNode['role'] } {
   return account.role === 'founder' || account.role === 'moderator' || account.role === 'verified';
 }
 
