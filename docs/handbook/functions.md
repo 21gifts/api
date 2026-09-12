@@ -731,7 +731,7 @@
 
 ## Function: notifyForumReply
 
-- **Purpose:** Persist a `forum_reply` notification for the parent-note author and enqueue one targeted Web Push (`url` `/notifications`, tag `forum_reply:<parentId>`). No-op when the parent is missing, Damus-only, or authored by the replier. Photo-only empty text still notifies. May throw; callers wrap so persist still succeeds.
+- **Purpose:** After a suitable parent, persist a `forum_reply` notification when `notifications` is set and enqueue one targeted Web Push (`url` `/notifications`, tag `forum_reply:<parentId>`) when `pushStore` is set. No-op when the parent is missing, Damus-only, or authored by the replier. Photo-only empty text still notifies. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ messages, notifications?, pushStore?, account, created, parentId }`.
 - **Returns / side effects:** Void. Writes one notification row when `notifications` is set (`create` unique on recipient/type/reply); calls `enqueueReplyPush` when `pushStore` is set. Does not copy into the member↔member inbox.
 - **Used by:** `messagesRoutes` after a 21.gifts-author reply `POST /messages`; `runNostrWorkerTick` after inbound member reply persist.

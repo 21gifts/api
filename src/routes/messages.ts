@@ -175,8 +175,8 @@ export interface MessagesRouteDeps {
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
   /**
-   * Optional in-app notification store. A 21.gifts-author reply creates a
-   * notification for the parent author (via {@link notifyForumReply}).
+   * Optional in-app notification store. When present, a 21.gifts-author
+   * reply creates a notification for the parent author (via {@link notifyForumReply}).
    */
   notificationStore?: NotificationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
@@ -345,9 +345,9 @@ async function serveForumVideo(
 
 /**
  * Media collapse → burst limiter → create → optional top-level push, or
- * a targeted notification+push via {@link notifyForumReply} when `parentId`
- * is a 21.gifts-author note. Shared by JSON and multipart after body parse /
- * normalize / decode.
+ * {@link notifyForumReply} (notification and/or push, each if that store
+ * is present) when `parentId` is a 21.gifts-author note. Shared by JSON and
+ * multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / notification stores.
  * @param postLimiter - Per-account burst limiter.
