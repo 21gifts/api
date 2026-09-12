@@ -36,7 +36,7 @@ api/
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
 │   │   ├── me.ts             # GET /me; POST /me/setup/skip; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
-│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note)
+│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + trust)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
@@ -44,6 +44,9 @@ api/
 │   │   ├── debug-messages.ts # PUT /debug/messages/:id/video (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; GET /debug/zap-ingests (DEBUG_TOKEN)
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
+│   │   ├── debug-trust.ts    # POST /debug/trust-edges (operator DEBUG_TOKEN; no role change)
+│   │   ├── trust-chain.ts    # GET /trust-chain (public stored graph)
+│   │   ├── trust.ts          # POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
@@ -63,6 +66,8 @@ api/
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
+│   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
+│   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── conversation.ts   # PN public JSON (no accountId / eventId / npub)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
@@ -84,7 +89,7 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, push, BTC-USD rates, KEK, db_change
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, push, trust_edge, BTC-USD rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
@@ -145,6 +150,8 @@ api/
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
+│       │   ├── trust.test.ts
+│       │   ├── trust-store.test.ts
 │       │   ├── conversation.test.ts
 │       │   ├── conversation-store.test.ts
 │       │   ├── push.test.ts
@@ -187,6 +194,9 @@ api/
 │           ├── debug-payments.test.ts
 │           ├── push.test.ts
 │           ├── debug-push.test.ts
+│           ├── debug-trust.test.ts
+│           ├── trust-chain.test.ts
+│           ├── trust.test.ts
 │           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
@@ -199,11 +209,12 @@ api/
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   ├── conversation.sql      # PN threads + messages (member/platform/Damus)
 │   ├── push.sql              # push_subscription + push_outbox
+│   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address, video-put (DEBUG_TOKEN)
+│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address, video-put, trust-edge (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
@@ -300,6 +311,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresMessageStore`, `migrateMessageSchema`,
 `PostgresContactStore`, `migrateContactSchema`,
+`PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`, `migrateDbChangeSchema`,
 `DB_CHANGE_SCHEMA_SQL`,
@@ -338,7 +350,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
   named `trg_db_change` on every `public` table except `db_change` itself — **not**
   by application store methods. New public tables are covered on the next SQL boot
-  (`migrateDbChangeSchema` after `migratePushSchema`) once the table exists. A
+  (`migrateDbChangeSchema` after `migrateTrustSchema` / `migratePushSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
 - `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
   **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
@@ -404,8 +416,8 @@ Currently:
 | ---------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BIND_ADDR`            | `0.0.0.0:3000`                          | Listen address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `SERVICE_VERSION`      | `0.1.0`                                 | Surfaced via `/info`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, `conversation` / `conversation_message`, `push_subscription`, `push_outbox`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages`, `GET /messages/:id`, `DELETE /messages/:id` (uses `PostgresMessageStore.markDeleted` soft-hide, not `deleteById`), `GET /messages/:id/replies`, `GET /messages/:id/photo`, and `GET /messages/:id/video.*` (MIME in Postgres, bytes under `MEDIA_DIR`) use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET/POST /conversations` and `GET/POST /conversations/:id` use `PostgresConversationStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. Unset keeps `InMemoryAuthStore`, in-memory forum, contact, conversation, and push stores, empty gift stats, empty day lists, and a no-op gift recorder. |
-| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `POST /debug/accounts`, `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`, `GET /debug/contacts`, `GET /debug/invoices`, `GET /debug/zap-ingests`, `PUT /debug/messages/:id/video`, and `POST /debug/push-ping`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `DATABASE_URL`         | _(unset → in-memory)_                   | Postgres connection string. When set, auth, `btc_usd_daily`, `message` (plus `message_invoice` and `nostr_zap_ingest`), `contact`, `conversation` / `conversation_message`, `push_subscription`, `push_outbox`, `trust_edge`, and `db_change` are migrated, `GET /gifts` and `GET /gifts/stats` read `gift` plus persisted BTC-USD daily closes (best-effort boot fill; failures log and do not kill the process), `GET/POST /messages`, `GET /messages/:id`, `DELETE /messages/:id` (uses `PostgresMessageStore.markDeleted` soft-hide, not `deleteById`), `GET /messages/:id/replies`, `GET /messages/:id/photo`, and `GET /messages/:id/video.*` (MIME in Postgres, bytes under `MEDIA_DIR`) use `PostgresMessageStore`, `POST /contact` / `GET /debug/contacts` use `PostgresContactStore`, `GET/POST /conversations` and `GET/POST /conversations/:id` use `PostgresConversationStore`, `GET /debug/invoices` and `GET /debug/zap-ingests` list invoice attempts and zap ingest rows, and a matching `POST /invoices/proof` inserts into `gift`. `GET /trust-chain` and staff `POST /trust/*` use `PostgresTrustStore`. Unset keeps `InMemoryAuthStore`, in-memory forum, contact, conversation, push, and trust stores, empty gift stats, empty day lists, and a no-op gift recorder. |
+| `DEBUG_TOKEN`          | _(unset → debug off)_                   | Operator bearer for `GET /debug/accounts`, `POST /debug/accounts`, `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`, `GET /debug/contacts`, `GET /debug/invoices`, `GET /debug/zap-ingests`, `PUT /debug/messages/:id/video`, `POST /debug/push-ping`, and `POST /debug/trust-edges`. Unset or blank → `503`; the process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `NIP57_PROBE`          | _(unset → probe on)_                    | Set to `0` to skip the NIP-57 mint probe on `POST /debug/accounts` new addresses (Playwright e2e only). Unset or any other value probes. Production must not set this. The process still boots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `WEBAUTHN_RP_ID`       | _(none — required for passkey)_         | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Passkey routes return `500` until it is set; the process still boots. Not a secret.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `WEBAUTHN_RP_NAME`     | `21.gifts`                              | Human-readable RP name.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |

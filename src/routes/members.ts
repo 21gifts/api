@@ -5,6 +5,8 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { accountTrust } from '@/lib/trust';
+import type { TrustStore } from '@/lib/trust-store';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
@@ -18,6 +20,8 @@ export interface MembersRouteDeps {
   authStore: AuthStore;
   /** Forum persistence (profile notes). */
   messageStore: MessageStore;
+  /** Stored trust edges for the `trust` object on GET JSON. */
+  trustStore: TrustStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
 }
@@ -39,7 +43,7 @@ async function authedAccount(
  *
  * Mounted at `/members` so the public path is `GET /members/:accountId`.
  *
- * @param deps - Auth store, message store, and clock.
+ * @param deps - Auth store, message store, trust store, and clock.
  * @returns A Hono app with `GET /:accountId`.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
@@ -74,6 +78,8 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           profileMessage = serializeMessage(row, payable, account.role, children.length, true);
         }
       }
+      const edges = await deps.trustStore.listEdgesForSubject(account.id);
+      const accounts = await deps.authStore.listAccounts();
       return c.json(
         {
           id: account.id,
@@ -82,6 +88,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           lightningAddress: account.lightningAddress,
           createdAt: new Date(account.createdAt).toISOString(),
           profileMessage,
+          trust: accountTrust(account.id, accounts, edges),
         },
         200,
       );

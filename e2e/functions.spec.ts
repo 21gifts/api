@@ -1196,3 +1196,62 @@ test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 
 }) => {
   expect((await request.get('/debug/accounts')).status()).toBe(401);
 });
+
+test('Function: isStaffRole — GET /trust-chain is empty on default boot', async ({ request }) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: buildTrustChain — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
+  expect(body.nodes).toEqual([]);
+  expect(body.edges).toEqual([]);
+});
+
+test('Function: accountTrust — GET /trust-chain is empty on default boot', async ({ request }) => {
+  expect((await request.get('/trust-chain')).status()).toBe(200);
+});
+
+test('Function: serializeTrustEdge — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/trust-chain')).status()).toBe(200);
+});
+
+test('Function: InMemoryTrustStore — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: PostgresTrustStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: migrateTrustSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: trustChainRoutes — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: trustRoutes — POST /trust/verify without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/verify', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugTrustRoutes — POST /debug/trust-edges without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});

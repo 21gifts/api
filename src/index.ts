@@ -51,6 +51,7 @@ if (import.meta.main) {
     nostrKek,
     contactStore,
     conversationStore,
+    trustStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
@@ -74,6 +75,7 @@ if (import.meta.main) {
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
+    ...(trustStore === undefined ? {} : { trustStore }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
