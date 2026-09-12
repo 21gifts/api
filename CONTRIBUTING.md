@@ -308,7 +308,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `PostgresMessageStore`, `migrateMessageSchema`,
 `PostgresContactStore`, `migrateContactSchema`,
 `PostgresConversationStore`, `migrateConversationSchema`,
-`PostgresPushStore`, `migratePushSchema`, `migrateDbChangeSchema`,
+`PostgresPushStore`, `migratePushSchema`,
+`PostgresNotificationStore`, `migrateNotificationSchema`, `migrateDbChangeSchema`,
 `DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
@@ -345,7 +346,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
   named `trg_db_change` on every `public` table except `db_change` itself — **not**
   by application store methods. New public tables are covered on the next SQL boot
-  (`migrateDbChangeSchema` after `migratePushSchema`) once the table exists. A
+  (`migrateDbChangeSchema` after `migrateNotificationSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
 - `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
   **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
