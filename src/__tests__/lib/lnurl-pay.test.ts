@@ -538,4 +538,62 @@ describe('requestZapInvoice', () => {
     });
     expect(result).toEqual({ ok: false, reason: 'unreachable', lnurlResponse: null });
   });
+
+  it('retries once when the first metadata fetch fails and returns the second invoice', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/.well-known/lnurlp/')) {
+        if (calls.length === 1) {
+          throw new Error('resolve blip');
+        }
+        return jsonResponse({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      return jsonResponse({ pr: PR });
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 21000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({
+      ok: true,
+      pr: PR,
+      amountSats: 21,
+      lnurlResponse: { pr: PR },
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toContain('/.well-known/lnurlp/');
+    expect(calls[1]).toContain('/.well-known/lnurlp/');
+    expect(calls[2]).toContain('nostr=');
+  });
+
+  it('does not retry when the first result is noZap', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      calls.push(String(input));
+      return jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+      });
+    };
+    const result = await requestZapInvoice({
+      address: ADDRESS,
+      amountMsat: 1000,
+      zapRequestJson: '{}',
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, reason: 'noZap', lnurlResponse: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('/.well-known/lnurlp/');
+  });
 });

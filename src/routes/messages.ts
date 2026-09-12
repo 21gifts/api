@@ -717,13 +717,21 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          const author = await deps.authStore.getAccount(row.accountId!);
-          const role = author?.role ?? 'basis';
-          const kept = await dropMissingVideoRow(deps.store, row);
-          if (kept === null) {
+          if (row.accountId === null) {
             continue;
           }
-          messages.push(serializeMessage(kept, false, role, undefined, true));
+          try {
+            const author = await deps.authStore.getAccount(row.accountId);
+            const role = author?.role ?? 'basis';
+            const kept = await dropMissingVideoRow(deps.store, row);
+            if (kept === null) {
+              continue;
+            }
+            messages.push(serializeMessage(kept, false, role, undefined, true));
+          } catch {
+            // One child must not 503 the thread (invalid createdAt, author lookup).
+            continue;
+          }
         }
         return c.json({ messages }, 200);
       } catch {
