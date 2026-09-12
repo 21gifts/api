@@ -4,6 +4,7 @@ import {
   parseUsdPerBtc,
   satsToBtcString,
   satsToUsdCents,
+  usdCentsToFiatCents,
   usdCentsToString,
 } from '@/lib/money';
 
@@ -80,6 +81,34 @@ describe('satsToUsdCents', () => {
 
   it('throws when cents exceed MAX_SAFE_INTEGER', () => {
     expect(() => satsToUsdCents(100_000_000, '100000000000000')).toThrow(/usd cents overflow/);
+  });
+});
+
+describe('usdCentsToFiatCents', () => {
+  it('converts USD cents at CHF, EUR, and PHP rates', () => {
+    expect(usdCentsToFiatCents(100, '0.80')).toBe(80);
+    expect(usdCentsToFiatCents(100, '0.90')).toBe(90);
+    expect(usdCentsToFiatCents(100, '50')).toBe(5000);
+  });
+
+  it('rounds half-up to the nearest quote cent', () => {
+    expect(usdCentsToFiatCents(1, '0.5')).toBe(1);
+    expect(usdCentsToFiatCents(1, '0.4')).toBe(0);
+  });
+
+  it('rejects negative / non-integer cents', () => {
+    expect(() => usdCentsToFiatCents(-1, '0.80')).toThrow(/non-negative integer/);
+    expect(() => usdCentsToFiatCents(1.2, '0.80')).toThrow(/non-negative integer/);
+    expect(() => usdCentsToFiatCents(Number.NaN, '0.80')).toThrow(/non-negative integer/);
+  });
+
+  it('rejects an invalid rate', () => {
+    expect(() => usdCentsToFiatCents(100, '0')).toThrow(/invalid/);
+    expect(() => usdCentsToFiatCents(100, '-1')).toThrow(/invalid/);
+  });
+
+  it('throws when rounded cents exceed MAX_SAFE_INTEGER', () => {
+    expect(() => usdCentsToFiatCents(Number.MAX_SAFE_INTEGER, '2')).toThrow(/fiat cents overflow/);
   });
 });
 

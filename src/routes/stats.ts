@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { buildGiftStats, giftsForRecipient } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 
 /** Collaborators the public gift-stats route needs. */
@@ -13,6 +14,11 @@ export interface GiftsStatsRouteDeps {
    * Empty boots stay empty 200 without calling Coinbase.
    */
   rates?: BtcUsdRateBook;
+  /**
+   * Historical USD→CHF/EUR/PHP crosses (default: empty {@link InMemoryFiatStore}).
+   * Missing fiat never 503s the page.
+   */
+  fiatRates?: FiatRateBook;
   /** Clock for rate refresh / "today" (default: `Date.now`). */
   now?: () => number;
 }
@@ -24,11 +30,12 @@ export interface GiftsStatsRouteDeps {
  * Optional `?recipient=` filters outbound gifts to one Wallet of Satoshi
  * handle before aggregation (see {@link giftsForRecipient}).
  *
- * @param deps - Gift store, optional rate book and clock.
+ * @param deps - Gift store, optional BTC-USD book, optional fiat book, and clock.
  * @returns A Hono app with `GET /`.
  */
 export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const now = deps.now ?? Date.now;
 
   return new Hono().get('/', async (c) => {
@@ -48,7 +55,13 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
           return c.json({ error: 'Gift stats are unavailable' }, 503);
         }
       }
-      return c.json(buildGiftStats(selected, rateMap), 200);
+      let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
+      try {
+        fiatMap = await fiatRates.ensureDays(giftDays, now());
+      } catch {
+        logEvent('gifts.stats.fiat_failed');
+      }
+      return c.json(buildGiftStats(selected, rateMap, fiatMap), 200);
     } catch {
       logEvent('gifts.stats.failed');
       return c.json({ error: 'Gift stats are unavailable' }, 503);

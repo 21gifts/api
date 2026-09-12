@@ -39,14 +39,16 @@ if (import.meta.main) {
   const { host, port } = parseBindAddr(addr);
   resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
-  // BTC_USD_CANDLES_URL is optional — resolveCandlesUrl inside openBootStores
-  // falls back to Coinbase; unset does not fail boot.
+  // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
+  // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
+  // does not fail boot.
   const boot = await openBootStores(databaseUrl, createBunSqlClient);
   const {
     authStore,
     giftStore,
     giftRecorder,
     btcUsdRates,
+    fiatRates,
     messageStore,
     nostrKek,
     contactStore,
@@ -67,6 +69,7 @@ if (import.meta.main) {
   const app = createApp({
     authStore,
     btcUsdRates,
+    fiatRates,
     pushStore,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),

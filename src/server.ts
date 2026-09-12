@@ -27,6 +27,7 @@ import { debugPushRoutes } from '@/routes/debug-push';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
@@ -119,6 +120,11 @@ export interface AppDeps {
    */
   btcUsdRates?: BtcUsdRateBook;
   /**
+   * Historical USD→CHF/EUR/PHP crosses for gift stats (default: empty
+   * {@link InMemoryFiatStore} — missing fiat is JSON `null`, never 503).
+   */
+  fiatRates?: FiatRateBook;
+  /**
    * Member forum messages (default: empty {@link InMemoryMessageStore}).
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
@@ -162,7 +168,7 @@ export interface AppDeps {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, message store, contact store, conversation
+ *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store, conversation
  *   store, push store,
  *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
@@ -178,6 +184,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
@@ -281,8 +288,11 @@ export function createApp(deps: AppDeps = {}): Hono {
       vapidPublicKey,
     }),
   );
-  app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, now }));
-  app.route('/gifts/stats', giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, now }));
+  app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
+  app.route(
+    '/gifts/stats',
+    giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }),
+  );
   app.route(
     '/messages',
     messagesRoutes({
