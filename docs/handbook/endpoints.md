@@ -268,8 +268,8 @@
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct **live 21.gifts-author** replies (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Soft-hidden and unknown-npub (Damus-only) children are omitted. A soft-hidden or missing parent is 404. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; signed-in replies always include `accountId` (21gifts author id); never includes `deletedAt` / `deletedBy`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID, the parent is missing, or the parent is soft-hidden; 503 `{ error: 'Messages are unavailable' }` (`messages.replies.failed`).
+- **Purpose:** Bearer required. Lists direct **live 21.gifts-author** replies (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Soft-hidden and unknown-npub (Damus-only) children are omitted. A soft-hidden or missing parent is 404. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. A child that cannot serialize or whose author lookup throws is omitted; remaining siblings still 200 `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; signed-in replies always include `accountId` (21gifts author id); never includes `deletedAt` / `deletedBy`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID, the parent is missing, or the parent is soft-hidden; 503 `{ error: 'Messages are unavailable' }` only when the store throws (`messages.replies.failed`) — not when one child fails to serialize.
 - **Used by:** App reply thread under a top-level note.
 - **Auth:** `Authorization: Bearer` session.
 
