@@ -2,7 +2,12 @@
  * Enqueue helpers and the Web Push outbox worker.
  */
 
-import { buildForumPushPayload, buildZapPushPayload, type PushPayload } from '@/lib/push';
+import {
+  buildForumPushPayload,
+  buildReplyPushPayload,
+  buildZapPushPayload,
+  type PushPayload,
+} from '@/lib/push';
 import type { PushSender } from '@/lib/push-sender';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
@@ -61,6 +66,42 @@ export async function enqueueForumPushes(
     };
     await store.enqueue(row);
   }
+}
+
+/**
+ * Enqueue one reply notification for the parent-note author when they have a
+ * subscription. Opens the inbox thread (`/messages?c=`).
+ *
+ * @param store - Push store.
+ * @param authorId - Parent-note author to notify.
+ * @param messageId - Reply forum message id (stored on the outbox row).
+ * @param conversationId - Inbox conversation id for the payload URL/tag.
+ * @param nowMs - Enqueue clock.
+ */
+export async function enqueueReplyPush(
+  store: PushStore,
+  authorId: string,
+  messageId: string,
+  conversationId: string,
+  nowMs: number,
+): Promise<void> {
+  const subs = await store.listByAccount(authorId);
+  if (subs.length === 0) {
+    return;
+  }
+  const row: PushOutboxRow = {
+    id: crypto.randomUUID(),
+    accountId: authorId,
+    type: 'forum',
+    messageId,
+    payload: JSON.stringify(buildReplyPushPayload(conversationId)),
+    status: 'pending',
+    attempts: 0,
+    claimedUntil: null,
+    createdAt: new Date(nowMs),
+    deliveredEndpoints: [],
+  };
+  await store.enqueue(row);
 }
 
 /**

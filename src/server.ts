@@ -291,6 +291,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       pushStore,
+      conversationStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );

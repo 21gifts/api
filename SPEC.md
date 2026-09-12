@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-11 (forum replies and `replyCount` are 21.gifts authors only).
+**Status**: living document. Last revised 2026-09-12 (forum replies notify the parent author in inbox + Web Push).
 
 ---
 
@@ -1509,8 +1509,12 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web
-Push is enqueued **only** when `parentId` is null (top-level notes); replies
-do not push. Over-limit posters get **429** `{ "error": "Too many messages" }`
+Push for a **top-level** note notifies every other subscribed account. A
+**reply** to a 21.gifts-author parent (not the replier themselves) opens or
+reuses the member↔member inbox thread, copies non-empty reply text into it,
+and enqueues one targeted push to the parent author (`url` `/messages?c=`
+that thread; `tag` `reply:<conversationId>`). Conversation or push failure
+does not fail the **200**. Over-limit posters get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).

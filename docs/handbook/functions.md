@@ -321,7 +321,14 @@
 - **Purpose:** Enqueue one forum notification per account that has at least one subscription, never for the message author.
 - **Inputs:** `PushStore`, `authorId`, `messageId`, `nowMs`. Payload from `buildForumPushPayload`.
 - **Returns / side effects:** One pending `type: 'forum'` outbox row per other subscriber account. Does not send HTTP push itself.
-- **Used by:** `messagesRoutes` after a successful `POST /messages` create.
+- **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create.
+
+## Function: enqueueReplyPush
+
+- **Purpose:** Enqueue one targeted reply notification for the parent-note author when they have a push subscription. Payload URL is `/messages?c=<conversationId>`.
+- **Inputs:** `PushStore`, `authorId` (parent author), `messageId` (reply row), `conversationId`, `nowMs`. Payload from `buildReplyPushPayload`.
+- **Returns / side effects:** Zero or one pending `type: 'forum'` outbox row (`tag` `reply:<conversationId>`). No-op when the author has no subscriptions.
+- **Used by:** `messagesRoutes` after a successful 21.gifts-author reply `POST /messages`.
 
 ## Function: enqueueZapPush
 
@@ -364,6 +371,13 @@
 - **Inputs:** None.
 - **Returns / side effects:** `PushPayload` object; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueForumPushes`.
+
+## Function: buildReplyPushPayload
+
+- **Purpose:** Targeted English payload when someone replies to the recipient's forum note (`type: 'forum'`, url `/messages?c=<conversationId>`, tag `reply:<conversationId>`).
+- **Inputs:** `conversationId` string.
+- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify`.
+- **Used by:** `enqueueReplyPush`.
 
 ## Function: buildZapPushPayload
 
@@ -606,7 +620,7 @@
 ## Function: messagesRoutes
 
 - **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name + Lightning Address), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **live top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, live `replyCount` of 21.gifts-author children); soft-hidden rows are omitted; missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video after parse/normalize/decode — identical live media from the same account+parent collapses to the existing row (200, no limiter, no second push); text-only still uses the 1/10s burst then inserts; soft-hidden `inReplyTo` parents are 404; public `GET /:id` stays unauthenticated without `accountId` (Damus-only **reply** 404; top-level Damus-only notes stay 200); optional `?sinceSats=` (non-negative integer) long-polls until `sats` is strictly greater (timeout still 200 with the current body; invalid value 400); soft-hidden rows still 404; Bearer `GET /:id/replies` lists 21.gifts-author children only (`accountId` set) and 404s soft-hidden parents; photo/video byte routes 404 soft-hidden ids; staff `DELETE /:id` soft-hides via `markDeleted` (founder/moderator → 204; basis/verified → 403); invoice returns `{ pr, amountSats }` only for NIP-57 invoices and 404s soft-hidden notes (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `pushStore` enqueues on true top-level inserts only (not media replays).
-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`).
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `conversationStore` (reply inbox copy), optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`).
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/replies/DELETE/invoice; 403 on DELETE when not founder/moderator; 409 `{ error: 'missing_requirements', missing }` when action gates fail; 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`.
 - **Used by:** `createApp`.
 
