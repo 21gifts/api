@@ -82,7 +82,9 @@ export interface AppDeps {
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
    * `GET /debug/contacts`, `GET /debug/invoices`,
-   * `GET /debug/zap-ingests`, and `PUT /debug/messages/:id/video`
+   * `GET /debug/zap-ingests`, `GET /debug/messages`,
+   * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`, and
+   * `PUT /debug/messages/:id/video`
    * return 503.
    */
   debugToken?: string;

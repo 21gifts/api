@@ -100,6 +100,17 @@ export interface MessageStore {
   listReplies(parentId: string, limit?: number): Promise<MessageRow[]>;
 
   /**
+   * Newest-first forum rows for operator debug (`createdAt` desc, then `id`
+   * desc), capped at `limit`. Includes top-level notes **and** replies, live
+   * **and** soft-hidden (`deletedAt` set). Rows include `hasPhoto` /
+   * `hasVideo` / `videoContentType` but never photo or video bytes.
+   *
+   * @param limit - Maximum rows to return.
+   * @returns Message row copies.
+   */
+  listDebug(limit: number): Promise<MessageRow[]>;
+
+  /**
    * Persist a new message row and optional photo and video.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -660,6 +671,33 @@ export class InMemoryMessageStore implements MessageStore {
         return copy;
       });
     return Promise.resolve(replies);
+  }
+
+  /**
+   * Newest-first forum rows for operator debug, including replies and
+   * soft-hidden notes, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns A new array of row copies; mutating it does not change the store.
+   *   Listed objects never expose photo or video bytes.
+   */
+  listDebug(limit: number): Promise<MessageRow[]> {
+    const sorted = [...this.#rows].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        return copy;
+      }),
+    );
   }
 
   /**
@@ -1274,6 +1312,22 @@ export class PostgresMessageStore implements MessageStore {
        ORDER BY created_at ASC, id ASC
        LIMIT $2`,
       [parentId, limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Newest-first forum rows for operator debug (`created_at` desc, `id`
+   * desc), including replies and soft-hidden notes. Never selects `photo`
+   * bytea.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
+  async listDebug(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
+      [limit],
     );
     return rows.map((row) => mapMessageRow(row));
   }

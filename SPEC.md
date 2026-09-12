@@ -100,6 +100,9 @@ Public base URLs used in examples:
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                          |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                                   |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                     |
+| GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)          |
+| GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                  |
+| GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                       |
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
 | GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
 | POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
@@ -997,6 +1000,70 @@ Environment:
 | -------------- | ----------------------------------------------------------------- |
 | `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.  |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
+### `GET /debug/messages`
+
+Operator listing of every persisted forum row (top-level **and** replies,
+live **and** soft-hidden). Authenticated with `Authorization: Bearer`
+matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Never includes
+`nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+### `GET /debug/messages/:id`
+
+Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
+`deletedBy` / `text`. Unknown or non-UUID id → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Same debug token gate as `GET /debug/messages`. Body is the debug object
+(not wrapped). Never includes `nostrEvent`, `contentFp`, nsec, or photo/video
+bytes.
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+### `GET /debug/messages/:id/photo`
+
+Operator JPEG/PNG/WebP bytes, **including** soft-hidden notes. Same
+`Content-Type` / `Content-Disposition` / CORS as public
+`GET /messages/:id/photo`. Missing row, no photo, or non-UUID id →
+**Response** `404`:
+
+```json
+{ "error": "Photo not found" }
+```
+
+Same debug token gate as `GET /debug/messages`.
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
 
 ### `PUT /debug/messages/:id/video`
 

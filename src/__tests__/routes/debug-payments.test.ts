@@ -162,6 +162,7 @@ describe('debugPaymentsRoutes', () => {
     const store = {
       listInvoiceAttempts: boom,
       listZapIngests: boom,
+      listDebug: boom,
     } as unknown as InMemoryMessageStore;
     const app = mount(store, 'secret');
     const invoices = await app.request('/debug/invoices', {
