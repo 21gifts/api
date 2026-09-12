@@ -33,10 +33,12 @@ verification payment requires an injected invoice payer; the default
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes (`GET /invoices/passkey`, `POST /invoices`,
-`POST /invoices/proof`) check passkey eligibility, fetch a BOLT11 via
-LNURL-pay, and accept a preimage proof. Issue requires a passkey-backed
-account for the address. They require `SPEND_API_TOKEN`; when it is unset the
+Spend-worker invoice routes (`GET /invoices/passkey`, `GET /invoices/posted`,
+`POST /invoices`, `POST /invoices/proof`) check passkey eligibility and a live
+forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
+requires a passkey-backed account for the address and at least one live forum
+message that is not the auto-created profile note. They require `SPEND_API_TOKEN`;
+when it is unset the
 routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
@@ -68,7 +70,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                 |
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
-| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing`)                                             |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
@@ -108,7 +110,8 @@ Public base URLs used in examples:
 | GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                          |
 | GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                               |
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                          |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey required)                            |
+| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live non-profile forum post                     |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)             |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |
 
 ### `GET /healthz`
@@ -246,12 +249,13 @@ ID).
     "createdAt": 0,
     "rulesAgreedAt": null,
     "setup": "name",
-    "missing": ["name", "lightning-address", "rules"]
+    "missing": ["name", "lightning-address", "rules"],
+    "hasPosted": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, and `missing`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, and `hasPosted`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -296,7 +300,8 @@ Missing or invalid bearer → **Response** `401`:
   "createdAt": 0,
   "rulesAgreedAt": null,
   "setup": "name",
-  "missing": ["name", "lightning-address", "rules"]
+  "missing": ["name", "lightning-address", "rules"],
+  "hasPosted": false
 }
 ```
 
@@ -314,6 +319,7 @@ Missing or invalid bearer → **Response** `401`:
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                     |
 | `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence. |
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
 
 ### `POST /me/setup/skip`
 
@@ -1302,11 +1308,30 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPasskey": false }` when there is no account for the address or the
 account has no passkey credential.
 
+### `GET /invoices/posted`
+
+Spend-worker eligibility check. Query `address=name@domain.tld`. Same
+`SPEND_API_TOKEN` Bearer as `POST /invoices` (503 unconfigured / 401
+unauthorized).
+
+Missing or invalid Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+Success is always **200** (never 404 for an unknown address):
+
+```json
+{ "hasPosted": true }
+```
+
+or `{ "hasPosted": false }` when there is no account for the address or the
+account has no live forum message other than the auto-created profile note.
+
 ### `POST /invoices`
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
+credential and at least one live forum message that is not the auto-created
+profile note. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
 the BOLT11, and stores `{ id, pr, paymentHash }` in memory. It does not pay.
 
 **Body:**
@@ -1340,6 +1365,14 @@ No account for the address, or the account has no passkey credential →
 
 ```json
 { "error": "Passkey required" }
+```
+
+The account has a passkey but no live forum message other than the
+auto-created profile note → **403** (after the passkey check, before any
+LNURL fetch; no invoice is stored):
+
+```json
+{ "error": "Forum post required" }
 ```
 
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:

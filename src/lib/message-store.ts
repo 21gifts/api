@@ -135,6 +135,18 @@ export interface MessageStore {
   ): Promise<MessageRow | undefined>;
 
   /**
+   * Whether `accountId` has at least one live forum row that is not `excludeId`.
+   * Live = `deletedAt` null and `accountId` equals the argument (Damus-only
+   * `accountId: null` rows never match). `excludeId` is the auto profile note
+   * id; `null` excludes nothing extra. Replies count.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching live row exists.
+   */
+  accountHasLivePost(accountId: string, excludeId: string | null): Promise<boolean>;
+
+  /**
    * Load photo bytes for a message id.
    *
    * @param id - Message id.
@@ -767,6 +779,23 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Whether `accountId` has at least one live forum row that is not `excludeId`.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching live row exists.
+   */
+  accountHasLivePost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const found = this.#rows.some(
+      (row) =>
+        row.accountId === accountId &&
+        row.deletedAt === null &&
+        (excludeId === null || row.id !== excludeId),
+    );
+    return Promise.resolve(found);
+  }
+
+  /**
    * Return a copy of the photo for `id`, or `null`.
    *
    * @param id - Message id.
@@ -1276,6 +1305,25 @@ export class PostgresMessageStore implements MessageStore {
       [parentId, limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Whether `accountId` has at least one live forum row that is not `excludeId`.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param excludeId - Auto profile note id (`$2`), or `null` to exclude nothing extra.
+   * @returns `true` when a matching live row exists.
+   */
+  async accountHasLivePost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM message
+       WHERE account_id = $1
+         AND deleted_at IS NULL
+         AND ($2::uuid IS NULL OR id <> $2::uuid)
+       LIMIT 1`,
+      [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
   }
 
   /**

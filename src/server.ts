@@ -102,8 +102,8 @@ export interface AppDeps {
   passkeyCeremony?: PasskeyCeremony;
   /**
    * Spend-worker shared secret (default: `process.env.SPEND_API_TOKEN`).
-   * Unset → `GET /invoices/passkey`, `POST /invoices`, and
-   * `POST /invoices/proof` return 503.
+   * Unset → `GET /invoices/passkey`, `GET /invoices/posted`, `POST /invoices`,
+   * and `POST /invoices/proof` return 503.
    */
   spendApiToken?: string;
   /** Gift invoices issued for the spend worker (default: in-memory). */
@@ -235,6 +235,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       webAuthnRpId,
       webAuthnRpName,
       passkeyCeremony,
+      messages: messageStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -314,6 +315,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       spendApiToken,
       store: invoiceStore,
       authStore: store,
+      messageStore,
       now,
       fetchImpl,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),

@@ -394,6 +394,11 @@ test('GET /invoices/passkey unconfigured is 503', async ({ request }) => {
   expect(res.status()).toBe(503);
 });
 
+test('GET /invoices/posted unconfigured is 503', async ({ request }) => {
+  const res = await request.get('/invoices/posted');
+  expect(res.status()).toBe(503);
+});
+
 test('POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
     data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },

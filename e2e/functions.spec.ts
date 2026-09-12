@@ -888,6 +888,13 @@ test('Function: serializeOwnerAccount — GET /me without bearer is 401', async 
   expect(res.status()).toBe(401);
 });
 
+test('Function: serializeOwnerAccountWithPosts — GET /me without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/me');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: serializeViewProfile — GET /view/:viewKey is 404 on default boot', async ({
   request,
 }) => {

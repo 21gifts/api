@@ -8,10 +8,11 @@ import {
   startPasskeyClaim,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
-import { serializeOwnerAccount } from '@/lib/auth/account-json';
+import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
+import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
 
 /**
@@ -22,6 +23,8 @@ import type { NostrKeygen } from '@/lib/nostr/keys';
 export interface AuthRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
+  /** Forum persistence (live-post lookup for owner JSON). */
+  messages: Pick<MessageStore, 'accountHasLivePost'>;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Browser origins CORS already allows; passkey finish filters these by RP ID. */
@@ -47,7 +50,7 @@ const passkeyFinishBody = z.object({
 /**
  * Build the `/auth` route group.
  *
- * @param deps - Shared store, clock, and passkey collaborators.
+ * @param deps - Shared store, message store, clock, and passkey collaborators.
  * @returns A Hono app exposing passkey register and authenticate routes.
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
@@ -108,7 +111,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       }
       logEvent('auth.passkey.register.ok', { accountId: result.value.account.id });
       return c.json(
-        { token: result.value.token, account: serializeOwnerAccount(result.value.account) },
+        {
+          token: result.value.token,
+          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages),
+        },
         200,
       );
     })
@@ -149,7 +155,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       }
       logEvent('auth.passkey.login.ok', { accountId: result.value.account.id });
       return c.json(
-        { token: result.value.token, account: serializeOwnerAccount(result.value.account) },
+        {
+          token: result.value.token,
+          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages),
+        },
         200,
       );
     });

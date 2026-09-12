@@ -142,7 +142,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -156,7 +156,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
@@ -210,10 +210,17 @@
 - **Used by:** the external spend worker before issuing a gift invoice.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
+## Endpoint: GET /invoices/posted
+
+- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ hasPosted: boolean }` so spend can filter before preflight. Fail closed: unknown address, or account with no live forum row other than the auto-created profile note → `hasPosted: false` (always HTTP 200 on success; never 404). Replies and photo-only / empty-text notes count; Damus-only rows (`accountId` null) and soft-deleted rows do not.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 missing or invalid Lightning Address (`Not a valid Lightning Address (expected name@domain)`).
+- **Used by:** the external spend worker before issuing a gift invoice.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
 ## Endpoint: POST /invoices
 
-- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Requires a 21.gifts account for `address` that already has a passkey credential. Then resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
-- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 403 `{ error: 'Passkey required' }` when there is no account or the account has no passkey (before LNURL); 502 provider did not issue a matching invoice.
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Requires a 21.gifts account for `address` that already has a passkey credential and at least one live forum message that is not the auto-created profile note. Then resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 403 `{ error: 'Passkey required' }` when there is no account or the account has no passkey (before LNURL); 403 `{ error: 'Forum post required' }` when the account has a passkey but no live non-profile forum row (after passkey, before LNURL); 502 provider did not issue a matching invoice.
 - **Used by:** the external spend worker before paying via lightning.space.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
@@ -233,7 +240,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
