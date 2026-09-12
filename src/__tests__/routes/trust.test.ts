@@ -187,6 +187,7 @@ describe('POST /trust/*', () => {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
 
     it('returns 200 idempotently when the caller already verified the subject', async () => {
@@ -251,6 +252,7 @@ describe('POST /trust/*', () => {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
 
     it('returns 503 when insert throws any other error', async () => {
@@ -259,6 +261,7 @@ describe('POST /trust/*', () => {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(503);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
   });
 
@@ -544,6 +547,7 @@ describe('POST /trust/*', () => {
           })
         ).status,
       ).toBe(409);
+      expect((await dup.authStore.getAccount(SUBJECT))?.role).toBe('verified');
       const boomStore: TrustStore = {
         listEdges: async () => withPropose,
         listEdgesForSubject: async () => withPropose,
@@ -559,6 +563,23 @@ describe('POST /trust/*', () => {
           })
         ).status,
       ).toBe(503);
+      expect((await boom.authStore.getAccount(SUBJECT))?.role).toBe('verified');
+    });
+
+    it('returns 409 without changing role when a confirm edge is already stored', async () => {
+      const { authStore, trustStore } = await pending();
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 2,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
   });
 
@@ -655,8 +676,17 @@ describe('POST /trust/*', () => {
       expect(await verifiedRes.json()).toEqual({ id: verifiedId, name: 'Ver', role: 'moderator' });
     });
 
-    it('returns 409 when insert is a duplicate and 503 on other insert errors', async () => {
+    it('returns 503 when listing throws, 409 when insert is a duplicate, and 503 on other insert errors', async () => {
       const extras = [account({ id: SUBJECT, role: 'basis', name: 'Sub' })];
+      const listed = await staffed(extras);
+      expect(
+        (
+          await post(mount(listed.authStore, throwingList), '/trust/appoint-moderator', 'founder', {
+            accountId: SUBJECT,
+          })
+        ).status,
+      ).toBe(503);
+      expect((await listed.authStore.getAccount(SUBJECT))?.role).toBe('basis');
       const dup = await staffed(extras);
       expect(
         (
@@ -665,6 +695,7 @@ describe('POST /trust/*', () => {
           })
         ).status,
       ).toBe(409);
+      expect((await dup.authStore.getAccount(SUBJECT))?.role).toBe('basis');
       const boom = await staffed(extras);
       expect(
         (
@@ -673,6 +704,25 @@ describe('POST /trust/*', () => {
           })
         ).status,
       ).toBe(503);
+      expect((await boom.authStore.getAccount(SUBJECT))?.role).toBe('basis');
+    });
+
+    it('returns 409 without changing role when an appoint edge is already stored', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
   });
 });

@@ -102,8 +102,8 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       }
       const updated = { ...subject, role: 'verified' as const };
       try {
-        await deps.authStore.updateAccount(updated);
         await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'verify'));
+        await deps.authStore.updateAccount(updated);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
@@ -199,14 +199,17 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
+      if (existing.some((edge) => edge.kind === 'moderator_confirm')) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
       const propose = existing.find((edge) => edge.kind === 'moderator_propose');
       if (propose === undefined || propose.actorId === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'moderator' as const };
       try {
-        await deps.authStore.updateAccount(updated);
         await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_confirm'));
+        await deps.authStore.updateAccount(updated);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
@@ -239,10 +242,20 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (subject.id === caller.id || subject.role === 'founder' || subject.role === 'moderator') {
         return c.json({ error: 'Conflict' }, 409);
       }
+      let existing: TrustEdge[];
+      try {
+        existing = await deps.trustStore.listEdgesForSubject(subject.id);
+      } catch {
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      if (existing.some((edge) => edge.kind === 'moderator_appoint')) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
       const updated = { ...subject, role: 'moderator' as const };
       try {
-        await deps.authStore.updateAccount(updated);
         await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_appoint'));
+        await deps.authStore.updateAccount(updated);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
