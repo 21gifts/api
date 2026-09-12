@@ -58,14 +58,14 @@ function post(
   token: string | undefined,
   body: unknown,
 ): Promise<Response> {
-  return app.request(path, {
+  return Promise.resolve(app.request(path, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  }));
 }
 
 const throwingList: TrustStore = {

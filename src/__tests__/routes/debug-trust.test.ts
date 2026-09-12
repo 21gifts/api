@@ -54,14 +54,14 @@ function mount(
 }
 
 function post(app: Hono, token: string | undefined, body: unknown): Promise<Response> {
-  return app.request('/debug/trust-edges', {
+  return Promise.resolve(app.request('/debug/trust-edges', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  }));
 }
 
 describe('POST /debug/trust-edges', () => {

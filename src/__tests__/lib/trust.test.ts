@@ -102,7 +102,7 @@ describe('buildTrustChain', () => {
       { from: 'f', to: 'm', kind: 'moderator_confirm' },
       { from: 'f', to: 'm', kind: 'moderator_appoint' },
     ]);
-    expect(chain.edges.some((item) => item.kind === 'moderator_propose')).toBe(false);
+    expect(chain.edges.map((item) => item.kind)).not.toContain('moderator_propose');
     expect(chain.edges.some((item) => item.to === 'd')).toBe(false);
   });
 });
