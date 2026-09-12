@@ -246,6 +246,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       webAuthnRpId,
       webAuthnRpName,
       passkeyCeremony,
+      messages: messageStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
