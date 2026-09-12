@@ -222,6 +222,47 @@ describe('serializeMessage', () => {
     };
     expect(serializeMessage(row, false, 'basis', undefined, true)).not.toHaveProperty('contentFp');
   });
+
+  it('coerces an empty name to a truncated author pubkey', () => {
+    const authorPubkey = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+    const row: MessageRow = {
+      id: 'msg-empty-name',
+      accountId: 'acc-1',
+      name: '',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey,
+    };
+    expect(serializeMessage(row, false, 'basis').name).toBe(truncatePubkeyDisplay(authorPubkey));
+  });
+
+  it('coerces an empty name to npub when authorPubkey is null', () => {
+    const row: MessageRow = {
+      id: 'msg-empty-name-null-pubkey',
+      accountId: 'acc-1',
+      name: '',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis').name).toBe('npub');
+  });
+
+  it('leaves a non-empty name unchanged', () => {
+    const row: MessageRow = {
+      id: 'msg-named',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis').name).toBe('Ada');
+  });
 });
 
 describe('unsignedNostrDefaults', () => {

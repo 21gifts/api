@@ -100,8 +100,12 @@ export type ZapInvoiceResult =
  * Captures the raw LNURL callback JSON body (even when schema-invalid) so
  * callers can persist it on invoice-attempt rows. Never pays the invoice.
  *
+ * When the first attempt is `{ ok: false, reason: 'unreachable' }`, the same
+ * attempt runs once more and that second result is returned. `ok` and `noZap`
+ * are not retried.
+ *
  * @param args - Address, amount millisats, signed 9734 JSON, fetch.
- * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true). Every result includes `lnurlResponse` (callback JSON object or `null`).
+ * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true or `nostrPubkey` is missing). Every result includes `lnurlResponse` (callback JSON object or `null`).
  */
 export async function requestZapInvoice(args: {
   address: string;
@@ -109,40 +113,48 @@ export async function requestZapInvoice(args: {
   zapRequestJson: string;
   fetchImpl: FetchFn;
 }): Promise<ZapInvoiceResult> {
-  const resolved = await resolveLnurlp({
-    address: args.address,
-    fetchImpl: args.fetchImpl,
-  });
-  if (!resolved.ok) {
-    return { ok: false, reason: 'unreachable', lnurlResponse: null };
-  }
-  const metadata = resolved.metadata;
-  if (metadata.allowsNostr !== true || metadata.nostrPubkey === undefined) {
-    return { ok: false, reason: 'noZap', lnurlResponse: null };
-  }
-  if (args.amountMsat < metadata.minSendable || args.amountMsat > metadata.maxSendable) {
-    return { ok: false, reason: 'unreachable', lnurlResponse: null };
-  }
-  const callbackUrl = new URL(metadata.callback);
-  callbackUrl.searchParams.set('amount', String(args.amountMsat));
-  callbackUrl.searchParams.set('nostr', args.zapRequestJson);
-  const fetched = await fetchJsonRaw(args.fetchImpl, callbackUrl.toString());
-  if (fetched === null) {
-    return { ok: false, reason: 'unreachable', lnurlResponse: null };
-  }
-  if (!fetched.ok) {
-    return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
-  }
-  const parsed = lnurlpInvoiceSchema.safeParse(fetched.body);
-  if (!parsed.success) {
-    return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
-  }
-  return {
-    ok: true,
-    pr: parsed.data.pr,
-    amountSats: Math.floor(args.amountMsat / 1000),
-    lnurlResponse: fetched.asObject,
+  const attempt = async (): Promise<ZapInvoiceResult> => {
+    const resolved = await resolveLnurlp({
+      address: args.address,
+      fetchImpl: args.fetchImpl,
+    });
+    if (!resolved.ok) {
+      return { ok: false, reason: 'unreachable', lnurlResponse: null };
+    }
+    const metadata = resolved.metadata;
+    if (metadata.allowsNostr !== true || metadata.nostrPubkey === undefined) {
+      return { ok: false, reason: 'noZap', lnurlResponse: null };
+    }
+    if (args.amountMsat < metadata.minSendable || args.amountMsat > metadata.maxSendable) {
+      return { ok: false, reason: 'unreachable', lnurlResponse: null };
+    }
+    const callbackUrl = new URL(metadata.callback);
+    callbackUrl.searchParams.set('amount', String(args.amountMsat));
+    callbackUrl.searchParams.set('nostr', args.zapRequestJson);
+    const fetched = await fetchJsonRaw(args.fetchImpl, callbackUrl.toString());
+    if (fetched === null) {
+      return { ok: false, reason: 'unreachable', lnurlResponse: null };
+    }
+    if (!fetched.ok) {
+      return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
+    }
+    const parsed = lnurlpInvoiceSchema.safeParse(fetched.body);
+    if (!parsed.success) {
+      return { ok: false, reason: 'unreachable', lnurlResponse: fetched.asObject };
+    }
+    return {
+      ok: true,
+      pr: parsed.data.pr,
+      amountSats: Math.floor(args.amountMsat / 1000),
+      lnurlResponse: fetched.asObject,
+    };
   };
+
+  const first = await attempt();
+  if (first.ok === false && first.reason === 'unreachable') {
+    return attempt();
+  }
+  return first;
 }
 
 /**
