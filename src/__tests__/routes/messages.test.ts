@@ -3429,6 +3429,77 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.text).toBe('good date');
   });
 
+  it('returns 200 skipping a reply whose author lookup throws', async () => {
+    const parentId = '25252525-2525-4252-8252-252525252525';
+    const throwId = '26262626-2626-4262-8262-262626262626';
+    const goodId = '27272727-2727-4272-8272-272727272727';
+    const auth = await namedStore('Ada');
+    await auth.createAccount({
+      id: 'thrower',
+      linkingKey: `02${'c'.repeat(64)}`,
+      role: 'basis',
+      name: 'Thrower',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const original = auth.getAccount.bind(auth);
+    vi.spyOn(auth, 'getAccount').mockImplementation(async (id: string) => {
+      if (id === 'thrower') {
+        throw new Error('store down');
+      }
+      return original(id);
+    });
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: throwId,
+        accountId: 'thrower',
+        name: 'Thrower',
+        text: 'throwing lookup',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goodId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'good sibling',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; text: string }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(goodId);
+    expect(body.messages[0]?.text).toBe('good sibling');
+  });
+
   it('skips a listed reply whose accountId is null', async () => {
     const parentId = '20202020-2020-4202-8202-202020202020';
     const memberId = '21212121-2121-4212-8212-212121212121';
