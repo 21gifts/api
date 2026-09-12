@@ -307,6 +307,21 @@ test('PUT /debug/messages/:id/video without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('GET /debug/messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/messages/:id without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/messages/:id');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/messages/:id/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/contacts with the e2e token lists contacts', async ({ request }) => {
   const res = await request.get('/debug/contacts', {
     headers: { authorization: 'Bearer e2e-debug-token' },

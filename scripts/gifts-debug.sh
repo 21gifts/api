@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
-#               and forum-video restore for 21.gifts
+#               forum-note debug reads, and forum-video restore for 21.gifts
 #               (GET /debug/accounts, PATCH /debug/accounts/:id,
+#               GET /debug/messages, GET /debug/messages/:id,
 #               PUT /debug/messages/:id/video). No raw SQL.
 #
 # Credentials (never in this script, never printed):
@@ -14,6 +15,8 @@
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
+#   gifts-debug messages [--raw]     # forum notes table (default) or JSON
+#   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
 #
 # Example:
@@ -21,6 +24,8 @@
 #   gifts-debug accounts --raw
 #   gifts-debug role <account-id> moderator
 #   gifts-debug unlink <account-id>
+#   gifts-debug messages
+#   gifts-debug message <message-id>
 #   gifts-debug video-put <message-id> ./clip.mp4
 #
 set -euo pipefail
@@ -137,6 +142,60 @@ cmd_unlink() {
   printf '%s\n' "$body"
 }
 
+fetch_messages() {
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_API_URL}/debug/messages") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_messages() {
+  local body
+  body=$(fetch_messages)
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+rows = data.get("messages") or []
+keys = ["id", "name", "accountId", "parentId", "sats", "deletedAt"]
+print("\t".join(keys))
+for row in rows:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("%s rows" % len(rows), file=sys.stderr)
+'
+}
+
+cmd_message() {
+  local id="${1:-}" tmp status body
+  [ -n "$id" ] || die "usage: gifts-debug message <id>"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_API_URL}/debug/messages/${id}") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
 cmd_video_put() {
   local id="${1:-}" path="${2:-}" tmp status body
   [ -n "$id" ] || die "usage: gifts-debug video-put <message-id> <file>"
@@ -176,6 +235,8 @@ case "${1:-}" in
   accounts) cmd_accounts ;;
   role) shift; cmd_role "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
+  messages) cmd_messages ;;
+  message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;

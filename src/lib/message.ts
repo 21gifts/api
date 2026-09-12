@@ -3,7 +3,8 @@ import type { AccountRole } from '@/lib/auth/store';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
- * Forum message domain: validation, photo decode, and public JSON projection.
+ * Forum message domain: validation, photo decode, public JSON, and operator
+ * debug JSON projection.
  *
  * Text is free-form encouragement (not unique). Over-long or disallowed
  * control-character input is rejected so a bad value cannot be stored and
@@ -263,6 +264,40 @@ export function serializeMessage(
     body.accountId = row.accountId;
   }
   return body;
+}
+
+/**
+ * Project a store row to operator debug JSON (includes soft-hide stamps).
+ *
+ * Always includes `accountId` (JSON `null` for Damus-only rows). Soft-hidden
+ * rows keep `text` and `deletedAt` / `deletedBy`. Never includes `nostrEvent`,
+ * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+ *
+ * @param row - Persisted message (including hidden rows and replies).
+ * @returns Debug fields; `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null
+ *   when live).
+ * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
+ */
+export function serializeDebugMessage(row: MessageRow): Record<string, unknown> {
+  const deletedAt = row.deletedAt ?? null;
+  return {
+    id: row.id,
+    name: row.name,
+    text: row.text,
+    createdAt: row.createdAt.toISOString(),
+    sats: row.sats,
+    hasPhoto: row.hasPhoto === true,
+    hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
+    parentId: row.parentId ?? null,
+    eventId: row.eventId ?? null,
+    nostrPublishState: row.nostrPublishState,
+    deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
+    deletedBy: row.deletedBy ?? null,
+    authorPubkey: row.authorPubkey ?? null,
+    nostrAttempts: row.nostrAttempts,
+    accountId: row.accountId ?? null,
+  };
 }
 
 /**

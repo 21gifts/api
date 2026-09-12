@@ -548,6 +548,60 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-member']);
   });
 
+  it('listDebug includes hidden rows and replies newest-first', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'hidden-top',
+      text: 'hidden',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-debug',
+      parentId: 'a',
+      text: 'reply',
+      createdAt: new Date('2026-08-04T00:00:00.000Z'),
+    });
+    const debugListed = await store.listDebug(10);
+    expect(debugListed.map((row) => row.id)).toEqual(['r-debug', 'hidden-top', 'a']);
+    expect(debugListed.find((row) => row.id === 'hidden-top')?.deletedAt?.toISOString()).toBe(
+      '2026-09-01T00:00:00.000Z',
+    );
+    expect(debugListed.find((row) => row.id === 'r-debug')?.parentId).toBe('a');
+    expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['a']);
+    expect((await store.listDebug(1)).map((row) => row.id)).toEqual(['r-debug']);
+  });
+
+  it('listDebug copies photo and video flags without exposing bytes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: '' }, JPEG);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create({ ...LATE, id: 'vid', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
+    const listed = await store.listDebug(10);
+    const photoRow = listed.find((row) => row.id === 'a');
+    const videoRow = listed.find((row) => row.id === 'vid');
+    expect(photoRow?.hasPhoto).toBe(true);
+    expect(videoRow?.hasVideo).toBe(true);
+    expect(videoRow?.videoContentType).toBe('video/mp4');
+    expect(photoRow).not.toHaveProperty('bytes');
+    expect(photoRow).not.toHaveProperty('photo');
+  });
+
+  it('listDebug breaks equal createdAt ties by id descending', async () => {
+    const same = new Date('2026-08-01T12:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'za', createdAt: same },
+      { ...EARLY, id: 'zb', createdAt: same },
+    ]);
+    expect((await store.listDebug(10)).map((row) => row.id)).toEqual(['zb', 'za']);
+  });
+
   it('breaks reply ties by id when createdAt matches', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     const same = new Date('2026-08-01T12:00:00.000Z');
@@ -1435,6 +1489,47 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.id).toBe('m2');
     expect(listed[1]?.hasPhoto).toBe(false);
     expect(listed[1]?.hasVideo).toBe(false);
+  });
+
+  it('listDebug selects all rows newest-first including hidden and replies', async () => {
+    const sql = new MockSql();
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'reply',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'child',
+        created_at: new Date('2026-08-03T00:00:00.000Z'),
+        has_photo: false,
+        parent_id: 'hidden',
+        deleted_at: null,
+        deleted_by: null,
+      },
+      {
+        id: 'hidden',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hidden',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        parent_id: null,
+        deleted_at: hiddenAt,
+        deleted_by: 'staff',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listDebug(200);
+    expect(sql.queries[0]?.text).toMatch(
+      /FROM message ORDER BY created_at DESC, id DESC LIMIT \$1/,
+    );
+    expect(sql.queries[0]?.text).not.toMatch(/WHERE/);
+    expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
+    expect(sql.queries[0]?.params).toEqual([200]);
+    expect(listed.map((row) => row.id)).toEqual(['reply', 'hidden']);
+    expect(listed[0]?.parentId).toBe('hidden');
+    expect(listed[1]?.deletedAt?.toISOString()).toBe(hiddenAt.toISOString());
+    expect(listed[1]?.deletedBy).toBe('staff');
   });
 
   it('create binds fifteen params including content_fp, video_content_type, parent_id and author_pubkey', async () => {
