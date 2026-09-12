@@ -105,7 +105,7 @@ export type ZapInvoiceResult =
  * are not retried.
  *
  * @param args - Address, amount millisats, signed 9734 JSON, fetch.
- * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true). Every result includes `lnurlResponse` (callback JSON object or `null`).
+ * @returns Invoice or a collapsed reason (`noZap` when `allowsNostr` is not true or `nostrPubkey` is missing). Every result includes `lnurlResponse` (callback JSON object or `null`).
  */
 export async function requestZapInvoice(args: {
   address: string;

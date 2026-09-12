@@ -219,7 +219,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * When `row.name` is empty after trim, JSON `name` is
  * {@link truncatePubkeyDisplay} of `row.authorPubkey` (`'npub'` when the
  * pubkey is missing). Non-empty names are unchanged. Invalid `createdAt`
- * is not guarded here: `toISOString()` still throws, and callers skip the row.
+ * is not guarded here: `toISOString()` still throws. The replies route omits
+ * that child; list and public GET return 503.
  *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
@@ -232,6 +233,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
  * when requested); `createdAt` ISO-8601. Never includes photo or video bytes,
  * and never includes `contentFp`.
+ * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
   row: MessageRow,

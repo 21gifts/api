@@ -720,13 +720,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (row.accountId === null) {
             continue;
           }
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
           try {
             const author = await deps.authStore.getAccount(row.accountId);
             const role = author?.role ?? 'basis';
-            const kept = await dropMissingVideoRow(deps.store, row);
-            if (kept === null) {
-              continue;
-            }
             messages.push(serializeMessage(kept, false, role, undefined, true));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).

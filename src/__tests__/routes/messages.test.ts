@@ -3484,6 +3484,46 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.id).toBe(memberId);
     expect(body.messages[0]?.text).toBe('member reply');
   });
+
+  it('returns 503 when deleting a missing-video reply throws', async () => {
+    const parentId = '23232323-2323-4232-8232-232323232323';
+    const replyId = '24242424-2424-4242-8242-242424242424';
+    const auth = await namedStore('Ada');
+    const parent = {
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    };
+    const missingVideo = {
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'missing clip',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    };
+    const base = new InMemoryMessageStore([parent, missingVideo]);
+    const store = throwingStore({
+      getById: (id) => base.getById(id),
+      listReplies: async () => [missingVideo],
+    });
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
+  });
 });
 
 describe('GET /messages/:id/photo', () => {
