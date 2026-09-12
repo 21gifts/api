@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryBtcUsdStore } from '@/lib/btc-usd-store';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { giftsStatsRoutes } from '@/routes/stats';
 import { createApp } from '@/server';
@@ -28,6 +29,9 @@ const EMPTY_STATS = {
   totalSats: 0,
   totalBtc: '0.00000000',
   totalUsd: '0.00',
+  totalChf: '0.00',
+  totalEur: '0.00',
+  totalPhp: '0.00',
   giftCount: 0,
   recipientCount: 0,
   firstPaidAt: null,
@@ -39,6 +43,7 @@ const EMPTY_STATS = {
     quote: 'BTC-USD',
     dayBasis: 'utc',
     source: 'coinbase-exchange-daily-close',
+    quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
   },
 };
 
@@ -215,5 +220,62 @@ describe('GET /gifts/stats', () => {
     const body = (await res.json()) as { giftCount: number; totalSats: number };
     expect(body.giftCount).toBe(1);
     expect(body.totalSats).toBe(1000);
+  });
+
+  it('converts CHF/EUR/PHP from a seeded fiat book', async () => {
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
+    }).request('/gifts/stats');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totalUsd: string;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
+    };
+    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalChf).toBe('0.80');
+    expect(body.totalEur).toBe('0.90');
+    expect(body.totalPhp).toBe('50.00');
+  });
+
+  it('returns 200 with null fiat totals when fiat ensureDays throws', async () => {
+    const fiatRates = {
+      ensureDays: async () => {
+        throw new Error('frankfurter down');
+      },
+    };
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([GIFT]),
+      btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
+      fiatRates,
+    }).request('/gifts/stats');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totalUsd: string;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
+    };
+    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.fiat_failed')).toBe(true);
+  });
+
+  it('does not call fiat ensureDays when the selection is empty', async () => {
+    const ensureDays = vi.fn(async () => new Map());
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore(),
+      fiatRates: { ensureDays },
+    }).request('/gifts/stats');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(EMPTY_STATS);
+    expect(ensureDays).not.toHaveBeenCalled();
   });
 });

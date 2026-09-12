@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
+import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
@@ -49,6 +50,7 @@ describe('openBootStores', () => {
       giftStore,
       giftRecorder,
       btcUsdRates,
+      fiatRates,
       messageStore,
       contactStore,
       conversationStore,
@@ -62,6 +64,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
+    expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
   });
 
@@ -72,6 +75,7 @@ describe('openBootStores', () => {
       giftStore,
       giftRecorder,
       btcUsdRates,
+      fiatRates,
       messageStore,
       contactStore,
       conversationStore,
@@ -85,6 +89,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
+    expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
   });
 
@@ -104,7 +109,7 @@ describe('openBootStores', () => {
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
         }
-        if (text.includes('btc_usd_daily')) {
+        if (text.includes('btc_usd_daily') || text.includes('usd_fiat_daily')) {
           return [] as T[];
         }
         return [
@@ -126,6 +131,7 @@ describe('openBootStores', () => {
       giftStore,
       giftRecorder,
       btcUsdRates,
+      fiatRates,
       messageStore,
       contactStore,
       conversationStore,
@@ -133,6 +139,7 @@ describe('openBootStores', () => {
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
     });
 
@@ -146,6 +153,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
+    expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
@@ -154,6 +162,12 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
     expect(executes.some((q) => /CREATE TABLE/i.test(q))).toBe(true);
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
+    const btcUsdIdx = executes.findIndex((q) => q.includes('btc_usd_daily'));
+    const fiatIdx = executes.findIndex((q) => q.includes('usd_fiat_daily'));
+    const dbChangeIdx = executes.findIndex((q) => q.includes('db_change'));
+    expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
+    expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
+    expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
 
     if (giftStore === undefined) {
       throw new Error('expected QueryGiftStore');
@@ -192,6 +206,7 @@ describe('openBootStores', () => {
       giftStore,
       giftRecorder,
       btcUsdRates,
+      fiatRates,
       messageStore,
       contactStore,
       conversationStore,
@@ -208,7 +223,11 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
+    expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.fiat_boot_fill.failed')).toBe(
+      true,
+    );
   });
 
   it('uses default fetch and candles URL when fx options are omitted', async () => {
@@ -221,12 +240,13 @@ describe('openBootStores', () => {
       },
       execute: async () => undefined,
     };
-    const { btcUsdRates, giftStore, giftRecorder } = await openBootStores(
+    const { btcUsdRates, fiatRates, giftStore, giftRecorder } = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
       () => client,
     );
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
+    expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
   });
 });

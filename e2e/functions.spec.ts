@@ -613,6 +613,52 @@ test('Function: usdCentsToString — empty stats totalUsd is 2 dp', async ({ req
   expect(((await res.json()) as { totalUsd: string }).totalUsd).toBe('0.00');
 });
 
+test('Function: usdCentsToFiatCents — empty stats totalChf is 2 dp', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { totalChf: string }).totalChf).toBe('0.00');
+});
+
+test('Function: InMemoryFiatStore — GET /gifts/stats is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { giftCount: number }).giftCount).toBe(0);
+});
+
+test('Function: PostgresFiatStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateFiatSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fillFiatRatesForGiftRange — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: fetchFiatRates — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: parseFrankfurterRates — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveFrankfurterUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
