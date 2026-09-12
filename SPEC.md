@@ -1515,7 +1515,9 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 **top-level** note notifies every other subscribed account. A **reply** to a
 21.gifts-author parent (not the replier themselves) inserts one
 `forum_reply` notification for that author and enqueues one targeted push
-(`url` `/notifications`, `tag` `forum_reply:<parentId>`). Photo-only empty
+(`url` `/notifications`, `tag` `forum_reply:<parentId>`). The booted process
+always has notification and push stores (in-memory without `DATABASE_URL`,
+Postgres when it is set). Photo-only empty
 text still notifies. Self-replies and Damus-only parents do not notify.
 Notification or push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
