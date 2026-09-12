@@ -75,8 +75,10 @@ export async function enqueueForumPushes(
  * @param store - Push store.
  * @param authorId - Parent-note author to notify.
  * @param messageId - Reply forum message id (stored on the outbox row).
- * @param parentId - Forum note that was replied to (payload URL/tag).
+ * @param parentId - Forum note that was replied to (payload tag `forum_reply:<parentId>`).
  * @param nowMs - Enqueue clock.
+ * @returns Resolves after enqueue, or immediately when the author has no subscriptions.
+ * @throws If `listByAccount` or `enqueue` rejects.
  */
 export async function enqueueReplyPush(
   store: PushStore,

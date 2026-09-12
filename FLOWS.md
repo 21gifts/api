@@ -1,7 +1,8 @@
 # 21.gifts — Core UI Flows
 
 > Screen-by-screen sketch of the five journeys named in CONCEPT next-step 7,
-> plus the shipped in-app contact mailbox (journey 6) and Web Push (journey 7).
+> plus the shipped in-app contact mailbox (journey 6) and in-app Notifications
+> plus Web Push (journey 7).
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md). Implemented HTTP
 > contracts live in [`SPEC.md`](./SPEC.md). This file **does not invent HTTP
 > paths, JSON fields, or status codes**. When a journey has no route in
@@ -208,6 +209,7 @@ The api enqueues (does not send inline):
 
 - a **forum** payload when someone else posts (`tag: forum`)
 - a **zap** payload when a zap receipt is newly indexed onto the author's note
+- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`), after a `forum_reply` notification row is stored
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. A reply push opens `/notifications`.
