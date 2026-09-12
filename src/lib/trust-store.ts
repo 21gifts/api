@@ -108,7 +108,7 @@ export class InMemoryTrustStore implements TrustStore {
    * @returns A copy of the stored edge.
    * @throws Error with message {@link DUPLICATE_TRUST_EDGE} when that pair exists.
    */
-  insertEdge(edge: TrustEdge): Promise<TrustEdge> {
+  async insertEdge(edge: TrustEdge): Promise<TrustEdge> {
     const duplicate = this.#edges.some(
       (stored) => stored.subjectId === edge.subjectId && stored.kind === edge.kind,
     );

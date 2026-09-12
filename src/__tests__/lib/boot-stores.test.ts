@@ -160,8 +160,8 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('push_subscription'))).toBe(true);
     expect(executes.some((q) => q.includes('trust_edge'))).toBe(true);
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
-    const trustIdx = executes.findIndex((q) => q.includes('trust_edge'));
-    const dbChangeIdx = executes.findIndex((q) => q.includes('db_change'));
+    const trustIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS trust_edge/i.test(q));
+    const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(dbChangeIdx).toBeGreaterThan(trustIdx);
     expect(executes.some((q) => /CREATE TABLE/i.test(q))).toBe(true);
