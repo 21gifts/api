@@ -1040,6 +1040,12 @@ Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped). Never includes `nostrEvent`, `contentFp`, nsec, or photo/video
 bytes.
 
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
 ### `GET /debug/messages/:id/photo`
 
 Operator JPEG/PNG/WebP bytes, **including** soft-hidden notes. Same
@@ -1052,6 +1058,12 @@ Operator JPEG/PNG/WebP bytes, **including** soft-hidden notes. Same
 ```
 
 Same debug token gate as `GET /debug/messages`.
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
 
 ### `PUT /debug/messages/:id/video`
 

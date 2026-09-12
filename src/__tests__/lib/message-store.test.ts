@@ -574,6 +574,25 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listDebug(1)).map((row) => row.id)).toEqual(['r-debug']);
   });
 
+  it('listDebug copies photo and video flags without exposing bytes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: '' }, JPEG);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create({ ...LATE, id: 'vid', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
+    const listed = await store.listDebug(10);
+    const photoRow = listed.find((row) => row.id === 'a');
+    const videoRow = listed.find((row) => row.id === 'vid');
+    expect(photoRow?.hasPhoto).toBe(true);
+    expect(videoRow?.hasVideo).toBe(true);
+    expect(videoRow?.videoContentType).toBe('video/mp4');
+    expect(photoRow).not.toHaveProperty('bytes');
+    expect(photoRow).not.toHaveProperty('photo');
+  });
+
   it('listDebug breaks equal createdAt ties by id descending', async () => {
     const same = new Date('2026-08-01T12:00:00.000Z');
     const store = new InMemoryMessageStore([
