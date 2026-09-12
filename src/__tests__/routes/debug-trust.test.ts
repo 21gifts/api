@@ -39,7 +39,7 @@ async function seeded(): Promise<InMemoryAuthStore> {
 function mount(
   store: InMemoryAuthStore,
   trustStore: TrustStore,
-  debugToken: string | undefined = 'secret',
+  debugToken: string | undefined | null = 'secret',
   clock: (() => number) | undefined = now,
 ): Hono {
   return new Hono().route(
@@ -47,7 +47,7 @@ function mount(
     debugTrustRoutes({
       store,
       trustStore,
-      debugToken,
+      debugToken: debugToken === null ? undefined : debugToken,
       ...(clock === undefined ? {} : { now: clock }),
     }),
   );
@@ -79,7 +79,7 @@ describe('POST /debug/trust-edges', () => {
 
   it('returns 503 when debug is not configured', async () => {
     const res = await post(
-      mount(new InMemoryAuthStore(), new InMemoryTrustStore(), undefined),
+      mount(new InMemoryAuthStore(), new InMemoryTrustStore(), null),
       'secret',
       { subjectId: SUBJECT, actorId: ACTOR, kind: 'verify' },
     );
