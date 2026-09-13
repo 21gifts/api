@@ -73,4 +73,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS name_skipped_at timestamptz`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS lightning_address_skipped_at timestamptz`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS profile_message_id uuid`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS location text`,
 ];

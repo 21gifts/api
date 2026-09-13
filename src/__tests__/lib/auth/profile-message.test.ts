@@ -21,6 +21,7 @@ async function seededAccount(
     lightningAddress: TEST_LN,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,

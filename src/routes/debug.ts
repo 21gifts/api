@@ -216,6 +216,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           linkingKey: null,
           role: 'basis',
           name: row.name,
+          location: null,
           lightningAddress: row.lightningAddress,
           lightningAddressVerified: false,
           forumLawsDismissed: false,

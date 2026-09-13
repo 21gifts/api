@@ -93,16 +93,20 @@ Until an invoice payer is injected, start returns **503**
 boots. Live verification payments do **not** work today. Edit or unlink clears
 any pending verification (`SPEC.md`).
 
-### Identity copy — **Shipped** (name) + **Sketch** (photo / story)
+### Identity copy — **Shipped** (name / location) + **Sketch** (photo / story)
 
-Receiver name is stored on the account (`POST /me/name`). The profile forum
-note is created when a non-blank name and a non-blank Lightning Address are
-present (`POST /me/name` no-ops without LN; `POST /me/lightning-address`
-creates it). Rename does not create a second note or change its text. Other
-members read live identity plus that note via `GET /members/:accountId`
-(Bearer; rules required). Photo and story beyond that note stay custodial
-`kind:0` metadata signed server-side (`about` is the profile-note text when
-present, else `21.gifts`). **Do not invent** `POST /me/profile`.
+Receiver name is stored on the account (`POST /me/name`). Optional free-text
+location is stored on the account (`POST /me/location`); empty or whitespace
+after trim stores `null`. Location is public on member and view cards. It is
+not a setup step, not a posting requirement, not a profile forum note, and
+not Nostr `kind:0`. The profile forum note is created when a non-blank name
+and a non-blank Lightning Address are present (`POST /me/name` no-ops without
+LN; `POST /me/lightning-address` creates it). Rename does not create a second
+note or change its text. Other members read live identity plus that note via
+`GET /members/:accountId` (Bearer; rules required). Photo and story beyond
+that note stay custodial `kind:0` metadata signed server-side (`about` is the
+profile-note text when present, else `21.gifts`). **Do not invent**
+`POST /me/profile`.
 
 ### View-key link — **Shipped**
 

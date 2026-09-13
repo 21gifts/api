@@ -10,6 +10,7 @@ const base: Account = {
   lightningAddress: null,
   lightningAddressVerified: false,
   forumLawsDismissed: false,
+  location: null,
   viewKey: 'a'.repeat(64),
   createdAt: 1,
   rulesAgreedAt: null,

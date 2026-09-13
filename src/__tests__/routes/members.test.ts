@@ -44,6 +44,7 @@ async function seededCaller(
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: overrides.rulesAgreedAt === undefined ? now() : overrides.rulesAgreedAt,
@@ -118,6 +119,7 @@ describe('GET /members/:accountId', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
       rulesAgreedAt: now(),
@@ -141,6 +143,7 @@ describe('GET /members/:accountId', () => {
     expect(body).toMatchObject({
       id: ACCOUNT_ID,
       name: 'Ada',
+      location: null,
       role: 'verified',
       lightningAddress: 'ada@walletofsatoshi.com',
       createdAt: new Date(1_700_000_000_000).toISOString(),
@@ -167,6 +170,7 @@ describe('GET /members/:accountId', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: now(),
@@ -174,10 +178,12 @@ describe('GET /members/:accountId', () => {
     const res = await mount(authStore).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
+      location: string | null;
       profileMessage: null;
       postCount: number;
       replyCount: number;
     };
+    expect(body.location).toBeNull();
     expect(body.profileMessage).toBeNull();
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
@@ -195,6 +201,7 @@ describe('GET /members/:accountId', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
       rulesAgreedAt: now(),

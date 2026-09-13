@@ -626,7 +626,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
+- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `nostrKek` (required to sign the mint probe).
 - **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
 - **Used by:** `createApp`.
@@ -672,6 +672,13 @@
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed name or `null`.
 - **Used by:** `POST /me/name`.
+
+## Function: normalizeLocation
+
+- **Purpose:** Trim and validate an optional free-text profile location (at most 80 characters after trim, no C0/DEL controls). Empty or whitespace-only input is a valid clear (`null`), unlike `normalizeDisplayName` which rejects empty. Internal spaces are kept.
+- **Inputs:** `raw` string. Cap is `LOCATION_MAX_LENGTH` (80).
+- **Returns / side effects:** `{ ok: true, value: string | null }` when empty-after-trim (clear) or a valid stored string; `{ ok: false }` when over-long (`> 80` after trim) or any character has `charCode < 32` or `=== 127`. No I/O.
+- **Used by:** `POST /me/location`.
 
 ## Function: normalizeForumText
 
