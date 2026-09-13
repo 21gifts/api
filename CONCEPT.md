@@ -814,7 +814,6 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-14 | Spend-worker payouts are ping-triggered from a new top-level `POST /messages`; replies do not pay. Unset `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the process still boots.                                                                                                                                                                                                                                                                                                       |
 | 2026-09-14 | Living-room post, reply, and zap notify every bell subscriber (accounts with ≥1 `push_subscription`) except the actor/payer. In-app kinds `forum_post` / `forum_reply` / `zap`. Push URLs `/notifications`; tags `forum_post:<id>`, `forum_reply:<replyId>`, `zap:<id>`. Damus-only parents still fan out. Self-reply skips only the actor. Missing `pushStore` is a no-op. Unique remains `(recipient, type, reply_id)`. **Supersedes** the 2026-09-12 parent-author-only reply notify. |
 | 2026-09-12 | Trust edges persist who verified whom and who proposed/confirmed/appointed a moderator. Public `GET /trust-chain` returns stored nodes+edges only (no synthetic links; `moderator_propose` is omitted). Staff POSTs under `/trust` write role + edge. Operator `POST /debug/trust-edges` backfills edges without changing `role`. `PATCH /debug/accounts/:id` still sets `role` only and does not write trust edges. |
-
 ---
 
 ## Next Steps
