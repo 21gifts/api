@@ -7,6 +7,27 @@
 - **Returns / side effects:** `GiftDay` (`gifts` sorted by `paidAt` then `recipient`) with `totalChf`/`totalEur`/`totalPhp` and `fx.quotes`. Empty day is `"0.00"` fiat and USD-only `quotes`. Throws `Error('fx.rate.missing')` when a listed gift has no BTC-USD rate. Missing CHF/EUR/PHP is JSON `null`, never a throw. No I/O.
 - **Used by:** `giftsRoutes`.
 
+## Function: buildAccountActivity
+
+- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps (plus `message.sats` remainder) on notes it authored including hidden, house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`.
+- **Inputs:** `{ account, gifts, messages, rates, now }`. Uses `listInvoiceAttemptsForPayer`, `listIndexedZapIngests`, `listAuthoredMessages`, `listOutbound`, and `giftsForRecipient`.
+- **Returns / side effects:** `AccountActivity` (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Empty input is zeros without Coinbase. Throws `Error('fx.rate.missing')` when a gift day has no rate after `ensureDays`.
+- **Used by:** `GET /me/activity`, `GET /members/:accountId/activity`, `GET /view/:viewKey/activity`.
+
+## Function: matchConfirmedGivenZaps
+
+- **Purpose:** Join `result === 'ok'` invoices to indexed zap ingests by payment hash, then a unique `(messageId, amountSats)` fallback. Skip unmatched and non-ok invoices. Each ingest is used at most once.
+- **Inputs:** `readonly MessageInvoiceAttempt[]` and `readonly ZapIngestRow[]`.
+- **Returns / side effects:** `GiftRow[]` with `paidAt` from the ingest. No I/O.
+- **Used by:** `buildAccountActivity`.
+
+## Function: paymentHashFromReceipt
+
+- **Purpose:** Read a kind:9735 receipt's `bolt11` tag and return the decoded lowercase payment hash.
+- **Inputs:** `Record<string, unknown>` receipt JSON (`tags` must be an array of string arrays).
+- **Returns / side effects:** 64-hex hash, or `null` when tags/bolt11/decode fail. No I/O.
+- **Used by:** `matchConfirmedGivenZaps`.
+
 ## Function: buildGiftStats
 
 - **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days, months with gap months, recipients) including BTC strings, historical USD from per-gift day rates, and additive CHF/EUR/PHP from each gift day's USD cross.
