@@ -1,9 +1,9 @@
 /**
  * Free-text profile location validation.
  *
- * Location is an optional label, not unique and not a setup step. Empty,
- * over-long, or C0/DEL control-character input (`charCode < 32` or `=== 127`)
- * is rejected so a bad value cannot be stored and re-served on every `/me`
+ * Location is an optional label, not unique and not a setup step. Over-long
+ * or C0/DEL control-character input (`charCode < 32` or `=== 127`) is
+ * rejected so a bad value cannot be stored and re-served on every `/me`
  * response. Empty-after-trim is a valid clear (`null`), unlike display names.
  */
 

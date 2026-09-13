@@ -1004,23 +1004,23 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the nine-field dump without `viewKey` or `isPlatform` (no Nostr fields).
+- **Purpose:** Project an account to the ten-field dump without `viewKey` or `isPlatform` (no Nostr fields).
 - **Inputs:** `Account`.
-- **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
+- **Returns / side effects:** Ten public fields (`id`, `linkingKey`, `role`, `name`, `location`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). `location` is `string | null` (never omitted, never `""`). No I/O. No Nostr key material.
 - **Used by:** `serializeOwnerAccount` (member `/me`) and `serializeDebugAccount`.
 
 ## Function: serializeDebugAccount
 
-- **Purpose:** Operator account JSON: the nine public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Purpose:** Operator account JSON: the ten public fields plus `isPlatform`. Never used by member `GET /me`.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
 - **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, `setup`, `missing`, and `hasPosted`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement` and `POST /me/setup/skip`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the ten public fields plus `viewKey`, `setup`, `missing`, and `hasPosted`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, and `POST /me/location`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account` plus `hasPosted: boolean`.
-- **Returns / side effects:** `OwnerAccountResponse` (thirteen fields including `hasPosted`). No I/O. Does not expose `profileMessageId`.
+- **Returns / side effects:** `OwnerAccountResponse` (fourteen fields including `hasPosted`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts`.
 
 ## Function: serializeOwnerAccountWithPosts
@@ -1039,7 +1039,7 @@
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Five fields (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). Omits `id`, `linkingKey`, `role`, and `viewKey`.
+- **Purpose:** Public profile card for the capability URL. Six fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
 - **Inputs:** `Account`, `hasPasskey: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.

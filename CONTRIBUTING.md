@@ -120,6 +120,7 @@ api/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
 │       │   ├── name.test.ts
+│       │   ├── location.test.ts
 │       │   ├── lightning-address.test.ts
 │       │   ├── invoice-payer.test.ts
 │       │   ├── lnurlp.test.ts
