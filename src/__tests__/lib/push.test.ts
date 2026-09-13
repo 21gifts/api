@@ -88,13 +88,13 @@ describe('buildForumPushPayload', () => {
 });
 
 describe('buildReplyPushPayload', () => {
-  it('points at the inbox thread', () => {
-    expect(buildReplyPushPayload('conv-1')).toEqual({
+  it('points at /notifications', () => {
+    expect(buildReplyPushPayload('parent-1')).toEqual({
       type: 'forum',
       title: 'Reply on your post',
       body: 'Someone replied in the living room.',
-      url: '/messages?c=conv-1',
-      tag: 'reply:conv-1',
+      url: '/notifications',
+      tag: 'forum_reply:parent-1',
     });
   });
 });
