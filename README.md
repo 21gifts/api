@@ -14,8 +14,10 @@ This repository is the **canonical home** for project-level documentation
 in [`SPEC.md`](./SPEC.md). The frontend lives at
 [`21gifts/app`](https://github.com/21gifts/app).
 
-Most of the people who started 21.gifts stand in Christian faith. That
-origin is in [`CONCEPT.md`](./CONCEPT.md) (Brand) and on
+21.gifts stands on three convictions: giving is a duty of every
+Christian; the best gift travels from one person to another with no
+middleman; Bitcoin is the most effective money we have. The argument
+is in [`CONCEPT.md`](./CONCEPT.md) (Convictions) and on
 [`21.gifts/about`](https://21.gifts/about).
 
 ## 🐳 Docker images

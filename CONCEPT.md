@@ -19,6 +19,86 @@ or send help.
 
 ---
 
+## Convictions
+
+21.gifts is built on three convictions. They are the reason the house
+exists. Technical Core Principles below say how it is built.
+
+### 1. Giving is a duty of every Christian
+
+Giving is not an optional extra of Christian life. Jesus assumes it:
+“When you give to the needy” (Matthew 6:2) — when, not if. Whoever
+has this world’s goods, sees a brother in need, and closes his heart
+does not have the love of God abiding in him (1 John 3:17). Faith
+without works is dead (James 2:17). To neglect the hungry, the
+stranger, the sick, and the imprisoned is to neglect Christ himself
+(Matthew 25:35–45). “Do not neglect to do good and to share what you
+have, for such sacrifices are pleasing to God” (Hebrews 13:16).
+
+The measure is free — “each one must give as he has decided in his
+heart, not reluctantly or under compulsion, for God loves a cheerful
+giver” (2 Corinthians 9:7). There is no Christian tithe-tax in the
+New Testament. The duty is to give; the amount is between the giver
+and God.
+
+Giving is not only money. A smile, time, a coat, a visit — Matthew 25
+counts food, drink, welcome, clothing, sickness, and prison. 21.gifts
+is the path for a money gift: one person to another.
+
+Signature of this house: “Freely you have received; freely give”
+(Matthew 10:8).
+
+### 2. Direct giving, with no middleman, is the best and most beautiful way to give
+
+A gift that travels from the giver’s hands to the receiver’s hands
+is the short path. Advantages:
+
+- The whole gift arrives. No take rate, no platform fee, no programme
+  overhead.
+- No organisation sits in the payment path that can freeze, skim,
+  delay, or politicise the money.
+- Giver and receiver remain persons, not a case file and a campaign.
+- Dignity stays with both sides: one asks, one sends, face to face
+  in the living room.
+- The house never holds the Bitcoin. If 21.gifts disappeared
+  tomorrow, the Wallet of Satoshi addresses would keep working.
+- Help is as fast as the payment rail, not as fast as a committee.
+- The giver can see the person who asked — not an abstract cause.
+
+This is Core Principle 2 in flesh: truly peer-to-peer.
+
+### 3. Bitcoin is the most effective money available today
+
+Bitcoin is the rail because it is the strongest money this house can
+put in a person’s hand.
+
+- **Censorship-resistant.** No bank or state can quietly block a gift
+  that the sender and receiver have agreed.
+- **Permissionless.** No account application, no ID gate, no banking
+  hours. A Wallet of Satoshi address is enough.
+- **Borderless.** One network, every country. International gifts do
+  not wait on correspondent banks or a money-transfer shop.
+- **Always on.** Weekends, nights, bank holidays, crises.
+- **Cheap and fast at human scale.** Lightning makes small gifts
+  practical; an email-like address is enough to receive.
+- **Bearer money.** The receiver owns it. Nobody holds it “for them”.
+- **Hard cap.** 21 million. Inflation does not silently tax people
+  who already have little.
+- **Works when banks do not.** Capital controls, frozen accounts,
+  war, a closed branch — the gift can still land.
+- **For people without a bank.** A phone and an address beat an
+  institution that will not open a file.
+- **Simplest international gift rail.** Send like an email; it
+  arrives as Bitcoin, not as a form.
+
+The website says “Bitcoin” and “Wallet of Satoshi”. Lightning, LNURL,
+and keys stay plumbing.
+
+Public copy of these three convictions lives on `/about` in the app
+(catalogized). This CONCEPT is the English argument.
+
+---
+
 ## Core Principles
 
 1. **Non-profit** — the platform itself earns nothing beyond what it costs to operate
@@ -573,12 +653,11 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **Tone**: warm, direct, dignified. Not charity-speak ("the needy"), not
   techbro-speak ("disrupting philanthropy"). People helping people, with the
   best money humans have ever had.
-- **Origin**: 21.gifts comes from Christian faith. Most of the people who
-  started it, and most of the people who give here, stand in that faith.
-  Public copy lives on `/about` in the app: state the origin, quote the
-  signature verse, do not justify or explain it. No inclusion slogan, no
-  FAQ that asks whether the project is Christian, no "open to everyone"
-  disclaimer.
+- **Origin**: 21.gifts comes from Christian faith. The three Convictions
+  above are the foundation. Public copy lives on `/about` in the app:
+  state the convictions, quote the verses, do not justify who may
+  enter. No inclusion slogan, no FAQ that asks whether the project is
+  Christian.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
   give." Matches rule 1: a gift has no price. Shown quietly in the marketing
   footer; not on the hero.
@@ -716,6 +795,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
 | 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law. Principle 7: CONCEPT/commits stay English; visitor UI is catalogized (`en`, `de`, `es`, `fil`).                                                                                                                              |
 | 2026-09-13 | Brand origin is stated, not explained: public copy (`/about` and catalogs) names the Christian origin and quotes Matthew 10:8; it does not justify access, does not use "rooted, not restricted", and does not FAQ "is this a Christian project?". Supersedes the earlier 2026-09-13 "rooted, not restricted" public-copy wording. Principle 7 unchanged.                                                                                                                   |
+| 2026-09-13 | Three convictions are canonical: (1) giving is a duty of every Christian (Matthew 6:2 when not if; 1 John 3:17; James 2:17; Matthew 25:35–45; Hebrews 13:16; measure free, 2 Corinthians 9:7; giving is not only money; 21.gifts is the money-gift path); (2) direct giving with no middleman is the best and most beautiful way; (3) Bitcoin is the most effective money available today. Public copy is /about. Matthew 10:8 unchanged. Principle 7 unchanged.            |
 
 ---
 
