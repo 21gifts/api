@@ -51,6 +51,7 @@ if (import.meta.main) {
     nostrKek,
     contactStore,
     conversationStore,
+    notificationStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
@@ -74,6 +75,7 @@ if (import.meta.main) {
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
+    ...(notificationStore === undefined ? {} : { notificationStore }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
@@ -95,6 +97,7 @@ if (import.meta.main) {
         env: process.env,
         pushStore,
         ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
+        ...(notificationStore === undefined ? {} : { notificationStore }),
       },
       WORKER_INTERVAL_MS,
     );

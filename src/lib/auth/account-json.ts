@@ -5,6 +5,7 @@ import {
   type AccountSetup,
 } from '@/lib/auth/account-setup';
 import type { Account } from '@/lib/auth/store';
+import type { MessageStore } from '@/lib/message-store';
 
 /**
  * Public JSON shape of an account (nine fields). Never includes Nostr
@@ -34,7 +35,8 @@ export interface AccountResponse {
 
 /**
  * Owner-facing account JSON: the nine public fields plus the durable
- * view-key capability secret, the next `setup` step, and factual `missing`.
+ * view-key capability secret, the next `setup` step, factual `missing`,
+ * and `hasPosted`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -51,6 +53,8 @@ export interface OwnerAccountResponse extends AccountResponse {
    * `lightning-address`, `rules`. Used by clients alongside action gates.
    */
   missing: AccountMissingField[];
+  /** True when this account has a live forum row that is not the profile note. */
+  hasPosted: boolean;
 }
 
 /**
@@ -119,19 +123,43 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
 /**
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *
- * Includes `viewKey` so the owner can copy the capability URL. Never used
- * by the operator debug listing. Does not expose `profileMessageId`.
+ * Includes `viewKey` so the owner can copy the capability URL. The second
+ * argument is the live-post flag (`hasPosted`); this function performs no I/O.
+ * Never used by the operator debug listing. Does not expose `profileMessageId`.
  *
  * @param account - Stored account.
- * @returns Twelve fields including `viewKey`, `setup`, and `missing`.
+ * @param hasPosted - True when the account has a live non-profile forum row.
+ * @returns Thirteen fields including `viewKey`, `setup`, `missing`, and `hasPosted`.
  */
-export function serializeOwnerAccount(account: Account): OwnerAccountResponse {
+export function serializeOwnerAccount(account: Account, hasPosted: boolean): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
     viewKey: account.viewKey,
     setup: accountSetup(account),
     missing: accountMissing(account),
+    hasPosted,
   };
+}
+
+/**
+ * Project owner JSON after looking up whether the account has a live
+ * non-profile forum row.
+ *
+ * Calls {@link MessageStore.accountHasLivePost} with the account id and
+ * `profileMessageId` (or `null`), then {@link serializeOwnerAccount}. HTTP
+ * callers (`meRoutes`, `authRoutes`) use this helper so they cannot drift.
+ * Does not wrap store errors.
+ *
+ * @param account - Stored account.
+ * @param messages - Message store (live-post lookup only).
+ * @returns Owner JSON including `hasPosted`.
+ */
+export async function serializeOwnerAccountWithPosts(
+  account: Account,
+  messages: Pick<MessageStore, 'accountHasLivePost'>,
+): Promise<OwnerAccountResponse> {
+  const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
+  return serializeOwnerAccount(account, hasPosted);
 }
 
 /**

@@ -163,7 +163,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -177,7 +177,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
@@ -231,10 +231,17 @@
 - **Used by:** the external spend worker before issuing a gift invoice.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
+## Endpoint: GET /invoices/posted
+
+- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ hasPosted: boolean }` so spend can filter before preflight. Fail closed: unknown address, or account with no live forum row other than the auto-created profile note → `hasPosted: false` (always HTTP 200 on success; never 404). Replies and photo-only / empty-text notes count; Damus-only rows (`accountId` null) and soft-deleted rows do not.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 missing or invalid Lightning Address (`Not a valid Lightning Address (expected name@domain)`).
+- **Used by:** the external spend worker before issuing a gift invoice.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
 ## Endpoint: POST /invoices
 
-- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Requires a 21.gifts account for `address` that already has a passkey credential. Then resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
-- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 403 `{ error: 'Passkey required' }` when there is no account or the account has no passkey (before LNURL); 502 provider did not issue a matching invoice.
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address, amountMsat, comment? }` (`comment` max 255). Requires a 21.gifts account for `address` that already has a passkey credential and at least one live forum message that is not the auto-created profile note. Then resolves LUD-16, fetches a BOLT11 via LNURL-pay, decodes hash/amount, stores the invoice in memory.
+- **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 bad JSON/address/amount/`comment` longer than 255; 403 `{ error: 'Passkey required' }` when there is no account or the account has no passkey (before LNURL); 403 `{ error: 'Forum post required' }` when the account has a passkey but no live non-profile forum row (after passkey, before LNURL); 502 provider did not issue a matching invoice.
 - **Used by:** the external spend worker before paying via lightning.space.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
@@ -254,7 +261,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -331,7 +338,7 @@
 
 ## Endpoint: POST /messages
 
-- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.post')` (needs rules + name + Lightning Address; skip timestamps do not satisfy). JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped; never `contentFp`). Identical live photo/video from the same account+parent (same normalised text + same media bytes) returns the existing row (200, same id) without consuming the 1/10s burst limiter and without a second push; text-only is unchanged (new row + burst). New notes have `sats` 0 and `payable` false until signed (and stay `payable` false without author LN). Top-level creates may enqueue a broadcast push. A reply to a 21.gifts-author parent (not the replier) opens the member inbox thread, copies non-empty text, and enqueues one targeted push to the parent author; conversation/push failure still returns 200.
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.post')` (needs rules + name + Lightning Address; skip timestamps do not satisfy). JSON `{ text?, photo?: { contentType, data }, inReplyTo? }` (base64 JPEG/PNG/WebP ≤ 1 MiB) or `multipart/form-data` with `text`, `video` (MP4/WebM/MOV ≤ 32 MiB), and optional JPEG/PNG/WebP `poster`. Optional `inReplyTo` is a **top-level** parent message UUID (sets `parentId` for a one-level NIP-10 reply; JSON only). Text-only stays valid; photo-only or video-only allowed; at least one of non-empty trimmed text, photo, or video required. Name snapshot. 200 is the public message including `sats`, `payable`, `hasPhoto`, `hasVideo`, `videoContentType`, the session account's live `role`, and `accountId` (not wrapped; never `contentFp`). Identical live photo/video from the same account+parent (same normalised text + same media bytes) returns the existing row (200, same id) without consuming the 1/10s burst limiter and without a second push; text-only is unchanged (new row + burst). New notes have `sats` 0 and `payable` false until signed (and stay `payable` false without author LN). Top-level creates may enqueue a broadcast push. A reply to a 21.gifts-author parent (not the replier, not a Damus-only parent) writes a `forum_reply` notification via `notifyForumReply` and enqueues one targeted push (`url` `/notifications`, `tag` `forum_reply:<parentId>`). The booted process always has those stores (in-memory without `DATABASE_URL`, Postgres when it is set). Photo-only empty text still notifies; notification or push failure still returns 200. It does not copy into the member↔member inbox.
 - **Errors:** 401 Unauthorized; 409 `{ error: 'missing_requirements', missing: [...] }` when rules, name, and/or Lightning Address are missing (order `rules`, then `name`, then `lightning-address`); 400 Expected a JSON body with text and/or photo; 400 Text must be 1–500 characters; 400 Text must be 1–500 characters or include a photo; 400 Text must be 1–500 characters or include a photo or video; 400 Photo must be a JPEG, PNG, or WebP under 1 MiB; 400 Poster must be a JPEG, PNG, or WebP under 1 MiB; 400 Video must be an MP4, WebM, or MOV under 32 MiB; 404 `{ error: 'Not found' }` when `inReplyTo` is present but not a UUID, the parent is missing, soft-hidden (`deletedAt` set), or the parent is itself a reply (`parentId !== null`); 429 Too many messages (`Retry-After: 10`); 503 Messages are unavailable (`messages.create.failed`).
 - **Used by:** App forum composer and reply composer.
 - **Auth:** `Authorization: Bearer` session.
@@ -356,6 +363,27 @@
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /notifications
+
+- **Purpose:** Bearer required. List `{ notifications, unreadCount }` cap 200 newest-first. `unreadCount` is total unread, not page length. No account ids.
+- **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.list.failed`).
+- **Used by:** App in-app notification list.
+- **Auth:** Bearer session.
+
+## Endpoint: POST /notifications/read-all
+
+- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read.
+- **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.read_all.failed`).
+- **Used by:** App mark-all-read control.
+- **Auth:** Bearer session.
+
+## Endpoint: POST /notifications/:id/read
+
+- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set.
+- **Errors:** 401 Unauthorized; 404 Not found (unknown/other/non-uuid); 503 Notifications are unavailable (`notifications.read.failed`).
+- **Used by:** App mark-one-read control.
+- **Auth:** Bearer session.
 
 ## Endpoint: POST /conversations
 

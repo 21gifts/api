@@ -993,6 +993,8 @@ describe('indexOpenZapReceipts', () => {
       findLiveByAccountContent: (
         ...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>
       ) => base.findLiveByAccountContent(...args),
+      accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
+        base.accountHasLivePost(...args),
       getPhoto: (id: string) => base.getPhoto(id),
       deleteById: (id: string) => base.deleteById(id),
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1151,6 +1153,8 @@ describe('indexOpenZapReceipts', () => {
         findLiveByAccountContent: (
           ...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>
         ) => base.findLiveByAccountContent(...args),
+        accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
+          base.accountHasLivePost(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1406,6 +1410,8 @@ describe('indexOpenZapReceipts', () => {
         findLiveByAccountContent: (
           ...args: Parameters<InMemoryMessageStore['findLiveByAccountContent']>
         ) => base.findLiveByAccountContent(...args),
+        accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
+          base.accountHasLivePost(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),

@@ -22,9 +22,14 @@ import {
   type ConversationStore,
 } from '@/lib/conversation-store';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
+import {
+  migrateNotificationSchema,
+  PostgresNotificationStore,
+  type NotificationStore,
+} from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
 
-/** Auth, gift, forum, contact, conversation, push, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, contact, conversation, notification, push, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -58,6 +63,10 @@ export interface BootStores {
    */
   conversationStore: ConversationStore | undefined;
   /**
+   * Postgres-backed in-app notifications, or `undefined` on memory boots.
+   */
+  notificationStore: NotificationStore | undefined;
+  /**
    * Postgres-backed push store, or `undefined` when no SQL client was
    * opened so the entry point keeps an in-memory default.
    */
@@ -75,24 +84,26 @@ export interface BootFxOptions {
 }
 
 /**
- * Open auth, optional gift, forum, contact, conversation, and push persistence, and the
- * BTC-USD rate book from `DATABASE_URL`.
+ * Open auth, optional gift, forum, contact, conversation, notification, and
+ * push persistence, and the BTC-USD rate book from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `contactStore: undefined`, `conversationStore: undefined`,
- * `pushStore: undefined`, `nostrKek: undefined`,
- * and an empty {@link InMemoryBtcUsdStore}. A set URL asks `createClient`
- * for one `SqlClient`, migrates auth (via `openAuthStore`) then the FX,
- * `message`, `contact`, `conversation`, `push`, and `db_change` schemas, builds a
- * {@link QueryGiftStore}, {@link SqlGiftRecorder},
- * {@link PostgresMessageStore}, {@link PostgresContactStore},
- * {@link PostgresConversationStore}, and
- * {@link PostgresPushStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
- * constructs {@link PostgresBtcUsdStore}, and best-effort fills rates for
- * the outbound gift day range (failures log `gifts.fx.boot_fill.failed` and
- * do not throw). Memory boots leave `nostrKek` undefined and do not run
- * the `db_change` migrate.
+ * `notificationStore: undefined`, `pushStore: undefined`,
+ * `nostrKek: undefined`, and an empty {@link InMemoryBtcUsdStore}. A set
+ * URL asks `createClient` for one `SqlClient`, migrates auth (via
+ * `openAuthStore`) then the FX, `message`, `contact`, `conversation`,
+ * `push`, `notification`, and `db_change` schemas (notification after push
+ * before `db_change`), builds a {@link QueryGiftStore},
+ * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
+ * {@link PostgresContactStore}, {@link PostgresConversationStore},
+ * {@link PostgresNotificationStore}, and {@link PostgresPushStore}, parses
+ * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore},
+ * and best-effort fills rates for the outbound gift day range (failures log
+ * `gifts.fx.boot_fill.failed` and do not throw). Memory boots omit
+ * `notificationStore`, leave `nostrKek` undefined, and do not run the
+ * `db_change` migrate. SQL boots return {@link PostgresNotificationStore}.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -126,6 +137,7 @@ export async function openBootStores(
       nostrKek: undefined,
       contactStore: undefined,
       conversationStore: undefined,
+      notificationStore: undefined,
       pushStore: undefined,
     };
   }
@@ -137,6 +149,7 @@ export async function openBootStores(
   await migrateContactSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
+  await migrateNotificationSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
@@ -169,6 +182,7 @@ export async function openBootStores(
   const contactStore = new PostgresContactStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);
+  const notificationStore = new PostgresNotificationStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -178,6 +192,7 @@ export async function openBootStores(
     nostrKek,
     contactStore,
     conversationStore,
+    notificationStore,
     pushStore,
   };
 }

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-12 (forum replies notify the parent author in inbox + Web Push).
+**Status**: living document. Last revised 2026-09-12 (forum replies notify via in-app Notifications + Web Push `/notifications`, not inbox copy).
 
 ---
 
@@ -33,10 +33,12 @@ verification payment requires an injected invoice payer; the default
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes (`GET /invoices/passkey`, `POST /invoices`,
-`POST /invoices/proof`) check passkey eligibility, fetch a BOLT11 via
-LNURL-pay, and accept a preimage proof. Issue requires a passkey-backed
-account for the address. They require `SPEND_API_TOKEN`; when it is unset the
+Spend-worker invoice routes (`GET /invoices/passkey`, `GET /invoices/posted`,
+`POST /invoices`, `POST /invoices/proof`) check passkey eligibility and a live
+forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
+requires a passkey-backed account for the address and at least one live forum
+message that is not the auto-created profile note. They require `SPEND_API_TOKEN`;
+when it is unset the
 routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
@@ -68,7 +70,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                 |
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
-| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing`)                                             |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
@@ -92,6 +94,9 @@ Public base URLs used in examples:
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                  |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages in one thread                                               |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                               |
+| GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                        |
+| POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                       |
+| POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                        |
 | GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                  |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                          |
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                       |
@@ -111,7 +116,8 @@ Public base URLs used in examples:
 | GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                          |
 | GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                               |
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                          |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey required)                            |
+| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live non-profile forum post                     |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)             |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |
 
 ### `GET /healthz`
@@ -249,12 +255,13 @@ ID).
     "createdAt": 0,
     "rulesAgreedAt": null,
     "setup": "name",
-    "missing": ["name", "lightning-address", "rules"]
+    "missing": ["name", "lightning-address", "rules"],
+    "hasPosted": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, and `missing`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, and `hasPosted`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -299,7 +306,8 @@ Missing or invalid bearer → **Response** `401`:
   "createdAt": 0,
   "rulesAgreedAt": null,
   "setup": "name",
-  "missing": ["name", "lightning-address", "rules"]
+  "missing": ["name", "lightning-address", "rules"],
+  "hasPosted": false
 }
 ```
 
@@ -317,6 +325,7 @@ Missing or invalid bearer → **Response** `401`:
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                     |
 | `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence. |
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
 
 ### `POST /me/setup/skip`
 
@@ -1369,11 +1378,30 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPasskey": false }` when there is no account for the address or the
 account has no passkey credential.
 
+### `GET /invoices/posted`
+
+Spend-worker eligibility check. Query `address=name@domain.tld`. Same
+`SPEND_API_TOKEN` Bearer as `POST /invoices` (503 unconfigured / 401
+unauthorized).
+
+Missing or invalid Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+Success is always **200** (never 404 for an unknown address):
+
+```json
+{ "hasPosted": true }
+```
+
+or `{ "hasPosted": false }` when there is no account for the address or the
+account has no live forum message other than the auto-created profile note.
+
 ### `POST /invoices`
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
+credential and at least one live forum message that is not the auto-created
+profile note. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
 the BOLT11, and stores `{ id, pr, paymentHash }` in memory. It does not pay.
 
 **Body:**
@@ -1407,6 +1435,14 @@ No account for the address, or the account has no passkey credential →
 
 ```json
 { "error": "Passkey required" }
+```
+
+The account has a passkey but no live forum message other than the
+auto-created profile note → **403** (after the passkey check, before any
+LNURL fetch; no invoice is stored):
+
+```json
+{ "error": "Forum post required" }
 ```
 
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
@@ -1575,13 +1611,16 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web
-Push for a **top-level** note notifies every other subscribed account. A
-**reply** to a 21.gifts-author parent (not the replier themselves) opens or
-reuses the member↔member inbox thread, copies non-empty reply text into it,
-and enqueues one targeted push to the parent author (`url` `/messages?c=`
-that thread; `tag` `reply:<conversationId>`). Conversation or push failure
-does not fail the **200**. Over-limit posters get **429** `{ "error": "Too many messages" }`
+author LN). `role` is the posting session account's live `account.role`. Web Push for a
+**top-level** note notifies every other subscribed account. A **reply** to a
+21.gifts-author parent (not the replier themselves) inserts one
+`forum_reply` notification for that author and enqueues one targeted push
+(`url` `/notifications`, `tag` `forum_reply:<parentId>`). The booted process
+always has notification and push stores (in-memory without `DATABASE_URL`,
+Postgres when it is set). Photo-only empty
+text still notifies. Self-replies and Damus-only parents do not notify.
+Notification or push failure does not fail the **200**. Over-limit posters
+get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
@@ -2070,6 +2109,69 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message).
+
+### `GET /notifications`
+
+Bearer session required. Lists the recipient's notifications newest-first
+(cap **200**) plus the total unread count (not the page length). Member
+JSON never includes recipient or actor account ids.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Notifications are unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "notifications": [
+    {
+      "id": "<uuid>",
+      "type": "forum_reply",
+      "parentId": "<uuid>",
+      "replyId": "<uuid>",
+      "name": "Bob",
+      "text": "bob reply",
+      "createdAt": "2026-09-12T12:00:00.000Z",
+      "readAt": null
+    }
+  ],
+  "unreadCount": 1
+}
+```
+
+`unreadCount` is the total unread, not the page length.
+
+### `POST /notifications/read-all`
+
+Bearer session required. Marks every unread notification for the session
+account read.
+
+Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
+Store failure → **503** `{ "error": "Notifications are unavailable" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true }
+```
+
+### `POST /notifications/:id/read`
+
+Bearer session required. `:id` is a UUID. Marks one notification read and
+returns that `PublicNotification` with `readAt` set. Unknown id, another
+account's notification, or a non-uuid `:id` → **404**
+`{ "error": "Not found" }`. Same **401** / **503** as list.
+
+Success → **Response** `200` (one public notification with `readAt` set).
 
 ---
 
