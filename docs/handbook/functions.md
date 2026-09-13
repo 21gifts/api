@@ -795,8 +795,8 @@
 ## Function: serializeConversation
 
 - **Purpose:** Project a stored thread to its public list JSON shape.
-- **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
-- **Returns / side effects:** `{ id, kind, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
+- **Inputs:** `ConversationThread` with resolved `name` / `lastText`, and `lastFromMe` boolean.
+- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe }`. Omits account ids, event ids, npubs. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeNotification
@@ -816,9 +816,16 @@
 ## Function: serializeConversationMessage
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
-- **Inputs:** `ConversationMessageRow`.
-- **Returns / side effects:** `{ id, name, text, createdAt }`. Omits account ids and event ids. No I/O.
+- **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe }`. Omits account ids and event ids. No I/O.
 - **Used by:** `conversationRoutes`.
+
+## Function: conversationFromMe
+
+- **Purpose:** Viewer-relative direction for a stored sender: true when the sender is the session account, or when staff is acting as the platform identity that sent the message.
+- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`. `senderAccountId` null (empty thread / Damus inbound) is false.
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `conversationRoutes` (list `lastFromMe`, thread `fromMe`).
 
 ## Function: unsignedConversationDefaults
 

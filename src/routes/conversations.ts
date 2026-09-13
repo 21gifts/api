@@ -4,6 +4,7 @@ import { resolveSession } from '@/lib/auth/service';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import {
   CONVERSATION_LIST_LIMIT,
+  conversationFromMe,
   serializeConversation,
   serializeConversationMessage,
   unsignedConversationDefaults,
@@ -116,13 +117,22 @@ async function counterpartName(
 
 async function publicThread(
   thread: ConversationThread,
-  viewerId: string,
+  account: Account,
   authStore: AuthStore,
+  platformId: string | null,
 ): Promise<PublicConversation> {
-  return serializeConversation({
-    ...thread,
-    name: await counterpartName(thread, viewerId, authStore),
-  });
+  return serializeConversation(
+    {
+      ...thread,
+      name: await counterpartName(thread, account.id, authStore),
+    },
+    conversationFromMe({
+      senderAccountId: thread.lastSenderAccountId,
+      viewerId: account.id,
+      staff: isStaffRole(account.role),
+      platformId,
+    }),
+  );
 }
 
 /**
@@ -148,7 +158,9 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         const conversations: PublicConversation[] = [];
         for (const thread of threads) {
-          conversations.push(await publicThread(thread, account.id, deps.authStore));
+          conversations.push(
+            await publicThread(thread, account, deps.authStore, platform?.id ?? null),
+          );
         }
         return c.json({ conversations }, 200);
       } catch {
@@ -196,7 +208,11 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         } else {
           return c.json({ error: 'Not found' }, 404);
         }
-        return c.json(await publicThread(thread, account.id, deps.authStore), 200);
+        const platform = await platformAccount(deps.authStore);
+        return c.json(
+          await publicThread(thread, account, deps.authStore, platform?.id ?? null),
+          200,
+        );
       } catch {
         logEvent('conversations.open.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -218,7 +234,23 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
-        return c.json({ messages: rows.map(serializeConversationMessage) }, 200);
+        const platformId = platform?.id ?? null;
+        return c.json(
+          {
+            messages: rows.map((row) =>
+              serializeConversationMessage(
+                row,
+                conversationFromMe({
+                  senderAccountId: row.senderAccountId,
+                  viewerId: account.id,
+                  staff: isStaffRole(account.role),
+                  platformId,
+                }),
+              ),
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('conversations.get.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -269,7 +301,18 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           name: senderName !== '' ? senderName : '21.gifts',
           ...unsignedConversationDefaults(),
         });
-        return c.json(serializeConversationMessage(created), 200);
+        return c.json(
+          serializeConversationMessage(
+            created,
+            conversationFromMe({
+              senderAccountId: created.senderAccountId,
+              viewerId: account.id,
+              staff: isStaffRole(account.role),
+              platformId: platform?.id ?? null,
+            }),
+          ),
+          200,
+        );
       } catch {
         logEvent('conversations.reply.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);

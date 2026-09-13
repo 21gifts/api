@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog).
+**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
 
 ---
 
@@ -2181,7 +2181,8 @@ Success → **Response** `200`:
       "kind": "member_member",
       "name": "Ada",
       "lastText": "Hello",
-      "lastAt": "2026-08-29T12:00:00.000Z"
+      "lastAt": "2026-08-29T12:00:00.000Z",
+      "lastFromMe": false
     }
   ]
 }
@@ -2216,7 +2217,8 @@ Success → **Response** `200`:
       "id": "<uuid>",
       "name": "Ada",
       "text": "Hello",
-      "createdAt": "2026-08-29T12:00:00.000Z"
+      "createdAt": "2026-08-29T12:00:00.000Z",
+      "fromMe": true
     }
   ]
 }

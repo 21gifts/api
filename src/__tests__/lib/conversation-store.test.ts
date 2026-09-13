@@ -53,6 +53,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     lastMessageAt: NOW,
     name: '',
     lastText: '',
+    lastSenderAccountId: null,
     ...partial,
   };
 }
@@ -129,6 +130,7 @@ describe('InMemoryConversationStore', () => {
     expect(first.accountA).toBe('a');
     expect(first.accountB).toBe('b');
     expect(first.kind).toBe('member_member');
+    expect(first.lastSenderAccountId).toBeNull();
   });
 
   it('opens unique member_platform and member_damus threads', async () => {
@@ -199,6 +201,7 @@ describe('InMemoryConversationStore', () => {
     expect(listed[0]?.text).toBe('hi');
     const got = await store.getById(opened.id);
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastSenderAccountId).toBe('acc-a');
   });
 
   it('returns the existing row when appending a duplicate event id', async () => {
@@ -321,6 +324,7 @@ describe('InMemoryConversationStore', () => {
       message({ conversationId: opened.id, senderAccountId: null, eventId: null }),
     );
     expect(await store.claimUnsigned(10, 1, 10)).toEqual([]);
+    expect((await store.getById(opened.id))?.lastSenderAccountId).toBeNull();
   });
 });
 
@@ -343,6 +347,7 @@ describe('PostgresConversationStore', () => {
     const got = await store.getById('c1');
     expect(got?.accountA).toBe('a');
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastSenderAccountId).toBeNull();
     expect(got?.lastMessageAt.toISOString()).toBe('2026-08-29T13:00:00.000Z');
     expect(sql.queries[0]?.params).toEqual(['c1']);
   });
@@ -369,6 +374,7 @@ describe('PostgresConversationStore', () => {
     ];
     const got = await new PostgresConversationStore(sql).getById('c1');
     expect(got?.lastText).toBe('');
+    expect(got?.lastSenderAccountId).toBeNull();
   });
 
   it('listVisible binds staff and platform filters', async () => {
@@ -377,6 +383,7 @@ describe('PostgresConversationStore', () => {
     await store.listVisible('acc', true, 'plat', 50);
     expect(sql.queries[0]?.params).toEqual(['acc', true, 'plat', 50]);
     expect(sql.queries[0]?.text).toMatch(/member_platform/);
+    expect(sql.queries[0]?.text).toMatch(/AS last_sender_account_id/);
   });
 
   it('openMemberMember returns an existing row without inserting', async () => {
@@ -438,6 +445,7 @@ describe('PostgresConversationStore', () => {
         created_at: NOW,
         last_message_at: NOW,
         last_text: 'hi',
+        last_sender_account_id: 'mem',
       },
     ];
     const store = new PostgresConversationStore(sql);
@@ -445,6 +453,7 @@ describe('PostgresConversationStore', () => {
     expect(opened.id).toBe('c1');
     expect(opened.accountB).toBe('plat');
     expect(opened.lastText).toBe('hi');
+    expect(opened.lastSenderAccountId).toBe('mem');
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/UPDATE conversation SET account_b/);
     expect(sql.executes[0]?.params).toEqual(['plat', 'c1']);

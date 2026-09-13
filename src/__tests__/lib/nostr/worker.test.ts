@@ -3914,6 +3914,7 @@ describe('runNostrWorkerTick', () => {
         lastMessageAt: new Date(0),
         name: '',
         lastText: '',
+        lastSenderAccountId: null,
       },
     ]);
     await conversations.appendMessage({

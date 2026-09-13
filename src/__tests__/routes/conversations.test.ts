@@ -119,16 +119,115 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ kind: string; name: string; lastText: string }>;
+      conversations: Array<{ kind: string; name: string; lastText: string; lastFromMe: boolean }>;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.kind).toBe('member_member');
     expect(body.conversations[0]?.name).toBe('Bob');
     expect(body.conversations[0]?.lastText).toBe('hi');
+    expect(body.conversations[0]?.lastFromMe).toBe(true);
     expect(body.conversations[0]).not.toHaveProperty('accountA');
     expect(body.conversations[0]).not.toHaveProperty('accountId');
     expect(body.conversations[0]).not.toHaveProperty('eventId');
     expect(body.conversations[0]).not.toHaveProperty('npub');
+    expect(body.conversations[0]).not.toHaveProperty('lastSenderAccountId');
+  });
+
+  it('sets lastFromMe false when the counterpart sent the last message', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm1',
+      conversationId: thread.id,
+      text: 'yo',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
+  });
+
+  it('sets lastFromMe true when staff views a platform-sent last message', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'someone');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-plat',
+      conversationId: thread.id,
+      text: 'official',
+      createdAt: new Date(now()),
+      senderAccountId: 'plat',
+      senderPubkey: null,
+      name: '21.gifts',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
+    expect(body.conversations[0]?.lastFromMe).toBe(true);
+  });
+
+  it('sets lastFromMe false when staff views a member-sent last message', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'someone');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-mem',
+      conversationId: thread.id,
+      text: 'help',
+      createdAt: new Date(now()),
+      senderAccountId: 'someone',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
+  });
+
+  it('sets lastFromMe false for Damus inbound without a sender account', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-damus',
+      conversationId: thread.id,
+      text: 'from damus',
+      createdAt: new Date(now()),
+      senderAccountId: null,
+      senderPubkey: 'aa'.repeat(32),
+      name: 'aabbccdd…8899',
+      eventId: 'ef'.repeat(32),
+      nostrPublishState: 'published',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
   it('lets staff see platform threads they are not in', async () => {
@@ -207,13 +306,17 @@ describe('GET /conversations', () => {
         lastMessageAt: new Date(now()),
         name: '',
         lastText: '',
+        lastSenderAccountId: null,
       },
     ]);
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; lastFromMe: boolean }>;
+    };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('21.gifts');
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
   it('names a member_member thread with a null counterpart member', async () => {
@@ -229,6 +332,7 @@ describe('GET /conversations', () => {
         lastMessageAt: new Date(now()),
         name: '',
         lastText: '',
+        lastSenderAccountId: null,
       },
     ]);
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
@@ -524,8 +628,9 @@ describe('GET /conversations/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ text: string }> };
+    const body = (await res.json()) as { messages: Array<{ text: string; fromMe: boolean }> };
     expect(body.messages.map((m) => m.text)).toEqual(['official']);
+    expect(body.messages[0]?.fromMe).toBe(true);
   });
 
   it('returns messages oldest-first', async () => {
@@ -546,13 +651,56 @@ describe('GET /conversations/:id', () => {
       nostrEvent: null,
       claimedUntil: null,
     });
+    await conversations.appendMessage({
+      id: 'm2',
+      conversationId: thread.id,
+      text: 'second',
+      createdAt: new Date(now() + 1),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
     const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ text: string; name: string }> };
-    expect(body.messages.map((m) => m.text)).toEqual(['first']);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; name: string; fromMe: boolean }>;
+    };
+    expect(body.messages.map((m) => m.text)).toEqual(['first', 'second']);
+    expect(body.messages[0]?.fromMe).toBe(true);
+    expect(body.messages[1]?.fromMe).toBe(false);
     expect(body.messages[0]).not.toHaveProperty('eventId');
+    expect(body.messages[0]).not.toHaveProperty('senderAccountId');
+  });
+
+  it('sets fromMe false for Damus inbound without a sender account', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-damus',
+      conversationId: thread.id,
+      text: 'from damus',
+      createdAt: new Date(now()),
+      senderAccountId: null,
+      senderPubkey: 'aa'.repeat(32),
+      name: 'aabbccdd…8899',
+      eventId: 'ef'.repeat(32),
+      nostrPublishState: 'published',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ fromMe: boolean }> };
+    expect(body.messages[0]?.fromMe).toBe(false);
   });
 
   it('returns 503 when get throws', async () => {
@@ -664,9 +812,10 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: '  ping  ' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { text: string; name: string };
+    const body = (await res.json()) as { text: string; name: string; fromMe: boolean };
     expect(body.text).toBe('ping');
     expect(body.name).toBe('Ada');
+    expect(body.fromMe).toBe(true);
   });
 
   it('lets staff reply on a platform thread as the platform account', async () => {
@@ -680,9 +829,10 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: 'official' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string; text: string };
+    const body = (await res.json()) as { name: string; text: string; fromMe: boolean };
     expect(body.name).toBe('21.gifts');
     expect(body.text).toBe('official');
+    expect(body.fromMe).toBe(true);
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
   });

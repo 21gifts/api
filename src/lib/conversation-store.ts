@@ -204,7 +204,11 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
     WHERE m.conversation_id = c.id
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
-  ), '') AS last_text`;
+  ), '') AS last_text,
+  (SELECT m.sender_account_id FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_sender_account_id`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name,
   event_id, nostr_publish_state, nostr_event, claimed_until`;
@@ -448,6 +452,7 @@ export class InMemoryConversationStore implements ConversationStore {
       lastMessageAt: new Date(args.now.getTime()),
       name: '',
       lastText: '',
+      lastSenderAccountId: null,
     };
     this.#threads.push(stored);
     return this.#hydrate(stored);
@@ -460,6 +465,7 @@ export class InMemoryConversationStore implements ConversationStore {
     return {
       ...copyThread(thread),
       lastText: last?.text ?? '',
+      lastSenderAccountId: last?.senderAccountId ?? null,
     };
   }
 
@@ -488,7 +494,7 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 }
 
-/** Row shape selected from `conversation` plus computed `last_text`. */
+/** Row shape selected from `conversation` plus computed `last_text` / `last_sender_account_id`. */
 interface ConversationSqlRow {
   id: string;
   kind: string;
@@ -498,6 +504,7 @@ interface ConversationSqlRow {
   created_at: Date | string;
   last_message_at: Date | string;
   last_text?: string | null;
+  last_sender_account_id?: string | null;
 }
 
 /** Row shape selected from `conversation_message`. */
@@ -910,6 +917,7 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     lastMessageAt: asDate(row.last_message_at),
     name: '',
     lastText: row.last_text ?? '',
+    lastSenderAccountId: row.last_sender_account_id ?? null,
   };
 }
 
