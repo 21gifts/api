@@ -14,6 +14,11 @@ This repository is the **canonical home** for project-level documentation
 in [`SPEC.md`](./SPEC.md). The frontend lives at
 [`21gifts/app`](https://github.com/21gifts/app).
 
+Most of the people who started 21.gifts stand in Christian faith. The project
+does not prescribe a religion — anyone can give or receive. That origin is
+spelled out in [`CONCEPT.md`](./CONCEPT.md) (Brand) and on
+[`21.gifts/about`](https://21.gifts/about).
+
 ## 🐳 Docker images
 
 Pre-built images are published to Docker Hub on every push to `develop` (`:beta`)

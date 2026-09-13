@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-08-30.
+**Status**: draft, in active iteration. Last revised 2026-09-13.
 
 ---
 
@@ -571,9 +571,21 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **Tone**: warm, direct, dignified. Not charity-speak ("the needy"), not
   techbro-speak ("disrupting philanthropy"). People helping people, with the
   best money humans have ever had.
+- **Origin**: rooted, not restricted. Most of the people who started
+  21.gifts, and most of the people who give here, stand in Christian faith.
+  That faith taught them that a gift has no price and that a guest is welcome
+  without a test. 21.gifts does not prescribe a religion. Anyone can give or
+  receive. The neighbour in the story of the Good Samaritan is the one who
+  shows mercy — that is the door of this house. Public copy lives on `/about`
+  in the app. The living-room rules stay house law, not liturgy.
+- **Signature verse**: Matthew 10:8 — "Freely you have received; freely
+  give." Matches rule 1: a gift has no price. Shown quietly in the marketing
+  footer; not on the hero.
 - **Visual**: minimal, photo-driven, large typography. Receiver photos and
-  stories are the hero. Tech is invisible.
-- **Language**: English only.
+  stories are the hero. Tech is invisible. No cross, fish, or second typeface
+  as brand marks; Bitcoin orange stays the accent.
+- **Language**: this CONCEPT is English. Visitor-facing app copy is
+  catalogized (en, de, es, fil).
 
 ---
 
@@ -701,6 +713,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | A 21.gifts-author forum reply writes a Notifications row for the parent author and enqueues one targeted Web Push (`/notifications`, tag `forum_reply:<parentId>`). The booted process always has those stores (memory or Postgres). It does not copy into the member↔member inbox. Top-level notes still broadcast. Self-replies and Damus-only parents do not notify. Failure does not fail POST /messages.                                                               |
 | 2026-09-12 | Operator `DEBUG_TOKEN` debug reads every persisted forum row (live, soft-hidden, and replies) via `GET /debug/messages` and `GET /debug/messages/:id`; hidden JPEG/PNG/WebP bytes via `GET /debug/messages/:id/photo`. Soft-hide remains a public-API filter only; public `GET /messages` hide behaviour is unchanged.                                                                                                                                                      |
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law.                                                                                                                                                                                                                              |
 
 ---
 
