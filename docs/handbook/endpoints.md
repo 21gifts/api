@@ -275,15 +275,15 @@
 
 ## Endpoint: GET /members/:accountId/posts
 
-- **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when `eventId` and a Lightning Address are set). Omits `parentId`. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted.
+- **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when `eventId` and a Lightning Address are set). Omits `parentId`. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live 21.gifts-author direct-reply count minus those dropped.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.posts.failed`).
 - **Used by:** App member profile post feed.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /members/:accountId/replies
 
-- **Purpose:** Bearer required. Live-only replies by `:accountId` newest-first, capped at 200 (`listRepliesByAccount`). `serializeMessage` with `payable` false, `accountId`, and optional `parentId` when set; omits `replyCount`. Top-level notes by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted.
-- **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.replies.failed`).
+- **Purpose:** Bearer required. Live-only replies by `:accountId` newest-first, capped at 200 (`listRepliesByAccount`). `serializeMessage` with `payable` false, `accountId`, and optional `parentId` when set; omits `replyCount`. Top-level notes by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. A child that cannot serialize (invalid `createdAt`) is omitted; remaining siblings still 200 `{ messages }`.
+- **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.replies.failed`). Invalid `createdAt` on one child is not 503.
 - **Used by:** App member profile reply feed.
 - **Auth:** `Authorization: Bearer` session.
 

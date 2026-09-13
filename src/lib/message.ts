@@ -224,8 +224,10 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * When `row.name` is empty after trim, JSON `name` is
  * {@link truncatePubkeyDisplay} of `row.authorPubkey` (`'npub'` when the
  * pubkey is missing). Non-empty names are unchanged. Invalid `createdAt`
- * is not guarded here: `toISOString()` still throws. The replies route omits
- * that child; list and public GET return 503.
+ * is not guarded here: `toISOString()` still throws. `GET /messages/:id/replies`
+ * and `GET /members/:accountId/replies` omit that child (200, siblings remain);
+ * `GET /messages` (list), `GET /members/:accountId/posts`, and public
+ * `GET /messages/:id` return 503.
  *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
