@@ -396,6 +396,15 @@ export interface MessageStore {
    */
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
 
+  /**
+   * Replace the stored note body. Does not change sats, photos, or event ids.
+   *
+   * @param id - Message id.
+   * @param text - New body (already normalised; may be empty).
+   * @returns The updated row copy, or `undefined` when no row has that id.
+   */
+  updateText(id: string, text: string): Promise<MessageRow | undefined>;
+
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
     id: string,
@@ -1382,6 +1391,15 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
+  updateText(id: string, text: string): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    row.text = text;
+    return Promise.resolve(copyRow(row));
+  }
+
   updateSignedEvent(
     id: string,
     eventId: string,
@@ -2360,6 +2378,15 @@ export class PostgresMessageStore implements MessageStore {
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
+  }
+
+  async updateText(id: string, text: string): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+      [id, text],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
   }
 
   async updateSignedEvent(

@@ -65,6 +65,7 @@ api/
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
+│   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
 │   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
@@ -158,6 +159,7 @@ api/
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── nip57-probe.test.ts
+│       │   ├── about-me.test.ts
 │       │   ├── account-activity.test.ts
 │       │   ├── message-store.test.ts
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit

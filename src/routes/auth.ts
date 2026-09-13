@@ -23,8 +23,8 @@ import type { NostrKeygen } from '@/lib/nostr/keys';
 export interface AuthRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (live-post lookup for owner JSON). */
-  messages: Pick<MessageStore, 'accountHasLivePost'>;
+  /** Forum persistence (live-post lookup and profile-note About me). */
+  messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Browser origins CORS already allows; passkey finish filters these by RP ID. */
