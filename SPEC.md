@@ -80,7 +80,9 @@ Public base URLs used in examples:
 | DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                   |
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
-| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note                                               |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + uncapped counts                             |
+| GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
+| GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
@@ -347,7 +349,27 @@ Bearer required. `:accountId` must be a UUID. After auth,
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
 Success → live `id` / `name` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
-`replyCount`, or `null`). Never `viewKey` / `eventId`.
+`replyCount`, or `null`) and uncapped live `postCount` / `replyCount`
+from `countByAccount` (not the latest-200 window). Never `viewKey` /
+`eventId`.
+
+### `GET /members/:accountId/posts`
+
+Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
+(`members.posts.failed` on 503). Live-only top-level notes by the member,
+newest-first, capped at 200. Body `{ "messages": [...] }` via
+`serializeMessage` like signed-in `GET /messages` (`accountId`,
+`replyCount`, `payable` when `eventId` and a Lightning Address are set).
+Omits `parentId`. Replies by that member are not listed.
+
+### `GET /members/:accountId/replies`
+
+Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
+(`members.replies.failed` on 503). Live-only replies by the member,
+newest-first, capped at 200. Body `{ "messages": [...] }` via
+`serializeMessage` with `payable` false, `accountId`, and optional
+`parentId` when set; omits `replyCount`. Top-level notes by that member
+are not listed.
 
 ### `GET /view/:viewKey`
 

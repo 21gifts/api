@@ -146,6 +146,10 @@ export interface PublicMessage {
    * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
    */
   replyCount?: number;
+  /**
+   * Parent note id for a reply. Omitted on top-level notes (`parentId` null).
+   */
+  parentId?: string;
 }
 
 /**
@@ -232,8 +236,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
  * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
- * when requested); `createdAt` ISO-8601. Never includes photo or video bytes,
- * and never includes `contentFp`.
+ * when requested; optional `parentId` when `row.parentId !== null`);
+ * `createdAt` ISO-8601. Never includes photo or video bytes, and never
+ * includes `contentFp`. Omits the `parentId` key on top-level notes.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
@@ -262,6 +267,9 @@ export function serializeMessage(
   }
   if (includeAccountId === true && row.accountId !== null) {
     body.accountId = row.accountId;
+  }
+  if (row.parentId !== null) {
+    body.parentId = row.parentId;
   }
   return body;
 }

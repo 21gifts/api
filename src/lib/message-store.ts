@@ -72,6 +72,14 @@ export interface MessageListRow extends MessageRow {
   replyCount: number;
 }
 
+/** Live totals for one 21.gifts author. Soft-deleted and Damus-only rows excluded. */
+export interface AccountMessageCounts {
+  /** Live top-level notes (`parentId === null`). */
+  postCount: number;
+  /** Live replies (`parentId !== null`). */
+  replyCount: number;
+}
+
 /**
  * Persistence port for forum messages.
  */
@@ -156,6 +164,41 @@ export interface MessageStore {
    * @returns `true` when a matching live row exists.
    */
   accountHasLivePost(accountId: string, excludeId: string | null): Promise<boolean>;
+
+  /**
+   * Live post/reply totals for one 21.gifts author.
+   *
+   * Live = `deletedAt` null and `accountId` equals the argument (Damus-only
+   * `accountId: null` rows never match). `postCount` is `parentId === null`;
+   * `replyCount` is `parentId !== null`. One query; not derived from a
+   * capped list.
+   *
+   * @param accountId - Author account id.
+   * @returns `{ postCount, replyCount }` (zeros when the account has no live rows).
+   */
+  countByAccount(accountId: string): Promise<AccountMessageCounts>;
+
+  /**
+   * Newest live top-level notes for `accountId` (`parentId` null,
+   * `deletedAt` null), capped at `limit`, with `replyCount` of live
+   * 21.gifts-author children (`deletedAt` null, `accountId` not null).
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listPostsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Newest live replies for `accountId` (`parentId` not null, `deletedAt`
+   * null), capped at `limit`. No `replyCount` — this is a member history
+   * feed, not a thread.
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows to return.
+   * @returns Reply rows (caller-owned copies).
+   */
+  listRepliesByAccount(accountId: string, limit: number): Promise<MessageRow[]>;
 
   /**
    * Load photo bytes for a message id.
@@ -834,6 +877,92 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Live post/reply totals for one 21.gifts author.
+   *
+   * @param accountId - Author account id.
+   * @returns `{ postCount, replyCount }` (zeros when empty).
+   */
+  countByAccount(accountId: string): Promise<AccountMessageCounts> {
+    let postCount = 0;
+    let replyCount = 0;
+    for (const row of this.#rows) {
+      if (row.accountId !== accountId || row.deletedAt !== null) {
+        continue;
+      }
+      if (row.parentId === null) {
+        postCount += 1;
+      } else {
+        replyCount += 1;
+      }
+    }
+    return Promise.resolve({ postCount, replyCount });
+  }
+
+  /**
+   * Newest-first live top-level notes for `accountId`, capped at `limit`,
+   * with `replyCount` of live 21.gifts-author children.
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listPostsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const posts = this.#rows.filter(
+      (row) => row.parentId === null && row.deletedAt === null && row.accountId === accountId,
+    );
+    const sorted = [...posts].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        const replyCount = this.#rows.filter(
+          (child) =>
+            child.parentId === row.id && child.deletedAt === null && child.accountId !== null,
+        ).length;
+        return { ...copy, replyCount };
+      }),
+    );
+  }
+
+  /**
+   * Newest-first live replies for `accountId`, capped at `limit`.
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows.
+   * @returns Reply row copies.
+   */
+  listRepliesByAccount(accountId: string, limit: number): Promise<MessageRow[]> {
+    const replies = this.#rows
+      .filter(
+        (row) => row.parentId !== null && row.deletedAt === null && row.accountId === accountId,
+      )
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      })
+      .slice(0, limit)
+      .map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        return copy;
+      });
+    return Promise.resolve(replies);
+  }
+
+  /**
    * Return a copy of the photo for `id`, or `null`.
    *
    * @param id - Message id.
@@ -1378,6 +1507,79 @@ export class PostgresMessageStore implements MessageStore {
       [accountId, excludeId],
     );
     return rows[0] !== undefined;
+  }
+
+  /**
+   * Live post/reply totals for one 21.gifts author (`account_id = $1` and
+   * `deleted_at IS NULL`). One `COUNT(*) FILTER` query; empty is zeros.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns `{ postCount, replyCount }` mapped via `Number`.
+   */
+  async countByAccount(accountId: string): Promise<AccountMessageCounts> {
+    const rows = await this.#sql.query<{
+      post_count: string | number | null;
+      reply_count: string | number | null;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE parent_id IS NULL)::int AS post_count,
+         COUNT(*) FILTER (WHERE parent_id IS NOT NULL)::int AS reply_count
+       FROM message
+       WHERE account_id = $1 AND deleted_at IS NULL`,
+      [accountId],
+    );
+    const row = rows[0];
+    return {
+      postCount: Number(row?.post_count ?? 0),
+      replyCount: Number(row?.reply_count ?? 0),
+    };
+  }
+
+  /**
+   * Newest-first live top-level notes for one account, capped at `limit`,
+   * with `replyCount` of live 21.gifts-author children (same subquery as
+   * {@link listLatest}).
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listPostsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND child.account_id IS NOT NULL) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND account_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [accountId, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Newest-first live replies for one account (`parent_id IS NOT NULL`,
+   * `deleted_at IS NULL`, `account_id = $1`). No `replyCount`.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped reply rows.
+   */
+  async listRepliesByAccount(accountId: string, limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE parent_id IS NOT NULL AND deleted_at IS NULL AND account_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [accountId, limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
   }
 
   /**

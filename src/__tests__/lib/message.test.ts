@@ -264,6 +264,30 @@ describe('serializeMessage', () => {
     };
     expect(serializeMessage(row, false, 'basis').name).toBe('Ada');
   });
+
+  it('includes parentId on replies and omits the key on top-level notes', () => {
+    const top: MessageRow = {
+      id: 'msg-top',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(top, false, 'basis')).not.toHaveProperty('parentId');
+    const reply: MessageRow = {
+      id: 'msg-reply',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 're',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'msg-top',
+    };
+    expect(serializeMessage(reply, false, 'basis').parentId).toBe('msg-top');
+  });
 });
 
 describe('serializeDebugMessage', () => {
