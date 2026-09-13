@@ -1731,5 +1731,5 @@
 
 - **Purpose:** Operator backfill `POST /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. Body `{ subjectId, actorId, kind }` (four `TrustKind` values). Inserts a stored edge and returns `serializeTrustEdge` (ISO `createdAt`). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
 - **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`).
-- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. 400 bad body; 404 missing subject/actor; 409 duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 on unexpected store throw (`debug.trust_edges.failed`).
+- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. 400 bad body; 404 missing subject/actor; 409 duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 on unexpected store throw (`debug.trust_edges.failed`).
 - **Used by:** `createApp`; operator `gifts-debug trust-edge`.

@@ -1082,6 +1082,7 @@ Duplicate `(subjectId, kind)` or `subjectId === actorId` → **409**
 `{ "error": "Conflict" }`.
 Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
 logged as `debug.trust_edges.failed`.
+Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 
 **Response** `200`:
 
