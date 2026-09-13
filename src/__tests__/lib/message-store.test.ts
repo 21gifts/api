@@ -1032,6 +1032,21 @@ describe('InMemoryMessageStore', () => {
     expect(unpublished).toEqual([]);
   });
 
+  it('updateText rewrites text and leaves sats and eventId unchanged', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
+    const updated = await store.updateText('a', 'bio');
+    expect(updated?.text).toBe('bio');
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    const stored = await store.getById('a');
+    expect(stored?.text).toBe('bio');
+    expect(stored?.sats).toBe(21);
+    expect(stored?.eventId).toBe('ee'.repeat(32));
+    expect(updated).not.toBe(stored);
+    expect(await store.updateText('missing', 'x')).toBeUndefined();
+  });
+
   it('getById and claimUnsigned lease a row', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -2924,6 +2939,33 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(false);
     expect(sql.executes).toEqual([]);
+  });
+
+  it('updateText issues UPDATE … RETURNING and maps the row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'bio',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ee'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 21,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const updated = await store.updateText('m1', 'bio');
+    expect(updated?.text).toBe('bio');
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    expect(sql.queries[0]?.text).toMatch(/UPDATE message SET text = \$2 WHERE id = \$1 RETURNING/);
+    expect(sql.queries[0]?.text).toMatch(/\(photo IS NOT NULL\) AS has_photo/);
+    expect(sql.queries[0]?.params).toEqual(['m1', 'bio']);
+    sql.nextRows = [];
+    expect(await store.updateText('missing', 'x')).toBeUndefined();
   });
 
   it('getById maps nostr_event JSON string', async () => {

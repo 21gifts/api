@@ -1,20 +1,22 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
+import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
+import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
-import { normalizeDisplayName } from '@/lib/name';
-import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
-import { ensureProfileMessage } from '@/lib/auth/profile-message';
-import type { Account, AuthStore } from '@/lib/auth/store';
-import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import { normalizeForumText, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -24,8 +26,8 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
- * optional location, welcome-forum laws dismiss, living-room rules agreement,
- * and the receiver's Lightning Address), including proof-of-control
+ * optional location, About me, welcome-forum laws dismiss, living-room rules
+ * agreement, and the receiver's Lightning Address), including proof-of-control
  * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
@@ -123,11 +125,14 @@ const confirmBody = z.object({ nonce: z.string() });
 /** Body schema for skipping a wizard step. */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 
+/** Body schema for writing About me. */
+const aboutBody = z.object({ text: z.string() });
+
 /**
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, location, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, location, About me, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -249,6 +254,95 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       logEvent('account.location.set', { accountId: current.id });
       return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+    })
+    .put('/about', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = aboutBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+      }
+      const normalized = normalizeForumText(parsed.data.text);
+      if (normalized === null) {
+        return c.json({ error: 'About me must be at most 500 characters' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const displayName = current.name === null ? '' : current.name.trim();
+      if (displayName === '') {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['name'] }, 409);
+      }
+      try {
+        let owner = current;
+        let noteId: string | undefined;
+        const existingId = owner.profileMessageId;
+        if (typeof existingId === 'string' && existingId.trim() !== '') {
+          const existing = await deps.messages.getById(existingId);
+          if (existing !== undefined) {
+            noteId = existingId;
+          }
+        }
+        if (noteId === undefined) {
+          owner = await ensureProfileMessage({
+            auth: deps.store,
+            messages: deps.messages,
+            account: owner,
+            now: deps.now,
+            ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          });
+          const ensuredId = owner.profileMessageId;
+          if (typeof ensuredId === 'string' && ensuredId.trim() !== '') {
+            const ensured = await deps.messages.getById(ensuredId);
+            if (ensured !== undefined) {
+              noteId = ensuredId;
+            }
+          }
+        }
+        if (noteId === undefined) {
+          const messageId = crypto.randomUUID();
+          const row: MessageRow = {
+            id: messageId,
+            accountId: owner.id,
+            name: displayName,
+            text: normalized,
+            createdAt: new Date(deps.now()),
+            hasPhoto: false,
+            hasVideo: false,
+            videoContentType: null,
+            ...unsignedNostrDefaults(),
+          };
+          const created = await deps.messages.create(row);
+          const live = await deps.store.getAccount(owner.id);
+          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+          if (live === undefined) {
+            return c.json({ error: 'Unauthorized' }, 401);
+          }
+          const updated: Account = { ...live, profileMessageId: created.id };
+          await deps.store.updateAccount(updated);
+          owner = updated;
+          noteId = created.id;
+        }
+        await deps.messages.updateText(noteId, normalized);
+        const liveRow = await deps.messages.getById(noteId);
+        if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
+          await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
+        }
+        const latest = await storedAccount(deps, owner.id);
+        /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+        if (latest === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        logEvent('account.about.set', { accountId: latest.id });
+        return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+      } catch {
+        logEvent('account.about.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

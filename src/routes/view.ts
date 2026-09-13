@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeViewProfile } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
@@ -97,6 +98,17 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const hasPasskey = await deps.store.accountHasPasskey(account.id);
-      return c.json(serializeViewProfile(account, hasPasskey), 200);
+      try {
+        let aboutMe: string | null = null;
+        const profileId = account.profileMessageId;
+        if (typeof profileId === 'string' && profileId.trim() !== '') {
+          const row = await messages.getById(profileId);
+          aboutMe = aboutMeFromNote(account.name, row?.text ?? null);
+        }
+        return c.json(serializeViewProfile(account, hasPasskey, aboutMe), 200);
+      } catch {
+        logEvent('view.get.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     });
 }

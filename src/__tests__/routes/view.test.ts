@@ -1,12 +1,47 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { viewRoutes } from '@/routes/view';
 
 const VIEW_KEY = 'a'.repeat(64);
+const NOTE_ID = 'note-ada';
 
-function mount(store: InMemoryAuthStore): Hono {
-  return new Hono().route('/view', viewRoutes({ store }));
+function mount(
+  store: InMemoryAuthStore,
+  messages: InMemoryMessageStore = new InMemoryMessageStore(),
+): Hono {
+  return new Hono().route('/view', viewRoutes({ store, messages }));
+}
+
+async function adaAccount(
+  store: InMemoryAuthStore,
+  overrides: {
+    lightningAddress?: string | null;
+    lightningAddressVerified?: boolean;
+    profileMessageId?: string;
+  } = {},
+): Promise<void> {
+  await store.createAccount({
+    id: 'acc',
+    linkingKey: null,
+    role: 'basis',
+    name: 'Ada',
+    lightningAddress:
+      overrides.lightningAddress === undefined
+        ? 'ada@walletofsatoshi.com'
+        : overrides.lightningAddress,
+    lightningAddressVerified: overrides.lightningAddressVerified ?? true,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: VIEW_KEY,
+    createdAt: 1_000_000,
+    rulesAgreedAt: null,
+    ...(overrides.profileMessageId === undefined
+      ? {}
+      : { profileMessageId: overrides.profileMessageId }),
+  });
 }
 
 describe('GET /view/:viewKey', () => {
@@ -36,19 +71,7 @@ describe('GET /view/:viewKey', () => {
 
   it('returns the six-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: VIEW_KEY,
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
+    await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -59,6 +82,7 @@ describe('GET /view/:viewKey', () => {
       lightningAddressVerified: true,
       createdAt: 1_000_000,
       hasPasskey: false,
+      aboutMe: null,
     });
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('id');
@@ -66,6 +90,7 @@ describe('GET /view/:viewKey', () => {
     expect(raw).not.toContain('role');
     expect(raw).not.toContain('viewKey');
     expect(Object.keys(body).sort()).toEqual([
+      'aboutMe',
       'createdAt',
       'hasPasskey',
       'lightningAddress',
@@ -77,19 +102,7 @@ describe('GET /view/:viewKey', () => {
 
   it('sets hasPasskey true when this account has a credential', async () => {
     const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: VIEW_KEY,
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
+    await adaAccount(store, { lightningAddress: null, lightningAddressVerified: false });
     await store.createPasskeyCredential({
       credentialId: 'cred-acc',
       publicKey: new Uint8Array([1]),
@@ -106,24 +119,13 @@ describe('GET /view/:viewKey', () => {
       lightningAddressVerified: false,
       createdAt: 1_000_000,
       hasPasskey: true,
+      aboutMe: null,
     });
   });
 
   it('does not flip hasPasskey from another account credential', async () => {
     const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: VIEW_KEY,
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
+    await adaAccount(store, { lightningAddress: null, lightningAddressVerified: false });
     await store.createAccount({
       id: 'other',
       linkingKey: null,
@@ -146,6 +148,69 @@ describe('GET /view/:viewKey', () => {
     });
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ hasPasskey: false });
+    expect(await res.json()).toMatchObject({ hasPasskey: false, aboutMe: null });
+  });
+
+  it('sets aboutMe from a real bio and null when the note is only the display name', async () => {
+    const bioStore = new InMemoryAuthStore();
+    await adaAccount(bioStore, { profileMessageId: NOTE_ID });
+    const bioMessages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'I build on Bitcoin',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const bioRes = await mount(bioStore, bioMessages).request(`/view/${VIEW_KEY}`);
+    expect(bioRes.status).toBe(200);
+    expect(((await bioRes.json()) as { aboutMe: string | null }).aboutMe).toBe(
+      'I build on Bitcoin',
+    );
+
+    const nameStore = new InMemoryAuthStore();
+    await adaAccount(nameStore, { profileMessageId: NOTE_ID });
+    const nameMessages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const nameRes = await mount(nameStore, nameMessages).request(`/view/${VIEW_KEY}`);
+    expect(nameRes.status).toBe(200);
+    expect(((await nameRes.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+  });
+
+  it('returns aboutMe null when profileMessageId has no row', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: 'missing-note' });
+    const res = await mount(store, new InMemoryMessageStore()).request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+  });
+
+  it('returns 503 when getById throws', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(messages, 'getById').mockRejectedValue(new Error('store down'));
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(
+      warn.mock.calls.some(
+        (call) => typeof call[0] === 'string' && call[0].includes('view.get.failed'),
+      ),
+    ).toBe(true);
+    warn.mockRestore();
   });
 });
