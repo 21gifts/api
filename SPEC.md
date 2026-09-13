@@ -1080,6 +1080,8 @@ Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\", \"act
 Missing subject or actor (or a non-UUID id) → **404** `{ "error": "Not found" }`.
 Duplicate `(subjectId, kind)` or `subjectId === actorId` → **409**
 `{ "error": "Conflict" }`.
+Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
+logged as `debug.trust_edges.failed`.
 
 **Response** `200`:
 
