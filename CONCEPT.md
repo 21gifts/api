@@ -29,8 +29,10 @@ or send help.
 5. **Self-sovereign keys** — Passkey + PRF derives the NOSTR key client-side; the
    server never sees raw key material
 6. **Lightning Address mandatory** — receivers must have a LUD-16 address; no custodial wallets
-7. **English only** — UI, copy, code, docs, and commits are all in English. No
-   multi-language support in v1. Internationalization is explicitly out of scope.
+7. **English canon, catalogized visitor UI** — CONCEPT, identifiers, commits,
+   and handbook stay English. Visitor-facing app copy is catalogized (`en`,
+   `de`, `es`, `fil`). Adding a fifth locale is out of scope unless Brand
+   changes.
 8. **Thin client, thick server** — the browser holds only what _must_ be
    client-side (keys, signing, wallet flow). Everything else — relay
    communication, indexing, discovery, LN-Address resolution, anti-abuse —
@@ -713,7 +715,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | A 21.gifts-author forum reply writes a Notifications row for the parent author and enqueues one targeted Web Push (`/notifications`, tag `forum_reply:<parentId>`). The booted process always has those stores (memory or Postgres). It does not copy into the member↔member inbox. Top-level notes still broadcast. Self-replies and Damus-only parents do not notify. Failure does not fail POST /messages.                                                               |
 | 2026-09-12 | Operator `DEBUG_TOKEN` debug reads every persisted forum row (live, soft-hidden, and replies) via `GET /debug/messages` and `GET /debug/messages/:id`; hidden JPEG/PNG/WebP bytes via `GET /debug/messages/:id/photo`. Soft-hide remains a public-API filter only; public `GET /messages` hide behaviour is unchanged.                                                                                                                                                      |
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
-| 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law.                                                                                                                                                                                                                              |
+| 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law. Principle 7: CONCEPT/commits stay English; visitor UI is catalogized (`en`, `de`, `es`, `fil`).                                                                                                                              |
 
 ---
 
