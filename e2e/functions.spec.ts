@@ -1363,6 +1363,12 @@ test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 
   expect((await request.get('/debug/accounts')).status()).toBe(401);
 });
 
+test('Function: isChainAccount — GET /trust-chain around a missing id is 404', async ({
+  request,
+}) => {
+  expect((await request.get('/trust-chain?around=ghost')).status()).toBe(404);
+});
+
 test('Function: isStaffRole — GET /trust-chain is empty on default boot', async ({ request }) => {
   const res = await request.get('/trust-chain');
   expect(res.status()).toBe(200);

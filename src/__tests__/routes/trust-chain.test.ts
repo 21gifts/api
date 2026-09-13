@@ -48,28 +48,44 @@ describe('GET /trust-chain', () => {
     expect(await res.json()).toEqual({ nodes: [], edges: [] });
   });
 
-  it('returns stored nodes and edges without propose or inferred links', async () => {
+  it('returns only founder seeds with no edges on the bare GET', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
     await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 2 }));
     await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
     await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
-    await authStore.createAccount(
-      account({ id: 'd', role: 'verified', name: 'Disconnected', createdAt: 4 }),
-    );
+    const edges: TrustEdge[] = [
+      { id: 'e1', subjectId: 'v', actorId: 'm', kind: 'verify', createdAt: 10 },
+      { id: 'e3', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm', createdAt: 12 },
+    ];
+    const res = await mount(authStore, new InMemoryTrustStore(edges)).request('/trust-chain');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      nodes: [{ id: 'f', name: 'F', role: 'founder' }],
+      edges: [],
+    });
+  });
+
+  it('returns one hop around a chain member and omits propose', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
+    await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 2 }));
+    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
+    await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
     const edges: TrustEdge[] = [
       { id: 'e1', subjectId: 'v', actorId: 'm', kind: 'verify', createdAt: 10 },
       { id: 'e2', subjectId: 'v', actorId: 'm', kind: 'moderator_propose', createdAt: 11 },
       { id: 'e3', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm', createdAt: 12 },
     ];
-    const res = await mount(authStore, new InMemoryTrustStore(edges)).request('/trust-chain');
+    const res = await mount(authStore, new InMemoryTrustStore(edges)).request(
+      '/trust-chain?around=m',
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       nodes: [
         { id: 'f', name: 'F', role: 'founder' },
         { id: 'm', name: 'M', role: 'moderator' },
         { id: 'v', name: 'V', role: 'verified' },
-        { id: 'd', name: 'Disconnected', role: 'verified' },
       ],
       edges: [
         { from: 'm', to: 'v', kind: 'verify' },
@@ -78,15 +94,29 @@ describe('GET /trust-chain', () => {
     });
   });
 
-  it('returns 503 and logs when listEdges throws', async () => {
+  it('returns 404 when around is missing or not on the chain', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
+    const missing = await mount(authStore, new InMemoryTrustStore()).request(
+      '/trust-chain?around=ghost',
+    );
+    expect(missing.status).toBe(404);
+    const basis = await mount(authStore, new InMemoryTrustStore()).request('/trust-chain?around=b');
+    expect(basis.status).toBe(404);
+  });
+
+  it('returns 503 and logs when listEdgesTouching throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
     const throwing: TrustStore = {
-      listEdges: async () => {
+      listEdges: async () => [],
+      listEdgesForSubject: async () => [],
+      listEdgesTouching: async () => {
         throw new Error('boom');
       },
-      listEdgesForSubject: async () => [],
       insertEdge: async (row) => row,
     };
-    const res = await mount(new InMemoryAuthStore(), throwing).request('/trust-chain');
+    const res = await mount(authStore, throwing).request('/trust-chain?around=f');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
     expect(parsedEvents(warn).some((event) => event['event'] === 'trust.chain.failed')).toBe(true);

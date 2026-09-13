@@ -1664,6 +1664,13 @@
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustRoutes`.
 
+## Function: isChainAccount
+
+- **Purpose:** True when `account.role` appears on the public Trust Chain (`founder`, `moderator`, or `verified`). `basis` is false.
+- **Inputs:** `Account`.
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `trustChainRoutes` (`GET /trust-chain?around=`).
+
 ## Function: buildTrustChain
 
 - **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_confirm` / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; never includes `moderator_propose`; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
@@ -1695,20 +1702,20 @@
 ## Function: InMemoryTrustStore
 
 - **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
-- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists.
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists.
 - **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `trustStore`.
 
 ## Function: PostgresTrustStore
 
-- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`.
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: trustChainRoutes
 
-- **Purpose:** Hono sub-app for public `GET /trust-chain`. No auth. Loads `listAccounts` + `listEdges`, then `buildTrustChain`. Empty arrays when none. Store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Purpose:** Hono sub-app for public `GET /trust-chain`. No auth. Bare GET returns founder seeds (no edges). `?around=<id>` returns that chain member plus one hop of stored public edges via `listEdgesTouching`. Empty arrays when none. Unknown/basis `around` → 404. Store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
 - **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`.
 - **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
 - **Used by:** `createApp`.

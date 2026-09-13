@@ -228,6 +228,7 @@ describe('POST /debug/trust-edges', () => {
     const throwing: TrustStore = {
       listEdges: async () => [],
       listEdgesForSubject: async () => [],
+      listEdgesTouching: async () => [],
       insertEdge: async () => {
         throw new Error('boom');
       },

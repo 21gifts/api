@@ -88,6 +88,7 @@ describe('InMemoryTrustStore', () => {
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryTrustStore().listEdges()).toEqual([]);
     expect(await new InMemoryTrustStore().listEdgesForSubject('sub')).toEqual([]);
+    expect(await new InMemoryTrustStore().listEdgesTouching('sub')).toEqual([]);
   });
 
   it('copies the seed and listed rows so callers cannot mutate store state', async () => {
@@ -120,6 +121,18 @@ describe('InMemoryTrustStore', () => {
   it('listEdgesForSubject filters and keeps oldest-first order', async () => {
     const store = new InMemoryTrustStore([LATE, EARLY, TIE_HIGH]);
     expect((await store.listEdgesForSubject('sub')).map((row) => row.id)).toEqual(['a', 'b']);
+  });
+
+  it('listEdgesTouching includes subject and actor ends', async () => {
+    const asActor: TrustEdge = {
+      id: 'act',
+      subjectId: 'other',
+      actorId: 'sub',
+      kind: 'verify',
+      createdAt: Date.parse('2026-08-04T00:00:00.000Z'),
+    };
+    const store = new InMemoryTrustStore([LATE, EARLY, TIE_HIGH, asActor]);
+    expect((await store.listEdgesTouching('sub')).map((row) => row.id)).toEqual(['a', 'b', 'act']);
   });
 
   it('insertEdge then list returns a copy of the new row', async () => {
@@ -190,6 +203,15 @@ describe('PostgresTrustStore', () => {
     expect(listed).toEqual([]);
   });
 
+  it('listEdgesTouching binds subject or actor', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const listed = await new PostgresTrustStore(sql).listEdgesTouching('sub');
+    expect(sql.queries[0]?.text).toMatch(/WHERE subject_id = \$1 OR actor_id = \$1/);
+    expect(sql.queries[0]?.params).toEqual(['sub']);
+    expect(listed).toEqual([]);
+  });
+
   it('insertEdge binds columns and does not use ON CONFLICT', async () => {
     const sql = new MockSql();
     const created = await new PostgresTrustStore(sql).insertEdge(EARLY);
@@ -235,5 +257,6 @@ describe('PostgresTrustStore', () => {
     await expect(new PostgresTrustStore(sql).listEdgesForSubject('sub')).rejects.toThrow(
       'list boom',
     );
+    await expect(new PostgresTrustStore(sql).listEdgesTouching('sub')).rejects.toThrow('list boom');
   });
 });

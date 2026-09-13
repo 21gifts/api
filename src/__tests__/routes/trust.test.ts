@@ -72,6 +72,7 @@ function post(
 
 const throwingList: TrustStore = {
   listEdges: async () => [],
+  listEdgesTouching: async () => [],
   listEdgesForSubject: async () => {
     throw new Error('list boom');
   },
@@ -81,6 +82,7 @@ const throwingList: TrustStore = {
 const duplicateInsert: TrustStore = {
   listEdges: async () => [],
   listEdgesForSubject: async () => [],
+  listEdgesTouching: async () => [],
   insertEdge: async () => {
     throw new Error('duplicate trust edge');
   },
@@ -89,6 +91,7 @@ const duplicateInsert: TrustStore = {
 const boomInsert: TrustStore = {
   listEdges: async () => [],
   listEdgesForSubject: async () => [],
+  listEdgesTouching: async () => [],
   insertEdge: async () => {
     throw new Error('insert boom');
   },
@@ -535,6 +538,7 @@ describe('POST /trust/*', () => {
       const dupStore: TrustStore = {
         listEdges: async () => withPropose,
         listEdgesForSubject: async () => withPropose,
+        listEdgesTouching: async () => withPropose,
         insertEdge: async () => {
           throw new Error('duplicate trust edge');
         },
@@ -551,6 +555,7 @@ describe('POST /trust/*', () => {
       const boomStore: TrustStore = {
         listEdges: async () => withPropose,
         listEdgesForSubject: async () => withPropose,
+        listEdgesTouching: async () => withPropose,
         insertEdge: async () => {
           throw new Error('insert boom');
         },

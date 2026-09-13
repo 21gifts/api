@@ -190,7 +190,9 @@ export function serializeTrustEdge(edge: TrustEdge): TrustEdgeJson {
 }
 
 /** True when `account.role` appears on the public chain. */
-function isChainAccount(account: Account): account is Account & { role: TrustChainNode['role'] } {
+export function isChainAccount(
+  account: Account,
+): account is Account & { role: TrustChainNode['role'] } {
   return account.role === 'founder' || account.role === 'moderator' || account.role === 'verified';
 }
 

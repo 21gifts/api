@@ -31,6 +31,14 @@ export interface TrustStore {
   listEdgesForSubject(subjectId: string): Promise<TrustEdge[]>;
 
   /**
+   * Edges whose subject or actor is `accountId`, oldest `createdAt` first, then `id`.
+   *
+   * @param accountId - Account on either end of the edge.
+   * @returns Edge copies (caller-owned).
+   */
+  listEdgesTouching(accountId: string): Promise<TrustEdge[]>;
+
+  /**
    * Insert. Rejects a duplicate `(subjectId, kind)`.
    *
    * @param edge - Fully formed edge (id, subject, actor, kind, time).
@@ -98,6 +106,20 @@ export class InMemoryTrustStore implements TrustStore {
   listEdgesForSubject(subjectId: string): Promise<TrustEdge[]> {
     return Promise.resolve(
       sortedCopies(this.#edges.filter((edge) => edge.subjectId === subjectId)),
+    );
+  }
+
+  /**
+   * Oldest-first copy of edges that touch `accountId`.
+   *
+   * @param accountId - Account on either end of the edge.
+   * @returns A new array of copies.
+   */
+  listEdgesTouching(accountId: string): Promise<TrustEdge[]> {
+    return Promise.resolve(
+      sortedCopies(
+        this.#edges.filter((edge) => edge.subjectId === accountId || edge.actorId === accountId),
+      ),
     );
   }
 
@@ -176,6 +198,20 @@ export class PostgresTrustStore implements TrustStore {
     const rows = await this.#sql.query<TrustSqlRow>(
       `SELECT id, subject_id, actor_id, kind, created_at FROM trust_edge WHERE subject_id = $1 ORDER BY created_at ASC, id ASC`,
       [subjectId],
+    );
+    return rows.map((row) => mapTrustRow(row));
+  }
+
+  /**
+   * Oldest-first list from `trust_edge` where `accountId` is subject or actor.
+   *
+   * @param accountId - Account on either end (`$1`).
+   * @returns Mapped rows.
+   */
+  async listEdgesTouching(accountId: string): Promise<TrustEdge[]> {
+    const rows = await this.#sql.query<TrustSqlRow>(
+      `SELECT id, subject_id, actor_id, kind, created_at FROM trust_edge WHERE subject_id = $1 OR actor_id = $1 ORDER BY created_at ASC, id ASC`,
+      [accountId],
     );
     return rows.map((row) => mapTrustRow(row));
   }

@@ -535,6 +535,10 @@ test('GET /trust-chain is empty on default boot', async ({ request }) => {
   expect(body.edges).toEqual([]);
 });
 
+test('GET /trust-chain?around= missing id is 404', async ({ request }) => {
+  expect((await request.get('/trust-chain?around=ghost')).status()).toBe(404);
+});
+
 test('POST /trust/verify without bearer is 401', async ({ request }) => {
   const res = await request.post('/trust/verify', { data: { accountId: 'x' } });
   expect(res.status()).toBe(401);

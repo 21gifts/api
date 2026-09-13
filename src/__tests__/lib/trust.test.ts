@@ -3,6 +3,7 @@ import type { Account, AccountRole } from '@/lib/auth/store';
 import {
   accountTrust,
   buildTrustChain,
+  isChainAccount,
   isStaffRole,
   serializeTrustEdge,
   type TrustEdge,
@@ -32,6 +33,17 @@ describe('isStaffRole', () => {
   it('is true for founder and moderator only', () => {
     const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'founder'];
     expect(roles.filter(isStaffRole)).toEqual(['moderator', 'founder']);
+  });
+});
+
+describe('isChainAccount', () => {
+  it('is true for founder, moderator, and verified only', () => {
+    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'founder'];
+    expect(roles.filter((role) => isChainAccount(account({ id: role, role })))).toEqual([
+      'verified',
+      'moderator',
+      'founder',
+    ]);
   });
 });
 
