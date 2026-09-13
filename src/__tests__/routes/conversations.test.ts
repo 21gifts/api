@@ -471,14 +471,21 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string; kind: string; name: string };
+    const body = (await res.json()) as {
+      id: string;
+      kind: string;
+      name: string;
+      lastFromMe: boolean;
+    };
     expect(body.name).toBe('Bob');
     expect(body.kind).toBe('member_member');
     expect(body.id.length).toBeGreaterThan(8);
+    expect(body.lastFromMe).toBe(false);
     expect(body).not.toHaveProperty('accountA');
     expect(body).not.toHaveProperty('accountId');
     expect(body).not.toHaveProperty('eventId');
     expect(body).not.toHaveProperty('npub');
+    expect(body).not.toHaveProperty('lastSenderAccountId');
   });
 
   it('opens a platform thread when the note author is the platform account', async () => {

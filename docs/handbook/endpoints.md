@@ -401,7 +401,7 @@
 
 ## Endpoint: POST /conversations
 
-- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind`).
+- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind` and `lastFromMe`; empty new threads are `lastFromMe: false`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "forumMessageId" string; 400 `{ error: 'Cannot message yourself' }` when the author is the session account; 404 `{ error: 'Not found' }` for a non-UUID / missing note / Damus note without pubkey; 503 Conversations are unavailable.
 - **Used by:** App "message the author" from a forum note.
 - **Auth:** `Authorization: Bearer` session.
@@ -415,7 +415,7 @@
 
 ## Endpoint: POST /conversations/:id
 
-- **Purpose:** Bearer required. Body `{ text }` 1–500 via `normalizeForumText`. Appends a message. Staff (founder/moderator) replies on a platform thread persist as the platform account (worker signs with the platform nsec). Local persist does not wait for relay ACK.
+- **Purpose:** Bearer required. Body `{ text }` 1–500 via `normalizeForumText`. Appends a message. 200 is the public conversation message (includes `fromMe`; true for the viewer, including staff sending as the platform account). Staff (founder/moderator) replies on a platform thread persist as the platform account (worker signs with the platform nsec). Local persist does not wait for relay ACK.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 404 Not found; 503 Conversations are unavailable.
 - **Used by:** App conversation composer.
 - **Auth:** `Authorization: Bearer` session.
