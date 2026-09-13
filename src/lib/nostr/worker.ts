@@ -179,6 +179,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+    ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);

@@ -168,6 +168,11 @@ export interface AuthStore {
    */
   getAccountByLightningAddress(address: string): Promise<Account | undefined>;
   /**
+   * Look up an account by custodial Nostr pubkey (case-insensitive hex).
+   * Unique index in Postgres; in-memory scans `#nostrKeys`.
+   */
+  getAccountByPubkey(pubkey: string): Promise<Account | undefined>;
+  /**
    * Whether the account already has at least one passkey credential.
    * Used to refuse a second claim on a provisioned profile.
    */
@@ -382,6 +387,19 @@ export class InMemoryAuthStore implements AuthStore {
       }
       if (account.lightningAddress.trim().toLowerCase() === needle) {
         return account;
+      }
+    }
+    return undefined;
+  }
+
+  async getAccountByPubkey(pubkey: string): Promise<Account | undefined> {
+    const needle = pubkey.trim().toLowerCase();
+    if (needle === '') {
+      return undefined;
+    }
+    for (const [accountId, record] of this.#nostrKeys) {
+      if (record.pubkey.toLowerCase() === needle) {
+        return this.#accounts.get(accountId);
       }
     }
     return undefined;

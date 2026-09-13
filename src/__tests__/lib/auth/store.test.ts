@@ -707,6 +707,31 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
   });
 
+  it('looks up an account by nostr pubkey case-insensitively', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.setNostrKeyIfAbsent('acc', {
+      pubkey: 'ab'.repeat(32),
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    expect((await store.getAccountByPubkey('AB'.repeat(32)))?.id).toBe('acc');
+    expect(await store.getAccountByPubkey('cd'.repeat(32))).toBeUndefined();
+    expect(await store.getAccountByPubkey('')).toBeUndefined();
+  });
+
   it('updateAccountNameByLightningAddress changes only name', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

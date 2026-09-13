@@ -1699,7 +1699,10 @@ one of (non-empty trimmed text, photo) is required. Optional `inReplyTo`
 is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
-null) → **404** `{ "error": "Not found" }`. Multipart video posts do not
+null) → **404** `{ "error": "Not found" }`. A valid parent where the
+caller is neither the parent author nor `moderator`/`founder` → **403**
+`{ "error": "A reply needs a Bitcoin payment" }` (`verified` is not
+exempt; pay via `POST /messages/:id/invoice` instead). Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
@@ -1781,6 +1784,14 @@ is itself a reply →
 { "error": "Not found" }
 ```
 
+Valid parent, but the caller is not the parent author and not
+`moderator`/`founder` →
+**Response** `403`:
+
+```json
+{ "error": "A reply needs a Bitcoin payment" }
+```
+
 Store failure → **Response** `503`:
 
 ```json
@@ -1807,10 +1818,17 @@ Success → **Response** `200`:
 ### `POST /messages/:id/invoice`
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
-Body `{ "sats": <int 1..10_000_000> }`. The api signs a NIP-57 zap request with the
+Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`. Optional `text` is the
+NIP-57 zap-request `content` (same 1–500 forum rules; omit or whitespace = gift-only).
+Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
+The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
-zap-request JSON (`isNip57Invoice`). LNURL success with a non-NIP-57 invoice
+zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt still increments
+the **parent** `sats`. After that increment (never in the same SQL CTE), the worker
+inserts a reply from the payer (`text` from the zap-request comment or `""`,
+`sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
+`skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with

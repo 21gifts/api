@@ -306,6 +306,21 @@ describe('PostgresAuthStore', () => {
     expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
   });
 
+  it('looks up an account by nostr_pubkey with lower(trim) SQL', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, name: 'Ada' }];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByPubkey('  AA'.repeat(16) + '  ');
+    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(nostr_pubkey\) = lower\(trim\(\$1\)\)/);
+    expect(found?.id).toBe('acc');
+  });
+
+  it('returns undefined when nostr_pubkey lookup has no rows', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByPubkey('aa'.repeat(32)),
+    ).toBeUndefined();
+  });
+
   it('returns undefined when lightning_address lookup has no rows', async () => {
     expect(
       await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(

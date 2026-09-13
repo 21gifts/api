@@ -87,7 +87,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(40);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(42);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -101,6 +101,8 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/event_id/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/payer_account_id uuid/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/gift_reply_id uuid REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
@@ -870,6 +872,56 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.sats).toBe(21);
     expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(false);
     expect((await store.getById('a'))?.sats).toBe(21);
+  });
+
+  it('tracks gift-reply receipts and finds ok invoices', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('r-gift', 'a', 21);
+    await store.updateZapReceiptGift('r-gift', { payerAccountId: 'payer' });
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([
+      { receiptEventId: 'r-gift', messageId: 'a', sats: 21, payerAccountId: 'payer' },
+    ]);
+    await store.updateZapReceiptGift('r-gift', { giftReplyId: 'reply-1' });
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
+    await store.updateZapReceiptGift('missing', { payerAccountId: 'x' });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-ok',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      messageId: 'a',
+      payerAccountId: 'payer',
+      authorAccountId: 'a',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'hi' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc21',
+      paymentHash: '11'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt({ ...invoice, result: 'not_zap', id: 'inv-bad' });
+    await store.recordInvoiceAttempt({
+      ...invoice,
+      id: 'inv-newer',
+      createdAt: new Date('2026-08-29T12:00:00.000Z'),
+    });
+    await store.recordInvoiceAttempt(invoice);
+    const olderSameTime: MessageInvoiceAttempt = {
+      ...invoice,
+      id: 'inv-older',
+      createdAt: invoice.createdAt,
+      paymentHash: '11'.repeat(32),
+      pr: 'lnbc21',
+    };
+    await store.recordInvoiceAttempt(olderSameTime);
+    expect((await store.findOkInvoiceByPaymentHash('11'.repeat(32)))?.id).toBe('inv-newer');
+    expect((await store.findOkInvoiceByPr('lnbc21'))?.id).toBe('inv-newer');
+    expect(await store.findOkInvoiceByPaymentHash('22'.repeat(32))).toBeUndefined();
+    expect(await store.findOkInvoiceByPr('lnbc-miss')).toBeUndefined();
   });
 
   it('listPendingSigned and clearSignedEvent round-trip in memory', async () => {
@@ -2700,5 +2752,85 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.receipt).toEqual({});
     expect(listed[2]?.receipt).toEqual({});
     expect(listed[3]?.receipt).toEqual({});
+  });
+
+  it('findOkInvoiceByPaymentHash queries ok rows newest first', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'inv-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc',
+        payment_hash: '11'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const found = await store.findOkInvoiceByPaymentHash('11'.repeat(32));
+    expect(sql.queries[0]?.text).toMatch(/payment_hash = \$1 AND result = 'ok'/);
+    expect(found?.id).toBe('inv-1');
+    expect(
+      await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
+    ).toBeUndefined();
+  });
+
+  it('findOkInvoiceByPr queries ok rows newest first', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'inv-pr',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc',
+        payment_hash: '11'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const found = await store.findOkInvoiceByPr('lnbc');
+    expect(sql.queries[0]?.text).toMatch(/pr = \$1 AND result = 'ok'/);
+    expect(found?.id).toBe('inv-pr');
+    expect(await new PostgresMessageStore(new MockSql()).findOkInvoiceByPr('lnbc')).toBeUndefined();
+  });
+
+  it('updateZapReceiptGift and listZapReceiptsAwaitingGiftReply talk to SQL', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        event_id: 'r1',
+        message_id: 'm1',
+        sats: '21',
+        payer_account_id: 'payer',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    await store.updateZapReceiptGift('r1', { payerAccountId: 'payer', giftReplyId: 'g1' });
+    expect(sql.executes).toHaveLength(2);
+    const listed = await store.listZapReceiptsAwaitingGiftReply(10);
+    expect(listed).toEqual([
+      { receiptEventId: 'r1', messageId: 'm1', sats: 21, payerAccountId: 'payer' },
+    ]);
+    await store.updateZapReceiptGift('r1', {});
   });
 });

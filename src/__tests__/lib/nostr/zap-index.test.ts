@@ -4,7 +4,8 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
-import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryMessageStore, type MessageInvoiceAttempt } from '@/lib/message-store';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -1036,6 +1037,12 @@ describe('indexOpenZapReceipts', () => {
       recordZapIngest: (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) =>
         base.recordZapIngest(...args),
       listZapIngests: (limit: number) => base.listZapIngests(limit),
+      findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
+      updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+        base.updateZapReceiptGift(...args),
+      listZapReceiptsAwaitingGiftReply: (limit: number) =>
+        base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const querier = new RecordingQuerier();
     querier.events = [
@@ -1204,6 +1211,12 @@ describe('indexOpenZapReceipts', () => {
           return base.recordZapIngest(...args);
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
+        findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
+        updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+          base.updateZapReceiptGift(...args),
+        listZapReceiptsAwaitingGiftReply: (limit: number) =>
+          base.listZapReceiptsAwaitingGiftReply(limit),
       };
       const querier = new RecordingQuerier();
       querier.events = [
@@ -1463,6 +1476,12 @@ describe('indexOpenZapReceipts', () => {
           throw new Error('ingest persist boom');
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
+        findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
+        updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+          base.updateZapReceiptGift(...args),
+        listZapReceiptsAwaitingGiftReply: (limit: number) =>
+          base.listZapReceiptsAwaitingGiftReply(limit),
       };
       const querier = new RecordingQuerier();
       querier.events = [
@@ -1798,5 +1817,727 @@ describe('indexOpenZapReceipts', () => {
     });
     warn.mockRestore();
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
+  });
+
+  it('creates a gift-only reply from an ok invoice after indexing', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-parent',
+      lightningAddress: 'zap-gift-parent@example.com',
+      messageId: 'm-gift-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-gift',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-gift',
+      authorAccountId: 'acc-gift-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-parent@example.com',
+      zapRequest: { content: '' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift',
+      paymentHash: '33'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-gift'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '33'.repeat(32), amountMsat: 21_000 });
+    const pushStore = new InMemoryPushStore();
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      pushStore,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.accountId).toBe('payer-gift');
+    expect(replies[0]?.text).toBe('');
+    expect(replies[0]?.sats).toBe(21);
+    expect(replies[0]?.nostrPublishState).toBe('skipped');
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
+  });
+
+  it('retries a pending gift reply on the next tick', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-retry-parent',
+      lightningAddress: 'zap-retry-parent@example.com',
+      messageId: 'm-retry-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-retry',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Cara',
+      lightningAddress: 'cara@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-retry'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordZapReceipt('r-retry', parentId, 7);
+    await store.updateZapReceiptGift('r-retry', { payerAccountId: 'payer-retry' });
+    await store.recordInvoiceAttempt({
+      id: 'inv-retry',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-retry',
+      authorAccountId: 'acc-retry-parent',
+      amountSats: 7,
+      lightningAddress: null,
+      zapRequest: { content: 'keep going' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-retry',
+      paymentHash: '44'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+    });
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.text).toBe('keep going');
+    expect(replies[0]?.nostrPublishState).toBe('pending');
+    expect(replies[0]?.sats).toBe(7);
+  });
+
+  it('does not create a reply when no payer can be resolved', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-anon-parent',
+      lightningAddress: 'zap-anon-parent@example.com',
+      messageId: 'm-anon-parent',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-anon',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-anon'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('creates a reply from a verified 9734 description when no invoice matches', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-damus-parent',
+      lightningAddress: 'zap-damus-parent@example.com',
+      messageId: 'm-damus-parent',
+    });
+    const zapSecret = generateSecretKey();
+    const zapPub = getPublicKey(zapSecret);
+    await auth.createAccount({
+      id: 'payer-damus',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'damus@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-damus'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await auth.setNostrKeyIfAbsent('payer-damus', {
+      pubkey: zapPub,
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const zapReq = finalizeEvent(
+      {
+        kind: 9734,
+        content: 'from damus',
+        created_at: 1_700_000_000,
+        tags: [['p', 'aa'.repeat(32)]],
+      },
+      zapSecret,
+    );
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-damus',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-damus'],
+          ['description', JSON.stringify(zapReq)],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '66'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.accountId).toBe('payer-damus');
+    expect(replies[0]?.text).toBe('from damus');
+  });
+
+  it('keeps parent sats when gift-reply create throws', async () => {
+    class BoomStore extends InMemoryMessageStore {
+      override create(
+        ...args: Parameters<InMemoryMessageStore['create']>
+      ): ReturnType<InMemoryMessageStore['create']> {
+        if (args[0].parentId !== null) {
+          return Promise.reject(new Error('create boom'));
+        }
+        return super.create(...args);
+      }
+    }
+    const store = new BoomStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-boom-parent',
+      lightningAddress: 'zap-boom-parent@example.com',
+      messageId: 'm-boom-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-boom',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bo',
+      lightningAddress: 'bo@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-boom'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-boom',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-boom',
+      authorAccountId: 'acc-boom-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 21 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-boom',
+      paymentHash: '77'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-boom',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-boom'],
+          ['description', 'not-json'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '77'.repeat(32), amountMsat: 21_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toHaveLength(1);
+  });
+
+  it('skips retry when the parent is gone or the payer is missing', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-skip-parent',
+      lightningAddress: 'zap-skip-parent@example.com',
+      messageId: 'm-skip-parent',
+    });
+    await store.recordZapReceipt('r-skip-deleted', parentId, 3);
+    await store.updateZapReceiptGift('r-skip-deleted', { payerAccountId: 'ghost' });
+    await store.markDeleted(parentId, new Date(1), 'acc-skip-parent');
+    await store.create({
+      id: 'm-skip-live',
+      accountId: 'acc-skip-parent',
+      name: 'Ada',
+      text: 'live',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: `${'01'.repeat(32)}`,
+    });
+    await store.recordZapReceipt('r-skip-ghost', 'm-skip-live', 3);
+    await store.updateZapReceiptGift('r-skip-ghost', { payerAccountId: 'ghost' });
+    await auth.createAccount({
+      id: 'payer-no-inv',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'noinv@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-no-inv'),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    await store.recordZapReceipt('r-no-inv', 'm-skip-live', 2);
+    await store.updateZapReceiptGift('r-no-inv', { payerAccountId: 'payer-no-inv' });
+    class RetryBoomStore extends InMemoryMessageStore {
+      override create(
+        ...args: Parameters<InMemoryMessageStore['create']>
+      ): ReturnType<InMemoryMessageStore['create']> {
+        if (args[0].id !== 'm-skip-live' && args[0].parentId === 'm-skip-live') {
+          return Promise.reject(new Error('retry boom'));
+        }
+        return super.create(...args);
+      }
+    }
+    const boomStore = new RetryBoomStore();
+    await boomStore.create((await store.getById('m-skip-live'))!);
+    await boomStore.recordZapReceipt('r-no-inv', 'm-skip-live', 2);
+    await boomStore.updateZapReceiptGift('r-no-inv', { payerAccountId: 'payer-no-inv' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store: boomStore,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+    });
+    warn.mockRestore();
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      notificationStore: new InMemoryNotificationStore(),
+      pushStore: new InMemoryPushStore(),
+    });
+    const skipped = await store.listReplies('m-skip-live');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.accountId).toBe('payer-no-inv');
+    expect(skipped[0]?.text).toBe('');
+  });
+
+  it('ignores an unverified or non-9734 description tag', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-bad-desc',
+      lightningAddress: 'zap-bad-desc@example.com',
+      messageId: 'm-bad-desc',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-bad-desc',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-bad-desc'],
+          ['description', JSON.stringify({ kind: 1, pubkey: 'aa'.repeat(32), content: 'nope' })],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '88'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('ignores a 9734 description without id/sig or with a bad signature', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-bad-sig',
+      lightningAddress: 'zap-bad-sig@example.com',
+      messageId: 'm-bad-sig',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-no-sig',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-no-sig'],
+          ['description', JSON.stringify({ kind: 9734, pubkey: 'aa'.repeat(32), content: 'x' })],
+        ],
+      },
+      {
+        id: 'r-bad-sig',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-bad-sig'],
+          [
+            'description',
+            JSON.stringify({
+              kind: 9734,
+              pubkey: 'aa'.repeat(32),
+              id: 'ff'.repeat(32),
+              sig: 'ee'.repeat(32),
+              created_at: 1,
+              tags: [],
+              content: 'x',
+            }),
+          ],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '99'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(42);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('ignores empty, non-json, and non-object description tags', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-desc-parse',
+      lightningAddress: 'zap-desc-parse@example.com',
+      messageId: 'm-desc-parse',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-empty-desc',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-empty-desc'],
+          ['description', ''],
+        ],
+      },
+      {
+        id: 'r-not-json',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-not-json'],
+          ['description', 'not-json'],
+        ],
+      },
+      {
+        id: 'r-json-null',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-json-null'],
+          ['description', 'null'],
+        ],
+      },
+      {
+        id: 'r-json-num',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-json-num'],
+          ['description', '1'],
+        ],
+      },
+      {
+        id: 'r-overlong',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-overlong'],
+          [
+            'description',
+            JSON.stringify(
+              finalizeEvent(
+                {
+                  kind: 9734,
+                  content: 'A'.repeat(501),
+                  created_at: 1_700_000_000,
+                  tags: [['p', 'aa'.repeat(32)]],
+                },
+                generateSecretKey(),
+              ),
+            ),
+          ],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'aa'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(105);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('matches an ok invoice by pr when the payment hash differs', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pr-parent',
+      lightningAddress: 'zap-pr-parent@example.com',
+      messageId: 'm-pr-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-pr',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-pr'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-pr',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-pr',
+      authorAccountId: 'acc-pr-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'via pr' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pr-match',
+      paymentHash: '00'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pr',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pr-match'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'bb'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.text).toBe('via pr');
+  });
+
+  it('logs notify failure without dropping the gift reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-notify-parent',
+      lightningAddress: 'zap-notify-parent@example.com',
+      messageId: 'm-notify-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-notify',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ned',
+      lightningAddress: 'ned@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-notify'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-notify',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-notify',
+      authorAccountId: 'acc-notify-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'A'.repeat(501) },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-notify',
+      paymentHash: 'cc'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    notifications.create = async () => {
+      throw new Error('notify boom');
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-notify',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-notify'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'cc'.repeat(32), amountMsat: 21_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    warn.mockRestore();
+    expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 });

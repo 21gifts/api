@@ -101,6 +101,18 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   return store;
 }
 
+/** Named session whose role may post unpaid replies (moderator). */
+async function staffStore(name: string): Promise<InMemoryAuthStore> {
+  const store = await namedStore(name);
+  const existing = await store.getAccount('acc');
+  expect(existing).toBeDefined();
+  if (existing === undefined) {
+    throw new Error('expected account');
+  }
+  await store.updateAccount({ ...existing, role: 'moderator' });
+  return store;
+}
+
 /** Signed-in account with rules agreed (name may still be missing). */
 async function rulesStore(
   overrides: { name?: string | null; nameSkippedAt?: number | null } = {},
@@ -156,6 +168,10 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listInvoiceAttempts: boom,
     recordZapIngest: boom,
     listZapIngests: boom,
+    findOkInvoiceByPaymentHash: boom,
+    findOkInvoiceByPr: boom,
+    updateZapReceiptGift: boom,
+    listZapReceiptsAwaitingGiftReply: boom,
     ...overrides,
   };
 }
@@ -822,7 +838,7 @@ describe('POST /messages', () => {
     expect(replies[0]?.text).toBe('child');
   });
 
-  it('creates a notification for the parent author and enqueues a targeted push', async () => {
+  it('returns 403 when a basis account replies without paying', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -833,6 +849,124 @@ describe('POST /messages', () => {
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
+  it('returns 403 when a verified account replies without paying', async () => {
+    const authStore = await namedStore('Ada');
+    const acc = await authStore.getAccount('acc');
+    expect(acc).toBeDefined();
+    if (acc === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({ ...acc, role: 'verified' });
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        inReplyTo: parentId,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+  });
+
+  it('lets a founder reply without paying', async () => {
+    const authStore = await namedStore('Ada');
+    const acc = await authStore.getAccount('acc');
+    expect(acc).toBeDefined();
+    if (acc === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({ ...acc, role: 'founder' });
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'bless you', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await messageStore.listReplies(parentId)).toHaveLength(1);
+  });
+
+  it('creates a notification for the parent author and enqueues a targeted push', async () => {
+    const authStore = await staffStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_001,
       rulesAgreedAt: now(),
@@ -919,7 +1053,7 @@ describe('POST /messages', () => {
   });
 
   it('still returns 200 when reply notify throws', async () => {
-    const authStore = await namedStore('Ada');
+    const authStore = await staffStore('Ada');
     await authStore.createAccount({
       id: 'parent',
       linkingKey: null,
@@ -963,7 +1097,7 @@ describe('POST /messages', () => {
     );
   });
 
-  it('does not notify when the parent note is Damus-only', async () => {
+  it('rejects an unpaid reply to a Damus-only parent', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
@@ -994,13 +1128,14 @@ describe('POST /messages', () => {
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
     expect(await pushStore.claimPending(10, now() + 1, 60_000)).toEqual([]);
   });
 
   it('enqueues a reply push without a notification store', async () => {
-    const authStore = await namedStore('Ada');
+    const authStore = await staffStore('Ada');
     await authStore.createAccount({
       id: 'parent',
       linkingKey: null,
@@ -1050,7 +1185,7 @@ describe('POST /messages', () => {
   });
 
   it('creates a notification for a photo-only reply with empty text', async () => {
-    const authStore = await namedStore('Ada');
+    const authStore = await staffStore('Ada');
     await authStore.createAccount({
       id: 'parent',
       linkingKey: null,
@@ -1431,6 +1566,11 @@ describe('POST /messages', () => {
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
+      findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
+      updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+        base.updateZapReceiptGift(...args),
+      listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -1498,6 +1638,11 @@ describe('POST /messages', () => {
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
+      findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
+      updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+        base.updateZapReceiptGift(...args),
+      listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const app = new Hono().route(
       '/messages',
@@ -1819,6 +1964,20 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts[0]?.result).toBe('bad_body');
     expect(attempts[0]?.httpStatus).toBe(400);
     expect(attempts[0]?.pr).toBeNull();
+  });
+
+  it('returns 400 when invoice text is too long', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const app = mount(await namedStore('Ada'), messageStore);
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21, text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts[0]?.result).toBe('bad_body');
   });
 
   it('returns 401 without a session', async () => {
@@ -2691,6 +2850,11 @@ describe('POST /messages/:id/invoice', () => {
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
+      findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
+      updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
+        base.updateZapReceiptGift(...args),
+      listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);

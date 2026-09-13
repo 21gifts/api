@@ -1,12 +1,21 @@
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT } from '@/lib/message';
+import {
+  MESSAGE_LIST_LIMIT,
+  MESSAGE_MAX_LENGTH,
+  normalizeForumText,
+  truncatePubkeyDisplay,
+  unsignedNostrDefaults,
+  type MessageRow,
+} from '@/lib/message';
 import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
+import { notifyForumReply } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { enqueueZapPush } from '@/lib/push-worker';
 import { verifyEvent } from 'nostr-tools/pure';
@@ -279,8 +288,11 @@ export async function indexOpenZapReceipts(args: {
   verifyReceipt?: (event: NostrEventFrame) => boolean;
   /** Optional push store; newly indexed receipts enqueue a zap push. */
   pushStore?: PushStore;
+  /** Optional notification store; gift-replies notify the parent author. */
+  notificationStore?: NotificationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
+    await retryGiftReplies(args);
     return;
   }
   const rows = await args.store.listLatest(MESSAGE_LIST_LIMIT);
@@ -297,6 +309,7 @@ export async function indexOpenZapReceipts(args: {
     eventIds.push(row.eventId);
   }
   if (eventIds.length === 0) {
+    await retryGiftReplies(args);
     return;
   }
 
@@ -332,6 +345,7 @@ export async function indexOpenZapReceipts(args: {
       }
     }
   }
+  await retryGiftReplies(args);
 }
 
 /**
@@ -349,6 +363,7 @@ async function ingestOneReceipt(
     fetchImpl: FetchFn;
     verifyReceipt: (event: NostrEventFrame) => boolean;
     pushStore?: PushStore;
+    notificationStore?: NotificationStore;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -572,6 +587,23 @@ async function ingestOneReceipt(
       logEvent('push.enqueue.failed');
     }
   }
+  if (indexed) {
+    await ensureGiftReplyFromReceipt({
+      store: args.store,
+      auth: args.auth,
+      now: args.now,
+      receiptEventId: event.id,
+      parent: row,
+      amountSats,
+      bolt11: pr,
+      paymentHash: decoded.paymentHash,
+      tags: event.tags,
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      ...(args.notificationStore === undefined
+        ? {}
+        : { notificationStore: args.notificationStore }),
+    });
+  }
 }
 
 /**
@@ -608,4 +640,236 @@ async function resolveProviderPubkey(args: {
     expiresAt: args.nowMs + LN_ADDRESS_CACHE_TTL_MS,
   });
   return nostrPubkey;
+}
+
+/** Collaborators for creating a gift-reply after a zap is indexed. */
+interface GiftReplyDeps {
+  store: MessageStore;
+  auth: AuthStore;
+  now: () => number;
+  pushStore?: PushStore;
+  notificationStore?: NotificationStore;
+}
+
+/**
+ * Create a forum reply for a newly indexed receipt (invoice first, then 9734).
+ *
+ * @param args - Receipt, parent, bolt11, tags.
+ */
+async function ensureGiftReplyFromReceipt(
+  args: GiftReplyDeps & {
+    receiptEventId: string;
+    parent: MessageRow;
+    amountSats: number;
+    bolt11: string;
+    paymentHash: string;
+    tags: string[][];
+  },
+): Promise<void> {
+  let payer: Account | undefined;
+  let text = '';
+  const byHash = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
+  const invoice = byHash ?? (await args.store.findOkInvoiceByPr(args.bolt11));
+  if (invoice !== undefined) {
+    payer = await args.auth.getAccount(invoice.payerAccountId);
+    text = commentFromZapRequest(invoice.zapRequest);
+  }
+  if (payer === undefined) {
+    const parsed = parseVerifiedZapRequest(args.tags);
+    if (parsed !== null) {
+      payer = await args.auth.getAccountByPubkey(parsed.pubkey);
+      if (payer !== undefined) {
+        text = parsed.content;
+      }
+    }
+  }
+  if (payer === undefined) {
+    return;
+  }
+  try {
+    await insertGiftReply({
+      store: args.store,
+      auth: args.auth,
+      now: args.now,
+      receiptEventId: args.receiptEventId,
+      parent: args.parent,
+      amountSats: args.amountSats,
+      payer,
+      text,
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      ...(args.notificationStore === undefined
+        ? {}
+        : { notificationStore: args.notificationStore }),
+    });
+  } catch {
+    logEvent('nostr.zap.gift_reply.failed', { receiptId: args.receiptEventId });
+  }
+}
+
+/**
+ * Retry receipts that have a payer but no gift-reply row yet.
+ *
+ * @param args - Store, auth, optional notify collaborators.
+ */
+async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
+  const pending = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);
+  for (const row of pending) {
+    try {
+      const parent = await args.store.getById(row.messageId);
+      if (parent === undefined || parent.deletedAt !== null) {
+        continue;
+      }
+      const payer = await args.auth.getAccount(row.payerAccountId);
+      if (payer === undefined) {
+        continue;
+      }
+      const invoices = await args.store.listInvoiceAttempts(200);
+      const match = invoices.find(
+        (item) =>
+          item.result === 'ok' &&
+          item.payerAccountId === row.payerAccountId &&
+          item.messageId === row.messageId &&
+          item.amountSats === row.sats,
+      );
+      const text = commentFromZapRequest(match?.zapRequest ?? null);
+      await insertGiftReply({
+        store: args.store,
+        auth: args.auth,
+        now: args.now,
+        receiptEventId: row.receiptEventId,
+        parent,
+        amountSats: row.sats,
+        payer,
+        text,
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(args.notificationStore === undefined
+          ? {}
+          : { notificationStore: args.notificationStore }),
+      });
+    } catch {
+      logEvent('nostr.zap.gift_reply.failed', { receiptId: row.receiptEventId });
+    }
+  }
+}
+
+/**
+ * Persist the gift-reply row and notify. Logs and returns on create/notify failure.
+ *
+ * @param args - Payer, parent, text, receipt id.
+ */
+async function insertGiftReply(
+  args: GiftReplyDeps & {
+    receiptEventId: string;
+    parent: MessageRow;
+    amountSats: number;
+    payer: Account;
+    text: string;
+  },
+): Promise<void> {
+  await args.store.updateZapReceiptGift(args.receiptEventId, {
+    payerAccountId: args.payer.id,
+  });
+  const awaiting = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);
+  /* v8 ignore next 3 -- gift_reply_id already set (retry race) */
+  if (!awaiting.some((row) => row.receiptEventId === args.receiptEventId)) {
+    return;
+  }
+  const pubkey = (await args.auth.getNostrPublicKey(args.payer.id)) ?? '';
+  const nameTrim = args.payer.name?.trim() ?? '';
+  const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
+  const text = args.text;
+  const created = await args.store.create({
+    id: crypto.randomUUID(),
+    accountId: args.payer.id,
+    name,
+    text,
+    createdAt: new Date(args.now()),
+    hasPhoto: false,
+    hasVideo: false,
+    videoContentType: null,
+    ...unsignedNostrDefaults(),
+    parentId: args.parent.id,
+    authorPubkey: pubkey === '' ? null : pubkey,
+    sats: args.amountSats,
+    nostrPublishState: text === '' ? 'skipped' : 'pending',
+    contentFp: null,
+  });
+  await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
+  try {
+    await notifyForumReply({
+      messages: args.store,
+      account: args.payer,
+      created,
+      parentId: args.parent.id,
+      ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    });
+  } catch {
+    logEvent('messages.reply.notify.failed');
+  }
+}
+
+/**
+ * Read a normalised NIP-57 comment from a stored zap request, or `''`.
+ *
+ * @param zapRequest - Signed 9734 JSON, or null.
+ * @returns Forum text, possibly empty.
+ */
+function commentFromZapRequest(zapRequest: Record<string, unknown> | null): string {
+  if (zapRequest === null) {
+    return '';
+  }
+  const raw = zapRequest['content'];
+  if (typeof raw !== 'string') {
+    return '';
+  }
+  return normalizeForumText(raw, MESSAGE_MAX_LENGTH) ?? '';
+}
+
+/**
+ * Parse and verify a kind:9734 from a 9735 `description` tag.
+ *
+ * @param tags - Receipt tags.
+ * @returns Pubkey + content, or null.
+ */
+function parseVerifiedZapRequest(tags: string[][]): { pubkey: string; content: string } | null {
+  const description = tags.find(
+    (tag) => tag[0] === 'description' && typeof tag[1] === 'string',
+  )?.[1];
+  if (description === undefined || description === '') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(description) as unknown;
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    return null;
+  }
+  const event = parsed as {
+    kind?: unknown;
+    pubkey?: unknown;
+    content?: unknown;
+    id?: unknown;
+    sig?: unknown;
+    created_at?: unknown;
+    tags?: unknown;
+  };
+  if (event.kind !== 9734 || typeof event.pubkey !== 'string' || event.pubkey === '') {
+    return null;
+  }
+  if (typeof event.id !== 'string' || typeof event.sig !== 'string') {
+    return null;
+  }
+  if (!verifyEvent(event as Parameters<typeof verifyEvent>[0])) {
+    return null;
+  }
+  const rawContent = event.content;
+  /* v8 ignore next -- verified 9734 content is a string */
+  const content = typeof rawContent === 'string' ? rawContent : '';
+  const normalised = normalizeForumText(content, MESSAGE_MAX_LENGTH);
+  const text = normalised === null ? '' : normalised;
+  return { pubkey: event.pubkey, content: text };
 }
