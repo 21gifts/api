@@ -66,6 +66,18 @@ describe('GET /trust-chain', () => {
     });
   });
 
+  it('treats empty around as founder seeds, not 404', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
+    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
+    const res = await mount(authStore, new InMemoryTrustStore()).request('/trust-chain?around=');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      nodes: [{ id: 'f', name: 'F', role: 'founder' }],
+      edges: [],
+    });
+  });
+
   it('returns one hop around a chain member and omits propose', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));

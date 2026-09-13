@@ -535,6 +535,14 @@ test('GET /trust-chain is empty on default boot', async ({ request }) => {
   expect(body.edges).toEqual([]);
 });
 
+test('GET /trust-chain?around= empty query is founder seeds not 404', async ({ request }) => {
+  const res = await request.get('/trust-chain?around=');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
+  expect(body.nodes).toEqual([]);
+  expect(body.edges).toEqual([]);
+});
+
 test('GET /trust-chain?around= missing id is 404', async ({ request }) => {
   expect((await request.get('/trust-chain?around=ghost')).status()).toBe(404);
 });
