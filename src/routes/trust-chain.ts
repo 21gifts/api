@@ -53,6 +53,16 @@ export function trustChainRoutes(deps: TrustChainRouteDeps): Hono {
 /** Focus account is missing or not on the public chain. */
 class NeighborhoodNotFound extends Error {}
 
+/** Postgres `22P02` when `around` is not a uuid (memory stores do not throw). */
+function isInvalidUuid(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === '22P02'
+  );
+}
+
 /**
  * One hop around `aroundId`: the focus account, stored public edges that
  * touch it, and the accounts on those edges.
@@ -65,11 +75,25 @@ async function neighborhood(
   deps: TrustChainRouteDeps,
   aroundId: string,
 ): Promise<ReturnType<typeof buildTrustChain>> {
-  const focus = await deps.authStore.getAccount(aroundId);
+  let focus: Account | undefined;
+  try {
+    focus = await deps.authStore.getAccount(aroundId);
+  } catch (error) {
+    if (isInvalidUuid(error)) {
+      throw new NeighborhoodNotFound();
+    }
+    throw error;
+  }
   if (focus === undefined || !isChainAccount(focus)) {
     throw new NeighborhoodNotFound();
   }
-  const edges = await deps.trustStore.listEdgesTouching(aroundId);
+  const touching = await deps.trustStore.listEdgesTouching(aroundId);
+  const edges = touching.filter(
+    (edge) =>
+      edge.kind === 'verify' ||
+      edge.kind === 'moderator_confirm' ||
+      edge.kind === 'moderator_appoint',
+  );
   const ids = new Set<string>([aroundId]);
   for (const edge of edges) {
     ids.add(edge.actorId);

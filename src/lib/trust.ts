@@ -189,7 +189,12 @@ export function serializeTrustEdge(edge: TrustEdge): TrustEdgeJson {
   };
 }
 
-/** True when `account.role` appears on the public chain. */
+/**
+ * True when `account.role` appears on the public chain.
+ *
+ * @param account - Live account (any role).
+ * @returns `true` for `founder`, `moderator`, and `verified`.
+ */
 export function isChainAccount(
   account: Account,
 ): account is Account & { role: TrustChainNode['role'] } {
