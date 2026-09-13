@@ -573,13 +573,12 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **Tone**: warm, direct, dignified. Not charity-speak ("the needy"), not
   techbro-speak ("disrupting philanthropy"). People helping people, with the
   best money humans have ever had.
-- **Origin**: rooted, not restricted. Most of the people who started
-  21.gifts, and most of the people who give here, stand in Christian faith.
-  That faith taught them that a gift has no price and that a guest is welcome
-  without a test. 21.gifts does not prescribe a religion. Anyone can give or
-  receive. The neighbour in the story of the Good Samaritan is the one who
-  shows mercy — that is the door of this house. Public copy lives on `/about`
-  in the app. The living-room rules stay house law, not liturgy.
+- **Origin**: 21.gifts comes from Christian faith. Most of the people who
+  started it, and most of the people who give here, stand in that faith.
+  Public copy lives on `/about` in the app: state the origin, quote the
+  signature verse, do not justify or explain it. No inclusion slogan, no
+  FAQ that asks whether the project is Christian, no "open to everyone"
+  disclaimer.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
   give." Matches rule 1: a gift has no price. Shown quietly in the marketing
   footer; not on the hero.
@@ -716,6 +715,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | Operator `DEBUG_TOKEN` debug reads every persisted forum row (live, soft-hidden, and replies) via `GET /debug/messages` and `GET /debug/messages/:id`; hidden JPEG/PNG/WebP bytes via `GET /debug/messages/:id/photo`. Soft-hide remains a public-API filter only; public `GET /messages` hide behaviour is unchanged.                                                                                                                                                      |
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
 | 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law. Principle 7: CONCEPT/commits stay English; visitor UI is catalogized (`en`, `de`, `es`, `fil`).                                                                                                                              |
+| 2026-09-13 | Brand origin is stated, not explained: public copy (`/about` and catalogs) names the Christian origin and quotes Matthew 10:8; it does not justify access, does not use "rooted, not restricted", and does not FAQ "is this a Christian project?". Supersedes the earlier 2026-09-13 "rooted, not restricted" public-copy wording. Principle 7 unchanged.                                                                                                                   |
 
 ---
 
