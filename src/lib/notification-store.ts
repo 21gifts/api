@@ -44,6 +44,7 @@ export interface NotificationStore {
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
+   * @returns The row for this recipient, or `undefined` if missing or owned by someone else.
    */
   getByIdForRecipient(id: string, accountId: string): Promise<NotificationRow | undefined>;
 
@@ -54,6 +55,7 @@ export interface NotificationStore {
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp for a previously unread row.
+   * @returns The row after stamping `readAt`, the already-read row unchanged, or `undefined` if missing/other recipient.
    */
   markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined>;
 
@@ -175,6 +177,7 @@ export class InMemoryNotificationStore implements NotificationStore {
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
+   * @returns A copy of the row, or `undefined` if missing or owned by someone else.
    */
   getByIdForRecipient(id: string, accountId: string): Promise<NotificationRow | undefined> {
     const row = this.#rows.find((item) => item.id === id && item.recipientAccountId === accountId);
@@ -187,6 +190,7 @@ export class InMemoryNotificationStore implements NotificationStore {
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp.
+   * @returns A copy after stamping `readAt`, the already-read row unchanged, or `undefined` if missing/other recipient.
    */
   markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined> {
     const row = this.#rows.find((item) => item.id === id && item.recipientAccountId === accountId);
@@ -324,6 +328,7 @@ export class PostgresNotificationStore implements NotificationStore {
    *
    * @param id - Notification id (`$1`).
    * @param accountId - Recipient (`$2`).
+   * @returns The mapped row, or `undefined` if missing or owned by someone else.
    */
   async getByIdForRecipient(id: string, accountId: string): Promise<NotificationRow | undefined> {
     const rows = await this.#sql.query<NotificationSqlRow>(
@@ -340,6 +345,7 @@ export class PostgresNotificationStore implements NotificationStore {
    * @param id - Notification id.
    * @param accountId - Recipient.
    * @param readAt - Read stamp.
+   * @returns The mapped row after stamping `read_at`, the already-read row unchanged, or `undefined` if missing/other recipient.
    */
   async markRead(
     id: string,
