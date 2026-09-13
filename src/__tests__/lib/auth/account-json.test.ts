@@ -3,6 +3,7 @@ import {
   serializeAccount,
   serializeDebugAccount,
   serializeOwnerAccount,
+  serializeOwnerAccountWithPosts,
   serializeViewProfile,
 } from '@/lib/auth/account-json';
 import type { Account } from '@/lib/auth/store';
@@ -35,6 +36,7 @@ describe('serializeAccount', () => {
       rulesAgreedAt: null,
     });
     expect(json).not.toHaveProperty('viewKey');
+    expect(json).not.toHaveProperty('hasPosted');
     expect(Object.keys(json)).toHaveLength(9);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
@@ -45,13 +47,14 @@ describe('serializeDebugAccount', () => {
     const json = serializeDebugAccount({ ...account, isPlatform: true });
     expect(json.isPlatform).toBe(true);
     expect(json).not.toHaveProperty('viewKey');
+    expect(json).not.toHaveProperty('hasPosted');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
   });
 });
 
 describe('serializeOwnerAccount', () => {
-  it('includes viewKey, setup, and missing alongside the nine public fields', () => {
-    const json = serializeOwnerAccount(account);
+  it('includes viewKey, setup, missing, and hasPosted false alongside the nine public fields', () => {
+    const json = serializeOwnerAccount(account, false);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
@@ -65,11 +68,59 @@ describe('serializeOwnerAccount', () => {
       viewKey: 'a'.repeat(64),
       setup: 'rules',
       missing: ['rules'],
+      hasPosted: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
     expect(json.missing).toEqual(['rules']);
+    expect(json.hasPosted).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('passes hasPosted true through', () => {
+    const json = serializeOwnerAccount(account, true);
+    expect(json.hasPosted).toBe(true);
+    expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('profileMessageId');
+  });
+});
+
+describe('serializeOwnerAccountWithPosts', () => {
+  it('sets hasPosted false when the store reports no live post', async () => {
+    let excludeId: string | null | undefined;
+    const json = await serializeOwnerAccountWithPosts(account, {
+      accountHasLivePost: async (_accountId, id) => {
+        excludeId = id;
+        return false;
+      },
+    });
+    expect(excludeId).toBeNull();
+    expect(json.hasPosted).toBe(false);
+    expect(json).not.toHaveProperty('profileMessageId');
+    expect(json).not.toHaveProperty('isPlatform');
+  });
+
+  it('sets hasPosted true when the store reports a live post', async () => {
+    const json = await serializeOwnerAccountWithPosts(account, {
+      accountHasLivePost: async () => true,
+    });
+    expect(json.hasPosted).toBe(true);
+  });
+
+  it('passes profileMessageId as the exclude id', async () => {
+    let seen: { accountId: string; excludeId: string | null } | undefined;
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async (accountId, excludeId) => {
+          seen = { accountId, excludeId };
+          return false;
+        },
+      },
+    );
+    expect(seen).toEqual({ accountId: 'acc', excludeId: 'note-1' });
+    expect(json.hasPosted).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
   });
 });
@@ -88,6 +139,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('linkingKey');
     expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
+    expect(json).not.toHaveProperty('hasPosted');
     expect(Object.keys(json)).toHaveLength(5);
   });
 

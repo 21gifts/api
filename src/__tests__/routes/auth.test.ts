@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { authRoutes } from '@/routes/auth';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 import { meRoutes } from '@/routes/me';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 
 const now = (): number => 1_000_000;
 const ORIGIN = 'http://localhost:3000';
@@ -19,6 +20,7 @@ function mount(store: InMemoryAuthStore, webAuthnRpId: string | undefined = 'loc
       webAuthnRpId,
       webAuthnRpName: undefined,
       passkeyCeremony: new FakePasskeyCeremony(),
+      messages: new InMemoryMessageStore(),
     }),
   );
 }
@@ -43,6 +45,7 @@ describe('auth routes', () => {
         webAuthnRpId: 'localhost',
         webAuthnRpName: undefined,
         passkeyCeremony: new FakePasskeyCeremony(),
+        messages: new InMemoryMessageStore(),
         nostrKek: new Uint8Array(32).fill(8),
         nostrKeygen: { generateSecretKey },
       }),
@@ -225,18 +228,18 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         token: string;
-        account: { id: string; linkingKey: string | null; viewKey: string };
+        account: { id: string; linkingKey: string | null; viewKey: string; hasPosted: boolean };
       };
       expect(body.token).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.linkingKey).toBeNull();
       expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.account.hasPosted).toBe(false);
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.register.ok' && e['accountId'] === body.account.id,
         ),
       ).toBe(true);
 
-      const { InMemoryMessageStore } = await import('@/lib/message-store');
       const meApp = new Hono().route(
         '/me',
         meRoutes({
@@ -353,10 +356,11 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         token: string;
-        account: { id: string; viewKey: string };
+        account: { id: string; viewKey: string; hasPosted: boolean };
       };
       expect(body.account.id).toBe(accountId);
       expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.account.hasPosted).toBe(false);
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.login.ok' && e['accountId'] === accountId,

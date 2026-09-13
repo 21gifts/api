@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { createApp } from '@/server';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -89,6 +91,23 @@ async function seedPasskeyAccount(
   });
 }
 
+/**
+ * Seed one live non-profile forum row for `accountId` (EARLY-shaped).
+ */
+function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: 'post-alice',
+      accountId,
+      name: 'Ada',
+      text: 'first',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+  ]);
+}
+
 describe('GET /invoices/passkey', () => {
   it('returns 503 when the spend token is not configured', async () => {
     const res = await createApp({ spendApiToken: '' }).request(
@@ -165,6 +184,132 @@ describe('GET /invoices/passkey', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ hasPasskey: true });
+  });
+});
+
+describe('GET /invoices/posted', () => {
+  it('returns 503 when the spend token is not configured', async () => {
+    const res = await createApp({ spendApiToken: '' }).request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  });
+
+  it('returns 401 when the bearer is missing', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 400 when address is missing', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices/posted', auth());
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+  });
+
+  it('returns 400 on a bad Lightning Address', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      '/invoices/posted?address=nope',
+      auth(),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    });
+  });
+
+  it('returns hasPosted false for an unknown address', async () => {
+    const res = await createApp({ spendApiToken: TOKEN }).request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPosted: false });
+  });
+
+  it('returns hasPosted false for an account without messages', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPosted: false });
+  });
+
+  it('returns hasPosted true when the account has a live non-profile message', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPosted: true });
+  });
+
+  it('returns hasPosted false when the account has only a profile note', async () => {
+    const authStore = new InMemoryAuthStore();
+    const profileId = 'prof-alice';
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: profileId,
+    });
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: profileId,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await createApp({ spendApiToken: TOKEN, authStore, messageStore }).request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPosted: false });
   });
 });
 
@@ -281,11 +426,31 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
   });
 
+  it('returns 403 when the account has a passkey but no live forum post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
+  });
+
   it('returns 502 when LNURL-pay cannot issue an invoice', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl: FetchFn = async () => jsonResponse({}, 500);
-    const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+    }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
@@ -300,6 +465,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
+      messageStore: livePostStore(),
       fetchImpl: happyFetch(),
     }).request(
       '/invoices',
@@ -315,6 +481,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
+      messageStore: livePostStore(),
       fetchImpl: happyFetch(),
     }).request(
       '/invoices',
@@ -329,6 +496,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
+      messageStore: livePostStore(),
       fetchImpl: happyFetch(),
     }).request(
       '/invoices',
