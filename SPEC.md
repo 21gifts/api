@@ -93,7 +93,7 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                     |
 | GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
 | GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
-| GET    | `/trust-chain`                               | none                       | Public stored trust graph (`nodes` + `edges`)                                     |
+| GET    | `/trust-chain`                               | none                       | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges        |
 | POST   | `/trust/verify`                              | Bearer                     | Staff: confirm a person in real life (`verified`)                                 |
 | POST   | `/trust/propose-moderator`                   | Bearer                     | Staff: propose a verified member as moderator                                     |
 | POST   | `/trust/confirm-moderator`                   | Bearer                     | Staff: second, independent confirmation → `moderator`                             |
