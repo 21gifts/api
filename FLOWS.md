@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-14.
+**Status**: living document. Last revised 2026-09-15.
 
 ---
 
@@ -151,7 +151,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api `addSats` on that post and inserts a platform-account gift-reply under it (the daily gift is visible in the thread, not a silent wallet credit)
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note**, not on a daily timer. Invoice HTTP
@@ -169,7 +169,7 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 (requires rules + name + Lightning Address — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
+`{ address, messageId }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`

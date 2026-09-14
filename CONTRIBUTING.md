@@ -47,7 +47,7 @@ api/
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
-│   │   ├── invoices.ts       # GET /invoices/passkey, POST /invoices, POST /invoices/proof (spend worker)
+│   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
@@ -85,7 +85,7 @@ api/
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
-│   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing
+│   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }`)
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic

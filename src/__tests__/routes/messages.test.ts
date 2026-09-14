@@ -1583,7 +1583,7 @@ describe('POST /messages', () => {
   });
 
   it('pings spend once on a top-level post', async () => {
-    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
     }).request('/messages', {
@@ -1592,12 +1592,13 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'hello' }),
     });
     expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com');
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
   });
 
   it('does not ping spend on a reply', async () => {
-    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
@@ -1624,7 +1625,7 @@ describe('POST /messages', () => {
   });
 
   it('does not ping spend a second time on photo replay', async () => {
-    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), { spendPing });
     const body = JSON.stringify({
       text: 'push photo',
@@ -1636,15 +1637,16 @@ describe('POST /messages', () => {
       body,
     });
     expect(first.status).toBe(200);
-    const firstId = ((await first.json()) as { id: string }).id;
+    const created = (await first.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
     const second = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body,
     });
     expect(second.status).toBe(200);
-    expect(((await second.json()) as { id: string }).id).toBe(firstId);
+    expect(((await second.json()) as { id: string }).id).toBe(created.id);
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
   });
 
@@ -1659,7 +1661,7 @@ describe('POST /messages', () => {
 
   it('still returns 200 when spendPing.ping throws', async () => {
     const spendPing = {
-      ping: vi.fn(async () => {
+      ping: vi.fn(async (_address: string, _messageId: string) => {
         throw new Error('ping boom');
       }),
     };
@@ -1671,12 +1673,14 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'hello' }),
     });
     expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
   it('pings spend once on a multipart video top-level post', async () => {
-    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const mp4 = (): Uint8Array => {
       const bytes = new Uint8Array(32);
       bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
@@ -1694,8 +1698,9 @@ describe('POST /messages', () => {
       body: form,
     });
     expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com');
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
   });
 
   it('returns 503 when findLiveByAccountContent throws', async () => {
