@@ -1151,10 +1151,10 @@
 
 ## Function: ensureProfileMessage
 
-- **Purpose:** Ensure a named account with a non-blank Lightning Address has exactly one top-level profile forum note. No-ops when name or Lightning Address is null/blank after trim. When both are set, the first insert creates one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing. Rolls back the insert if `updateAccount` fails or a later write wins the live pointer. A successful insert calls `notifyForumPost` (in-app rows via `auth.listAccounts()` except the actor; Web Push via `pushStore` when set).
+- **Purpose:** Ensure a named account with a non-blank Lightning Address has exactly one live top-level profile forum note. No-ops when name or Lightning Address is null/blank after trim. When both are set, the first insert creates one message (kind:1 pipeline defaults, frozen tags only) and stores `profileMessageId`. Rename is idempotent and does not change note text. Recreates when the stored id is missing or the row is soft-hidden (`deletedAt` set). A live `profileMessageId` winner is adopted and the insert is deleted; a hidden winner is missing — the created live note is kept and `profileMessageId` is persisted to it. Rolls back the insert if `updateAccount` fails. A successful insert calls `notifyForumPost` (in-app rows via `auth.listAccounts()` except the actor; Web Push via `pushStore` when set).
 - **Inputs:** `{ auth, messages, account, now, pushStore?, notifications? }`.
-- **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure, a vanished row, or a later `profileMessageId` winner.
-- **Used by:** `meRoutes` (`POST /me/name`, `POST /me/lightning-address`), `debugRoutes` provision, Nostr worker backfill.
+- **Returns / side effects:** The account (possibly with `profileMessageId` set). May insert a message and update the account; may delete an orphaned insert on update failure, a vanished row, or a later live `profileMessageId` winner.
+- **Used by:** `meRoutes` (`POST /me/name`, `POST /me/lightning-address`, `PUT /me/about`), `debugRoutes` provision, Nostr worker backfill.
 
 ## Function: serializeAccount
 
