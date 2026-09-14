@@ -184,7 +184,6 @@ describe('openBootStores', () => {
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
     const btcUsdIdx = executes.findIndex((q) => q.includes('btc_usd_daily'));
     const fiatIdx = executes.findIndex((q) => q.includes('usd_fiat_daily'));
-    const dbChangeIdx = executes.findIndex((q) => q.includes('db_change'));
     expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
     expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
     expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
