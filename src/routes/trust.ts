@@ -115,10 +115,27 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       const verifyEdge = existing.find((edge) => edge.kind === 'verify');
-      if (subject.role === 'verified' && verifyEdge?.actorId === caller.id) {
-        return c.json(accountSummary(subject), 200);
+      if (verifyEdge !== undefined) {
+        if (verifyEdge.actorId !== caller.id) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        if (subject.role === 'verified') {
+          return c.json(accountSummary(subject), 200);
+        }
+        if (subject.role !== 'basis') {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const updated = { ...subject, role: 'verified' as const };
+        try {
+          await deps.authStore.updateAccount(updated);
+        } catch {
+          logEvent('trust.write.failed');
+          return c.json({ error: 'Trust chain is unavailable' }, 503);
+        }
+        logEvent('trust.verified', { subjectId: subject.id, actorId: caller.id });
+        return c.json(accountSummary(updated), 200);
       }
-      if (subject.role !== 'basis' || verifyEdge !== undefined) {
+      if (subject.role !== 'basis') {
         return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'verified' as const };
@@ -212,9 +229,6 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (subject.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
-      if (subject.role !== 'verified') {
-        return c.json({ error: 'Conflict' }, 409);
-      }
       let existing: TrustEdge[];
       try {
         existing = await deps.trustStore.listEdgesForSubject(subject.id);
@@ -222,7 +236,28 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
-      if (existing.some((edge) => edge.kind === 'moderator_confirm')) {
+      const confirmEdge = existing.find((edge) => edge.kind === 'moderator_confirm');
+      if (confirmEdge !== undefined) {
+        if (confirmEdge.actorId !== caller.id) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        if (subject.role === 'moderator') {
+          return c.json(accountSummary(subject), 200);
+        }
+        if (subject.role !== 'verified') {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const updated = { ...subject, role: 'moderator' as const };
+        try {
+          await deps.authStore.updateAccount(updated);
+        } catch {
+          logEvent('trust.write.failed');
+          return c.json({ error: 'Trust chain is unavailable' }, 503);
+        }
+        logEvent('trust.moderator_confirmed', { subjectId: subject.id, actorId: caller.id });
+        return c.json(accountSummary(updated), 200);
+      }
+      if (subject.role !== 'verified') {
         return c.json({ error: 'Conflict' }, 409);
       }
       const propose = existing.find((edge) => edge.kind === 'moderator_propose');
@@ -273,8 +308,20 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
-      if (existing.some((edge) => edge.kind === 'moderator_appoint')) {
-        return c.json({ error: 'Conflict' }, 409);
+      const appointEdge = existing.find((edge) => edge.kind === 'moderator_appoint');
+      if (appointEdge !== undefined) {
+        if (appointEdge.actorId !== caller.id) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const updated = { ...subject, role: 'moderator' as const };
+        try {
+          await deps.authStore.updateAccount(updated);
+        } catch {
+          logEvent('trust.write.failed');
+          return c.json({ error: 'Trust chain is unavailable' }, 503);
+        }
+        logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
+        return c.json(accountSummary(updated), 200);
       }
       const updated = { ...subject, role: 'moderator' as const };
       try {

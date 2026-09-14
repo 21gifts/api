@@ -213,6 +213,26 @@ describe('POST /trust/*', () => {
       expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['e1']);
     });
 
+    it('completes the role write when the caller already stored a verify edge', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'e1',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'verify',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['e1']);
+    });
+
     it('verifies a basis subject, inserts an edge, and logs', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
@@ -284,6 +304,30 @@ describe('POST /trust/*', () => {
       });
       expect(res.status).toBe(503);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+    });
+
+    it('returns 503 when updateAccount throws after insert and retries the role write', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const spy = vi.spyOn(authStore, 'updateAccount').mockRejectedValueOnce(new Error('role boom'));
+      const first = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(first.status).toBe(503);
+      expect(await first.json()).toEqual({ error: 'Trust chain is unavailable' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(
+        (await trustStore.listEdges()).some((row) => row.kind === 'verify' && row.actorId === MOD),
+      ).toBe(true);
+      const retry = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect(await trustStore.listEdges()).toHaveLength(1);
+      spy.mockRestore();
     });
   });
 
@@ -590,7 +634,7 @@ describe('POST /trust/*', () => {
       expect((await boom.authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
 
-    it('returns 409 without changing role when a confirm edge is already stored', async () => {
+    it('completes the role write when the caller already stored a confirm edge', async () => {
       const { authStore, trustStore } = await pending();
       await trustStore.insertEdge({
         id: 'confirm',
@@ -602,8 +646,74 @@ describe('POST /trust/*', () => {
       const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
         accountId: SUBJECT,
       });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(
+        (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_confirm'),
+      ).toHaveLength(1);
+    });
+
+    it('returns 409 when a confirm edge from a different actor already exists', async () => {
+      const { authStore, trustStore } = await pending();
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_confirm',
+        createdAt: 2,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
       expect(res.status).toBe(409);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+    });
+
+    it('returns 200 idempotently when the caller already confirmed the subject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['confirm']);
+    });
+
+    it('returns 503 when updateAccount throws after insert and retries the role write', async () => {
+      const { authStore, trustStore } = await pending();
+      const spy = vi.spyOn(authStore, 'updateAccount').mockRejectedValueOnce(new Error('role boom'));
+      const first = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(first.status).toBe(503);
+      expect(await first.json()).toEqual({ error: 'Trust chain is unavailable' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect(
+        (await trustStore.listEdges()).some(
+          (row) => row.kind === 'moderator_confirm' && row.actorId === MOD,
+        ),
+      ).toBe(true);
+      const retry = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(
+        (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_confirm'),
+      ).toHaveLength(1);
+      spy.mockRestore();
     });
   });
 
@@ -731,7 +841,7 @@ describe('POST /trust/*', () => {
       expect((await boom.authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
 
-    it('returns 409 without changing role when an appoint edge is already stored', async () => {
+    it('completes the role write when the caller already stored an appoint edge', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
       ]);
@@ -745,8 +855,54 @@ describe('POST /trust/*', () => {
       const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
         accountId: SUBJECT,
       });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
+    });
+
+    it('returns 409 when an appoint edge from a different actor already exists', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: OTHER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
       expect(res.status).toBe(409);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+    });
+
+    it('returns 503 when updateAccount throws after insert and retries the role write', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const spy = vi.spyOn(authStore, 'updateAccount').mockRejectedValueOnce(new Error('role boom'));
+      const first = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(first.status).toBe(503);
+      expect(await first.json()).toEqual({ error: 'Trust chain is unavailable' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(
+        (await trustStore.listEdges()).some(
+          (row) => row.kind === 'moderator_appoint' && row.actorId === FOUNDER,
+        ),
+      ).toBe(true);
+      const retry = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(await trustStore.listEdges()).toHaveLength(1);
+      spy.mockRestore();
     });
   });
 });
