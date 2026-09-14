@@ -318,14 +318,44 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           };
           const created = await deps.messages.create(row);
           const live = await deps.store.getAccount(owner.id);
-          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
           if (live === undefined) {
+            await deps.messages.deleteById(created.id);
             return c.json({ error: 'Unauthorized' }, 401);
           }
-          const updated: Account = { ...live, profileMessageId: created.id };
-          await deps.store.updateAccount(updated);
-          owner = updated;
-          noteId = created.id;
+          const liveId = live.profileMessageId;
+          if (typeof liveId === 'string' && liveId.trim() !== '') {
+            const winner = await deps.messages.getById(liveId);
+            if (winner !== undefined) {
+              await deps.messages.deleteById(created.id);
+              owner = live;
+              noteId = liveId;
+            }
+          }
+          if (noteId === undefined) {
+            const updated: Account = { ...live, profileMessageId: created.id };
+            await deps.store.updateAccount(updated);
+            const confirmed = await deps.store.getAccount(owner.id);
+            if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
+              await deps.messages.deleteById(created.id);
+              if (confirmed === undefined) {
+                return c.json({ error: 'Unauthorized' }, 401);
+              }
+              const confirmedId = confirmed.profileMessageId;
+              if (typeof confirmedId === 'string' && confirmedId.trim() !== '') {
+                const confirmedRow = await deps.messages.getById(confirmedId);
+                if (confirmedRow !== undefined) {
+                  owner = confirmed;
+                  noteId = confirmedId;
+                }
+              }
+              if (noteId === undefined) {
+                return c.json({ error: 'Messages are unavailable' }, 503);
+              }
+            } else {
+              owner = updated;
+              noteId = created.id;
+            }
+          }
         }
         await deps.messages.updateText(noteId, normalized);
         const liveRow = await deps.messages.getById(noteId);
