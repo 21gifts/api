@@ -68,6 +68,7 @@ async function addAccount(
     lightningAddress,
     lightningAddressVerified: lightningAddress !== null && lightningAddress !== '',
     forumLawsDismissed: false,
+    location: null,
     viewKey,
     createdAt: 1_700_000_000_000,
     rulesAgreedAt: now(),
