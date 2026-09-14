@@ -684,9 +684,11 @@ Display name is blank → **Response** `409`:
 
 Lightning Address is not required. Empty `text` clears the bio
 (`aboutMe` becomes `null`; the note row is kept with empty text). When
-no profile note exists, one is created even without a Lightning Address
-and `profileMessageId` is stored (not on owner JSON). A published
-sats=0 note is unsigned (`resetSignedEvent`) so kind:1 can be rewritten.
+no profile note exists, or the stored note is soft-hidden (`deletedAt`
+set), a new live note is created even without a Lightning Address and
+`profileMessageId` is pointed at it (not on owner JSON). The hidden row
+stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
+so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
 
