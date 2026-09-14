@@ -254,7 +254,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }
     return cors({
       origin: allowedOrigins,
-      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Authorization', 'Content-Type'],
       maxAge: 86400,
     })(c, next);
