@@ -477,9 +477,9 @@ Logged as `trust.chain.failed`.
 ### `POST /trust/verify`
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
-or `moderator`. Sets `account.role` to `verified` and inserts a `verify`
-edge from the caller to the subject. `verified` is a real-life confirmation
-(forum badge), not Lightning-Address proof.
+or `moderator`. Inserts a `verify` edge from the caller to the subject,
+then sets `account.role` to `verified`. `verified` is a real-life
+confirmation (forum badge), not Lightning-Address proof.
 
 Missing/invalid bearer → **401** `{ "error": "Unauthorized" }`.
 Caller not staff → **403** `{ "error": "Forbidden" }`.
