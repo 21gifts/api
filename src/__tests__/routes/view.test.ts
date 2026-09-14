@@ -48,9 +48,7 @@ describe('GET /view/:viewKey', () => {
   it('defaults forum and gift collaborators when omitted', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
-    const res = await new Hono()
-      .route('/view', viewRoutes({ store }))
-      .request(`/view/${VIEW_KEY}`);
+    const res = await new Hono().route('/view', viewRoutes({ store })).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ name: 'Ada', aboutMe: null });
   });
