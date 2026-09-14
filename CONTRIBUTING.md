@@ -471,7 +471,7 @@ Deploy workflows require these GitHub Actions secrets:
 
 If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, deploy fails loud (the image
 may already be on Hub). After `image-published`, the job waits for the
-infrastructure run whose title contains `image-published 21gifts/api:<tag> <sha>`
+infrastructure run whose title is `image-published 21gifts/api:<tag> <sha>`
 and fails if that run does not succeed. The wait is what makes a failed DEV
 deploy visible on the develop→main PR.
 

@@ -32,7 +32,7 @@ find_run() {
   json="$(gh run list --repo "$repo" --event repository_dispatch --limit 30 \
     --json databaseId,displayTitle,status,conclusion,createdAt)"
   printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" \
-    '[.[] | select((.displayTitle | contains($n)) and .createdAt >= $t)]
+    '[.[] | select(.displayTitle == $n and .createdAt >= $t)]
      | sort_by(.createdAt) | reverse | .[0].databaseId // empty'
 }
 
