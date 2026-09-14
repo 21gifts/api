@@ -249,6 +249,24 @@ describe('POST /trust/*', () => {
       expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
     });
 
+    it('returns 503 when getAccount throws', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const inner = authStore.getAccount.bind(authStore);
+      vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) => {
+        if (id === SUBJECT) {
+          throw new Error('get boom');
+        }
+        return inner(id);
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    });
+
     it('returns 409 when insert reports a duplicate edge', async () => {
       const { authStore } = await staffed([account({ id: SUBJECT, role: 'basis', name: 'Sub' })]);
       const res = await post(mount(authStore, duplicateInsert), '/trust/verify', 'founder', {

@@ -224,6 +224,27 @@ describe('POST /debug/trust-edges', () => {
     expect(await second.json()).toEqual({ error: 'Conflict' });
   });
 
+  it('returns 503 when getAccount throws', async () => {
+    const store = await seeded();
+    const inner = store.getAccount.bind(store);
+    vi.spyOn(store, 'getAccount').mockImplementation(async (id) => {
+      if (id === SUBJECT) {
+        throw new Error('get boom');
+      }
+      return inner(id);
+    });
+    const res = await post(mount(store, new InMemoryTrustStore()), 'secret', {
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'verify',
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.failed')).toBe(
+      true,
+    );
+  });
+
   it('returns 503 when insert throws an unexpected error', async () => {
     const throwing: TrustStore = {
       listEdges: async () => [],

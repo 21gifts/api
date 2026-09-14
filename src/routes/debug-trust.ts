@@ -66,15 +66,15 @@ export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
     if (!MESSAGE_ID_RE.test(subjectId) || !MESSAGE_ID_RE.test(actorId)) {
       return c.json({ error: 'Not found' }, 404);
     }
-    const subject = await deps.store.getAccount(subjectId);
-    const actor = await deps.store.getAccount(actorId);
-    if (subject === undefined || actor === undefined) {
-      return c.json({ error: 'Not found' }, 404);
-    }
-    if (subjectId === actorId) {
-      return c.json({ error: 'Conflict' }, 409);
-    }
     try {
+      const subject = await deps.store.getAccount(subjectId);
+      const actor = await deps.store.getAccount(actorId);
+      if (subject === undefined || actor === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (subjectId === actorId) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
       const stored = await deps.trustStore.insertEdge({
         id: crypto.randomUUID(),
         subjectId,

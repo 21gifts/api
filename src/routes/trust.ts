@@ -53,6 +53,26 @@ function isDuplicateTrustEdge(error: unknown): boolean {
 }
 
 /**
+ * Load a target account. Missing → 404. Postgres/query throw → 503, matching
+ * SPEC unexpected-store-throw on the staff POSTs.
+ */
+async function loadTargetAccount(
+  store: AuthStore,
+  id: string,
+): Promise<{ account: Account } | { error: string; status: 404 | 503 }> {
+  try {
+    const account = await store.getAccount(id);
+    if (account === undefined) {
+      return { error: 'Not found', status: 404 };
+    }
+    return { account };
+  } catch {
+    logEvent('trust.write.failed');
+    return { error: 'Trust chain is unavailable', status: 503 };
+  }
+}
+
+/**
  * Build the `/trust` route group.
  *
  * Mounted at `/trust` so the public paths are `POST /trust/verify`,
@@ -79,10 +99,11 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const subject = await deps.authStore.getAccount(parsed.data.accountId);
-      if (subject === undefined) {
-        return c.json({ error: 'Not found' }, 404);
+      const loaded = await loadTargetAccount(deps.authStore, parsed.data.accountId);
+      if ('status' in loaded) {
+        return c.json({ error: loaded.error }, loaded.status);
       }
+      const subject = loaded.account;
       if (subject.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
@@ -129,10 +150,11 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const subject = await deps.authStore.getAccount(parsed.data.accountId);
-      if (subject === undefined) {
-        return c.json({ error: 'Not found' }, 404);
+      const loaded = await loadTargetAccount(deps.authStore, parsed.data.accountId);
+      if ('status' in loaded) {
+        return c.json({ error: loaded.error }, loaded.status);
       }
+      const subject = loaded.account;
       if (subject.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
@@ -182,10 +204,11 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const subject = await deps.authStore.getAccount(parsed.data.accountId);
-      if (subject === undefined) {
-        return c.json({ error: 'Not found' }, 404);
+      const loaded = await loadTargetAccount(deps.authStore, parsed.data.accountId);
+      if ('status' in loaded) {
+        return c.json({ error: loaded.error }, loaded.status);
       }
+      const subject = loaded.account;
       if (subject.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
@@ -235,10 +258,11 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const subject = await deps.authStore.getAccount(parsed.data.accountId);
-      if (subject === undefined) {
-        return c.json({ error: 'Not found' }, 404);
+      const loaded = await loadTargetAccount(deps.authStore, parsed.data.accountId);
+      if ('status' in loaded) {
+        return c.json({ error: loaded.error }, loaded.status);
       }
+      const subject = loaded.account;
       if (subject.id === caller.id || subject.role === 'founder' || subject.role === 'moderator') {
         return c.json({ error: 'Conflict' }, 409);
       }
