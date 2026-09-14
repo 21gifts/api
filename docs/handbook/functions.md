@@ -383,7 +383,7 @@
 
 - **Purpose:** VAPID Web Push delivery via the `web-push` package to one browser subscription endpoint.
 - **Inputs:** Constructor takes resolved `VapidConfig`. `send(sub, payload)` takes a `PushSubscriptionRecord` and a JSON string body.
-- **Returns / side effects:** `isConfigured()` is `true`. Maps HTTP 404/410 to `gone`, other errors to `fail`, success to `{ ok: true }`. Optional ASCII `topic` from payload `tag` (max 32). TTL 86400.
+- **Returns / side effects:** `isConfigured()` is `true`. Maps HTTP 404/410 to `gone`, other errors to `fail`, success to `{ ok: true }`. Optional ASCII `topic` from payload `tag` (max 32). TTL 86400. `urgency` `high`.
 - **Used by:** `src/index.ts` when VAPID resolves; drained by `runPushWorkerTick`.
 
 ## Function: InMemoryPushStore
@@ -446,7 +446,7 @@
 
 - **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account.
 - **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`). Batch size and lease from module constants.
-- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; `markFailed` on fail after recording successes; `markSent` when remaining sends succeed / all gone / no subs left to try.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` then `markFailed` on fail after recording successes; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
 
 ## Function: startPushWorker

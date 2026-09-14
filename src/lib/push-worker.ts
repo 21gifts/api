@@ -2,6 +2,7 @@
  * Enqueue helpers and the Web Push outbox worker.
  */
 
+import { logEvent } from '@/lib/log';
 import {
   buildForumPushPayload,
   buildReplyPushPayload,
@@ -239,6 +240,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
         continue;
       }
       anyFail = true;
+      logEvent('push.send.failed');
     }
     if (newlyDelivered.length > 0) {
       await deps.store.recordDelivered(row.id, newlyDelivered);
