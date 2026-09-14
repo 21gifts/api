@@ -65,6 +65,7 @@ async function seededStore(
     linkingKey: LINKING_KEY,
     role: 'basis',
     name: overrides.name ?? null,
+    location: null,
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
     forumLawsDismissed: false,
