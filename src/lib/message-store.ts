@@ -80,6 +80,12 @@ function extraHashtagBindings(
   return { accountIds, patterns };
 }
 
+function postgresTextArrayLiteral(values: readonly string[]): string {
+  return `{${values
+    .map((value) => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
+    .join(',')}}`;
+}
+
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
   if (event === null) {
     return true;
@@ -2261,9 +2267,15 @@ export class PostgresMessageStore implements MessageStore {
         ? ''
         : `\n         AND NOT (id::text = ANY($${excludeParamIndex}::text[]))`;
     const params: unknown[] =
-      extras === null ? [limit] : [limit, extras.accountIds, extras.patterns];
+      extras === null
+        ? [limit]
+        : [
+            limit,
+            postgresTextArrayLiteral(extras.accountIds),
+            postgresTextArrayLiteral(extras.patterns),
+          ];
     if (excludeList !== null) {
-      params.push(excludeList);
+      params.push(postgresTextArrayLiteral(excludeList));
     }
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}

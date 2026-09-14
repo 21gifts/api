@@ -1117,9 +1117,11 @@ export function startNostrWorker(
   deps: NostrWorkerDeps,
   intervalMs: number = WORKER_INTERVAL_MS,
 ): { stop: () => void } {
-  /* v8 ignore next 3 -- interval callback */
+  /* v8 ignore next 5 -- interval callback */
   const timer = setInterval(() => {
-    void runNostrWorkerTick(deps);
+    void runNostrWorkerTick(deps).catch((error: unknown) => {
+      logEvent('nostr.worker.tick.failed', { error: String(error) });
+    });
   }, intervalMs);
   return {
     stop: () => {
