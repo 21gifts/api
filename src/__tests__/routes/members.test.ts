@@ -3,11 +3,27 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { membersRoutes } from '@/routes/members';
 
 const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const ACCOUNT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTHER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const POST_OLD = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const POST_NEW = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const MEMBER_REPLY_OLD = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const MEMBER_REPLY_NEW = '77777777-7777-4777-8777-777777777777';
+const OTHER_POST = '99999999-9999-4999-8999-999999999999';
+const OTHER_REPLY = '88888888-8888-4888-8888-888888888888';
+
+function loggedEvents(warn: ReturnType<typeof vi.spyOn>): string[] {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+    .map((arg) => (JSON.parse(arg) as { event?: string }).event)
+    .filter((event): event is string => typeof event === 'string');
+}
 
 function mount(
   authStore: InMemoryAuthStore,
@@ -34,6 +50,27 @@ async function seededCaller(
   });
   await store.createSession({ token: 'tok', accountId: 'caller', createdAt: now() });
   return store;
+}
+
+async function addAccount(
+  store: InMemoryAuthStore,
+  id: string,
+  viewKey: string,
+  extras: { name?: string; lightningAddress?: string | null } = {},
+): Promise<void> {
+  const lightningAddress = extras.lightningAddress === undefined ? null : extras.lightningAddress;
+  await store.createAccount({
+    id,
+    linkingKey: null,
+    role: 'verified',
+    name: extras.name ?? 'Ada',
+    lightningAddress,
+    lightningAddressVerified: lightningAddress !== null && lightningAddress !== '',
+    forumLawsDismissed: false,
+    viewKey,
+    createdAt: 1_700_000_000_000,
+    rulesAgreedAt: now(),
+  });
 }
 
 describe('GET /members/:accountId', () => {
@@ -107,6 +144,8 @@ describe('GET /members/:accountId', () => {
       role: 'verified',
       lightningAddress: 'ada@walletofsatoshi.com',
       createdAt: new Date(1_700_000_000_000).toISOString(),
+      postCount: 1,
+      replyCount: 0,
     });
     expect(body).not.toHaveProperty('viewKey');
     expect(body).not.toHaveProperty('eventId');
@@ -134,8 +173,14 @@ describe('GET /members/:accountId', () => {
     });
     const res = await mount(authStore).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { profileMessage: null };
+    const body = (await res.json()) as {
+      profileMessage: null;
+      postCount: number;
+      replyCount: number;
+    };
     expect(body.profileMessage).toBeNull();
+    expect(body.postCount).toBe(0);
+    expect(body.replyCount).toBe(0);
   });
 
   it('returns profileMessage null when the profile note is soft-deleted but keeps profileMessageId', async () => {
@@ -170,8 +215,14 @@ describe('GET /members/:accountId', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { profileMessage: null };
+    const body = (await res.json()) as {
+      profileMessage: null;
+      postCount: number;
+      replyCount: number;
+    };
     expect(body.profileMessage).toBeNull();
+    expect(body.postCount).toBe(0);
+    expect(body.replyCount).toBe(0);
     const account = await authStore.getAccount(ACCOUNT_ID);
     expect(account?.profileMessageId).toBe(noteId);
   });
@@ -188,5 +239,523 @@ describe('GET /members/:accountId', () => {
     const res = await mount(authStore).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+});
+
+describe('GET /members/:accountId/posts', () => {
+  it('returns 401 without a bearer', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/members/${ACCOUNT_ID}/posts`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when the caller lacks rules agreement', async () => {
+    const res = await mount(await seededCaller({ rulesAgreedAt: null })).request(
+      `/members/${ACCOUNT_ID}/posts`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules'],
+    });
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seededCaller()).request('/members/not-a-uuid/posts', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the account is unknown', async () => {
+    const res = await mount(await seededCaller()).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns an empty list when the member has replies but no top-level notes', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'member reply',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('lists the member live top-level notes newest-first and omits replies and other authors', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: POST_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'older post',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: POST_NEW,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'newer post',
+      createdAt: new Date(now() + 1_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'member reply',
+      createdAt: new Date(now() + 2_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: POST_OLD,
+    });
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other post',
+      createdAt: new Date(now() + 3_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ff'.repeat(32),
+    });
+    await messageStore.create({
+      id: OTHER_REPLY,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other reply',
+      createdAt: new Date(now() + 4_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: POST_NEW,
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        id: string;
+        accountId?: string;
+        replyCount?: number;
+        payable: boolean;
+        parentId?: string;
+      }>;
+    };
+    expect(body.messages.map((row) => row.id)).toEqual([POST_NEW, POST_OLD]);
+    expect(body.messages[0]?.accountId).toBe(ACCOUNT_ID);
+    expect(body.messages[0]?.replyCount).toBe(1);
+    expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]).not.toHaveProperty('parentId');
+    expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
+    expect(body.messages[1]?.replyCount).toBe(1);
+    expect(body.messages[1]?.payable).toBe(false);
+    expect(body.messages[1]).not.toHaveProperty('parentId');
+  });
+
+  it('keeps a post whose video file is present', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const keptId = '5c5051d3-adba-44f9-a964-9bd0df1ce096';
+    const bytes = new Uint8Array(32);
+    bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await writeForumVideo(keptId, { contentType: 'video/mp4', bytes });
+    try {
+      const messageStore = new InMemoryMessageStore([
+        {
+          id: keptId,
+          accountId: ACCOUNT_ID,
+          name: 'Ada',
+          text: 'clip',
+          createdAt: new Date(now()),
+          ...unsignedNostrDefaults(),
+          hasPhoto: false,
+          hasVideo: true,
+          videoContentType: 'video/mp4',
+        },
+      ]);
+      const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { messages: Array<{ id: string; hasVideo: boolean }> };
+      expect(body.messages).toEqual([expect.objectContaining({ id: keptId, hasVideo: true })]);
+      expect(await messageStore.getById(keptId)).toBeDefined();
+    } finally {
+      await removeForumVideo(keptId, 'video/mp4');
+    }
+  });
+
+  it('drops a missing-file video post from the list', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const goneId = '5c5051d3-adba-44f9-a964-9bd0df1ce090';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: goneId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(await messageStore.getById(goneId)).toBeUndefined();
+  });
+
+  it('subtracts dropped missing-file video replies from replyCount', async () => {
+    const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce091';
+    const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce092';
+    const keptChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce093';
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'live parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: goneChildId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+      {
+        id: keptChildId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'text reply',
+        createdAt: new Date(now() + 2),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; replyCount: number }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(parentId);
+    expect(body.messages[0]?.replyCount).toBe(1);
+    expect(await messageStore.getById(goneChildId)).toBeUndefined();
+  });
+
+  it('returns 503 when listPostsByAccount throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const authStore = await seededCaller();
+      await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+      const messageStore = new InMemoryMessageStore();
+      vi.spyOn(messageStore, 'listPostsByAccount').mockRejectedValue(new Error('boom'));
+      const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(loggedEvents(warn)).toContain('members.posts.failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('GET /members/:accountId/replies', () => {
+  it('returns 401 without a bearer', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/members/${ACCOUNT_ID}/replies`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when the caller lacks rules agreement', async () => {
+    const res = await mount(await seededCaller({ rulesAgreedAt: null })).request(
+      `/members/${ACCOUNT_ID}/replies`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules'],
+    });
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seededCaller()).request('/members/not-a-uuid/replies', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the account is unknown', async () => {
+    const res = await mount(await seededCaller()).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns an empty list when the member has top-level notes but no replies', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: POST_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'member post',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other post',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('lists the member live replies newest-first with parentId and payable false', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: POST_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'member post',
+      createdAt: new Date(now() + 500),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_OLD,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'older reply',
+      createdAt: new Date(now() + 1_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_NEW,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'newer reply',
+      createdAt: new Date(now() + 2_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+      eventId: 'ee'.repeat(32),
+    });
+    await messageStore.create({
+      id: OTHER_REPLY,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other reply',
+      createdAt: new Date(now() + 3_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        id: string;
+        accountId?: string;
+        parentId?: string;
+        payable: boolean;
+        replyCount?: number;
+      }>;
+    };
+    expect(body.messages.map((row) => row.id)).toEqual([MEMBER_REPLY_NEW, MEMBER_REPLY_OLD]);
+    expect(body.messages[0]?.accountId).toBe(ACCOUNT_ID);
+    expect(body.messages[0]?.parentId).toBe(OTHER_POST);
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]).not.toHaveProperty('replyCount');
+    expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
+    expect(body.messages[1]?.parentId).toBe(OTHER_POST);
+    expect(body.messages[1]?.payable).toBe(false);
+    expect(body.messages[1]).not.toHaveProperty('replyCount');
+  });
+
+  it('drops a missing-file video reply from the list', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const goneId = '5c5051d3-adba-44f9-a964-9bd0df1ce094';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: OTHER_POST,
+        accountId: OTHER_ID,
+        name: 'Bob',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+      },
+      {
+        id: goneId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        parentId: OTHER_POST,
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+    expect(await messageStore.getById(goneId)).toBeUndefined();
+  });
+
+  it('omits a reply that cannot serialize and still returns siblings', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const badId = '5c5051d3-adba-44f9-a964-9bd0df1ce095';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: OTHER_POST,
+        accountId: OTHER_ID,
+        name: 'Bob',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+      },
+      {
+        id: badId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'bad date',
+        createdAt: new Date(Number.NaN),
+        ...unsignedNostrDefaults(),
+        parentId: OTHER_POST,
+        hasPhoto: false,
+      },
+      {
+        id: MEMBER_REPLY_NEW,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'ok reply',
+        createdAt: new Date(now() + 2),
+        ...unsignedNostrDefaults(),
+        parentId: OTHER_POST,
+        hasPhoto: false,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id)).toEqual([MEMBER_REPLY_NEW]);
+  });
+
+  it('returns 503 when listRepliesByAccount throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const authStore = await seededCaller();
+      await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+      const messageStore = new InMemoryMessageStore();
+      vi.spyOn(messageStore, 'listRepliesByAccount').mockRejectedValue(new Error('boom'));
+      const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(loggedEvents(warn)).toContain('members.replies.failed');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

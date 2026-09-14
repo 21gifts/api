@@ -77,6 +77,16 @@ test('GET /members/:accountId without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /members/:accountId/posts without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/posts');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /members/:accountId/replies without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/replies');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /view/not-a-key is 404', async ({ request }) => {
   const res = await request.get('/view/not-a-key');
   expect(res.status()).toBe(404);
