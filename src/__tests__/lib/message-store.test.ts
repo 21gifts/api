@@ -2939,9 +2939,9 @@ describe('PostgresMessageStore', () => {
     expect(extraSql).toContain('#bitcoin([^a-z0-9_]|$)');
     expect(extraSql).toMatch(/unnest/i);
     expect(extraSql).toMatch(/extra\.pattern/);
-    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#berlin([^a-z0-9_]|$)']]);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#berlin([^a-z0-9_]|$)"}`]);
     await store.listSignedMissingHashtags(4, new Map([['acc', ['St.Gallen']]]));
-    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#st\\.gallen([^a-z0-9_]|$)']]);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#st\\\\.gallen([^a-z0-9_]|$)"}`]);
   });
 
   it('listSignedMissingHashtags excludeIds binds before LIMIT', async () => {
@@ -2949,7 +2949,6 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [];
     const store = new PostgresMessageStore(sql);
     const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const berlinPattern = '#berlin([^a-z0-9_]|$)';
 
     await store.listSignedMissingHashtags(4);
     expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
@@ -2961,20 +2960,29 @@ describe('PostgresMessageStore', () => {
 
     await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
     expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
-    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern]]);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#berlin([^a-z0-9_]|$)"}`]);
 
     await store.listSignedMissingHashtags(4, undefined, new Set([profileId]));
     const excludeOnlySql = sql.queries.at(-1)?.text ?? '';
     expect(excludeOnlySql).toMatch(/ANY/);
     expect(excludeOnlySql).toMatch(/\$2::text\[\]/);
-    expect(sql.queries.at(-1)?.params).toEqual([4, [profileId]]);
+    expect(sql.queries.at(-1)?.params).toEqual([4, `{"${profileId}"}`]);
 
     await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]), new Set([profileId]));
     const extraExcludeSql = sql.queries.at(-1)?.text ?? '';
     expect(extraExcludeSql).toMatch(/ANY/);
     expect(extraExcludeSql).toMatch(/unnest/i);
     expect(extraExcludeSql).toMatch(/\$4::text\[\]/);
-    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern], [profileId]]);
+    expect(sql.queries.at(-1)?.params).toEqual([
+      4,
+      '{"acc"}',
+      `{"#berlin([^a-z0-9_]|$)"}`,
+      `{"${profileId}"}`,
+    ]);
+
+    await store.listSignedMissingHashtags(4, undefined, new Set(['id"quote', 'id\\slash']));
+    expect(sql.queries.at(-1)?.text ?? '').toMatch(/\$2::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"id\\"quote","id\\\\slash"}']);
   });
 
   it('propagates getPhoto query errors', async () => {
