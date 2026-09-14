@@ -950,6 +950,26 @@ describe('POST /trust/*', () => {
       expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
     });
 
+    it('returns 200 idempotently when the caller already appointed the subject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
+    });
+
     it('returns 503 when updateAccount throws on a caller-owned appoint retry', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'basis', name: 'Sub' }),

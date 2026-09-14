@@ -298,7 +298,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: loaded.error }, loaded.status);
       }
       const subject = loaded.account;
-      if (subject.id === caller.id || subject.role === 'founder' || subject.role === 'moderator') {
+      if (subject.id === caller.id || subject.role === 'founder') {
         return c.json({ error: 'Conflict' }, 409);
       }
       let existing: TrustEdge[];
@@ -313,6 +313,9 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (appointEdge.actorId !== caller.id) {
           return c.json({ error: 'Conflict' }, 409);
         }
+        if (subject.role === 'moderator') {
+          return c.json(accountSummary(subject), 200);
+        }
         const updated = { ...subject, role: 'moderator' as const };
         try {
           await deps.authStore.updateAccount(updated);
@@ -322,6 +325,9 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         }
         logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
         return c.json(accountSummary(updated), 200);
+      }
+      if (subject.role === 'moderator') {
+        return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'moderator' as const };
       try {

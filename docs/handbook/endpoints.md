@@ -520,7 +520,7 @@
 
 ## Endpoint: POST /trust/appoint-moderator
 
-- **Purpose:** Bearer founder (moderators → 403). Body `{ "accountId" }`. Subject must not be self, not founder, and not already moderator; may be `basis` or `verified`. Inserts `moderator_appoint` then sets role to `moderator`, logs `trust.moderator_appointed`, `200 { id, name, role }`. If the caller already stored `moderator_appoint` and the subject is not yet `moderator`, completes the role write and returns 200.
+- **Purpose:** Bearer founder (moderators → 403). Body `{ "accountId" }`. Subject must not be self, not founder, and not already moderator; may be `basis` or `verified`. Inserts `moderator_appoint` then sets role to `moderator`, logs `trust.moderator_appointed`, `200 { id, name, role }`. If the caller already stored `moderator_appoint` and the subject is not yet `moderator`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200.
 - **Errors:** 401 without session; 403 when the caller is not `founder`; 400/404/409/503 same JSON shapes as `POST /trust/verify`.
 - **Used by:** Founder appointment of a moderator.
 - **Auth:** `Authorization: Bearer` session. Founder only.

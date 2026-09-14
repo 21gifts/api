@@ -536,7 +536,8 @@ already `moderator`; subject may be `basis` or `verified`. Inserts
 `moderator_appoint` then sets role to `moderator`, logs
 `trust.moderator_appointed`. If the caller already stored `moderator_appoint`
 and the subject is not yet `moderator`, completes the role write and returns
-**200**. Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
+**200**; already-moderator with that caller-owned edge is idempotent **200**.
+Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
 when the caller is not a founder). **200** `{ id, name, role }` with
 `role: "moderator"`.
 
