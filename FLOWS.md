@@ -168,6 +168,9 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
 (requires rules + name + Lightning Address — missing requirements are
 **409** `missing_requirements`);
+a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
+`{ address }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
+not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter only; operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. The shipped UI

@@ -197,16 +197,17 @@ boots. No LUD-21 dependency — WoS does not implement LNURL-verify.
 
 ### Recurring gifts (v1 feature)
 
-Donors can configure recurring daily gifts: fixed USD amounts to a list of
-recipients. This api does not pay. It issues BOLT11 invoices
-(`POST /invoices`, LNURL-pay to the recipient) and verifies the payment
-preimage (`POST /invoices/proof`). A matching proof records the outbound
-gift for public `GET /gifts/stats`. An external worker holds lightning.space
-LNDHub credentials, pays, and submits the proof. Payout semantics on that
-worker are fail-closed: per-day idempotency log, ambiguous outcomes
-quarantined as "uncertain" and never auto-retried the same day, balance
-preflight before the first payment, and a per-donor daily cap. Recurring
-donor UI and an in-process scheduler are not HTTP yet.
+Donors can configure fixed USD amounts to a list of recipients. This api
+does not pay. Invoice HTTP (`POST /invoices` / `POST /invoices/proof`) is
+unchanged: the api issues BOLT11 invoices (LNURL-pay to the recipient) and
+verifies the payment preimage. A matching proof records the outbound gift
+for public `GET /gifts/stats`. An external worker holds lightning.space
+LNDHub credentials and pays **when the recipient posts a top-level forum
+note** (ping from this api); **replies do not pay**. Payout semantics on
+that worker are fail-closed: ambiguous outcomes quarantined as
+"uncertain", balance preflight before the first payment, and a per-donor
+cap. Recurring donor UI and an in-process scheduler are not HTTP yet. Do
+not invent `/me/recurring`.
 
 ### NOSTR in v1
 
@@ -469,8 +470,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   Verified)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
-- Recurring gifts: configure daily USD amounts per recipient (paid by the
-  external spend worker, not by depositing LNDHub into this api)
+- Recurring gifts: configure USD amounts per recipient (paid by the
+  external spend worker when the recipient posts a top-level note, not
+  on a daily timer; replies do not pay)
 - Public comment composer (POST to api; signed server-side with the
   account's custodial key)
 - Moderation actions on campaigns/comments (Moderator role)
