@@ -137,9 +137,9 @@ test('DELETE /messages/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('GET /messages/:id/replies without bearer is 401', async ({ request }) => {
+test('GET /messages/:id/replies without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/replies');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
 test('POST /messages without bearer is 401', async ({ request }) => {

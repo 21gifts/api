@@ -529,17 +529,17 @@ const invoiceBody = z.object({
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
- * `GET /messages/:id/video.mp4|.webm|.mov`, `GET /messages/:id/replies`,
- * staff `DELETE /messages/:id` (soft-hide), public `GET /messages/:id`
- * (optional `?sinceSats=` non-negative integer long-polls until `sats` is
- * strictly greater; timeout still returns 200 with the current body;
- * invalid value 400), and `POST /messages/:id/invoice`. Photo, video,
- * replies, and DELETE register before the public single-note `GET /:id`.
- * Soft-hidden rows (`deletedAt`) are omitted from lists and 404 on reads;
- * `getById` still returns them for workers. Public `GET /:id` of a live
- * Damus-only reply (`parentId` set, `accountId` null) is 404; top-level
- * Damus-only notes stay 200. `GET /:id/replies` lists 21.gifts-author
- * children only (`accountId` set).
+ * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
+ * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide),
+ * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
+ * long-polls until `sats` is strictly greater; timeout still returns 200 with
+ * the current body; invalid value 400), and `POST /messages/:id/invoice`.
+ * Photo, video, replies, and DELETE register before the public single-note
+ * `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from lists and 404
+ * on reads; `getById` still returns them for workers. Public `GET /:id` of a
+ * live Damus-only reply (`parentId` set, `accountId` null) is 404; top-level
+ * Damus-only notes stay 200. Public `GET /:id/replies` lists 21.gifts-author
+ * children only; Bearer is optional (`accountId` present only when signed in).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
  * `notificationStore`, and
@@ -548,8 +548,8 @@ const invoiceBody = z.object({
  * `WAIT_SATS_POLL_MS`).
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
- * `GET /:id/replies`, `DELETE /:id`, public `GET /:id` (optional
- * `?sinceSats=`), and `POST /:id/invoice`.
+ * public `GET /:id/replies` (optional Bearer for `accountId`), `DELETE /:id`,
+ * public `GET /:id` (optional `?sinceSats=`), and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -660,14 +660,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     .get('/:id/video.webm', (c) => serveForumVideo(deps, c, c.req.param('id'), 'webm'))
     .get('/:id/video.mov', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mov'))
     .get('/:id/replies', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      const includeAccountId = account !== null;
       try {
         const parent = await deps.store.getById(id);
         if (parent === undefined || parent.deletedAt !== null) {
@@ -686,7 +684,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           try {
             const author = await deps.authStore.getAccount(row.accountId);
             const role = author?.role ?? 'basis';
-            messages.push(serializeMessage(kept, false, role, undefined, true));
+            messages.push(serializeMessage(kept, false, role, undefined, includeAccountId));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;
