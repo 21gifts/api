@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -153,6 +153,8 @@ api/
 │       │   ├── usd-fiat-candles.test.ts
 │       │   ├── usd-fiat-store.test.ts
 │       │   ├── db-change.test.ts
+│       │   ├── account-activity.test.ts
+│       │   ├── about-me.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
@@ -196,6 +198,8 @@ api/
 │           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
+│           ├── me-about.test.ts
+│           ├── activity.test.ts
 │           ├── members.test.ts
 │           ├── activity.test.ts
 │           ├── lightning-address.test.ts

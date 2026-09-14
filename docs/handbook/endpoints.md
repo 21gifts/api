@@ -493,7 +493,7 @@
 ## Endpoint: PUT /me/about
 
 - **Purpose:** Bearer required. Body `{ text }`. Writes About me onto the profile forum note (creates the note without a Lightning Address when missing). Empty text clears the bio (`aboutMe` null; the note row is kept). Name-only auto-copy is not a bio. Requires a display name (not LN). Success is owner JSON with `aboutMe`.
-- **Errors:** 401 without session; 400 if the body is not `{ text: string }` or text is longer than 500 characters (`About me must be at most 500 characters`); 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
+- **Errors:** 401 without session; 400 if the body is not `{ text: string }`, text is longer than 500 characters (`About me must be at most 500 characters`), or text contains C0/DEL control characters; 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
 - **Used by:** App profile About me editor.
 - **Auth:** `Authorization: Bearer` session.
 

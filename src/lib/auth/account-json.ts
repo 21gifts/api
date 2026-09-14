@@ -188,7 +188,7 @@ export async function serializeOwnerAccountWithPosts(
   let noteText: string | null = null;
   if (typeof profileId === 'string' && profileId.trim() !== '') {
     const row = await messages.getById(profileId);
-    noteText = row?.text ?? null;
+    noteText = row !== undefined && row.deletedAt === null ? row.text : null;
   }
   return serializeOwnerAccount(account, hasPosted, aboutMeFromNote(account.name, noteText));
 }

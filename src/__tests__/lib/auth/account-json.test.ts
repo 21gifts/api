@@ -191,6 +191,17 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
   });
+
+  it('sets aboutMe null when the profile note is soft-hidden', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => ({ ...note('I build on Bitcoin'), deletedAt: new Date(1) }),
+      },
+    );
+    expect(json.aboutMe).toBeNull();
+  });
 });
 
 describe('serializeViewProfile', () => {
