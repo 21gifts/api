@@ -272,8 +272,9 @@ export async function indexZapReceipt(args: {
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, index
  * validated ones, then insert a payer gift-reply and fan out zap/reply
- * notifications to bell subscribers. Retries receipts that have a payer
- * and no gift-reply id yet.
+ * in-app notifications to every account except skip (Web Push only to
+ * bell subscribers). Retries receipts that have a payer and no gift-reply
+ * id yet.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
