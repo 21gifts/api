@@ -353,7 +353,7 @@ About me is the profile-note text when it is a real bio, else null (auto name-co
 | `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                         |
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                |
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only). |
-| `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (auto name-copy is not a bio)                                                                                                   |
+| `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio)                                                         |
 
 ### `GET /me/activity`
 
@@ -580,9 +580,9 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 `hasPasskey` is `true` when the account has at least one passkey credential,
 otherwise `false`. Clients use it to show an activation banner only while the
 profile is still unclaimed. `aboutMe` is the profile-note text when it is a
-real bio, else `null` (auto name-copy is not a bio). Store throw on the
-profile-note read → **503** `{ "error": "Messages are unavailable" }`
-(`view.get.failed`).
+real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto
+name-copy is not a bio). Store throw on the profile-note read → **503**
+`{ "error": "Messages are unavailable" }` (`view.get.failed`).
 
 ### `GET /view/:viewKey/activity`
 

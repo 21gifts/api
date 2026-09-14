@@ -294,6 +294,141 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(NOTE_ID))?.eventId).toBe(eventId);
     expect((await messages.getById(NOTE_ID))?.text).toBe(BIO);
   });
+
+  it('deletes a raced insert when another profile note already won', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const winnerId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: winnerId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      vi.spyOn(store, 'getAccount').mockResolvedValue({
+        ...account!,
+        profileMessageId: winnerId,
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null };
+    expect(body.aboutMe).toBe(BIO);
+    expect((await messages.getById(winnerId))?.text).toBe(BIO);
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
+  });
+
+  it('deletes the insert when a later write wins the profile pointer', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const winnerId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: winnerId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      let calls = 0;
+      vi.spyOn(store, 'getAccount').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return account;
+        }
+        return { ...account!, profileMessageId: winnerId };
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null };
+    expect(body.aboutMe).toBe(BIO);
+    expect((await messages.getById(winnerId))?.text).toBe(BIO);
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
+  });
+
+  it('returns 401 and deletes the insert when the account vanishes after create', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const originalCreate = messages.create.bind(messages);
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      vi.spyOn(store, 'getAccount').mockResolvedValue(undefined);
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns 503 when the confirmed pointer has no message row', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      let calls = 0;
+      vi.spyOn(store, 'getAccount').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return account;
+        }
+        return { ...account!, profileMessageId: 'missing-winner' };
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns 401 and deletes the insert when the account vanishes after update', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      let calls = 0;
+      vi.spyOn(store, 'getAccount').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return account;
+        }
+        return undefined;
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
 });
 
 describe('GET /me aboutMe', () => {
