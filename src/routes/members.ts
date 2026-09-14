@@ -17,7 +17,7 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * `/members` — signed-in member profile cards (live identity + profile note),
+ * `/members` — signed-in member profile cards (live identity + About me),
  * given/received activity, and on-demand latest-200 post/reply feeds.
  */
 
@@ -25,7 +25,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 export interface MembersRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
-  /** Forum persistence (profile notes and member feeds). */
+  /** Forum persistence (About me, member feeds, and activity zaps/invoices). */
   messageStore: MessageStore;
   /** Stored trust edges for the `trust` object on GET JSON. */
   trustStore: TrustStore;
