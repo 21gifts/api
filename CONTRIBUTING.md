@@ -454,8 +454,8 @@ More will be added as concrete subsystems that need runtime configuration
 | Workflow               | Trigger               | Action                                                                       |
 | ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
 | `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify infrastructure → wait until that deploy finishes (job **Build and deploy to DEV**; red on the develop→main PR if it fails) |
-| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify infrastructure → wait until that deploy finishes (job **Build and deploy to PRD**) |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy            |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy          |
 | `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
