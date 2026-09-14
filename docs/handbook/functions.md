@@ -395,7 +395,7 @@
 
 ## Function: InMemoryNotificationStore
 
-- **Purpose:** Process-local `NotificationStore` for in-app forum-reply notifications. Default empty so the process boots without a database.
+- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, and zap notifications. Default empty so the process boots without a database.
 - **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `notificationStore`; memory `openBootStores` omits it.
