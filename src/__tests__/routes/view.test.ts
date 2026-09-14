@@ -12,7 +12,7 @@ function mount(
   store: InMemoryAuthStore,
   messages: InMemoryMessageStore = new InMemoryMessageStore(),
 ): Hono {
-  return new Hono().route('/view', viewRoutes({ store, messages }));
+  return new Hono().route('/view', viewRoutes({ store, messageStore: messages }));
 }
 
 async function adaAccount(
