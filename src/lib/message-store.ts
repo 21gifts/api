@@ -409,11 +409,39 @@ export interface MessageStore {
   /** Newest invoice attempts first, capped at `limit`. */
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
 
+  /**
+   * Invoice attempts for one payer, newest-first, **no debug cap**.
+   * Same sort as {@link MessageStore.listInvoiceAttempts}
+   * (`createdAt` DESC, `id` DESC).
+   *
+   * @param payerAccountId - Payer account id.
+   * @returns Every matching attempt (caller-owned copies).
+   */
+  listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]>;
+
   /** Append one kind:9735 ingest decision (indexed or rejected). */
   recordZapIngest(row: ZapIngestRow): Promise<void>;
 
   /** Newest zap ingest rows first, capped at `limit`. */
   listZapIngests(limit: number): Promise<ZapIngestRow[]>;
+
+  /**
+   * Indexed kind:9735 ingests, newest-first, **no debug cap**.
+   * Same sort as {@link MessageStore.listZapIngests}.
+   *
+   * @returns Every row with `outcome === 'indexed'` (caller-owned copies).
+   */
+  listIndexedZapIngests(): Promise<ZapIngestRow[]>;
+
+  /**
+   * Every forum row this account authored, including hidden notes
+   * (`deletedAt` set) and replies. Newest-first (`createdAt` DESC, `id`
+   * DESC). **No debug cap.**
+   *
+   * @param accountId - Author account id.
+   * @returns Matching row copies (caller-owned).
+   */
+  listAuthoredMessages(accountId: string): Promise<MessageRow[]>;
 
   /**
    * Newest `result === 'ok'` invoice with this payment hash, or `undefined`.
@@ -1401,6 +1429,45 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
   }
 
+  listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {
+    const sorted = this.#invoiceAttempts
+      .filter((row) => row.payerAccountId === payerAccountId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyInvoiceAttempt(row)));
+  }
+
+  listIndexedZapIngests(): Promise<ZapIngestRow[]> {
+    const sorted = this.#zapIngests
+      .filter((row) => row.outcome === 'indexed')
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyZapIngest(row)));
+  }
+
+  listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
+    const sorted = this.#rows
+      .filter((row) => row.accountId === accountId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyRow(row)));
+  }
+
   findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined> {
     return Promise.resolve(
       newestOkInvoice(this.#invoiceAttempts, (row) => row.paymentHash === paymentHash),
@@ -2361,6 +2428,46 @@ export class PostgresMessageStore implements MessageStore {
       [limit],
     );
     return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  async listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response
+       FROM message_invoice
+       WHERE payer_account_id = $1
+       ORDER BY created_at DESC, id DESC`,
+      [payerAccountId],
+    );
+    return rows.map((row) => mapInvoiceAttemptRow(row));
+  }
+
+  async listIndexedZapIngests(): Promise<ZapIngestRow[]> {
+    const rows = await this.#sql.query<ZapIngestSqlRow>(
+      `SELECT id, created_at, receipt_id, note_event_id, message_id,
+              outcome, reason, amount_sats, receipt_pubkey, receipt
+       FROM nostr_zap_ingest
+       WHERE outcome = 'indexed'
+       ORDER BY created_at DESC, id DESC`,
+    );
+    return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  /**
+   * Every `message` row for `account_id`, including hidden notes and replies.
+   * Newest-first, no `LIMIT`.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns Mapped rows.
+   */
+  async listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE account_id = $1 ORDER BY created_at DESC, id DESC`,
+      [accountId],
+    );
+    return rows.map((row) => mapMessageRow(row));
   }
 
   async findOkInvoiceByPaymentHash(

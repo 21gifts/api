@@ -108,6 +108,27 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: buildAccountActivity — GET /me/activity without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/me/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: matchConfirmedGivenZaps — GET /members/:accountId/activity without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/members/:accountId/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: paymentHashFromReceipt — GET /view/:viewKey/activity is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey/activity');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: membersRoutes — GET /members/:accountId without bearer is 401', async ({
   request,
 }) => {

@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
 import { normalizeDisplayName } from '@/lib/name';
@@ -40,6 +43,16 @@ export interface MeRouteDeps {
   nostrKek?: Uint8Array;
   /** Optional push outbox; profile-note create enqueues when present. */
   pushStore?: PushStore;
+  /**
+   * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
+   * Used by `GET /activity`.
+   */
+  giftStore?: GiftStore;
+  /**
+   * Historical BTC-USD rates (default: empty {@link InMemoryBtcUsdStore}).
+   * Empty activity stays 200 without calling Coinbase.
+   */
+  rates?: BtcUsdRateBook;
 }
 
 /**
@@ -104,11 +117,14 @@ const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, display-name, location, setup skip, forum-laws dismiss,
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
+ * @returns A Hono app exposing account, activity, display-name, location, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
+  const giftStore = deps.giftStore ?? new InMemoryGiftStore();
+  const rates = deps.rates ?? new InMemoryBtcUsdStore();
+
   return new Hono()
     .get('/', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -116,6 +132,26 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       return c.json(await serializeOwnerAccountWithPosts(account, deps.messages), 200);
+    })
+    .get('/activity', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      try {
+        const activity = await buildAccountActivity({
+          account,
+          gifts: giftStore,
+          messages: deps.messages,
+          rates,
+          now: deps.now,
+        });
+        return c.json(activity, 200);
+      } catch (err) {
+        const missingFx = err instanceof Error && err.message === 'fx.rate.missing';
+        logEvent(missingFx ? 'account.activity.fx_incomplete' : 'account.activity.failed');
+        return c.json({ error: 'Gift stats are unavailable' }, 503);
+      }
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

@@ -1044,6 +1044,10 @@ describe('indexOpenZapReceipts', () => {
       getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit: number) =>
         base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId: string) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
     };
     const querier = new RecordingQuerier();
     querier.events = [
@@ -1219,6 +1223,10 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        listInvoiceAttemptsForPayer: (payerAccountId: string) =>
+          base.listInvoiceAttemptsForPayer(payerAccountId),
+        listIndexedZapIngests: () => base.listIndexedZapIngests(),
+        listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
       };
       const querier = new RecordingQuerier();
       querier.events = [
@@ -1485,6 +1493,10 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        listInvoiceAttemptsForPayer: (payerAccountId: string) =>
+          base.listInvoiceAttemptsForPayer(payerAccountId),
+        listIndexedZapIngests: () => base.listIndexedZapIngests(),
+        listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
       };
       const querier = new RecordingQuerier();
       querier.events = [

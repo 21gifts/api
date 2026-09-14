@@ -173,6 +173,9 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     updateZapReceiptGift: boom,
     getZapReceiptGift: boom,
     listZapReceiptsAwaitingGiftReply: boom,
+    listInvoiceAttemptsForPayer: boom,
+    listIndexedZapIngests: boom,
+    listAuthoredMessages: boom,
     ...overrides,
   };
 }
@@ -1576,6 +1579,10 @@ describe('POST /messages', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -1649,6 +1656,10 @@ describe('POST /messages', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const app = new Hono().route(
       '/messages',
@@ -2873,6 +2884,10 @@ describe('POST /messages/:id/invoice', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);

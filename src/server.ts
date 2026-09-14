@@ -266,11 +266,16 @@ export function createApp(deps: AppDeps = {}): Hono {
       payer: invoicePayer,
       fetchImpl,
       pushStore,
+      giftStore,
+      rates: btcUsdRates,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
-  app.route('/members', membersRoutes({ authStore: store, messageStore, now }));
-  app.route('/view', viewRoutes({ store }));
+  app.route(
+    '/members',
+    membersRoutes({ authStore: store, messageStore, now, giftStore, rates: btcUsdRates }),
+  );
+  app.route('/view', viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, now }));
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),

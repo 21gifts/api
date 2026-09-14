@@ -67,6 +67,21 @@ test('GET /me without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /me/activity without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /members/:accountId/activity without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /view/:viewKey/activity is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/activity');
+  expect(res.status()).toBe(404);
+});
+
 test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/setup/skip', { data: { step: 'name' } });
   expect(res.status()).toBe(401);

@@ -74,7 +74,9 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
 | GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
+| GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound) |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
+| GET    | `/view/:viewKey/activity`                    | none                       | Public given/received payload for the account behind the view key                 |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
 | POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
@@ -85,6 +87,7 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
 | GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + uncapped counts                             |
+| GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                     |
 | GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
 | GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
@@ -336,6 +339,41 @@ Missing or invalid bearer → **Response** `401`:
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
 
+### `GET /me/activity`
+
+Bearer required (same session as `GET /me`). No living-room-rules gate.
+
+Missing or invalid bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store throw or missing FX day → **Response** `503`:
+
+```json
+{ "error": "Gift stats are unavailable" }
+```
+
+**Response** `200` (empty series when the account has no attributed gifts):
+
+```json
+{
+  "donatedSats": 0,
+  "receivedSats": 0,
+  "donatedOverTime": [],
+  "receivedOverTime": [],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
+  }
+}
+```
+
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`. Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+
 ### `POST /me/setup/skip`
 
 Skip a skippable wizard step. Body:
@@ -378,6 +416,12 @@ newest-first, capped at 200. Body `{ "messages": [...] }` via
 `parentId` when set; omits `replyCount`. Top-level notes by that member
 are not listed.
 
+### `GET /members/:accountId/activity`
+
+Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
+same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
+stats are unavailable" }` when the gift store throws or a gift day lacks FX.
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -406,6 +450,13 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 `hasPasskey` is `true` when the account has at least one passkey credential,
 otherwise `false`. Clients use it to show an activation banner only while the
 profile is still unclaimed.
+
+### `GET /view/:viewKey/activity`
+
+Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
+the same JSON as `GET /me/activity` for the account behind the key. 503
+`{ "error": "Gift stats are unavailable" }` when the gift store throws or a
+gift day lacks FX.
 
 ### `POST /me/name`
 

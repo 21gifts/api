@@ -1,7 +1,10 @@
 import { Hono, type Context } from 'hono';
+import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -10,8 +13,8 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * `/members` — signed-in member profile cards (live identity + profile note)
- * and on-demand latest-200 post/reply feeds.
+ * `/members` — signed-in member profile cards (live identity + profile note),
+ * given/received activity, and on-demand latest-200 post/reply feeds.
  */
 
 /** Collaborators the `/members` routes need. */
@@ -22,6 +25,16 @@ export interface MembersRouteDeps {
   messageStore: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /**
+   * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
+   * Used by `GET /:accountId/activity`.
+   */
+  giftStore?: GiftStore;
+  /**
+   * Historical BTC-USD rates (default: empty {@link InMemoryBtcUsdStore}).
+   * Empty activity stays 200 without calling Coinbase.
+   */
+  rates?: BtcUsdRateBook;
 }
 
 /** Auth or member-load outcome. */
@@ -112,15 +125,42 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * Build the `/members` route group.
  *
  * Mounted at `/members` so the public paths are `GET /members/:accountId`,
- * `GET /members/:accountId/posts`, and `GET /members/:accountId/replies`.
- * Posts and replies register before `/:accountId`.
+ * `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and
+ * `GET /members/:accountId/replies`. More-specific paths register before
+ * `/:accountId`.
  *
- * @param deps - Auth store, message store, and clock.
- * @returns A Hono app with `GET /:accountId/posts`, `GET /:accountId/replies`,
- * and `GET /:accountId`.
+ * @param deps - Auth store, message store, clock, and optional gift/rate stores.
+ * @returns A Hono app with activity, posts, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
+  const giftStore = deps.giftStore ?? new InMemoryGiftStore();
+  const rates = deps.rates ?? new InMemoryBtcUsdStore();
+
   return new Hono()
+    .get('/:accountId/activity', async (c) => {
+      const auth = await requireForumRead(deps, c);
+      if (!auth.ok) {
+        return auth.response;
+      }
+      const member = await loadMember(deps, c);
+      if (!member.ok) {
+        return member.response;
+      }
+      try {
+        const activity = await buildAccountActivity({
+          account: member.account,
+          gifts: giftStore,
+          messages: deps.messageStore,
+          rates,
+          now: deps.now,
+        });
+        return c.json(activity, 200);
+      } catch (err) {
+        const missingFx = err instanceof Error && err.message === 'fx.rate.missing';
+        logEvent(missingFx ? 'account.activity.fx_incomplete' : 'account.activity.failed');
+        return c.json({ error: 'Gift stats are unavailable' }, 503);
+      }
+    })
     .get('/:accountId/posts', async (c) => {
       const auth = await requireForumRead(deps, c);
       if (!auth.ok) {

@@ -35,9 +35,9 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
-│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note)
-│   │   ├── view.ts           # GET /view/:viewKey (public profile card)
+│   │   ├── me.ts             # GET /me; GET /me/activity; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
+│   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
@@ -62,6 +62,7 @@ api/
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
+│   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
@@ -150,6 +151,7 @@ api/
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── nip57-probe.test.ts
+│       │   ├── account-activity.test.ts
 │       │   ├── message-store.test.ts
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
 │       │   ├── contact.test.ts
@@ -184,6 +186,7 @@ api/
 │           ├── auth.test.ts
 │           ├── me.test.ts
 │           ├── members.test.ts
+│           ├── activity.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
 │           ├── stats.test.ts
