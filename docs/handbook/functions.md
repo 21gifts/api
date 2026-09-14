@@ -9,7 +9,7 @@
 
 ## Function: buildAccountActivity
 
-- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps (plus `message.sats` remainder) on notes it authored including hidden, house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`.
+- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps on notes it authored including hidden, plus `message.sats` remainder on **top-level** notes only (gift-as-reply `sats` are not Received), house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`.
 - **Inputs:** `{ account, gifts, messages, rates, now }`. Uses `listInvoiceAttemptsForPayer`, `listIndexedZapIngests`, `listAuthoredMessages`, `listOutbound`, and `giftsForRecipient`.
 - **Returns / side effects:** `AccountActivity` (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Empty input is zeros without Coinbase. Throws `Error('fx.rate.missing')` when a gift day has no rate after `ensureDays`.
 - **Used by:** `GET /me/activity`, `GET /members/:accountId/activity`, `GET /view/:viewKey/activity`.

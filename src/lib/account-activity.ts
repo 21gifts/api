@@ -139,7 +139,8 @@ export function matchConfirmedGivenZaps(
  * gift when `account.isPlatform === true`. Received: indexed zaps on messages
  * this account authored (including soft-hidden rows), unique by `receiptId`
  * (oldest wins), plus a remainder when `message.sats` exceeds those ingest
- * amounts (so a visible ₿21 post is never “no gifts”), plus house gifts whose
+ * amounts on **top-level** notes (so a visible ₿21 post is never “no gifts”;
+ * gift-as-reply `sats` do not inflate the payer's Received), plus house gifts whose
  * recipient handle matches the account Lightning Address. Self-zaps count on
  * both sides. Empty input is zeros without Coinbase. Missing FX throws the
  * same `fx.rate.missing` as {@link buildGiftStats}.
@@ -203,8 +204,10 @@ export async function buildAccountActivity(args: {
  * `message.sats` remainder when the stored total exceeds those ingests.
  *
  * Unique by `receiptId` (oldest first). Hidden notes (`deletedAt` set) still
- * count. A note with `sats: 21` and no ingest still yields 21 received sats.
- * External/Damus zaps need no payer account.
+ * count. A top-level note with `sats: 21` and no ingest still yields 21
+ * received sats. Remainder is not applied to replies (`parentId` set) so a
+ * gift-as-reply does not inflate the payer's Received. Indexed ingests on
+ * published replies still count. External/Damus zaps need no payer account.
  *
  * @param account - Author whose notes collect received zaps.
  * @param messages - Forum store (`listAuthoredMessages` includes hidden rows).
@@ -252,6 +255,9 @@ async function receivedZapsForAccount(
     creditedByMessageId.set(ingest.messageId, prev + ingest.amountSats);
   }
   for (const message of authored) {
+    if (message.parentId !== null) {
+      continue;
+    }
     if (message.sats <= 0) {
       continue;
     }

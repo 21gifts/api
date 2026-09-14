@@ -96,6 +96,7 @@ function note(
     deletedAt?: Date | null;
     createdAt?: Date;
     text?: string;
+    parentId?: string | null;
   } = {},
 ): {
   id: string;
@@ -113,6 +114,7 @@ function note(
     createdAt: overrides.createdAt ?? PAID_AT,
     hasPhoto: false,
     ...unsignedNostrDefaults(),
+    parentId: overrides.parentId === undefined ? null : overrides.parentId,
     sats: overrides.sats ?? 0,
     deletedAt: overrides.deletedAt === undefined ? null : overrides.deletedAt,
   };
@@ -349,6 +351,18 @@ describe('buildAccountActivity', () => {
     await messages.recordZapIngest(ingest());
     const stats = await activity({ messages });
     expect(stats.receivedSats).toBe(21);
+  });
+
+  it('does not count a gift-as-reply remainder as received for the payer', async () => {
+    const messages = new InMemoryMessageStore([
+      note({ accountId: 'author', sats: 21 }),
+      note({ id: 'gift-reply', accountId: 'acc', parentId: 'm1', sats: 21, text: '⚡ 21' }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(ingest());
+    const stats = await activity({ messages });
+    expect(stats.donatedSats).toBe(21);
+    expect(stats.receivedSats).toBe(0);
   });
 
   it('counts a self-zap on both donated and received', async () => {
