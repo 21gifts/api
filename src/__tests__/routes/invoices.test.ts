@@ -93,7 +93,7 @@ async function seedPasskeyAccount(
 }
 
 /**
- * Seed one live non-profile forum row for `accountId` (EARLY-shaped).
+ * Seed one live non-profile top-level forum row for `accountId` (EARLY-shaped).
  */
 function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   return new InMemoryMessageStore([
@@ -105,6 +105,24 @@ function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
       createdAt: new Date('2026-08-01T00:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+    },
+  ]);
+}
+
+/**
+ * Seed one live reply (no top-level row) for `accountId`.
+ */
+function liveReplyStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: 'reply-alice',
+      accountId,
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-alice',
     },
   ]);
 }
@@ -257,7 +275,7 @@ describe('GET /invoices/posted', () => {
     expect(await res.json()).toEqual({ hasPosted: false });
   });
 
-  it('returns hasPosted true when the account has a live non-profile message', async () => {
+  it('returns hasPosted true when the account has a live top-level non-profile message', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
@@ -313,6 +331,30 @@ describe('GET /invoices/posted', () => {
       `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
       auth(),
     );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ hasPosted: false });
+  });
+
+  it('returns hasPosted false when the account has only a live reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: liveReplyStore(),
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ hasPosted: false });
   });
@@ -439,6 +481,26 @@ describe('POST /invoices', () => {
       throw new Error('LNURL must not be called');
     };
     const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
+  });
+
+  it('returns 403 when the account has a passkey but only a live reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: liveReplyStore(),
+      fetchImpl,
+    }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );

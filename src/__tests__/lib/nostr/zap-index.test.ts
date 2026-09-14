@@ -998,6 +998,9 @@ describe('indexOpenZapReceipts', () => {
       ) => base.findLiveByAccountContent(...args),
       accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
         base.accountHasLivePost(...args),
+      accountHasLiveTopLevelPost: (
+        ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
+      ) => base.accountHasLiveTopLevelPost(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
       listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
@@ -1175,6 +1178,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.findLiveByAccountContent(...args),
         accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
           base.accountHasLivePost(...args),
+        accountHasLiveTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
+        ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
@@ -1449,6 +1455,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.findLiveByAccountContent(...args),
         accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
           base.accountHasLivePost(...args),
+        accountHasLiveTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
+        ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>

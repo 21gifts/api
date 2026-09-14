@@ -747,6 +747,19 @@ test('Function: resolveCandlesUrl — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
+test('Function: resolveSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+test('Function: HttpSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+test('Function: NoopSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: startPasskeyClaim — POST begin with an unknown viewKey is 404', async ({
   request,
 }) => {

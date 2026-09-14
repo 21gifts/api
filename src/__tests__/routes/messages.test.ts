@@ -144,6 +144,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     create: boom,
     findLiveByAccountContent: boom,
     accountHasLivePost: boom,
+    accountHasLiveTopLevelPost: boom,
     countByAccount: boom,
     listPostsByAccount: boom,
     listRepliesByAccount: boom,
@@ -1534,6 +1535,122 @@ describe('POST /messages', () => {
     expect(claimed[0]?.type).toBe('forum');
   });
 
+  it('pings spend once on a top-level post', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com');
+  });
+
+  it('does not ping spend on a reply', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await staffStore('Ada'), messageStore, { spendPing }).request(
+      '/messages',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('does not ping spend a second time on photo replay', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), { spendPing });
+    const body = JSON.stringify({
+      text: 'push photo',
+      photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+    });
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { id: string }).id;
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { id: string }).id).toBe(firstId);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 200 on a top-level post when spendPing is omitted', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('still returns 200 when spendPing.ping throws', async () => {
+    const spendPing = {
+      ping: vi.fn(async () => {
+        throw new Error('ping boom');
+      }),
+    };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pings spend once on a multipart video top-level post', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string) => undefined) };
+    const mp4 = (): Uint8Array => {
+      const bytes = new Uint8Array(32);
+      bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+      return bytes;
+    };
+    const form = new FormData();
+    form.set('text', 'clip');
+    form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
+    form.set('poster', new File([JPEG_BYTES], 'poster.jpg', { type: 'image/jpeg' }));
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com');
+  });
+
   it('returns 503 when findLiveByAccountContent throws', async () => {
     const base = new InMemoryMessageStore();
     const store: MessageStore = {
@@ -1546,6 +1663,8 @@ describe('POST /messages', () => {
         throw new Error('find boom');
       },
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
+      accountHasLiveTopLevelPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
@@ -1622,6 +1741,8 @@ describe('POST /messages', () => {
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       findLiveByAccountContent: async () => undefined,
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
+      accountHasLiveTopLevelPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
@@ -2852,6 +2973,8 @@ describe('POST /messages/:id/invoice', () => {
       create: (row, photo) => base.create(row, photo),
       findLiveByAccountContent: (...args) => base.findLiveByAccountContent(...args),
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
+      accountHasLiveTopLevelPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),

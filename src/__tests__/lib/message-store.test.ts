@@ -232,6 +232,56 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('other', null)).toBe(false);
   });
 
+  it('accountHasLiveTopLevelPost is false on an empty store', async () => {
+    expect(await new InMemoryMessageStore().accountHasLiveTopLevelPost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelPost is true for a live top-level row by that account', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelPost('acc', null)).toBe(
+      true,
+    );
+  });
+
+  it('accountHasLiveTopLevelPost is false when only a live reply exists', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, parentId: 'parent' }]);
+    expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelPost is false when only the excluded profile id is live', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelPost('acc', 'a')).toBe(
+      false,
+    );
+  });
+
+  it('accountHasLiveTopLevelPost is true when the profile id plus a second live top-level row exist', async () => {
+    const store = new InMemoryMessageStore([EARLY, LATE]);
+    expect(await store.accountHasLiveTopLevelPost('acc', 'a')).toBe(true);
+  });
+
+  it('accountHasLiveTopLevelPost is false when the profile id plus only a live reply exist', async () => {
+    const store = new InMemoryMessageStore([EARLY, { ...LATE, parentId: 'a' }]);
+    expect(await store.accountHasLiveTopLevelPost('acc', 'a')).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelPost is false when only a soft-deleted top-level row exists', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, deletedAt: new Date('2026-08-02T00:00:00.000Z') },
+    ]);
+    expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelPost is false for a Damus-only row', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, accountId: null }]);
+    expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(false);
+    expect(await store.accountHasLiveTopLevelPost('other', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelPost is false for another account live top-level row', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelPost('other', null)).toBe(
+      false,
+    );
+  });
+
   it('countByAccount and member feeds are empty on an empty store', async () => {
     const store = new InMemoryMessageStore();
     expect(await store.countByAccount('acc')).toEqual({ postCount: 0, replyCount: 0 });
@@ -1962,6 +2012,23 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [{ '?column?': 1 }];
     expect(await store.accountHasLivePost('acc', null)).toBe(true);
     expect(await store.accountHasLivePost('acc', 'prof')).toBe(true);
+    expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('accountHasLiveTopLevelPost queries live top-level message rows for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::uuid IS NULL OR id <> \$2::uuid/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null]);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(true);
+    expect(await store.accountHasLiveTopLevelPost('acc', 'prof')).toBe(true);
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 

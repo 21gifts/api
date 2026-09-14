@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-12.
+**Status**: living document. Last revised 2026-09-14.
 
 ---
 
@@ -153,9 +153,12 @@ worker holds lightning.space LNDHub credentials and calls:
 2. LNDHub `payinvoice` (spend, not this api)
 3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`
 
-Recurring **daily** gifts as fixed **USD** amounts and the donor UI are still
-a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or scheduler paths.
-HTTP that exists today is only the spend-worker invoice pair above (`SPEC.md`).
+Recurring **USD** gifts are paid by the external spend worker **when the
+recipient posts a top-level note**, not on a daily timer. Invoice HTTP
+(`POST /invoices` / `POST /invoices/proof`) is unchanged. Recurring donor UI
+is still a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or
+scheduler paths. HTTP that exists today is only the spend-worker invoice
+pair above (`SPEC.md`).
 
 ---
 
@@ -165,6 +168,9 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
 (requires rules + name + Lightning Address — missing requirements are
 **409** `missing_requirements`);
+a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
+`{ address }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
+not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter only; operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. The shipped UI

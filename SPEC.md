@@ -38,9 +38,9 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes (`GET /invoices/passkey`, `GET /invoices/posted`,
 `POST /invoices`, `POST /invoices/proof`) check passkey eligibility and a live
-forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
-requires a passkey-backed account for the address and at least one live forum
-message that is not the auto-created profile note. They require `SPEND_API_TOKEN`;
+**top-level** forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
+requires a passkey-backed account for the address and at least one live **top-level** forum
+message that is not the auto-created profile note. Replies do not count. They require `SPEND_API_TOKEN`;
 when it is unset the
 routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
@@ -125,7 +125,7 @@ Public base URLs used in examples:
 | GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                          |
 | GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                               |
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                          |
-| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live non-profile forum post                     |
+| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post           |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)             |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |
 
@@ -322,22 +322,22 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-| Field                      | Type           | Meaning                                                                                                                                                      |
-| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                       | string         | Opaque account id                                                                                                                                            |
-| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                      |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                               |
-| `name`                     | string \| null | Display name, or `null` until set                                                                                                                            |
-| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                     |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                             |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                            |
-| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                           |
-| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                |
-| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                     |
-| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                     |
-| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence. |
-| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
-| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
+| Field                      | Type           | Meaning                                                                                                                                                                              |
+| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                       | string         | Opaque account id                                                                                                                                                                    |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                              |
+| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                       |
+| `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                    |
+| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                             |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                     |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                    |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                   |
+| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                        |
+| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                             |
+| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                             |
+| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                         |
+| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only). |
 
 ### `GET /me/activity`
 
@@ -1548,15 +1548,18 @@ Success is always **200** (never 404 for an unknown address):
 ```
 
 or `{ "hasPosted": false }` when there is no account for the address or the
-account has no live forum message other than the auto-created profile note.
+account has no live **top-level** forum message other than the auto-created
+profile note. Replies do not count. Photo-only / empty-text top-level notes
+still count.
 
 ### `POST /invoices`
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential and at least one live forum message that is not the auto-created
-profile note. It then resolves LUD-16, GETs the LNURL-pay callback, decodes
-the BOLT11, and stores `{ id, pr, paymentHash }` in memory. It does not pay.
+credential and at least one live **top-level** forum message that is not the
+auto-created profile note. Replies do not unlock an invoice. It then resolves
+LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
+`{ id, pr, paymentHash }` in memory. It does not pay.
 
 **Body:**
 
@@ -1591,8 +1594,8 @@ No account for the address, or the account has no passkey credential →
 { "error": "Passkey required" }
 ```
 
-The account has a passkey but no live forum message other than the
-auto-created profile note → **403** (after the passkey check, before any
+The account has a passkey but no live **top-level** forum message other than
+the auto-created profile note → **403** (after the passkey check, before any
 LNURL fetch; no invoice is stored):
 
 ```json
@@ -1781,7 +1784,12 @@ get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
-Text-only posts are unchanged (still **429** on burst). The worker signs a
+Text-only posts are unchanged (still **429** on burst). After a **new**
+top-level persist, the api POSTs `{ address }` to `{SPEND_URL}/ping` with
+Bearer `SPEND_API_TOKEN` (fire-and-await). Errors are logged; the POST still
+returns **200**. Replies do not ping. Idempotent media replay does not ping
+again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the
+process still boots. The worker signs a
 top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`, and when the author's `location` is non-null also `#<locationHashtagName>` plus a `t` tag (not on the profile note);
 forum `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
@@ -2365,9 +2373,10 @@ treat the list below as inventing endpoints.
 external spend worker, not encrypted storage in this api. No `/me/donor`
 deposit route.
 
-**Recurring daily gifts UI.** Donors will configure fixed USD amounts to
-recipients. Invoice fetch + preimage proof for the external payer is
-`POST /invoices` / `POST /invoices/proof`. No `/me/recurring` or in-process
+**Recurring gifts.** Donors will configure fixed USD amounts to
+recipients. They are paid by the external spend worker **when the recipient
+posts a top-level note**, not on a daily timer. Invoice HTTP (`POST /invoices`
+/ `POST /invoices/proof`) is unchanged. No `/me/recurring` or in-process
 scheduler.
 
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
