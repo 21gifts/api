@@ -181,6 +181,14 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore().listLatest(10)).toEqual([]);
   });
 
+  it('create returns the existing row when the id is already stored', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    const again = await store.create({ ...EARLY, text: 'other' });
+    expect(again.text).toBe('first');
+    expect(await store.listDebug(10)).toHaveLength(1);
+  });
+
   it('accountHasLivePost is false on an empty store', async () => {
     expect(await new InMemoryMessageStore().accountHasLivePost('acc', null)).toBe(false);
   });
@@ -1918,14 +1926,6 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT DISTINCT FROM \$2/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.params).toEqual(['acc', null, 'ab'.repeat(32)]);
-  });
-
-  it('create returns the existing row when the id is already stored', async () => {
-    const store = new InMemoryMessageStore();
-    await store.create(EARLY);
-    const again = await store.create({ ...EARLY, text: 'other' });
-    expect(again.text).toBe('first');
-    expect(await store.listDebug(10)).toHaveLength(1);
   });
 
   it('create on 23505 returns the existing live row and unlinks the new video', async () => {

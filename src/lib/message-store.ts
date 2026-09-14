@@ -1787,7 +1787,8 @@ export class PostgresMessageStore implements MessageStore {
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
    * @returns The stored row after a successful insert (a copy) with `hasPhoto`
    *   from `photo` and `hasVideo` / `videoContentType` from `video`. INSERT
-   *   failure unlinks the video (`removeForumVideo`).
+   *   failure unlinks the video (`removeForumVideo`), except unique violation
+   *   when `getById(stored.id)` matches that id (gift-reply retry, no unlink).
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
