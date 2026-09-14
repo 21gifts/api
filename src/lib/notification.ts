@@ -7,6 +7,7 @@
  * ids. Callers catch failures so persist still succeeds.
  */
 
+import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -95,7 +96,9 @@ function zapReplyIdFromReceipt(receiptId: string): string {
  *
  * @param args - Optional stores, skip id, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
- * @throws If `listAccountIdsWithSubscriptions`, `create`, or `enqueue` rejects.
+ * @throws If `listAccountIdsWithSubscriptions` rejects. Per-recipient
+ *   `create`/`enqueue` failures log `push.fanout.failed`, continue, then
+ *   throw after the loop so callers still wrap persist.
  */
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
@@ -120,30 +123,39 @@ export async function fanoutToBellSubscribers(args: {
   }
   const accountIds = await args.pushStore.listAccountIdsWithSubscriptions();
   const createdAt = new Date(args.nowMs);
+  let failed = false;
   for (const accountId of accountIds) {
     if (args.skipAccountId !== null && accountId === args.skipAccountId) {
       continue;
     }
-    if (args.notifications !== undefined) {
-      await args.notifications.create({
-        ...args.template,
+    try {
+      if (args.notifications !== undefined) {
+        await args.notifications.create({
+          ...args.template,
+          id: crypto.randomUUID(),
+          recipientAccountId: accountId,
+        });
+      }
+      const row: PushOutboxRow = {
         id: crypto.randomUUID(),
-        recipientAccountId: accountId,
-      });
+        accountId,
+        type: args.outboxType,
+        messageId: args.outboxMessageId,
+        payload: args.payload,
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt,
+        deliveredEndpoints: [],
+      };
+      await args.pushStore.enqueue(row);
+    } catch {
+      failed = true;
+      logEvent('push.fanout.failed');
     }
-    const row: PushOutboxRow = {
-      id: crypto.randomUUID(),
-      accountId,
-      type: args.outboxType,
-      messageId: args.outboxMessageId,
-      payload: args.payload,
-      status: 'pending',
-      attempts: 0,
-      claimedUntil: null,
-      createdAt,
-      deliveredEndpoints: [],
-    };
-    await args.pushStore.enqueue(row);
+  }
+  if (failed) {
+    throw new Error('push.fanout.failed');
   }
 }
 

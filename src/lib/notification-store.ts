@@ -1,5 +1,5 @@
 /**
- * Persistence for in-app notifications (forum replies).
+ * Persistence for in-app notifications (forum posts, replies, and zaps).
  *
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. New public tables are covered by `db_change` attach.

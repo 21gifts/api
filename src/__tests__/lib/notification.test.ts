@@ -183,6 +183,34 @@ describe('fanoutToBellSubscribers', () => {
     });
     expect(await notifications.listByRecipient('one', 10)).toHaveLength(1);
   });
+
+  it('continues fan-out when one recipient create rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await subscribe(pushStore, 'two');
+    const original = notifications.create.bind(notifications);
+    notifications.create = async (row) => {
+      if (row.recipientAccountId === 'one') {
+        throw new Error('boom');
+      }
+      return original(row);
+    };
+    await expect(
+      fanoutToBellSubscribers({
+        notifications,
+        pushStore,
+        skipAccountId: 'actor',
+        template,
+        outboxType: 'forum',
+        outboxMessageId: 'reply-1',
+        payload: '{}',
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+    expect(await notifications.listByRecipient('one', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
+  });
 });
 
 describe('notifyForumReply', () => {

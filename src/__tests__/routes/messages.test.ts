@@ -964,7 +964,7 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toHaveLength(1);
   });
 
-  it('creates a notification for the parent author and enqueues a targeted push', async () => {
+  it('notifies a subscribed parent of a forum reply', async () => {
     const authStore = await staffStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -1052,7 +1052,7 @@ describe('POST /messages', () => {
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
-  it('does not notify when the replier owns the parent note', async () => {
+  it('skips a self-replier when they are the only subscriber', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({

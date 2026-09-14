@@ -852,7 +852,7 @@
 
 - **Purpose:** Fan out one in-app row and one pending outbox row to every bell subscriber (account ids from `push_subscription`) except `skipAccountId`. Missing `pushStore` is a no-op (no in-app rows). Unique duplicate `create` is fine.
 - **Inputs:** `{ notifications?, pushStore?, skipAccountId, template, outboxType, outboxMessageId, payload, nowMs }`. `skipAccountId` `null` skips nobody. `template` is copied to each recipient (`id` / `recipientAccountId` filled here).
-- **Returns / side effects:** Void. When `pushStore` is set, lists subscriber account ids, skips `skipAccountId`, writes a notification row when `notifications` is set, and enqueues one pending outbox row per remaining account. Does not copy into the member↔member inbox.
+- **Returns / side effects:** Void. When `pushStore` is set, lists subscriber account ids, skips `skipAccountId`, writes a notification row when `notifications` is set, and enqueues one pending outbox row per remaining account. Per-recipient `create`/`enqueue` failures log `push.fanout.failed`, continue to later subscribers, then throw after the loop. Does not copy into the member↔member inbox.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap`.
 
 ## Function: notifyForumPost
