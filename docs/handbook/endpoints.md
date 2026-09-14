@@ -485,7 +485,7 @@
 
 ## Endpoint: POST /me/name
 
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and stores `profileMessageId` (not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.

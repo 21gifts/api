@@ -627,7 +627,7 @@ Success → **Response** `200` with the updated account (same shape as
 `GET /me`). The stored value is trimmed. Names are not unique. When a
 non-blank Lightning Address is already linked, the first persisted
 non-empty name also creates exactly one top-level profile forum note and
-stores `profileMessageId` (not on owner JSON). Without a Lightning
+claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not on owner JSON). Without a Lightning
 Address the name is stored and no profile note is inserted (linking the
 address later creates it). Rename does not create a second note and does
 not change the note text.
