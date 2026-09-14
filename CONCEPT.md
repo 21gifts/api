@@ -56,8 +56,9 @@ is the short path. Advantages:
 
 - The whole gift arrives. No take rate, no platform fee, no program
   overhead.
-- No organization sits in the payment path that can freeze, skim,
-  delay, or politicize the money.
+- No charity, platform, or program sits between giver and receiver
+  to skim, delay, or politicize the gift; the only party in the path
+  is the wallet the receiver chose.
 - Giver and receiver stay people to each other, not a case file and
   a campaign.
 - Both keep their dignity: one asks, one gives, and they meet as
@@ -76,9 +77,9 @@ transitional model below.
 Bitcoin is the rail because it is the strongest money 21.gifts can
 put in a person’s hand.
 
-- **Censorship-resistant.** No bank or state can quietly block a gift
-  that the sender and receiver have agreed. Capital controls, frozen
-  accounts, war, a closed branch — the gift can still land.
+- **Censorship-resistant.** Bitcoin itself cannot be told to refuse a
+  gift that the sender and receiver have agreed. Capital controls,
+  frozen accounts, war, a closed branch — the gift can still land.
 - **Permissionless.** No account application, no ID gate, no banking
   hours. A phone and a Wallet of Satoshi address are enough, also for
   people no bank will open a file for.
@@ -90,8 +91,9 @@ put in a person’s hand.
   practical; an email-like address is enough to receive.
 - **Hard cap.** 21 million, so inflation cannot quietly tax people
   who already have little.
-- **Bearer money.** It lands in the receiver’s own wallet. 21.gifts
-  never holds it.
+- **Bearer money.** In a self-custodial wallet — Wallet of Satoshi
+  offers one — nobody holds it for the receiver. 21.gifts never holds
+  it in any case.
 
 On the website we say “Bitcoin” and “Wallet of Satoshi”; Lightning,
 LNURL, and keys are plumbing and stay out of sight.
@@ -661,8 +663,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
   welcome: no inclusion slogan, and no FAQ entry asking whether the project
   is Christian.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
-  give." It is the app's first living-room rule in one line: a gift has no
-  price. Shown quietly in the marketing footer; not on the hero.
+  give." It says in one line what the living-room rules say at length: a
+  gift has no price. Shown quietly in the marketing footer; not on the hero.
 - **Visual**: minimal, photo-driven, large typography. Receiver photos and
   stories are the hero. Tech is invisible. No cross, fish, or second typeface
   as brand marks; Bitcoin orange stays the accent.
