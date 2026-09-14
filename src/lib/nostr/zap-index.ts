@@ -380,6 +380,9 @@ async function ingestOneReceipt(
     remembered === decisionKey('indexed', null) ||
     remembered === decisionKey('rejected', 'duplicate')
   ) {
+    if (!args.verifyReceipt(event)) {
+      return;
+    }
     await tryEnsureGiftReply(event, args);
     return;
   }

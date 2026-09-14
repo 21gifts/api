@@ -2849,6 +2849,64 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies('m-gift-hide')).toEqual([]);
   });
 
+  it('does not ensure a gift-reply from an unverified remembered receipt frame', async () => {
+    let giftLookups = 0;
+    class CountGiftStore extends InMemoryMessageStore {
+      override getZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
+        giftLookups += 1;
+        return super.getZapReceiptGift(...args);
+      }
+    }
+    const store = new CountGiftStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-unverified',
+      lightningAddress: 'zap-gift-unverified@example.com',
+      messageId: 'm-gift-unverified',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-unverified',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-gift-unverified'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c5'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const lookupsAfterIndex = giftLookups;
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      verifyReceipt: () => false,
+    });
+    expect(giftLookups).toBe(lookupsAfterIndex);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('indexed');
+  });
+
   it('relinks a gift reply with a deterministic id when the receipt update throws', async () => {
     let linkBlows = true;
     class LinkBoomStore extends InMemoryMessageStore {
