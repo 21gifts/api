@@ -466,7 +466,7 @@ Deploy workflows require these GitHub Actions secrets:
 | ----------------- | --------------------------------------------------- |
 | `DOCKER_USERNAME` | Docker Hub username for image push                  |
 | `DOCKER_PASSWORD` | Docker Hub token for image push                     |
-| `DISPATCH_TOKEN`  | PAT used to fire `repository_dispatch` after push   |
+| `DISPATCH_TOKEN`  | PAT to dispatch `image-published` and read that run |
 | `DISPATCH_REPO`   | Target `owner/repo` that receives `image-published` |
 
 If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, deploy fails loud (the image
