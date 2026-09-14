@@ -8,6 +8,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  conversationIsInbound,
   type ConversationKind,
   type ConversationMessageRow,
   type ConversationThread,
@@ -38,6 +39,24 @@ export interface ConversationStore {
     platformId: string | null,
     limit: number,
   ): Promise<ConversationThread[]>;
+
+  /**
+   * True when the thread has at least one inbound message for the viewer
+   * (`conversationIsInbound`). Used by GET /conversations to omit empty
+   * and outbound-only threads.
+   *
+   * @param conversationId - Thread to inspect.
+   * @param viewerId - Session account.
+   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @returns Whether any stored message is inbound for that viewer.
+   */
+  hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean>;
 
   /**
    * Open or return the member↔member thread (`account_a`/`account_b`
@@ -204,7 +223,11 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
     WHERE m.conversation_id = c.id
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
-  ), '') AS last_text`;
+  ), '') AS last_text,
+  (SELECT m.sender_account_id FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_sender_account_id`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name,
   event_id, nostr_publish_state, nostr_event, claimed_until`;
@@ -258,6 +281,26 @@ export class InMemoryConversationStore implements ConversationStore {
       .slice(0, limit)
       .map((thread) => this.#hydrate(thread));
     return Promise.resolve(listed);
+  }
+
+  hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    return Promise.resolve(
+      this.#messages.some(
+        (row) =>
+          row.conversationId === conversationId &&
+          conversationIsInbound({
+            senderAccountId: row.senderAccountId,
+            viewerId,
+            staff,
+            platformId,
+          }),
+      ),
+    );
   }
 
   openMemberMember(accountA: string, accountB: string, now: Date): Promise<ConversationThread> {
@@ -448,6 +491,7 @@ export class InMemoryConversationStore implements ConversationStore {
       lastMessageAt: new Date(args.now.getTime()),
       name: '',
       lastText: '',
+      lastSenderAccountId: null,
     };
     this.#threads.push(stored);
     return this.#hydrate(stored);
@@ -460,6 +504,7 @@ export class InMemoryConversationStore implements ConversationStore {
     return {
       ...copyThread(thread),
       lastText: last?.text ?? '',
+      lastSenderAccountId: last?.senderAccountId ?? null,
     };
   }
 
@@ -488,7 +533,7 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 }
 
-/** Row shape selected from `conversation` plus computed `last_text`. */
+/** Row shape selected from `conversation` plus computed `last_text` / `last_sender_account_id`. */
 interface ConversationSqlRow {
   id: string;
   kind: string;
@@ -498,6 +543,7 @@ interface ConversationSqlRow {
   created_at: Date | string;
   last_message_at: Date | string;
   last_text?: string | null;
+  last_sender_account_id?: string | null;
 }
 
 /** Row shape selected from `conversation_message`. */
@@ -554,6 +600,30 @@ export class PostgresConversationStore implements ConversationStore {
       [accountId, staff, platformId, limit],
     );
     return rows.map((row) => mapThread(row));
+  }
+
+  async hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM conversation_message
+         WHERE conversation_id = $1
+           AND (
+             sender_account_id IS NULL
+             OR (
+               sender_account_id IS DISTINCT FROM $2
+               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
+             )
+           )
+       ) AS exists`,
+      [conversationId, viewerId, staff, platformId],
+    );
+    return rows[0]?.exists === true;
   }
 
   async openMemberMember(
@@ -910,6 +980,7 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     lastMessageAt: asDate(row.last_message_at),
     name: '',
     lastText: row.last_text ?? '',
+    lastSenderAccountId: row.last_sender_account_id ?? null,
   };
 }
 

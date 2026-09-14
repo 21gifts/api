@@ -108,6 +108,27 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: buildAccountActivity — GET /me/activity without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/me/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: matchConfirmedGivenZaps — GET /members/:accountId/activity without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/members/:accountId/activity');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: paymentHashFromReceipt — GET /view/:viewKey/activity is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey/activity');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: membersRoutes — GET /members/:accountId without bearer is 401', async ({
   request,
 }) => {
@@ -164,6 +185,13 @@ test('Function: normalizeDisplayName — POST /me/name without bearer is 401', a
 });
 
 test('Function: normalizeLocation — POST /me/location without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/location', { data: { location: 'Berlin' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: locationHashtagName — POST /me/location without bearer is 401', async ({
   request,
 }) => {
   const res = await request.post('/me/location', { data: { location: 'Berlin' } });
@@ -1214,6 +1242,16 @@ test('Function: writeForumVideo — POST /messages without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 test('Function: serializeConversation — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: conversationFromMe — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: conversationIsInbound — GET /conversations without bearer is 401', async ({
   request,
 }) => {
   expect((await request.get('/conversations')).status()).toBe(401);

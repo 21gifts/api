@@ -243,6 +243,137 @@ describe('runNostrWorkerTick', () => {
     ]);
     expect(String(m1?.nostrEvent?.['content'])).toContain('#bitcoin');
     expect(String(m1?.nostrEvent?.['content'])).toContain('#21gifts');
+    expect(String(m1?.nostrEvent?.['content'])).toBe('hello\n\n#bitcoin #21gifts');
+  });
+
+  it('appends a location hashtag when the account location is set', async () => {
+    const { auth, messages } = await seed();
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    await auth.updateAccount({ ...account!, location: 'Berlin' });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    const m1 = await messages.getById('m1');
+    expect(m1?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'berlin'],
+      ['r', 'https://21.gifts'],
+    ]);
+    expect(String(m1?.nostrEvent?.['content'])).toBe('hello\n\n#bitcoin #21gifts #Berlin');
+  });
+
+  it('re-signs published unpaid notes that lack the location hashtag', async () => {
+    const { auth, messages } = await seed();
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    await auth.updateAccount({ ...account!, location: 'Berlin' });
+    const tags = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ];
+    await messages.create({
+      id: 'm-loc',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date('2026-08-28T00:10:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m-loc', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags,
+      created_at: 1,
+    });
+    await messages.updatePublishState('m-loc', 'published', 'space');
+    await messages.create({
+      id: 'm-loc-zapped',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date('2026-08-28T00:11:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m-loc-zapped', 'cd'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags,
+      created_at: 1,
+    });
+    await messages.updatePublishState('m-loc-zapped', 'published', 'space');
+    await messages.addSats('m-loc-zapped', 21);
+    const tick = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    await runNostrWorkerTick(tick);
+    expect((await messages.getById('m-loc'))?.eventId).toBeNull();
+    expect((await messages.getById('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))?.eventId).toBe(
+      'f1'.repeat(32),
+    );
+    expect((await messages.getById('m-loc-zapped'))?.eventId).toBe('cd'.repeat(32));
+    await runNostrWorkerTick(tick);
+    const unpaid = await messages.getById('m-loc');
+    expect(String(unpaid?.nostrEvent?.['content'])).toBe('hello\n\n#bitcoin #21gifts #Berlin');
+    expect(unpaid?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'berlin'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('does not put a location hashtag on the profile note', async () => {
+    const { auth, messages } = await seed();
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    await messages.create({
+      id: 'profile-unsigned',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date('2026-08-27T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await auth.updateAccount({
+      ...account!,
+      location: 'Berlin',
+      profileMessageId: 'profile-unsigned',
+    });
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+    );
+    const profile = await messages.getById('profile-unsigned');
+    expect(String(profile?.nostrEvent?.['content'])).toBe('Ada\n\n#bitcoin #21gifts');
+    expect(profile?.nostrEvent?.['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
   });
 
   it('leaves pending kind:1 events that already have t=bitcoin', async () => {
@@ -3783,6 +3914,7 @@ describe('runNostrWorkerTick', () => {
         lastMessageAt: new Date(0),
         name: '',
         lastText: '',
+        lastSenderAccountId: null,
       },
     ]);
     await conversations.appendMessage({

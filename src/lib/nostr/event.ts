@@ -6,6 +6,8 @@
  * on top of the frozen tags (never on top-level notes).
  */
 
+import { locationHashtagName } from '@/lib/location';
+
 /** Frozen kind:1 tags, in this order. Extra `imeta` rows may follow. */
 export const KIND1_TAGS: readonly [
   readonly ['t', 'bitcoin'],
@@ -85,9 +87,29 @@ export function forumPhotoUrl(
   return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo.${forumPhotoExt(mime)}`;
 }
 
-/** Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}). */
-export function kind1Tags(): string[][] {
-  return KIND1_TAGS.map((tag) => [...tag]);
+/**
+ * Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}).
+ *
+ * Extra `t` names (already lowercased) are inserted after `t=21gifts` and
+ * before `r`. `bitcoin` / `21gifts` and duplicates among extras are skipped
+ * so a no-arg call still returns the original three tags.
+ *
+ * @param extraT - Optional extra `t` tag values (lowercase, no `#`).
+ * @returns A mutable copy of the frozen tags plus any extra `t` rows.
+ */
+export function kind1Tags(extraT: readonly string[] = []): string[][] {
+  const tags: string[][] = KIND1_TAGS.map((tag) => [...tag]);
+  const seen = new Set<string>(['bitcoin', '21gifts']);
+  let offset = 0;
+  for (const name of extraT) {
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    tags.splice(2 + offset, 0, ['t', name]);
+    offset += 1;
+  }
+  return tags;
 }
 
 /**
@@ -119,18 +141,33 @@ export function kind1HasHashtag(content: string, name: string): boolean {
 }
 
 /**
- * Append any missing `#bitcoin` / `#21gifts` so Damus renders them.
- * Forum text is unchanged by the caller; this only shapes Nostr content.
+ * Append any missing `#bitcoin` / `#21gifts` (and optional extra hashtags)
+ * so Damus renders them. Forum text is unchanged by the caller; this only
+ * shapes Nostr content.
  *
- * Empty content → `"#bitcoin #21gifts"` (no leading blank line).
+ * Empty content → wanted tags joined by a space (no leading blank line).
  * Non-empty → trailing newlines stripped, then `\n\n` + missing tags joined by a single space.
- * Already-present tags (any case, e.g. `#21Gifts`) are not duplicated; only missing ones are appended, still in KIND1_CONTENT_HASHTAGS order.
+ * Already-present tags (any case, e.g. `#21Gifts`) are not duplicated; only missing ones are appended, still in KIND1_CONTENT_HASHTAGS order then extras.
  *
  * @param content - Forum text and optional photo URL already composed.
- * @returns Content with any missing hashtag tokens appended (unchanged when both are already present).
+ * @param extraHashtags - Optional extra hashtag names without `#` (case preserved in content).
+ * @returns Content with any missing hashtag tokens appended (unchanged when all are already present).
  */
-export function kind1ContentWithHashtags(content: string): string {
-  const missing = KIND1_CONTENT_HASHTAGS.filter((tag) => !kind1HasHashtag(content, tag.slice(1)));
+export function kind1ContentWithHashtags(
+  content: string,
+  extraHashtags: readonly string[] = [],
+): string {
+  const wanted: string[] = [...KIND1_CONTENT_HASHTAGS];
+  const seen = new Set(wanted.map((tag) => tag.slice(1).toLowerCase()));
+  for (const name of extraHashtags) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    wanted.push(`#${name}`);
+  }
+  const missing = wanted.filter((tag) => !kind1HasHashtag(content, tag.slice(1)));
   if (missing.length === 0) {
     return content;
   }
@@ -157,15 +194,19 @@ export interface UnsignedKind1 {
  * Build an unsigned kind:1 for a forum message (top-level or NIP-10 reply).
  *
  * Content is plaintext (no name prefix). `kind1ContentWithHashtags` ensures
- * Damus-visible `#bitcoin` / `#21gifts` tokens (appends only missing ones).
- * Top-level tags are frozen — no `e`/`p`/`q`. When `replyTo` is set, adds
- * NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional
- * `imeta`).
+ * Damus-visible `#bitcoin` / `#21gifts` tokens (appends only missing ones)
+ * and, when `location` yields a hashtag name, that token after them.
+ * Forum row `text` is never modified. Top-level tags are frozen — no `e`/`p`/`q`.
+ * Extra location `t` tags sit after `t=21gifts` and before `r`. When `replyTo`
+ * is set, adds NIP-10 `e` (root + reply) and `p` tags after those tags (and
+ * optional `imeta`). Profile notes are skipped by the worker, not by this
+ * function.
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
  * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
+ * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
@@ -173,8 +214,11 @@ export function buildKind1Event(
   createdAtUnix: number,
   photo?: Kind1Photo,
   replyTo?: Kind1ReplyTo,
+  location?: string | null,
 ): UnsignedKind1 {
-  const tags = kind1Tags();
+  const name = locationHashtagName(location ?? null);
+  const extras = name === null ? [] : [name];
+  const tags = kind1Tags(extras.map((n) => n.toLowerCase()));
   let body = content;
   if (photo !== undefined) {
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
@@ -195,7 +239,7 @@ export function buildKind1Event(
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'reply']);
     tags.push(['p', replyTo.noteAuthorPubkey]);
   }
-  body = kind1ContentWithHashtags(body);
+  body = kind1ContentWithHashtags(body, extras);
   return {
     kind: 1,
     content: body,

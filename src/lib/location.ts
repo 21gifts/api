@@ -39,3 +39,24 @@ export function normalizeLocation(raw: string): { ok: true; value: string | null
   }
   return { ok: true, value: trimmed };
 }
+
+/**
+ * Turn a stored profile location into a Damus hashtag name (no `#`).
+ *
+ * Null or empty-after-strip → null (caller must not add a tag).
+ * Strip leading `#` characters, then remove all whitespace (`\s+`).
+ * Internal letters (including Unicode, e.g. `Zürich`) stay. Case is preserved.
+ *
+ * @param location - Account `location`, or `null`.
+ * @returns Hashtag name without `#`, or `null`.
+ */
+export function locationHashtagName(location: string | null): string | null {
+  if (location === null) {
+    return null;
+  }
+  const name = location.replace(/^#+/, '').replace(/\s+/g, '');
+  if (name === '') {
+    return null;
+  }
+  return name;
+}

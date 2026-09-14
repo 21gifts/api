@@ -173,6 +173,9 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     updateZapReceiptGift: boom,
     getZapReceiptGift: boom,
     listZapReceiptsAwaitingGiftReply: boom,
+    listInvoiceAttemptsForPayer: boom,
+    listIndexedZapIngests: boom,
+    listAuthoredMessages: boom,
     ...overrides,
   };
 }
@@ -1576,6 +1579,10 @@ describe('POST /messages', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -1649,6 +1656,10 @@ describe('POST /messages', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const app = new Hono().route(
       '/messages',
@@ -2873,6 +2884,10 @@ describe('POST /messages/:id/invoice', () => {
         base.updateZapReceiptGift(...args),
       getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
+      listInvoiceAttemptsForPayer: (payerAccountId) =>
+        base.listInvoiceAttemptsForPayer(payerAccountId),
+      listIndexedZapIngests: () => base.listIndexedZapIngests(),
+      listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);
@@ -3442,11 +3457,50 @@ describe('GET /messages/:id/replies', () => {
     expect(await store.getById('16161616-1616-4161-8161-161616161616')).toBeUndefined();
   });
 
-  it('returns 401 without a session', async () => {
-    const res = await mount(new InMemoryAuthStore()).request(
-      '/messages/14141414-1414-4141-8141-141414141414/replies',
+  it('returns 200 without a session and omits accountId', async () => {
+    const parentId = '28282828-2828-4282-8282-282828282828';
+    const replyId = '29292929-2929-4292-8292-292929292929';
+    const store = new InMemoryMessageStore([
+      {
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+      {
+        id: replyId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'member reply',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        parentId,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(await namedStore('Ada'), store).request(
+      `/messages/${parentId}/replies`,
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; accountId?: string; payable: boolean }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.text).toBe('member reply');
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]).not.toHaveProperty('accountId');
+  });
+
+  it('returns 404 for a non-uuid id without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/messages/not-a-uuid/replies');
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 for a non-uuid id', async () => {

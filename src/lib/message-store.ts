@@ -44,12 +44,46 @@ function kind1MissingVideoUrl(event: Record<string, unknown> | null, messageId: 
   return typeof content !== 'string' || !content.includes(`/messages/${messageId}/video.`);
 }
 
-function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
+function kind1MissingHashtags(
+  event: Record<string, unknown> | null,
+  extraHashtags: readonly string[] = [],
+): boolean {
   if (event === null) {
     return true;
   }
   const content = event['content'];
-  return typeof content !== 'string' || kind1ContentWithHashtags(content) !== content;
+  return (
+    typeof content !== 'string' || kind1ContentWithHashtags(content, extraHashtags) !== content
+  );
+}
+
+const POSIX_REGEX_META = /[\\^$.|?*+()[\]{}]/g;
+
+function posixHashtagTokenPattern(name: string): string {
+  return `#${name.toLowerCase().replace(POSIX_REGEX_META, '\\$&')}([^a-z0-9_]|$)`;
+}
+
+function extraHashtagBindings(
+  extraHashtagsByAccountId: ReadonlyMap<string, readonly string[]> | undefined,
+): { accountIds: string[]; patterns: string[] } | null {
+  if (extraHashtagsByAccountId === undefined || extraHashtagsByAccountId.size === 0) {
+    return null;
+  }
+  const accountIds: string[] = [];
+  const patterns: string[] = [];
+  for (const [accountId, names] of extraHashtagsByAccountId) {
+    for (const name of names) {
+      accountIds.push(accountId);
+      patterns.push(posixHashtagTokenPattern(name));
+    }
+  }
+  return { accountIds, patterns };
+}
+
+function postgresTextArrayLiteral(values: readonly string[]): string {
+  return `{${values
+    .map((value) => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
+    .join(',')}}`;
 }
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -321,11 +355,21 @@ export interface MessageStore {
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
    * first. Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row
    * that can never satisfy a repair scan is not reset forever. Includes
-   * `nostrEvent === null` and non-string content.
+   * `nostrEvent === null` and non-string content. One-arg calls still select
+   * bitcoin/21gifts only. When `extraHashtagsByAccountId` maps an account id
+   * to extra hashtag names (without `#`), those accounts' rows are also
+   * listed when content lacks that token. Optional `excludeIds` is applied
+   * before the limit so profile notes cannot fill the batch.
    *
    * @param limit - Max rows.
+   * @param extraHashtagsByAccountId - Optional extra Damus tokens per account.
+   * @param excludeIds - Optional ids dropped before sort/limit (profile notes).
    */
-  listSignedMissingHashtags(limit: number): Promise<MessageRow[]>;
+  listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
+  ): Promise<MessageRow[]>;
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
@@ -371,11 +415,39 @@ export interface MessageStore {
   /** Newest invoice attempts first, capped at `limit`. */
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
 
+  /**
+   * Invoice attempts for one payer, newest-first, **no debug cap**.
+   * Same sort as {@link MessageStore.listInvoiceAttempts}
+   * (`createdAt` DESC, `id` DESC).
+   *
+   * @param payerAccountId - Payer account id.
+   * @returns Every matching attempt (caller-owned copies).
+   */
+  listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]>;
+
   /** Append one kind:9735 ingest decision (indexed or rejected). */
   recordZapIngest(row: ZapIngestRow): Promise<void>;
 
   /** Newest zap ingest rows first, capped at `limit`. */
   listZapIngests(limit: number): Promise<ZapIngestRow[]>;
+
+  /**
+   * Indexed kind:9735 ingests, newest-first, **no debug cap**.
+   * Same sort as {@link MessageStore.listZapIngests}.
+   *
+   * @returns Every row with `outcome === 'indexed'` (caller-owned copies).
+   */
+  listIndexedZapIngests(): Promise<ZapIngestRow[]>;
+
+  /**
+   * Every forum row this account authored, including hidden notes
+   * (`deletedAt` set) and replies. Newest-first (`createdAt` DESC, `id`
+   * DESC). **No debug cap.**
+   *
+   * @param accountId - Author account id.
+   * @returns Matching row copies (caller-owned).
+   */
+  listAuthoredMessages(accountId: string): Promise<MessageRow[]>;
 
   /**
    * Newest `result === 'ok'` invoice with this payment hash, or `undefined`.
@@ -1229,7 +1301,11 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(rows);
   }
 
-  listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+  listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
+  ): Promise<MessageRow[]> {
     const rows = this.#rows
       .filter(
         (row) =>
@@ -1240,7 +1316,11 @@ export class InMemoryMessageStore implements MessageStore {
           row.nostrPublishState === 'published' &&
           row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
-          kind1MissingHashtags(row.nostrEvent),
+          (excludeIds === undefined || excludeIds.size === 0 || !excludeIds.has(row.id)) &&
+          kind1MissingHashtags(
+            row.nostrEvent,
+            extraHashtagsByAccountId?.get(row.accountId ?? '') ?? [],
+          ),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -1353,6 +1433,45 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id.localeCompare(a.id);
     });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
+  }
+
+  listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {
+    const sorted = this.#invoiceAttempts
+      .filter((row) => row.payerAccountId === payerAccountId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyInvoiceAttempt(row)));
+  }
+
+  listIndexedZapIngests(): Promise<ZapIngestRow[]> {
+    const sorted = this.#zapIngests
+      .filter((row) => row.outcome === 'indexed')
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyZapIngest(row)));
+  }
+
+  listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
+    const sorted = this.#rows
+      .filter((row) => row.accountId === accountId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
+    return Promise.resolve(sorted.map((row) => copyRow(row)));
   }
 
   findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined> {
@@ -2125,7 +2244,39 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => mapMessageRow(row));
   }
 
-  async listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+  async listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
+  ): Promise<MessageRow[]> {
+    const extras = extraHashtagBindings(extraHashtagsByAccountId);
+    const extraClause =
+      extras === null
+        ? ''
+        : `
+           OR EXISTS (
+             SELECT 1
+             FROM unnest($2::text[], $3::text[]) AS extra(account_id, pattern)
+             WHERE message.account_id::text = extra.account_id
+               AND NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ extra.pattern)
+           )`;
+    const excludeList = excludeIds === undefined || excludeIds.size === 0 ? null : [...excludeIds];
+    const excludeParamIndex = extras === null ? 2 : 4;
+    const excludeClause =
+      excludeList === null
+        ? ''
+        : `\n         AND NOT (id::text = ANY($${excludeParamIndex}::text[]))`;
+    const params: unknown[] =
+      extras === null
+        ? [limit]
+        : [
+            limit,
+            postgresTextArrayLiteral(extras.accountIds),
+            postgresTextArrayLiteral(extras.patterns),
+          ];
+    if (excludeList !== null) {
+      params.push(postgresTextArrayLiteral(excludeList));
+    }
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
@@ -2137,11 +2288,11 @@ export class PostgresMessageStore implements MessageStore {
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
            OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#21gifts([^a-z0-9_]|$)')
-           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')
-         )
+           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')${extraClause}
+         )${excludeClause}
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,
-      [limit],
+      params,
     );
     return rows.map((row) => mapMessageRow(row));
   }
@@ -2289,6 +2440,46 @@ export class PostgresMessageStore implements MessageStore {
       [limit],
     );
     return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  async listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response
+       FROM message_invoice
+       WHERE payer_account_id = $1
+       ORDER BY created_at DESC, id DESC`,
+      [payerAccountId],
+    );
+    return rows.map((row) => mapInvoiceAttemptRow(row));
+  }
+
+  async listIndexedZapIngests(): Promise<ZapIngestRow[]> {
+    const rows = await this.#sql.query<ZapIngestSqlRow>(
+      `SELECT id, created_at, receipt_id, note_event_id, message_id,
+              outcome, reason, amount_sats, receipt_pubkey, receipt
+       FROM nostr_zap_ingest
+       WHERE outcome = 'indexed'
+       ORDER BY created_at DESC, id DESC`,
+    );
+    return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  /**
+   * Every `message` row for `account_id`, including hidden notes and replies.
+   * Newest-first, no `LIMIT`.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns Mapped rows.
+   */
+  async listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE account_id = $1 ORDER BY created_at DESC, id DESC`,
+      [accountId],
+    );
+    return rows.map((row) => mapMessageRow(row));
   }
 
   async findOkInvoiceByPaymentHash(

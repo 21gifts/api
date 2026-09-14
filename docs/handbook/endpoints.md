@@ -203,6 +203,27 @@
 - **Used by:** App day page (`GET /gifts` same-origin proxy).
 - **Auth:** Public.
 
+## Endpoint: GET /me/activity
+
+- **Purpose:** Bearer session JSON of given and received sats for the signed-in account (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Given is confirmed forum zaps this account paid plus all outbound house gifts when the account is platform. Received is zaps on authored notes (including hidden and replies) plus `message.sats` remainder on **top-level** notes only (so a ₿21 post cannot sit under an empty chart; gift-as-reply `sats` are not Received) plus house gifts to the Lightning handle. Empty activity is 200 zeros without Coinbase. No invoices or payment hashes.
+- **Errors:** 401 `{ "error": "Unauthorized" }` without session; 503 `{ "error": "Gift stats are unavailable" }` on store throw or missing FX (`account.activity.failed` / `account.activity.fx_incomplete`).
+- **Used by:** App `/me/activity` proxy, signed-in profile chart and menu totals.
+- **Auth:** Bearer session. No living-room-rules gate.
+
+## Endpoint: GET /members/:accountId/activity
+
+- **Purpose:** Same activity JSON as `GET /me/activity` for the member `:accountId`. Auth matches `GET /members/:accountId`.
+- **Errors:** 401 without session; 409 `missing_requirements` when the caller lacks rules; 404 non-uuid or unknown account; 503 gift stats unavailable.
+- **Used by:** App `/forum/members/[accountId]/activity` proxy and member profile chart.
+- **Auth:** Bearer session with `forum.read`.
+
+## Endpoint: GET /view/:viewKey/activity
+
+- **Purpose:** Public activity JSON for the account behind the 64-hex view key. Same body as `GET /me/activity`.
+- **Errors:** 404 `{ "error": "Not found" }` for a bad or unknown key (same as `GET /view/:viewKey`); 503 gift stats unavailable.
+- **Used by:** App `/view-key/[viewKey]/activity` proxy and public view profile chart.
+- **Auth:** none.
+
 ## Endpoint: GET /gifts/stats
 
 - **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd` plus additive `totalChf` / `totalEur` / `totalPhp`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD+fiat), `byRecipient`, `byMonth`, and `fx` (`quote` stays BTC-USD; `fx.quotes` lists USD always and CHF/EUR/PHP when at least one selected gift day has that cross). USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot); CHF/EUR/PHP are USD × that UTC day's Frankfurter ECB rate. A gift day that lacks a fiat cross returns that currency as JSON `null` (totals go null if any selected gift lacks that cross). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). Empty boots are empty **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). No invoices.
@@ -310,10 +331,10 @@
 
 ## Endpoint: GET /messages/:id/replies
 
-- **Purpose:** Bearer required. Lists direct **live 21.gifts-author** replies (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Soft-hidden and unknown-npub (Damus-only) children are omitted. A soft-hidden or missing parent is 404. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. A child that cannot serialize or whose author lookup throws is omitted; remaining siblings still 200 `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; signed-in replies always include `accountId` (21gifts author id); never includes `deletedAt` / `deletedBy`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Not found' }` when `:id` is not a UUID, the parent is missing, or the parent is soft-hidden; 503 `{ error: 'Messages are unavailable' }` only when `getById` / `listReplies` throws or `dropMissingVideoRow` store/I/O throws (non-ENOENT video I/O or `deleteById`) (`messages.replies.failed`) — a child whose author lookup or serialize throws is omitted and remaining siblings still 200 `{ messages }`.
+- **Purpose:** Bearer optional. Lists direct **live 21.gifts-author** replies (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt` then `id` ASC), capped at 200. Soft-hidden and unknown-npub (Damus-only) children are omitted. A soft-hidden or missing parent is 404. A `hasVideo` reply whose file is missing or empty is deleted (`messages.video.dropped`) and omitted from `{ messages }`. A child that cannot serialize or whose author lookup throws is omitted; remaining siblings still 200 `{ messages }`. Body is `{ messages: [...] }` (same key as `GET /messages`, not `replies`). Each item is public message JSON with `payable` false; unauthenticated items omit `accountId`; signed-in items still include `accountId` (21gifts author id); never includes `deletedAt` / `deletedBy`.
+- **Errors:** 404 `{ error: 'Not found' }` when `:id` is not a UUID, the parent is missing, or the parent is soft-hidden; 503 `{ error: 'Messages are unavailable' }` only when `getById` / `listReplies` throws or `dropMissingVideoRow` store/I/O throws (non-ENOENT video I/O or `deleteById`) (`messages.replies.failed`) — a child whose author lookup or serialize throws is omitted and remaining siblings still 200 `{ messages }`.
 - **Used by:** App reply thread under a top-level note.
-- **Auth:** `Authorization: Bearer` session.
+- **Auth:** none (public).
 
 ## Endpoint: GET /messages/:id/photo
 
@@ -373,7 +394,7 @@
 
 ## Endpoint: GET /conversations
 
-- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `DEBUG_TOKEN` cannot read this inbox.
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists threads with at least one inbound message for the viewer (empty and outbound-only member/Damus omitted). The member's own `member_platform` contact thread is listed when it has a message, even if outbound-only. Inbound = not `conversationFromMe`; Damus null sender is inbound. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `DEBUG_TOKEN` cannot read this inbox.
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
 - **Auth:** `Authorization: Bearer` session.
@@ -401,21 +422,21 @@
 
 ## Endpoint: POST /conversations
 
-- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind`).
+- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind` and `lastFromMe`; empty new threads are `lastFromMe: false`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "forumMessageId" string; 400 `{ error: 'Cannot message yourself' }` when the author is the session account; 404 `{ error: 'Not found' }` for a non-UUID / missing note / Damus note without pubkey; 503 Conversations are unavailable.
 - **Used by:** App "message the author" from a forum note.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /conversations/:id
 
-- **Purpose:** Bearer required. `:id` is a UUID. Messages oldest-first (cap 200) as `{ messages: [{ id, name, text, createdAt }] }`. 404 when the session may not see the thread.
+- **Purpose:** Bearer required. `:id` is a UUID. Messages oldest-first (cap 200) as `{ messages: [{ id, name, text, createdAt, fromMe }] }`. `fromMe` is true when that message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. 404 when the session may not see the thread.
 - **Errors:** 401 Unauthorized; 404 Not found; 503 Conversations are unavailable.
 - **Used by:** App conversation thread.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /conversations/:id
 
-- **Purpose:** Bearer required. Body `{ text }` 1–500 via `normalizeForumText`. Appends a message. Staff (founder/moderator) replies on a platform thread persist as the platform account (worker signs with the platform nsec). Local persist does not wait for relay ACK.
+- **Purpose:** Bearer required. Body `{ text }` 1–500 via `normalizeForumText`. Appends a message. 200 is the public conversation message (includes `fromMe`; true for the viewer, including staff sending as the platform account). Staff (founder/moderator) replies on a platform thread persist as the platform account (worker signs with the platform nsec). Local persist does not wait for relay ACK.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "text" string; 400 Set a name before posting; 400 Text must be 1–500 characters; 404 Not found; 503 Conversations are unavailable.
 - **Used by:** App conversation composer.
 - **Auth:** `Authorization: Bearer` session.

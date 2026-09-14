@@ -1588,6 +1588,74 @@ describe('InMemoryMessageStore', () => {
     ]);
   });
 
+  it('listSignedMissingHashtags lists notes missing an extra location hashtag', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      text: 'x',
+      eventId: 'ab'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      id: 'damus',
+      accountId: null,
+      text: 'x',
+      eventId: 'cc'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('damus', 'published', 'space');
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).not.toContain('a');
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['a']);
+    await store.updateSignedEvent('a', 'ab'.repeat(32), {
+      content: 'x\n\n#bitcoin #21gifts #Berlin',
+    });
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).not.toContain('a');
+  });
+
+  it('listSignedMissingHashtags applies excludeIds before the limit', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'profile',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      text: 'x',
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('profile', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      text: 'x',
+      eventId: 'ab'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['profile', 'a']);
+    expect(
+      (
+        await store.listSignedMissingHashtags(
+          1,
+          new Map([['acc', ['Berlin']]]),
+          new Set(['profile']),
+        )
+      ).map((row) => row.id),
+    ).toEqual(['a']);
+  });
+
   it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
     const store = new InMemoryMessageStore();
     await store.create(LATE);
@@ -1745,6 +1813,139 @@ describe('InMemoryMessageStore', () => {
     expect(again.map((row) => row.id)).toEqual(['zi-z', 'zi-b', 'zi-a']);
     expect(again[0]?.outcome).toBe('indexed');
     expect(again[0]?.receipt).toEqual({ id: 'r3', kind: 9735 });
+  });
+
+  it('listInvoiceAttemptsForPayer filters the payer and returns every matching row', async () => {
+    const store = new InMemoryMessageStore();
+    const base: MessageInvoiceAttempt = {
+      id: 'inv-a',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(base);
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-b',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-c',
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+    });
+    await store.recordInvoiceAttempt({ ...base, id: 'inv-other', payerAccountId: 'other' });
+    const listed = await store.listInvoiceAttemptsForPayer('payer');
+    expect(listed.map((row) => row.id)).toEqual(['inv-c', 'inv-b', 'inv-a']);
+    expect(listed).toHaveLength(3);
+  });
+
+  it('listInvoiceAttemptsForPayer ties on createdAt are ordered by id desc', async () => {
+    const store = new InMemoryMessageStore();
+    const at = new Date('2026-08-01T00:00:00.000Z');
+    const base: MessageInvoiceAttempt = {
+      id: 'inv-a',
+      createdAt: at,
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt({ ...base, id: 'inv-a' });
+    await store.recordInvoiceAttempt({ ...base, id: 'inv-b' });
+    const listed = await store.listInvoiceAttemptsForPayer('payer');
+    expect(listed.map((row) => row.id)).toEqual(['inv-b', 'inv-a']);
+  });
+
+  it('listIndexedZapIngests returns indexed rows only, uncapped', async () => {
+    const store = new InMemoryMessageStore();
+    const base: ZapIngestRow = {
+      id: 'zi-a',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      receiptId: 'r1',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'm1',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'aa'.repeat(32),
+      receipt: { id: 'r1' },
+    };
+    await store.recordZapIngest(base);
+    await store.recordZapIngest({
+      ...base,
+      id: 'zi-b',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      receiptId: 'r2',
+    });
+    await store.recordZapIngest({
+      ...base,
+      id: 'zi-rej',
+      outcome: 'rejected',
+      reason: 'sig',
+      receiptId: 'r3',
+    });
+    const listed = await store.listIndexedZapIngests();
+    expect(listed.map((row) => row.id)).toEqual(['zi-b', 'zi-a']);
+    expect(listed.every((row) => row.outcome === 'indexed')).toBe(true);
+  });
+
+  it('listIndexedZapIngests ties on createdAt are ordered by id desc', async () => {
+    const store = new InMemoryMessageStore();
+    const at = new Date('2026-08-01T00:00:00.000Z');
+    const base: ZapIngestRow = {
+      id: 'zi-a',
+      createdAt: at,
+      receiptId: 'r1',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'm1',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'aa'.repeat(32),
+      receipt: { id: 'r1' },
+    };
+    await store.recordZapIngest({ ...base, id: 'zi-a', receiptId: 'r1' });
+    await store.recordZapIngest({ ...base, id: 'zi-b', receiptId: 'r2' });
+    const listed = await store.listIndexedZapIngests();
+    expect(listed.map((row) => row.id)).toEqual(['zi-b', 'zi-a']);
+  });
+
+  it('listAuthoredMessages includes hidden rows, excludes other accounts, and has no cap', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'live' });
+    await store.create({ ...LATE, id: 'hidden' });
+    await store.create({ ...TIE_HIGH, id: 'other', accountId: 'other' });
+    await store.create({ ...EARLY, id: 'reply', parentId: 'live', text: 'child' });
+    expect(await store.markDeleted('hidden', new Date('2026-09-01T00:00:00.000Z'), 'staff')).toBe(
+      true,
+    );
+    const listed = await store.listAuthoredMessages('acc');
+    expect(listed.map((row) => row.id)).toEqual(['hidden', 'reply', 'live']);
+    expect(listed.find((row) => row.id === 'hidden')?.deletedAt).not.toBeNull();
+    expect(listed.some((row) => row.accountId === 'other')).toBe(false);
   });
 });
 
@@ -2709,6 +2910,81 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
   });
 
+  it('listSignedMissingHashtags extras map extends the Postgres hashtag scan', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    await store.listSignedMissingHashtags(4, new Map());
+    const emptySql = sql.queries.at(-1)?.text ?? '';
+    expect(emptySql).toContain('#21gifts([^a-z0-9_]|$)');
+    expect(emptySql).toContain('#bitcoin([^a-z0-9_]|$)');
+    expect(emptySql).not.toMatch(/unnest/i);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+    const missing = await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
+    expect(missing[0]?.id).toBe('m1');
+    const extraSql = sql.queries.at(-1)?.text ?? '';
+    expect(extraSql).toContain('#21gifts([^a-z0-9_]|$)');
+    expect(extraSql).toContain('#bitcoin([^a-z0-9_]|$)');
+    expect(extraSql).toMatch(/unnest/i);
+    expect(extraSql).toMatch(/extra\.pattern/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#berlin([^a-z0-9_]|$)"}`]);
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['St.Gallen']]]));
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#st\\\\.gallen([^a-z0-9_]|$)"}`]);
+  });
+
+  it('listSignedMissingHashtags excludeIds binds before LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    await store.listSignedMissingHashtags(4);
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map(), new Set());
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"acc"}', `{"#berlin([^a-z0-9_]|$)"}`]);
+
+    await store.listSignedMissingHashtags(4, undefined, new Set([profileId]));
+    const excludeOnlySql = sql.queries.at(-1)?.text ?? '';
+    expect(excludeOnlySql).toMatch(/ANY/);
+    expect(excludeOnlySql).toMatch(/\$2::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, `{"${profileId}"}`]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]), new Set([profileId]));
+    const extraExcludeSql = sql.queries.at(-1)?.text ?? '';
+    expect(extraExcludeSql).toMatch(/ANY/);
+    expect(extraExcludeSql).toMatch(/unnest/i);
+    expect(extraExcludeSql).toMatch(/\$4::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([
+      4,
+      '{"acc"}',
+      `{"#berlin([^a-z0-9_]|$)"}`,
+      `{"${profileId}"}`,
+    ]);
+
+    await store.listSignedMissingHashtags(4, undefined, new Set(['id"quote', 'id\\slash']));
+    expect(sql.queries.at(-1)?.text ?? '').toMatch(/\$2::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, '{"id\\"quote","id\\\\slash"}']);
+  });
+
   it('propagates getPhoto query errors', async () => {
     const sql = new MockSql();
     sql.queryError = new Error('photo boom');
@@ -3143,5 +3419,34 @@ describe('PostgresMessageStore', () => {
     const executesBeforeEmptyPatch = sql.executes.length;
     await store.updateZapReceiptGift('r1', {});
     expect(sql.executes).toHaveLength(executesBeforeEmptyPatch);
+  });
+
+  it('listInvoiceAttemptsForPayer filters payer_account_id without LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    await store.listInvoiceAttemptsForPayer('payer');
+    expect(sql.queries[0]?.text).toContain('WHERE payer_account_id = $1');
+    expect(sql.queries[0]?.text).not.toContain('LIMIT');
+    expect(sql.queries[0]?.params).toEqual(['payer']);
+  });
+
+  it('listIndexedZapIngests filters outcome indexed without LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    await store.listIndexedZapIngests();
+    expect(sql.queries[0]?.text).toContain("WHERE outcome = 'indexed'");
+    expect(sql.queries[0]?.text).not.toContain('LIMIT');
+  });
+
+  it('listAuthoredMessages filters account_id without LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    await store.listAuthoredMessages('acc');
+    expect(sql.queries[0]?.text).toContain('WHERE account_id = $1');
+    expect(sql.queries[0]?.text).not.toContain('LIMIT');
+    expect(sql.queries[0]?.params).toEqual(['acc']);
   });
 });

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog).
+**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
 
 ---
 
@@ -74,7 +74,9 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
 | GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
+| GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound) |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
+| GET    | `/view/:viewKey/activity`                    | none                       | Public given/received payload for the account behind the view key                 |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
 | POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
@@ -85,12 +87,13 @@ Public base URLs used in examples:
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
 | GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + uncapped counts                             |
+| GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                     |
 | GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
 | GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
-| GET    | `/messages/:id/replies`                      | Bearer                     | Oldest-first 21.gifts-author replies for a parent note                            |
+| GET    | `/messages/:id/replies`                      | none                       | Oldest-first 21.gifts-author replies (optional Bearer for `accountId`)            |
 | GET    | `/messages/:id/photo`                        | none                       | Fetch forum message photo bytes                                                   |
 | GET    | `/messages/:id/video.*`                      | none                       | Fetch forum video bytes (Range / 206)                                             |
 | DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)                     |
@@ -336,6 +339,41 @@ Missing or invalid bearer → **Response** `401`:
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                        |
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Same predicate as GET /invoices/posted.                               |
 
+### `GET /me/activity`
+
+Bearer required (same session as `GET /me`). No living-room-rules gate.
+
+Missing or invalid bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store throw or missing FX day → **Response** `503`:
+
+```json
+{ "error": "Gift stats are unavailable" }
+```
+
+**Response** `200` (empty series when the account has no attributed gifts):
+
+```json
+{
+  "donatedSats": 0,
+  "receivedSats": 0,
+  "donatedOverTime": [],
+  "receivedOverTime": [],
+  "fx": {
+    "quote": "BTC-USD",
+    "dayBasis": "utc",
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
+  }
+}
+```
+
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`. Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+
 ### `POST /me/setup/skip`
 
 Skip a skippable wizard step. Body:
@@ -378,6 +416,12 @@ newest-first, capped at 200. Body `{ "messages": [...] }` via
 `parentId` when set; omits `replyCount`. Top-level notes by that member
 are not listed.
 
+### `GET /members/:accountId/activity`
+
+Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
+same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
+stats are unavailable" }` when the gift store throws or a gift day lacks FX.
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -406,6 +450,13 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 `hasPasskey` is `true` when the account has at least one passkey credential,
 otherwise `false`. Clients use it to show an activation banner only while the
 profile is still unclaimed.
+
+### `GET /view/:viewKey/activity`
+
+Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
+the same JSON as `GET /me/activity` for the account behind the key. 503
+`{ "error": "Gift stats are unavailable" }` when the gift store throws or a
+gift day lacks FX.
 
 ### `POST /me/name`
 
@@ -1731,7 +1782,7 @@ with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
 Text-only posts are unchanged (still **429** on burst). The worker signs a
-top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`;
+top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`, and when the author's `location` is non-null also `#<locationHashtagName>` plus a `t` tag (not on the profile note);
 forum `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -1921,19 +1972,14 @@ Success → **Response** `200` or `206`: raw video body,
 
 ### `GET /messages/:id/replies`
 
-Bearer session required. Lists **direct live 21.gifts-author replies**
+Public (Bearer optional). Lists **direct live 21.gifts-author replies**
 (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt`
 then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
 children are omitted. Each item is the public message JSON with
-`payable` false and no `replyCount`. Signed-in replies always include
-`accountId` (21gifts author id). Photo and
-video bytes are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
-
-Missing/invalid/expired bearer → **Response** `401`:
-
-```json
-{ "error": "Unauthorized" }
-```
+`payable` false and no `replyCount`. Unauthenticated items omit
+`accountId`; signed-in replies include `accountId` (21gifts author id).
+Photo and video bytes are never included. `:id` is a UUID
+(`MESSAGE_ID_RE`).
 
 `:id` is not a UUID, the parent is missing, or the parent is soft-hidden
 → **Response** `404`:
@@ -2155,9 +2201,15 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-`role` is `founder` or `moderator`) every platform thread. Newest
-`lastMessageAt` first. Cap 200. Member JSON never includes `accountId`,
-event ids, or npubs; Damus-only counterpart `name` may be a truncated npub.
+`role` is `founder` or `moderator`) every platform thread. Empty threads
+and outbound-only member/Damus threads (every stored sender is
+`conversationFromMe` for the viewer, including staff-as-platform) are
+omitted. The member's own `member_platform` contact thread is listed when
+it has a message, even if outbound-only. Damus inbound (null sender) is
+inbound and listed. `GET /conversations/:id` and `POST` still return/open
+outbound-only and empty threads. Newest `lastMessageAt` first.
+Cap 200. Member JSON never includes `accountId`, event ids, or npubs;
+Damus-only counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2181,7 +2233,8 @@ Success → **Response** `200`:
       "kind": "member_member",
       "name": "Ada",
       "lastText": "Hello",
-      "lastAt": "2026-08-29T12:00:00.000Z"
+      "lastAt": "2026-08-29T12:00:00.000Z",
+      "lastFromMe": false
     }
   ]
 }
@@ -2216,7 +2269,8 @@ Success → **Response** `200`:
       "id": "<uuid>",
       "name": "Ada",
       "text": "Hello",
-      "createdAt": "2026-08-29T12:00:00.000Z"
+      "createdAt": "2026-08-29T12:00:00.000Z",
+      "fromMe": true
     }
   ]
 }

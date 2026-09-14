@@ -132,6 +132,86 @@ describe('kind1', () => {
     const event = buildKind1Event('hello', 1);
     expect(event.tags.some((tag) => tag[0] === 'e' || tag[0] === 'p')).toBe(false);
   });
+
+  it('inserts extra t tags after 21gifts and before r', () => {
+    expect(kind1Tags(['berlin'])).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'berlin'],
+      ['r', 'https://21.gifts'],
+    ]);
+    expect(kind1Tags(['bitcoin'])).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('appends extra location hashtags after bitcoin and 21gifts', () => {
+    expect(kind1ContentWithHashtags('hello', ['Berlin'])).toBe(
+      'hello\n\n#bitcoin #21gifts #Berlin',
+    );
+    expect(kind1ContentWithHashtags('hello\n\n#bitcoin #21gifts #Berlin', ['Berlin'])).toBe(
+      'hello\n\n#bitcoin #21gifts #Berlin',
+    );
+  });
+
+  it('adds a location hashtag and t tag when location is set', () => {
+    const berlin = buildKind1Event('hello', 1, undefined, undefined, 'Berlin');
+    expect(berlin.content).toBe('hello\n\n#bitcoin #21gifts #Berlin');
+    expect(berlin.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'berlin'],
+      ['r', 'https://21.gifts'],
+    ]);
+    const newYork = buildKind1Event('hello', 1, undefined, undefined, 'New York');
+    expect(newYork.content).toBe('hello\n\n#bitcoin #21gifts #NewYork');
+    expect(newYork.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'newyork'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('omits a location hashtag when location is null or collides with Damus tokens', () => {
+    const fourArg = buildKind1Event('hello', 1);
+    const withNull = buildKind1Event('hello', 1, undefined, undefined, null);
+    expect(withNull).toEqual(fourArg);
+    const bitcoinLocation = buildKind1Event('hello', 1, undefined, undefined, 'Bitcoin');
+    expect(bitcoinLocation.content).toBe('hello\n\n#bitcoin #21gifts');
+    expect(bitcoinLocation.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+    ]);
+  });
+
+  it('keeps extra location t tags before r when replyTo is set', () => {
+    const noteEventId = 'ee'.repeat(32);
+    const noteAuthorPubkey = 'aa'.repeat(32);
+    const event = buildKind1Event(
+      'reply',
+      1,
+      undefined,
+      {
+        noteEventId,
+        spaceRelay: 'wss://relay.nostr.space',
+        noteAuthorPubkey,
+      },
+      'Berlin',
+    );
+    expect(event.tags).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['t', 'berlin'],
+      ['r', 'https://21.gifts'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'root'],
+      ['e', noteEventId, 'wss://relay.nostr.space', 'reply'],
+      ['p', noteAuthorPubkey],
+    ]);
+  });
 });
 
 describe('kind0', () => {
