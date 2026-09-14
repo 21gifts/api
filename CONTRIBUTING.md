@@ -68,7 +68,7 @@ api/
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── conversation.ts   # PN public JSON (no accountId / eventId / npub)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
-│   │   ├── notification.ts   # Notification public JSON + notifyForumReply
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap payloads
@@ -217,7 +217,7 @@ api/
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   ├── conversation.sql      # PN threads + messages (member/platform/Damus)
 │   ├── push.sql              # push_subscription + push_outbox
-│   ├── notification.sql      # in-app Notifications rows (forum_reply)
+│   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1

@@ -40,6 +40,8 @@ function buildDebugPushPayload(): PushPayload {
  * @param authorId - Skip id (post actor; never notified).
  * @param messageId - Forum message id (outbox `messageId` and payload tag).
  * @param nowMs - Enqueue clock.
+ * @returns Resolves after each recipient is enqueued (including no-ops).
+ * @throws If `listAccountIdsWithSubscriptions` or `enqueue` rejects.
  */
 export async function enqueueForumPushes(
   store: PushStore,
@@ -125,6 +127,8 @@ export async function enqueueReplyPush(
  * @param authorId - Skip id (payer; may be the note author).
  * @param messageId - Tag id (also stored as outbox `messageId` here).
  * @param nowMs - Enqueue clock.
+ * @returns Resolves after each recipient is enqueued (including no-ops).
+ * @throws If `listAccountIdsWithSubscriptions` or `enqueue` rejects.
  */
 export async function enqueueZapPush(
   store: PushStore,
