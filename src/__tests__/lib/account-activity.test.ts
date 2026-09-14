@@ -38,6 +38,7 @@ function account(overrides: Partial<Account> = {}): Account {
     linkingKey: null,
     role: 'basis',
     name: 'Ada',
+    location: null,
     lightningAddress: 'ada@walletofsatoshi.com',
     lightningAddressVerified: true,
     forumLawsDismissed: false,
