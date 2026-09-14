@@ -9,6 +9,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { bearerToken, meRoutes } from '@/routes/me';
 
@@ -47,6 +48,7 @@ interface MountOpts {
   clock?: () => number;
   messages?: InMemoryMessageStore;
   pushStore?: InMemoryPushStore;
+  notificationStore?: InMemoryNotificationStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -60,6 +62,9 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       fetchImpl: opts.fetchImpl ?? globalThis.fetch,
       nostrKek: NOSTR_KEK,
       ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
+      ...(opts.notificationStore === undefined
+        ? {}
+        : { notificationStore: opts.notificationStore }),
     }),
   );
 }
@@ -553,7 +558,11 @@ describe('POST /me/name', () => {
       auth: 'a',
       createdAt: new Date(now()),
     });
-    const res = await mount(store, { messages, pushStore }).request('/me/name', {
+    const res = await mount(store, {
+      messages,
+      pushStore,
+      notificationStore: new InMemoryNotificationStore(),
+    }).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Ada' }),
@@ -770,14 +779,16 @@ describe('POST /me/lightning-address', () => {
     expect(named.status).toBe(200);
     expect((await store.getAccount('acc'))?.profileMessageId).toBeUndefined();
     expect(await messages.listLatest(10)).toHaveLength(0);
-    const res = await mount(store, { messages, pushStore, fetchImpl: happyFetch() }).request(
-      '/me/lightning-address',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ address: ADDRESS }),
-      },
-    );
+    const res = await mount(store, {
+      messages,
+      pushStore,
+      notificationStore: new InMemoryNotificationStore(),
+      fetchImpl: happyFetch(),
+    }).request('/me/lightning-address', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ address: ADDRESS }),
+    });
     expect(res.status).toBe(200);
     const stored = await store.getAccount('acc');
     expect(typeof stored?.profileMessageId).toBe('string');

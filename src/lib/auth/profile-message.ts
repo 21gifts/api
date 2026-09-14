@@ -2,8 +2,9 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { notifyForumPost } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueForumPushes } from '@/lib/push-worker';
 
 /**
  * Ensure the account has exactly one top-level profile forum note when a
@@ -18,7 +19,8 @@ import { enqueueForumPushes } from '@/lib/push-worker';
  * insert returns the input account (name may still be persisted by the
  * caller; worker backfill creates the missing note once LN is linked).
  *
- * @param args - Auth store, message store, account snapshot, clock, optional push.
+ * @param args - Auth store, message store, account snapshot, clock, optional
+ *   push and notification stores.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).
  */
 export async function ensureProfileMessage(args: {
@@ -27,6 +29,7 @@ export async function ensureProfileMessage(args: {
   account: Account;
   now: () => number;
   pushStore?: PushStore;
+  notifications?: NotificationStore;
 }): Promise<Account> {
   const trimmed = args.account.name === null ? '' : args.account.name.trim();
   if (trimmed === '') {
@@ -96,12 +99,15 @@ export async function ensureProfileMessage(args: {
     return confirmed === undefined ? live : confirmed;
   }
 
-  if (args.pushStore !== undefined) {
-    try {
-      await enqueueForumPushes(args.pushStore, args.account.id, created.id, args.now());
-    } catch {
-      logEvent('push.enqueue.failed');
-    }
+  try {
+    await notifyForumPost({
+      account: args.account,
+      created,
+      ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    });
+  } catch {
+    logEvent('push.enqueue.failed');
   }
   return updated;
 }

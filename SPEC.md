@@ -1771,15 +1771,15 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web Push for a
-**top-level** note notifies every other subscribed account. A **reply** to a
-21.gifts-author parent (not the replier themselves) inserts one
-`forum_reply` notification for that author and enqueues one targeted push
-(`url` `/notifications`, `tag` `forum_reply:<parentId>`). The booted process
-always has notification and push stores (in-memory without `DATABASE_URL`,
-Postgres when it is set). Photo-only empty
-text still notifies. Self-replies and Damus-only parents do not notify.
-Notification or push failure does not fail the **200**. Over-limit posters
+author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
+`forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
+**reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
+`tag` `forum_reply:<replyId>`) fan out to every bell subscriber except the
+actor. Damus-only parents still fan out. A self-reply skips only the actor.
+The booted process always has notification and push stores (in-memory without
+`DATABASE_URL`, Postgres when it is set). Photo-only empty text still
+notifies. Missing `pushStore` is a no-op (no in-app rows). Notification or
+push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
@@ -1888,10 +1888,12 @@ the **parent** `sats`. After that increment (never in the same SQL CTE), the wor
 inserts a reply from the payer (`text` from the zap-request comment or `""`,
 `sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
-After the gift-reply insert, `notifyForumReply` runs best-effort (notification
-row and/or `/notifications` push when those stores are set; it does not copy
-into the member↔member inbox). Notify failure logs `messages.reply.notify.failed`
-and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
+After a newly indexed receipt, `notifyZap` runs best-effort (bell-subscriber
+fan-out except the resolved payer when `pushStore` is set; enqueue failure
+logs `push.enqueue.failed`). After the gift-reply insert, `notifyForumReply`
+runs best-effort (bell-subscriber fan-out except the actor when `pushStore`
+is set; it does not copy into the member↔member inbox). Notify failure logs
+`messages.reply.notify.failed` and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with
@@ -2300,8 +2302,9 @@ Success → **Response** `200` (one public conversation message).
 ### `GET /notifications`
 
 Bearer session required. Lists the recipient's notifications newest-first
-(cap **200**) plus the total unread count (not the page length). Member
-JSON never includes recipient or actor account ids.
+(cap **200**) plus the total unread count (not the page length). Each item
+`type` is `"forum_post"`, `"forum_reply"`, or `"zap"`. Member JSON never
+includes recipient or actor account ids.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

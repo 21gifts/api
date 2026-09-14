@@ -1781,6 +1781,93 @@ describe('indexOpenZapReceipts', () => {
     expect(claimed[0]?.type).toBe('zap');
   });
 
+  it('skips the invoice payer on zap notify and still notifies the note author', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-zap-payer-skip',
+      lightningAddress: 'zap-payer-skip@example.com',
+      messageId: 'm-zap-payer-skip',
+    });
+    await auth.createAccount({
+      id: 'payer-zap-skip',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-zap-skip@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-zap-skip'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-zap-payer-skip',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-zap-skip',
+      authorAccountId: 'acc-zap-payer-skip',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-zap-payer-skip',
+      paymentHash: 'a1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/author',
+      accountId: 'acc-zap-payer-skip',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/payer',
+      accountId: 'payer-zap-skip',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-zap-payer-skip',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-zap-payer-skip'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'a1'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+      pushStore,
+    });
+    const forAuthor = await notifications.listByRecipient('acc-zap-payer-skip', 10);
+    const forPayer = await notifications.listByRecipient('payer-zap-skip', 10);
+    expect(forPayer.filter((row) => row.type === 'zap')).toEqual([]);
+    expect(forAuthor.filter((row) => row.type === 'zap')).toHaveLength(1);
+  });
+
   it('indexes sats even when zap push enqueue throws', async () => {
     const secret = generateSecretKey();
     const pubkey = getPublicKey(secret);
@@ -2543,6 +2630,14 @@ describe('indexOpenZapReceipts', () => {
     notifications.create = async () => {
       throw new Error('notify boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/notify-boom',
+      accountId: 'acc-notify-parent',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -2566,6 +2661,7 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
       notificationStore: notifications,
+      pushStore,
     });
     warn.mockRestore();
     expect(await store.listReplies(parentId)).toHaveLength(1);
