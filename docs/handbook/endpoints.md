@@ -205,7 +205,7 @@
 
 ## Endpoint: GET /me/activity
 
-- **Purpose:** Bearer session JSON of given and received sats for the signed-in account (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Given is confirmed forum zaps this account paid plus all outbound house gifts when the account is platform. Received is zaps on authored notes (including hidden and any `message.sats` remainder so a ₿21 post cannot sit under an empty chart) plus house gifts to the Lightning handle. Empty activity is 200 zeros without Coinbase. No invoices or payment hashes.
+- **Purpose:** Bearer session JSON of given and received sats for the signed-in account (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Given is confirmed forum zaps this account paid plus all outbound house gifts when the account is platform. Received is zaps on authored notes (including hidden and replies) plus `message.sats` remainder on **top-level** notes only (so a ₿21 post cannot sit under an empty chart; gift-as-reply `sats` are not Received) plus house gifts to the Lightning handle. Empty activity is 200 zeros without Coinbase. No invoices or payment hashes.
 - **Errors:** 401 `{ "error": "Unauthorized" }` without session; 503 `{ "error": "Gift stats are unavailable" }` on store throw or missing FX (`account.activity.failed` / `account.activity.fx_incomplete`).
 - **Used by:** App `/me/activity` proxy, signed-in profile chart and menu totals.
 - **Auth:** Bearer session. No living-room-rules gate.
