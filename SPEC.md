@@ -93,7 +93,7 @@ Public base URLs used in examples:
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
-| GET    | `/messages/:id/replies`                      | Bearer                     | Oldest-first 21.gifts-author replies for a parent note                            |
+| GET    | `/messages/:id/replies`                      | none                       | Oldest-first 21.gifts-author replies (optional Bearer for `accountId`)            |
 | GET    | `/messages/:id/photo`                        | none                       | Fetch forum message photo bytes                                                   |
 | GET    | `/messages/:id/video.*`                      | none                       | Fetch forum video bytes (Range / 206)                                             |
 | DELETE | `/messages/:id`                              | Bearer (founder/moderator) | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)                     |
@@ -1972,19 +1972,14 @@ Success → **Response** `200` or `206`: raw video body,
 
 ### `GET /messages/:id/replies`
 
-Bearer session required. Lists **direct live 21.gifts-author replies**
+Public (Bearer optional). Lists **direct live 21.gifts-author replies**
 (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt`
 then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
 children are omitted. Each item is the public message JSON with
-`payable` false and no `replyCount`. Signed-in replies always include
-`accountId` (21gifts author id). Photo and
-video bytes are never included. `:id` is a UUID (`MESSAGE_ID_RE`).
-
-Missing/invalid/expired bearer → **Response** `401`:
-
-```json
-{ "error": "Unauthorized" }
-```
+`payable` false and no `replyCount`. Unauthenticated items omit
+`accountId`; signed-in replies include `accountId` (21gifts author id).
+Photo and video bytes are never included. `:id` is a UUID
+(`MESSAGE_ID_RE`).
 
 `:id` is not a UUID, the parent is missing, or the parent is soft-hidden
 → **Response** `404`:
