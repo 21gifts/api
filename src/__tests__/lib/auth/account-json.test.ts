@@ -205,7 +205,7 @@ describe('serializeOwnerAccountWithPosts', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly six public profile fields', () => {
+  it('emits exactly seven public profile fields', () => {
     const json = serializeViewProfile(account, false, null);
     expect(json).toEqual({
       name: 'Ada',
