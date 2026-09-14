@@ -219,14 +219,21 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-The api enqueues (does not send inline):
+The api enqueues (does not send inline) one Web Push and one in-app row to
+every bell subscriber (an account with at least one `push_subscription`)
+except the actor:
 
-- a **forum** payload when someone else posts (`tag: forum`)
-- a **zap** payload when a zap receipt is newly indexed onto the author's note
-- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`). That includes an unpaid `POST /messages` reply, an inbound member reply the worker persisted, and a zap gift-reply after a validated kind:9735. The notification row is stored first, then the push is enqueued; if either fails, the reply persist still succeeds (HTTP 200 on `POST /messages`; worker paths log and keep the row).
+- a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
+- a **reply** payload when someone replies (`title` New reply on 21.gifts, `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply, an inbound member reply the worker persisted, and a zap gift-reply after a validated kind:9735.
+- a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer.
+
+Missing `pushStore` is a no-op (no in-app rows). If persist or enqueue
+fails, the living-room write still succeeds (HTTP 200 on `POST /messages`;
+worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
-separate from `/conversations` chat. A reply push opens `/notifications`.
+separate from `/conversations` chat. Post, reply, and zap pushes open
+`/notifications`.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip

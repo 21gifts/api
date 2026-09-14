@@ -964,7 +964,7 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toHaveLength(1);
   });
 
-  it('creates a notification for the parent author and enqueues a targeted push', async () => {
+  it('notifies a subscribed parent of a forum reply', async () => {
     const authStore = await staffStore('Ada');
     await authStore.createAccount({
       id: 'parent',
@@ -1018,13 +1018,41 @@ describe('POST /messages', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('parent');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'Reply on your post',
+      title: 'New reply on 21.gifts',
       url: '/notifications',
-      tag: `forum_reply:${parentId}`,
+      tag: `forum_reply:${listed[0]?.replyId}`,
     });
   });
 
-  it('does not notify when the replier owns the parent note', async () => {
+  it('creates a forum_post notification for other bell subscribers', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, {
+      notificationStore,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello living room' }),
+    });
+    expect(res.status).toBe(200);
+    const listed = await notificationStore.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    expect(listed[0]?.text).toBe('hello living room');
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
+  });
+
+  it('skips a self-replier when they are the only subscriber', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
@@ -1092,8 +1120,17 @@ describe('POST /messages', () => {
     notificationStore.create = async () => {
       throw new Error('boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
     const res = await mount(authStore, messageStore, {
       notificationStore,
+      pushStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -1187,8 +1224,9 @@ describe('POST /messages', () => {
     const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
     expect(claimed).toHaveLength(1);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'New reply on 21.gifts',
       url: '/notifications',
-      tag: `forum_reply:${parentId}`,
+      tag: `forum_reply:${claimed[0]?.messageId}`,
     });
   });
 
@@ -1221,8 +1259,17 @@ describe('POST /messages', () => {
       ...unsignedNostrDefaults(),
     });
     const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
     const res = await mount(authStore, messageStore, {
       notificationStore,
+      pushStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },

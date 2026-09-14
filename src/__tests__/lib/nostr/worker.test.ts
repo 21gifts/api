@@ -4555,6 +4555,13 @@ describe('runNostrWorkerTick', () => {
     ];
     const notificationStore = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
     await inboundTick(
       auth,
       messages,
@@ -4572,10 +4579,23 @@ describe('runNostrWorkerTick', () => {
     expect(await notificationStore.listByRecipient('bob', 10)).toHaveLength(0);
   });
 
-  it('does not notify when inbound kind:1 is a self-reply', async () => {
+  it('skips the self-replier on inbound kind:1 and still notifies another subscriber', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
     const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const replyEventId = 'b1'.repeat(32);
     const querier = new RecordingQuerier();
@@ -4591,8 +4611,33 @@ describe('runNostrWorkerTick', () => {
       },
     ];
     const notificationStore = new InMemoryNotificationStore();
-    await inboundTick(auth, messages, new InMemoryConversationStore(), querier, notificationStore);
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/bob',
+      accountId: 'bob',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
+    await inboundTick(
+      auth,
+      messages,
+      new InMemoryConversationStore(),
+      querier,
+      notificationStore,
+      pushStore,
+    );
     expect(await notificationStore.listByRecipient('acc', 10)).toHaveLength(0);
+    const forBob = await notificationStore.listByRecipient('bob', 10);
+    expect(forBob).toHaveLength(1);
+    expect(forBob[0]?.type).toBe('forum_reply');
     expect(await messages.getByEventId(replyEventId)).toBeDefined();
   });
 
@@ -4632,6 +4677,14 @@ describe('runNostrWorkerTick', () => {
     notificationStore.create = async () => {
       throw new Error('boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await inboundTick(
@@ -4640,6 +4693,7 @@ describe('runNostrWorkerTick', () => {
         new InMemoryConversationStore(),
         querier,
         notificationStore,
+        pushStore,
       );
       expect(await messages.getByEventId(replyEventId)).toBeDefined();
       const events = warn.mock.calls

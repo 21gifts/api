@@ -16,6 +16,7 @@ import { normalizeDisplayName } from '@/lib/name';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 
 /**
@@ -43,6 +44,8 @@ export interface DebugRouteDeps {
   messageStore?: MessageStore;
   /** Optional push outbox for profile-note create. */
   pushStore?: PushStore;
+  /** Optional in-app notification store for profile-note create. */
+  notificationStore?: NotificationStore;
   /** Clock for minted debug sessions. Defaults to `Date.now`. */
   now?: () => number;
 }
@@ -53,7 +56,7 @@ export interface DebugRouteDeps {
  * @param deps - Debug collaborators (message store required at the call site).
  * @param account - Account that just received a name.
  * @param now - Clock.
- * @returns Helper input, including push when configured.
+ * @returns Helper input, including push and notifications when configured.
  */
 function profileEnsureArgs(
   deps: DebugRouteDeps & { messageStore: MessageStore },
@@ -66,6 +69,7 @@ function profileEnsureArgs(
     account,
     now,
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+    ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
   };
 }
 

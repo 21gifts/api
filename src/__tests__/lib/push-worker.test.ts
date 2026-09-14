@@ -54,6 +54,14 @@ const SUB_B: PushSubscriptionRecord = {
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
 };
 
+const SUB_C: PushSubscriptionRecord = {
+  endpoint: 'https://push.example/c',
+  accountId: 'third',
+  p256dh: 'p',
+  auth: 'a',
+  createdAt: new Date('2026-08-01T00:00:00.000Z'),
+};
+
 describe('push worker constants', () => {
   it('exports batch, lease, and interval numbers', () => {
     expect(PUSH_WORKER_BATCH).toBe(20);
@@ -73,7 +81,12 @@ describe('enqueueForumPushes', () => {
     expect(claimed[0]?.accountId).toBe('other');
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.deliveredEndpoints).toEqual([]);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({ type: 'forum', tag: 'forum' });
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      type: 'forum',
+      tag: 'forum_post:msg-1',
+      title: 'New post on 21.gifts',
+      url: '/notifications',
+    });
   });
 
   it('enqueues nothing when only the author is subscribed', async () => {
@@ -85,42 +98,55 @@ describe('enqueueForumPushes', () => {
 });
 
 describe('enqueueReplyPush', () => {
-  it('enqueues when the parent author has subscriptions', async () => {
+  it('enqueues one row per subscriber besides the skip id', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription(SUB_B);
+    await store.upsertSubscription(SUB_C);
     await enqueueReplyPush(store, 'author', 'reply-1', 'parent-9', 5);
     const claimed = await store.claimPending(10, 5, 1000);
-    expect(claimed).toHaveLength(1);
-    expect(claimed[0]?.accountId).toBe('author');
+    expect(claimed).toHaveLength(2);
+    expect(claimed.map((row) => row.accountId).sort()).toEqual(['other', 'third']);
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.messageId).toBe('reply-1');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'New reply on 21.gifts',
       url: '/notifications',
-      tag: 'forum_reply:parent-9',
+      tag: 'forum_reply:reply-1',
     });
   });
 
-  it('does nothing when the parent author has no subscriptions', async () => {
+  it('does nothing when nobody else is subscribed', async () => {
     const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
     await enqueueReplyPush(store, 'author', 'reply-1', 'parent-9', 5);
     expect(await store.claimPending(10, 5, 1000)).toEqual([]);
   });
 });
 
 describe('enqueueZapPush', () => {
-  it('enqueues when the author has subscriptions', async () => {
+  it('enqueues one row per subscriber besides the payer skip id', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription(SUB_B);
+    await store.upsertSubscription(SUB_C);
     await enqueueZapPush(store, 'author', 'msg-9', 5);
     const claimed = await store.claimPending(10, 5, 1000);
-    expect(claimed).toHaveLength(1);
+    expect(claimed).toHaveLength(2);
+    expect(claimed.map((row) => row.accountId).sort()).toEqual(['other', 'third']);
     expect(claimed[0]?.type).toBe('zap');
     expect(claimed[0]?.deliveredEndpoints).toEqual([]);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}').tag).toBe('zap:msg-9');
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Bitcoin on 21.gifts',
+      body: 'Someone sent sats.',
+      url: '/notifications',
+      tag: 'zap:msg-9',
+    });
   });
 
-  it('does nothing when the author has no subscriptions', async () => {
+  it('does nothing when nobody else is subscribed', async () => {
     const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
     await enqueueZapPush(store, 'author', 'msg-9', 5);
     expect(await store.claimPending(10, 5, 1000)).toEqual([]);
   });

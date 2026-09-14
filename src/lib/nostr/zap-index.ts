@@ -15,10 +15,9 @@ import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
-import { notifyForumReply } from '@/lib/notification';
+import { notifyForumReply, notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueZapPush } from '@/lib/push-worker';
 import { verifyEvent } from 'nostr-tools/pure';
 
 /** Minimal zap receipt fields we validate. */
@@ -272,8 +271,9 @@ export async function indexZapReceipt(args: {
 
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, index
- * validated ones, then insert a payer gift-reply and notify the parent
- * author. Retries receipts that have a payer and no gift-reply id yet.
+ * validated ones, then insert a payer gift-reply and fan out zap/reply
+ * notifications to bell subscribers. Retries receipts that have a payer
+ * and no gift-reply id yet.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
@@ -289,9 +289,9 @@ export async function indexOpenZapReceipts(args: {
   fetchImpl: FetchFn;
   /** Signature check; production uses nostr-tools `verifyEvent`. */
   verifyReceipt?: (event: NostrEventFrame) => boolean;
-  /** Optional push store; newly indexed receipts enqueue a zap push. */
+  /** Optional push store; newly indexed receipts call `notifyZap`. */
   pushStore?: PushStore;
-  /** Optional notification store; gift-replies notify the parent author. */
+  /** Optional notification store; gift-replies and zaps fan out when `pushStore` is set. */
   notificationStore?: NotificationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
@@ -587,9 +587,32 @@ async function ingestOneReceipt(
     receiptEvent: receipt,
     noteEventId,
   });
-  if (indexed && args.pushStore !== undefined && row.accountId !== null) {
+  if (indexed && row.accountId !== null) {
+    let payer: Account | undefined;
     try {
-      await enqueueZapPush(args.pushStore, row.accountId, row.id, args.now());
+      const resolved = await resolveZapPayer({
+        store: args.store,
+        auth: args.auth,
+        bolt11: pr,
+        paymentHash: decoded.paymentHash,
+        tags: event.tags,
+      });
+      payer = resolved?.payer;
+    } catch {
+      payer = undefined;
+    }
+    try {
+      await notifyZap({
+        note: row,
+        receiptId: event.id,
+        amountSats,
+        nowMs: args.now(),
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(payer === undefined
+          ? {}
+          : { payerAccountId: payer.id, payerName: payer.name ?? 'Someone' }),
+      });
     } catch {
       logEvent('push.enqueue.failed');
     }
@@ -690,6 +713,41 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
 }
 
 /**
+ * Resolve the zap payer from an ok invoice (payment hash, then bolt11), else a
+ * verified 9734 pubkey. An invoice match whose account is missing does not
+ * fall through to 9734.
+ *
+ * @param args - Store, auth, bolt11, payment hash, receipt tags.
+ * @returns Payer and comment, or `undefined` when unknown.
+ */
+async function resolveZapPayer(args: {
+  store: MessageStore;
+  auth: AuthStore;
+  bolt11: string;
+  paymentHash: string;
+  tags: string[][];
+}): Promise<{ payer: Account; text: string } | undefined> {
+  const byHash = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
+  const invoice = byHash ?? (await args.store.findOkInvoiceByPr(args.bolt11));
+  if (invoice !== undefined) {
+    const payer = await args.auth.getAccount(invoice.payerAccountId);
+    const text = commentFromZapRequest(invoice.zapRequest);
+    if (payer === undefined) {
+      return undefined;
+    }
+    return { payer, text };
+  }
+  const parsed = parseVerifiedZapRequest(args.tags);
+  if (parsed !== null) {
+    const payer = await args.auth.getAccountByPubkey(parsed.pubkey);
+    if (payer !== undefined) {
+      return { payer, text: parsed.content };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Create a forum reply for a newly indexed receipt (invoice first, then 9734).
  *
  * @param args - Receipt, parent, bolt11, tags.
@@ -704,26 +762,14 @@ async function ensureGiftReplyFromReceipt(
     tags: string[][];
   },
 ): Promise<void> {
-  let payer: Account | undefined;
-  let text = '';
-  const byHash = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
-  const invoice = byHash ?? (await args.store.findOkInvoiceByPr(args.bolt11));
-  if (invoice !== undefined) {
-    payer = await args.auth.getAccount(invoice.payerAccountId);
-    text = commentFromZapRequest(invoice.zapRequest);
-    if (payer === undefined) {
-      return;
-    }
-  } else {
-    const parsed = parseVerifiedZapRequest(args.tags);
-    if (parsed !== null) {
-      payer = await args.auth.getAccountByPubkey(parsed.pubkey);
-      if (payer !== undefined) {
-        text = parsed.content;
-      }
-    }
-  }
-  if (payer === undefined) {
+  const resolved = await resolveZapPayer({
+    store: args.store,
+    auth: args.auth,
+    bolt11: args.bolt11,
+    paymentHash: args.paymentHash,
+    tags: args.tags,
+  });
+  if (resolved === undefined) {
     return;
   }
   await insertGiftReply({
@@ -733,8 +779,8 @@ async function ensureGiftReplyFromReceipt(
     receiptEventId: args.receiptEventId,
     parent: args.parent,
     amountSats: args.amountSats,
-    payer,
-    text,
+    payer: resolved.payer,
+    text: resolved.text,
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.notificationStore === undefined ? {} : { notificationStore: args.notificationStore }),
   });

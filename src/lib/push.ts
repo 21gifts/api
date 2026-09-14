@@ -73,48 +73,49 @@ export function parsePushSubscription(input: unknown): ParsedPushSubscription | 
 }
 
 /**
- * Forum notification payload (shared English copy).
+ * Forum post payload for every bell subscriber except the actor.
  *
+ * @param postId - Top-level forum message id (used in `tag`).
  * @returns Payload object; callers `JSON.stringify`.
  */
-export function buildForumPushPayload(): PushPayload {
+export function buildForumPushPayload(postId: string): PushPayload {
   return {
     type: 'forum',
-    title: 'New message on 21.gifts',
+    title: 'New post on 21.gifts',
     body: 'Someone posted in the living room.',
-    url: '/welcome',
-    tag: 'forum',
+    url: '/notifications',
+    tag: `forum_post:${postId}`,
   };
 }
 
 /**
- * Zap notification payload for a note author.
+ * Zap payload for every bell subscriber except the payer skip id.
  *
- * @param messageId - Forum message id (used in `tag`).
+ * @param messageId - Tag id (receipt UUID on the `notifyZap` path).
  * @returns Payload object; callers `JSON.stringify`.
  */
 export function buildZapPushPayload(messageId: string): PushPayload {
   return {
     type: 'zap',
-    title: 'Bitcoin on your post',
-    body: 'Someone sent you sats.',
-    url: '/welcome',
+    title: 'Bitcoin on 21.gifts',
+    body: 'Someone sent sats.',
+    url: '/notifications',
     tag: `zap:${messageId}`,
   };
 }
 
 /**
- * Targeted notification when someone replies to the recipient's forum note.
+ * Forum reply payload for every bell subscriber except the actor.
  *
- * @param parentId - Forum note that was replied to (`tag` / collapse key).
+ * @param replyId - Reply forum message id (`tag` / collapse key; not the parent).
  * @returns Payload object; callers `JSON.stringify`.
  */
-export function buildReplyPushPayload(parentId: string): PushPayload {
+export function buildReplyPushPayload(replyId: string): PushPayload {
   return {
     type: 'forum',
-    title: 'Reply on your post',
+    title: 'New reply on 21.gifts',
     body: 'Someone replied in the living room.',
     url: '/notifications',
-    tag: `forum_reply:${parentId}`,
+    tag: `forum_reply:${replyId}`,
   };
 }

@@ -77,24 +77,24 @@ describe('parsePushSubscription', () => {
 
 describe('buildForumPushPayload', () => {
   it('returns the fixed English forum payload', () => {
-    expect(buildForumPushPayload()).toEqual({
+    expect(buildForumPushPayload('post-1')).toEqual({
       type: 'forum',
-      title: 'New message on 21.gifts',
+      title: 'New post on 21.gifts',
       body: 'Someone posted in the living room.',
-      url: '/welcome',
-      tag: 'forum',
+      url: '/notifications',
+      tag: 'forum_post:post-1',
     });
   });
 });
 
 describe('buildReplyPushPayload', () => {
-  it('points at /notifications', () => {
-    expect(buildReplyPushPayload('parent-1')).toEqual({
+  it('points at /notifications with the reply id tag', () => {
+    expect(buildReplyPushPayload('reply-1')).toEqual({
       type: 'forum',
-      title: 'Reply on your post',
+      title: 'New reply on 21.gifts',
       body: 'Someone replied in the living room.',
       url: '/notifications',
-      tag: 'forum_reply:parent-1',
+      tag: 'forum_reply:reply-1',
     });
   });
 });
@@ -103,9 +103,9 @@ describe('buildZapPushPayload', () => {
   it('includes the message id in the tag', () => {
     expect(buildZapPushPayload('msg-1')).toEqual({
       type: 'zap',
-      title: 'Bitcoin on your post',
-      body: 'Someone sent you sats.',
-      url: '/welcome',
+      title: 'Bitcoin on 21.gifts',
+      body: 'Someone sent sats.',
+      url: '/notifications',
       tag: 'zap:msg-1',
     });
   });
