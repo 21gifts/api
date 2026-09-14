@@ -1024,6 +1024,34 @@ describe('POST /messages', () => {
     });
   });
 
+  it('creates a forum_post notification for other bell subscribers', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, {
+      notificationStore,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello living room' }),
+    });
+    expect(res.status).toBe(200);
+    const listed = await notificationStore.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    expect(listed[0]?.text).toBe('hello living room');
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
+  });
+
   it('does not notify when the replier owns the parent note', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

@@ -2543,6 +2543,14 @@ describe('indexOpenZapReceipts', () => {
     notifications.create = async () => {
       throw new Error('notify boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/notify-boom',
+      accountId: 'acc-notify-parent',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -2566,6 +2574,7 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
       notificationStore: notifications,
+      pushStore,
     });
     warn.mockRestore();
     expect(await store.listReplies(parentId)).toHaveLength(1);

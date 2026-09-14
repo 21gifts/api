@@ -5,6 +5,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { debugRoutes } from '@/routes/debug';
 
@@ -699,6 +700,7 @@ describe('debugRoutes', () => {
         fetchImpl: zapCapableFetch(),
         messageStore,
         pushStore: new InMemoryPushStore(),
+        notificationStore: new InMemoryNotificationStore(),
       }),
     );
     const res = await app.request('/debug/accounts', {
