@@ -163,6 +163,13 @@ test('Function: normalizeDisplayName — POST /me/name without bearer is 401', a
   expect(res.status()).toBe(401);
 });
 
+test('Function: normalizeLocation — POST /me/location without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/location', { data: { location: 'Berlin' } });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: normalizeLightningAddress — POST /me/lightning-address without bearer is 401', async ({
   request,
 }) => {

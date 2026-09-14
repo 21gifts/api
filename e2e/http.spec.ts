@@ -229,6 +229,13 @@ test('POST /me/name without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/location without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/location', {
+    data: { location: 'Berlin' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/forum-laws-dismissed');
   expect(res.status()).toBe(401);

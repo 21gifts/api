@@ -8,7 +8,7 @@ import type { Account } from '@/lib/auth/store';
 import type { MessageStore } from '@/lib/message-store';
 
 /**
- * Public JSON shape of an account (nine fields). Never includes Nostr
+ * Public JSON shape of an account (ten fields). Never includes Nostr
  * pubkey, ciphertext, or other key material. Omits `viewKey` (operator
  * debug listing only — not `/me` or passkey finish).
  */
@@ -21,6 +21,8 @@ export interface AccountResponse {
   role: string;
   /** Display name, or `null` until set. */
   name: string | null;
+  /** Free-text location set by the owner, or `null` when unset. */
+  location: string | null;
   /** Linked Lightning Address, or `null`. */
   lightningAddress: string | null;
   /** Whether control of the linked address has been proven. */
@@ -34,7 +36,7 @@ export interface AccountResponse {
 }
 
 /**
- * Owner-facing account JSON: the nine public fields plus the durable
+ * Owner-facing account JSON: the ten public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * and `hasPosted`.
  */
@@ -64,6 +66,8 @@ export interface OwnerAccountResponse extends AccountResponse {
 export interface ViewProfileResponse {
   /** Display name, or `null` until set. */
   name: string | null;
+  /** Free-text location set by the owner, or `null` when unset. */
+  location: string | null;
   /** Linked Lightning Address, or `null`. */
   lightningAddress: string | null;
   /** Whether control of the linked address has been proven. */
@@ -75,7 +79,7 @@ export interface ViewProfileResponse {
 }
 
 /**
- * Project an account to the nine-field public JSON shape.
+ * Project an account to the ten-field public JSON shape.
  *
  * Shared by {@link serializeDebugAccount} and {@link serializeOwnerAccount}.
  * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
@@ -83,7 +87,7 @@ export interface ViewProfileResponse {
  * `viewKey` or `isPlatform`.
  *
  * @param account - Stored account.
- * @returns The nine public fields only.
+ * @returns The ten public fields only.
  */
 export function serializeAccount(account: Account): AccountResponse {
   return {
@@ -91,6 +95,7 @@ export function serializeAccount(account: Account): AccountResponse {
     linkingKey: account.linkingKey,
     role: account.role,
     name: account.name,
+    location: account.location,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
     forumLawsDismissed: account.forumLawsDismissed,
@@ -99,7 +104,7 @@ export function serializeAccount(account: Account): AccountResponse {
   };
 }
 
-/** Operator JSON shape: the nine public fields plus `isPlatform`. */
+/** Operator JSON shape: the ten public fields plus `isPlatform`. */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
@@ -129,7 +134,7 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  *
  * @param account - Stored account.
  * @param hasPosted - True when the account has a live non-profile forum row.
- * @returns Thirteen fields including `viewKey`, `setup`, `missing`, and `hasPosted`.
+ * @returns Fourteen fields including `viewKey`, `setup`, `missing`, and `hasPosted`.
  */
 export function serializeOwnerAccount(account: Account, hasPosted: boolean): OwnerAccountResponse {
   return {
@@ -169,11 +174,12 @@ export async function serializeOwnerAccountWithPosts(
  *
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
- * @returns Five public profile fields.
+ * @returns Six public profile fields.
  */
 export function serializeViewProfile(account: Account, hasPasskey: boolean): ViewProfileResponse {
   return {
     name: account.name,
+    location: account.location,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
     createdAt: account.createdAt,

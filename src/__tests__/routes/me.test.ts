@@ -77,6 +77,7 @@ async function seededStore(
     lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: overrides.verified ?? false,
     forumLawsDismissed: false,
+    location: null,
     viewKey: VIEW_KEY,
     createdAt: 1_000_000,
     rulesAgreedAt: null,
@@ -154,6 +155,7 @@ describe('GET /me', () => {
       id: string;
       role: string;
       name: string | null;
+      location: string | null;
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
       viewKey: string;
@@ -165,6 +167,7 @@ describe('GET /me', () => {
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
     expect(body.name).toBeNull();
+    expect(body.location).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
     expect(body.viewKey).toBe(VIEW_KEY);
@@ -614,6 +617,112 @@ describe('POST /me/name', () => {
   });
 });
 
+describe('POST /me/location', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/location', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ location: 'Berlin' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a malformed JSON body', async () => {
+    const res = await mount(await seededStore()).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "location" string' });
+  });
+
+  it('rejects a body without a location string', async () => {
+    const res = await mount(await seededStore()).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "location" string' });
+  });
+
+  it('rejects an over-long location', async () => {
+    const res = await mount(await seededStore()).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ location: 'A'.repeat(81) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Location must be at most 80 characters' });
+  });
+
+  it('rejects a location with a newline', async () => {
+    const res = await mount(await seededStore()).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ location: 'Berlin\nDE' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Location must be at most 80 characters' });
+  });
+
+  it('trims, stores, and returns the location', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ location: '  Berlin  ' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { location: string | null; viewKey: string };
+    expect(body.location).toBe('Berlin');
+    expect(body.viewKey).toBe(VIEW_KEY);
+    expect((await store.getAccount('acc'))?.location).toBe('Berlin');
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.location.set' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('clears an empty location to null', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      return;
+    }
+    await store.updateAccount({ ...existing, location: 'Berlin' });
+    const res = await mount(store).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ location: '   ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { location: string | null }).location).toBeNull();
+    expect((await store.getAccount('acc'))?.location).toBeNull();
+  });
+
+  it('clears an empty-string location to null', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      return;
+    }
+    await store.updateAccount({ ...existing, location: 'Berlin' });
+    const res = await mount(store).request('/me/location', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ location: '' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { location: string | null }).location).toBeNull();
+    expect((await store.getAccount('acc'))?.location).toBeNull();
+  });
+});
+
 describe('POST /me/lightning-address', () => {
   it('returns 401 without a valid session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/me/lightning-address', {
@@ -703,6 +812,7 @@ describe('POST /me/lightning-address', () => {
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -735,6 +845,7 @@ describe('POST /me/lightning-address', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -1367,6 +1478,7 @@ describe('POST /me/lightning-address/verification/confirm', () => {
       lightningAddress: ADDRESS,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,

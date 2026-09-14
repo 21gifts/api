@@ -271,7 +271,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later).
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`).
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -682,7 +682,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
+- **Purpose:** Authenticated account routes (`GET /`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `nostrKek` (required to sign the mint probe).
 - **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted`. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`.
 - **Used by:** `createApp`.
@@ -728,6 +728,13 @@
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed name or `null`.
 - **Used by:** `POST /me/name`.
+
+## Function: normalizeLocation
+
+- **Purpose:** Trim and validate an optional free-text profile location (at most 80 characters after trim, no C0/DEL controls). Empty or whitespace-only input is a valid clear (`null`), unlike `normalizeDisplayName` which rejects empty. Internal spaces are kept.
+- **Inputs:** `raw` string. Cap is `LOCATION_MAX_LENGTH` (80).
+- **Returns / side effects:** `{ ok: true, value: string | null }` when empty-after-trim (clear) or a valid stored string; `{ ok: false }` when over-long (`> 80` after trim) or any character has `charCode < 32` or `=== 127`. No I/O.
+- **Used by:** `POST /me/location`.
 
 ## Function: normalizeForumText
 
@@ -1053,23 +1060,23 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the nine-field dump without `viewKey` or `isPlatform` (no Nostr fields).
+- **Purpose:** Project an account to the ten-field dump without `viewKey` or `isPlatform` (no Nostr fields).
 - **Inputs:** `Account`.
-- **Returns / side effects:** Nine public fields (`id`, `linkingKey`, `role`, `name`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). No I/O. No Nostr key material.
+- **Returns / side effects:** Ten public fields (`id`, `linkingKey`, `role`, `name`, `location`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). `location` is `string | null` (never omitted, never `""`). No I/O. No Nostr key material.
 - **Used by:** `serializeOwnerAccount` (member `/me`) and `serializeDebugAccount`.
 
 ## Function: serializeDebugAccount
 
-- **Purpose:** Operator account JSON: the nine public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Purpose:** Operator account JSON: the ten public fields plus `isPlatform`. Never used by member `GET /me`.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
 - **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the nine public fields plus `viewKey`, `setup`, `missing`, and `hasPosted`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement` and `POST /me/setup/skip`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the ten public fields plus `viewKey`, `setup`, `missing`, and `hasPosted`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, and `POST /me/location`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account` plus `hasPosted: boolean`.
-- **Returns / side effects:** `OwnerAccountResponse` (thirteen fields including `hasPosted`). No I/O. Does not expose `profileMessageId`.
+- **Returns / side effects:** `OwnerAccountResponse` (fourteen fields including `hasPosted`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts`.
 
 ## Function: serializeOwnerAccountWithPosts
@@ -1088,7 +1095,7 @@
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Five fields (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). Omits `id`, `linkingKey`, `role`, and `viewKey`.
+- **Purpose:** Public profile card for the capability URL. Six fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
 - **Inputs:** `Account`, `hasPasskey: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.

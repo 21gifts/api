@@ -77,6 +77,7 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
+| POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                            |
 | POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                |
 | POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                         |
@@ -253,6 +254,7 @@ ID).
     "linkingKey": null,
     "role": "basis",
     "name": null,
+    "location": null,
     "lightningAddress": null,
     "lightningAddressVerified": false,
     "forumLawsDismissed": false,
@@ -304,6 +306,7 @@ Missing or invalid bearer → **Response** `401`:
   "linkingKey": "<hex>",
   "role": "basis",
   "name": null,
+  "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "forumLawsDismissed": false,
@@ -322,6 +325,7 @@ Missing or invalid bearer → **Response** `401`:
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                      |
 | `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                               |
 | `name`                     | string \| null | Display name, or `null` until set                                                                                                                            |
+| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                     |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                             |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                            |
 | `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                           |
@@ -350,7 +354,7 @@ Bearer required. `:accountId` must be a UUID. After auth,
 `requireAction(caller, 'forum.read')` — missing rules → **409**
 `{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
-Success → live `id` / `name` / `role` / `lightningAddress` / ISO
+Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
 `replyCount`, or `null`) and uncapped live `postCount` / `replyCount`
 from `countByAccount` (not the latest-200 window). Never `viewKey` /
@@ -386,11 +390,12 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (five fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (six fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
   "name": null,
+  "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0,
@@ -433,6 +438,35 @@ stores `profileMessageId` (not on owner JSON). Without a Lightning
 Address the name is stored and no profile note is inserted (linking the
 address later creates it). Rename does not create a second note and does
 not change the note text.
+
+### `POST /me/location`
+
+Set, change, or clear the account free-text location. Body:
+
+```json
+{ "location": "Berlin" }
+```
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `location` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"location\" string" }
+```
+
+Location is longer than 80 characters after trim, or contains a C0
+control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
+
+```json
+{ "error": "Location must be at most 80 characters" }
+```
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`). Empty or whitespace-only input stores `null` (clears). The
+stored non-empty value is trimmed. Location is not unique, not a setup
+step, and not a posting requirement. It is public on member and view
+cards. Does not create or update a profile forum note.
 
 ### `POST /me/forum-laws-dismissed`
 
@@ -719,6 +753,7 @@ Success → **Response** `200`:
       "linkingKey": "<hex>",
       "role": "basis",
       "name": null,
+      "location": null,
       "lightningAddress": null,
       "lightningAddressVerified": false,
       "forumLawsDismissed": false,
@@ -730,7 +765,7 @@ Success → **Response** `200`:
 }
 ```
 
-The listing uses `serializeDebugAccount` (the nine public fields plus
+The listing uses `serializeDebugAccount` (the ten public fields plus
 `isPlatform`) and never includes `viewKey`. Member `GET /me` does not
 include `isPlatform`.
 

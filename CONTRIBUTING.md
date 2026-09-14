@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; POST /me/setup/skip; POST /me/name; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card)
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -57,6 +57,7 @@ api/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
+│   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
@@ -121,6 +122,7 @@ api/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
 │       │   ├── name.test.ts
+│       │   ├── location.test.ts
 │       │   ├── lightning-address.test.ts
 │       │   ├── invoice-payer.test.ts
 │       │   ├── lnurlp.test.ts

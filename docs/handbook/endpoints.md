@@ -51,7 +51,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`) **without** `viewKey`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, `location` (`string | null`, never omit, never `""`), lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`) **without** `viewKey`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -261,14 +261,14 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), and uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), and uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -289,7 +289,7 @@
 
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only profile card (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
 - **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown.
 - **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
 - **Auth:** none.
@@ -461,6 +461,13 @@
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/location
+
+- **Purpose:** Bearer required. Body `{ location }`. Stores the trimmed free-text location on the account (at most 80 characters after trim, no C0/DEL control characters). Empty or whitespace-only input stores `null` (clear). Does not call `ensureProfileMessage`. Field is always present on owner JSON as `location` (`string | null`, never omitted, never `""`). Not a setup step, not a posting requirement, not a profile forum note, not Nostr `kind:0`.
+- **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a \"location\" string" }` when the body is not `{ location: string }`; 400 `{ error: "Location must be at most 80 characters" }` when `normalizeLocation` returns `{ ok: false }`.
+- **Used by:** App owner profile location.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/setup/skip
 

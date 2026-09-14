@@ -19,6 +19,7 @@ interface AccountRow {
   linking_key: string | null;
   role: string;
   name: string | null;
+  location: string | null;
   lightning_address: string | null;
   lightning_address_verified: boolean;
   forum_laws_dismissed: boolean;
@@ -31,7 +32,7 @@ interface AccountRow {
   profile_message_id?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -101,8 +102,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -119,6 +120,7 @@ export class PostgresAuthStore implements AuthStore {
           account.nameSkippedAt ?? null,
           account.lightningAddressSkippedAt ?? null,
           account.profileMessageId ?? null,
+          account.location,
         ],
       );
     } catch (error: unknown) {
@@ -146,7 +148,8 @@ export class PostgresAuthStore implements AuthStore {
              is_platform = $11,
              name_skipped_at = to_timestamp($12::double precision / 1000.0),
              lightning_address_skipped_at = to_timestamp($13::double precision / 1000.0),
-             profile_message_id = $14
+             profile_message_id = $14,
+             location = $15
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -170,6 +173,7 @@ export class PostgresAuthStore implements AuthStore {
           account.nameSkippedAt ?? null,
           account.lightningAddressSkippedAt ?? null,
           account.profileMessageId ?? null,
+          account.location,
         ],
       );
     } catch (error: unknown) {
@@ -511,6 +515,7 @@ function mapAccount(row: AccountRow): Account | undefined {
     linkingKey: row.linking_key,
     role: parseRole(row.role),
     name: row.name,
+    location: row.location ?? null,
     lightningAddress: row.lightning_address,
     lightningAddressVerified: row.lightning_address_verified,
     forumLawsDismissed: row.forum_laws_dismissed,

@@ -34,6 +34,7 @@ const ACCOUNT_ROW = {
   linking_key: `02${'a'.repeat(64)}`,
   role: 'basis',
   name: null as string | null,
+  location: null as string | null,
   lightning_address: null as string | null,
   lightning_address_verified: false,
   forum_laws_dismissed: false,
@@ -101,6 +102,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.nameSkippedAt).toBeNull();
     expect(mapped?.lightningAddressSkippedAt).toBeNull();
     expect(mapped?.profileMessageId).toBeNull();
+    expect(mapped?.location).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -108,6 +110,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/rules_agreed_at/);
     expect(sql.queries[0]?.text).toMatch(/name_skipped_at/);
     expect(sql.queries[0]?.text).toMatch(/profile_message_id/);
+    expect(sql.queries[0]?.text).toMatch(/location/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -171,6 +174,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: 'a@b.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: null,
@@ -184,6 +188,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: 9_000,
@@ -199,8 +204,10 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[11]).toBeNull();
     expect(sql.executes[0]?.params[12]).toBeNull();
     expect(sql.executes[0]?.params[13]).toBeNull();
+    expect(sql.executes[0]?.params[14]).toBeNull();
     expect(sql.executes[0]?.text).toMatch(/name_skipped_at/);
     expect(sql.executes[0]?.text).toMatch(/profile_message_id/);
+    expect(sql.executes[0]?.text).toMatch(/location/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
@@ -208,6 +215,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/is_platform = \$11/);
     expect(sql.executes[1]?.text).toMatch(/name_skipped_at/);
     expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
+    expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -221,6 +229,7 @@ describe('PostgresAuthStore', () => {
       VIEW_KEY,
       9_000,
       false,
+      null,
       null,
       null,
       null,
@@ -238,6 +247,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: null,
@@ -254,6 +264,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: null,
@@ -379,6 +390,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -398,6 +410,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -415,6 +428,7 @@ describe('PostgresAuthStore', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: null,
@@ -434,6 +448,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -453,6 +468,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -472,6 +488,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -491,6 +508,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,
@@ -510,6 +528,7 @@ describe('PostgresAuthStore', () => {
         lightningAddress: null,
         lightningAddressVerified: false,
         forumLawsDismissed: false,
+        location: null,
         viewKey: VIEW_KEY,
         createdAt: 1,
         rulesAgreedAt: null,

@@ -95,6 +95,7 @@ describe('createApp', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1_000_000,
       rulesAgreedAt: null,

@@ -13,6 +13,7 @@ describe('GET /.well-known/nostr.json', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'cd'.repeat(32),
       createdAt: 1,
       rulesAgreedAt: null,

@@ -226,6 +226,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           {
             id: account.id,
             name: account.name,
+            location: account.location,
             role: account.role,
             lightningAddress: account.lightningAddress,
             createdAt: new Date(account.createdAt).toISOString(),

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
+import { normalizeLocation } from '@/lib/location';
 import { normalizeDisplayName } from '@/lib/name';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
@@ -18,9 +19,9 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
- * welcome-forum laws dismiss, living-room rules agreement, and the receiver's
- * Lightning Address), including proof-of-control verification. Shares the
- * {@link AuthStore} instance with `/auth`.
+ * optional location, welcome-forum laws dismiss, living-room rules agreement,
+ * and the receiver's Lightning Address), including proof-of-control
+ * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -88,6 +89,9 @@ async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | n
 /** Body schema for setting a display name. */
 const nameBody = z.object({ name: z.string() });
 
+/** Body schema for setting a free-text profile location. */
+const locationBody = z.object({ location: z.string() });
+
 /** Body schema for linking a Lightning Address. */
 const addressBody = z.object({ address: z.string() });
 
@@ -101,7 +105,7 @@ const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, display-name, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, display-name, location, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -174,6 +178,29 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(named);
       logEvent('account.name.set', { accountId: current.id });
       return c.json(await serializeOwnerAccountWithPosts(named, deps.messages), 200);
+    })
+    .post('/location', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = locationBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "location" string' }, 400);
+      }
+      const normalized = normalizeLocation(parsed.data.location);
+      if (!normalized.ok) {
+        return c.json({ error: 'Location must be at most 80 characters' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, location: normalized.value };
+      await deps.store.updateAccount(updated);
+      logEvent('account.location.set', { accountId: current.id });
+      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
