@@ -28,9 +28,10 @@ exists; the Core Principles below say how it is built.
 
 Giving is not an optional extra of Christian life. Jesus assumes it:
 “When you give to the needy” (Matthew 6:2) — when, not if. Whoever
-has this world’s goods, sees a brother in need, and closes his heart
-does not have the love of God abiding in him (1 John 3:17). Faith
-without works is dead (James 2:17). To neglect the hungry, the
+has material possessions, sees a brother or sister in need, and has
+no pity on them does not have the love of God in them (1 John 3:17).
+Faith by itself, if it is not accompanied by action, is dead
+(James 2:17). To neglect the hungry, the
 thirsty, the stranger, the naked, the sick, and the prisoner is to
 neglect Christ himself (Matthew 25:31–46). “And do not forget to do
 good and to share with others, for with such sacrifices God is
@@ -61,12 +62,14 @@ is the short path. Advantages:
   a campaign.
 - Both keep their dignity: one asks, one gives, and they meet as
   people in the living room.
-- 21.gifts never holds the Bitcoin. If 21.gifts disappeared tomorrow,
-  the Wallet of Satoshi addresses would keep working.
+- 21.gifts never holds the receiver’s Bitcoin. If 21.gifts disappeared
+  tomorrow, the Wallet of Satoshi addresses would keep working.
 - Help moves at the speed of the payment, not of a committee.
 - The giver can see the person who asked — not an abstract cause.
 
-This is Core Principle 2 (Truly P2P) in practice.
+This is Core Principle 2 (Truly P2P) in practice on the receiving
+side; the v1 sending-side compromise is documented under the
+transitional model below.
 
 ### 3. Bitcoin is the most effective money available today
 
@@ -658,8 +661,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
   welcome: no inclusion slogan, and no FAQ entry asking whether the project
   is Christian.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
-  give." It is living-room rule 1 in one line: a gift has no price. Shown
-  quietly in the marketing footer; not on the hero.
+  give." It is the app's first living-room rule in one line: a gift has no
+  price. Shown quietly in the marketing footer; not on the hero.
 - **Visual**: minimal, photo-driven, large typography. Receiver photos and
   stories are the hero. Tech is invisible. No cross, fish, or second typeface
   as brand marks; Bitcoin orange stays the accent.
@@ -792,7 +795,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | A 21.gifts-author forum reply writes a Notifications row for the parent author and enqueues one targeted Web Push (`/notifications`, tag `forum_reply:<parentId>`). The booted process always has those stores (memory or Postgres). It does not copy into the member↔member inbox. Top-level notes still broadcast. Self-replies and Damus-only parents do not notify. Failure does not fail POST /messages.                                                               |
 | 2026-09-12 | Operator `DEBUG_TOKEN` debug reads every persisted forum row (live, soft-hidden, and replies) via `GET /debug/messages` and `GET /debug/messages/:id`; hidden JPEG/PNG/WebP bytes via `GET /debug/messages/:id/photo`. Soft-hide remains a public-API filter only; public `GET /messages` hide behaviour is unchanged.                                                                                                                                                      |
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
-| 2026-09-13 | Three convictions are canonical (CONCEPT "Convictions"): giving is a duty of every Christian; direct giving with no middleman is the best and most beautiful way; Bitcoin is the most effective money available today. Public copy is `/about` in the app: it states the convictions and quotes the verses; no inclusion slogan, no "is this a Christian project?" FAQ. Matthew 10:8 unchanged. Principle 7: canon English; visitor UI localized (`en`, `de`, `es`, `fil`). |
+| 2026-09-13 | Three convictions are canonical (CONCEPT "Convictions"): giving is a duty of every Christian; direct giving with no middleman is the best and most beautiful way; Bitcoin is the most effective money available today. Public copy is `/about` in the app: states the convictions, quotes the verses, no inclusion slogan. Matthew 10:8 unchanged. Principle 7: visitor UI localized (`en`, `de`, `es`, `fil`). **Supersedes** the 2026-05-25 English-only decision.        |
 
 ---
 
