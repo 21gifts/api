@@ -103,7 +103,10 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
         const profileId = account.profileMessageId;
         if (typeof profileId === 'string' && profileId.trim() !== '') {
           const row = await messages.getById(profileId);
-          aboutMe = aboutMeFromNote(account.name, row?.text ?? null);
+          aboutMe =
+            row !== undefined && row.deletedAt === null
+              ? aboutMeFromNote(account.name, row.text)
+              : null;
         }
         return c.json(serializeViewProfile(account, hasPasskey, aboutMe), 200);
       } catch {

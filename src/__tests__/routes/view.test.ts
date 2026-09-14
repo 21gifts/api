@@ -189,6 +189,26 @@ describe('GET /view/:viewKey', () => {
     expect(((await nameRes.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
   });
 
+  it('returns aboutMe null when the profile note is soft-hidden', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'I build on Bitcoin',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(2_000_000), 'staff')).toBe(true);
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+  });
+
   it('returns aboutMe null when profileMessageId has no row', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store, { profileMessageId: 'missing-note' });
