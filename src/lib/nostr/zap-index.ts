@@ -781,11 +781,10 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
 }
 
 /**
- * Persist the gift-reply row and notify. Re-reads the parent immediately
- * before `create` and throws when it is missing or soft-hidden. Create/link
- * failures propagate so `tryEnsureGiftReply` / `retryGiftReplies` log
- * `nostr.zap.gift_reply.failed`. Only `notifyForumReply` is caught here
- * (`messages.reply.notify.failed`).
+ * Persist the gift-reply row and notify. `store.create` throws when the
+ * parent is missing or soft-hidden. Create/link failures propagate so
+ * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
+ * Only `notifyForumReply` is caught here (`messages.reply.notify.failed`).
  *
  * @param args - Payer, parent, text, receipt id.
  */
@@ -811,10 +810,6 @@ async function insertGiftReply(
   const nameTrim = args.payer.name?.trim() ?? '';
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
   const text = args.text;
-  const parent = await args.store.getById(args.parent.id);
-  if (parent === undefined || parent.deletedAt !== null) {
-    throw new Error('parent missing or deleted');
-  }
   const created = await args.store.create({
     id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: args.payer.id,
