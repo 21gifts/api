@@ -2280,6 +2280,6 @@ exist on the account model; `GET /debug/accounts` and
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
 - Email/password login (or any second login method)
-- Internationalization (English only)
+- Internationalization of the api (responses and push payloads stay English; visitor-UI locales live in the app catalog)
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)

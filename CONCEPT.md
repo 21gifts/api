@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-09-13.
+**Status**: draft, in active iteration. Last revised 2026-09-14.
 
 ---
 
@@ -21,8 +21,8 @@ or send help.
 
 ## Convictions
 
-21.gifts is built on three convictions. They are the reason the house
-exists. Technical Core Principles below say how it is built.
+21.gifts is built on three convictions. They are the reason 21.gifts
+exists; the Core Principles below say how it is built.
 
 ### 1. Giving is a duty of every Christian
 
@@ -31,71 +31,70 @@ Giving is not an optional extra of Christian life. Jesus assumes it:
 has this world’s goods, sees a brother in need, and closes his heart
 does not have the love of God abiding in him (1 John 3:17). Faith
 without works is dead (James 2:17). To neglect the hungry, the
-stranger, the sick, and the imprisoned is to neglect Christ himself
-(Matthew 25:35–45). “Do not neglect to do good and to share what you
-have, for such sacrifices are pleasing to God” (Hebrews 13:16).
+thirsty, the stranger, the naked, the sick, and the prisoner is to
+neglect Christ himself (Matthew 25:31–46). “And do not forget to do
+good and to share with others, for with such sacrifices God is
+pleased” (Hebrews 13:16).
 
-The measure is free — “each one must give as he has decided in his
-heart, not reluctantly or under compulsion, for God loves a cheerful
-giver” (2 Corinthians 9:7). There is no Christian tithe-tax in the
-New Testament. The duty is to give; the amount is between the giver
-and God.
+The measure is free — “each of you should give what you have decided
+in your heart to give, not reluctantly or under compulsion, for God
+loves a cheerful giver” (2 Corinthians 9:7). The New Testament sets
+no rate. The tithe of the Law is never laid on the church; the duty
+is to give, and the amount is between the giver and God.
 
-Giving is not only money. A smile, time, a coat, a visit — Matthew 25
-counts food, drink, welcome, clothing, sickness, and prison. 21.gifts
-is the path for a money gift: one person to another.
+Giving is not only money. A smile, time, a coat, a visit are gifts
+too. 21.gifts is the path for the money gift: one person to another.
 
-Signature of this house: “Freely you have received; freely give”
-(Matthew 10:8).
+The signature verse of 21.gifts is Matthew 10:8: “Freely you have
+received; freely give.”
 
 ### 2. Direct giving, with no middleman, is the best and most beautiful way to give
 
 A gift that travels from the giver’s hands to the receiver’s hands
 is the short path. Advantages:
 
-- The whole gift arrives. No take rate, no platform fee, no programme
+- The whole gift arrives. No take rate, no platform fee, no program
   overhead.
-- No organisation sits in the payment path that can freeze, skim,
-  delay, or politicise the money.
-- Giver and receiver remain persons, not a case file and a campaign.
-- Dignity stays with both sides: one asks, one sends, face to face
-  in the living room.
-- The house never holds the Bitcoin. If 21.gifts disappeared
-  tomorrow, the Wallet of Satoshi addresses would keep working.
-- Help is as fast as the payment rail, not as fast as a committee.
+- No organization sits in the payment path that can freeze, skim,
+  delay, or politicize the money.
+- Giver and receiver stay people to each other, not a case file and
+  a campaign.
+- Both keep their dignity: one asks, one gives, and they meet as
+  people in the living room.
+- 21.gifts never holds the Bitcoin. If 21.gifts disappeared tomorrow,
+  the Wallet of Satoshi addresses would keep working.
+- Help moves at the speed of the payment, not of a committee.
 - The giver can see the person who asked — not an abstract cause.
 
-This is Core Principle 2 in flesh: truly peer-to-peer.
+This is Core Principle 2 (Truly P2P) in practice.
 
 ### 3. Bitcoin is the most effective money available today
 
-Bitcoin is the rail because it is the strongest money this house can
+Bitcoin is the rail because it is the strongest money 21.gifts can
 put in a person’s hand.
 
 - **Censorship-resistant.** No bank or state can quietly block a gift
-  that the sender and receiver have agreed.
+  that the sender and receiver have agreed. Capital controls, frozen
+  accounts, war, a closed branch — the gift can still land.
 - **Permissionless.** No account application, no ID gate, no banking
-  hours. A Wallet of Satoshi address is enough.
-- **Borderless.** One network, every country. International gifts do
-  not wait on correspondent banks or a money-transfer shop.
-- **Always on.** Weekends, nights, bank holidays, crises.
+  hours. A phone and a Wallet of Satoshi address are enough, also for
+  people no bank will open a file for.
+- **Borderless and always on.** One network, every country; nights,
+  weekends, bank holidays, and crises included. An international gift
+  does not wait on correspondent banks or a money-transfer shop: it is
+  sent like an email and arrives as Bitcoin, not as a form.
 - **Cheap and fast at human scale.** Lightning makes small gifts
   practical; an email-like address is enough to receive.
-- **Bearer money.** The receiver owns it. Nobody holds it “for them”.
-- **Hard cap.** 21 million. Inflation does not silently tax people
+- **Hard cap.** 21 million, so inflation cannot quietly tax people
   who already have little.
-- **Works when banks do not.** Capital controls, frozen accounts,
-  war, a closed branch — the gift can still land.
-- **For people without a bank.** A phone and an address beat an
-  institution that will not open a file.
-- **Simplest international gift rail.** Send like an email; it
-  arrives as Bitcoin, not as a form.
+- **Bearer money.** It lands in the receiver’s own wallet. 21.gifts
+  never holds it.
 
-The website says “Bitcoin” and “Wallet of Satoshi”. Lightning, LNURL,
-and keys stay plumbing.
+On the website we say “Bitcoin” and “Wallet of Satoshi”; Lightning,
+LNURL, and keys are plumbing and stay out of sight.
 
-Public copy of these three convictions lives on `/about` in the app
-(catalogized). This CONCEPT is the English argument.
+The public version of these convictions is `/about` in the app, in
+every catalog locale. This section is the full argument.
 
 ---
 
@@ -108,11 +107,11 @@ Public copy of these three convictions lives on `/about` in the app
    visible in Damus/Amethyst/etc., but the user is never asked about keys or relays
 5. **Self-sovereign keys** — Passkey + PRF derives the NOSTR key client-side; the
    server never sees raw key material
-6. **Lightning Address mandatory** — receivers must have a LUD-16 address; no custodial wallets
-7. **English canon, catalogized visitor UI** — CONCEPT, identifiers, commits,
-   and handbook stay English. Visitor-facing app copy is catalogized (`en`,
-   `de`, `es`, `fil`). Adding a fifth locale is out of scope unless Brand
-   changes.
+6. **Lightning Address mandatory** — receivers must have a LUD-16 address; the platform never custodies receiver funds
+7. **English canon, localized visitor UI** — CONCEPT, identifiers, commits,
+   handbook, and api payloads stay English. Visitor-facing app copy is
+   localized (`en`, `de`, `es`, `fil`). Adding a fifth locale is out of scope
+   unless Brand changes.
 8. **Thin client, thick server** — the browser holds only what _must_ be
    client-side (keys, signing, wallet flow). Everything else — relay
    communication, indexing, discovery, LN-Address resolution, anti-abuse —
@@ -650,22 +649,22 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **Domain**: `21.gifts` (secured 2026-05-25). The `21` is a Bitcoin
   reference (21M cap); `.gifts` semantically captures the intent — these are
   gifts, not donations, not transactions
-- **Tone**: warm, direct, dignified. Not charity-speak ("the needy"), not
-  techbro-speak ("disrupting philanthropy"). People helping people, with the
-  best money humans have ever had.
+- **Tone**: warm, direct, dignified. Not charity-speak ("the needy"; quoted
+  Scripture excepted), not techbro-speak ("disrupting philanthropy"). People
+  helping people, with the best money humans have ever had.
 - **Origin**: 21.gifts comes from Christian faith. The three Convictions
-  above are the foundation. Public copy lives on `/about` in the app:
-  state the convictions, quote the verses, do not justify who may
-  enter. No inclusion slogan, no FAQ that asks whether the project is
-  Christian.
+  above are the foundation. The public copy is `/about` in the app: it
+  states the convictions and quotes the verses. It does not explain who is
+  welcome: no inclusion slogan, and no FAQ entry asking whether the project
+  is Christian.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
-  give." Matches rule 1: a gift has no price. Shown quietly in the marketing
-  footer; not on the hero.
+  give." It is living-room rule 1 in one line: a gift has no price. Shown
+  quietly in the marketing footer; not on the hero.
 - **Visual**: minimal, photo-driven, large typography. Receiver photos and
   stories are the hero. Tech is invisible. No cross, fish, or second typeface
   as brand marks; Bitcoin orange stays the accent.
-- **Language**: this CONCEPT is English. Visitor-facing app copy is
-  catalogized (en, de, es, fil).
+- **Language**: English for CONCEPT, code, commits, handbook, and api
+  payloads. Visitor-facing app copy is localized (en, de, es, fil).
 
 ---
 
@@ -793,9 +792,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-12 | A 21.gifts-author forum reply writes a Notifications row for the parent author and enqueues one targeted Web Push (`/notifications`, tag `forum_reply:<parentId>`). The booted process always has those stores (memory or Postgres). It does not copy into the member↔member inbox. Top-level notes still broadcast. Self-replies and Damus-only parents do not notify. Failure does not fail POST /messages.                                                               |
 | 2026-09-12 | Operator `DEBUG_TOKEN` debug reads every persisted forum row (live, soft-hidden, and replies) via `GET /debug/messages` and `GET /debug/messages/:id`; hidden JPEG/PNG/WebP bytes via `GET /debug/messages/:id/photo`. Soft-hide remains a public-API filter only; public `GET /messages` hide behaviour is unchanged.                                                                                                                                                      |
 | 2026-09-12 | Public gift stats/day also return historical CHF/EUR/PHP (USD × Frankfurter ECB; missing fiat is null, not 503).                                                                                                                                                                                                                                                                                                                                                            |
-| 2026-09-13 | Brand origin is rooted, not restricted: most founders and many who give stand in Christian faith; the house does not prescribe a religion. Signature verse Matthew 10:8. Public copy is `/about` in the app. Living-room rules stay house law. Principle 7: CONCEPT/commits stay English; visitor UI is catalogized (`en`, `de`, `es`, `fil`).                                                                                                                              |
-| 2026-09-13 | Brand origin is stated, not explained: public copy (`/about` and catalogs) names the Christian origin and quotes Matthew 10:8; it does not justify access, does not use "rooted, not restricted", and does not FAQ "is this a Christian project?". Supersedes the earlier 2026-09-13 "rooted, not restricted" public-copy wording. Principle 7 unchanged.                                                                                                                   |
-| 2026-09-13 | Three convictions are canonical: (1) giving is a duty of every Christian (Matthew 6:2 when not if; 1 John 3:17; James 2:17; Matthew 25:35–45; Hebrews 13:16; measure free, 2 Corinthians 9:7; giving is not only money; 21.gifts is the money-gift path); (2) direct giving with no middleman is the best and most beautiful way; (3) Bitcoin is the most effective money available today. Public copy is /about. Matthew 10:8 unchanged. Principle 7 unchanged.            |
+| 2026-09-13 | Three convictions are canonical (CONCEPT "Convictions"): giving is a duty of every Christian; direct giving with no middleman is the best and most beautiful way; Bitcoin is the most effective money available today. Public copy is `/about` in the app: it states the convictions and quotes the verses; no inclusion slogan, no "is this a Christian project?" FAQ. Matthew 10:8 unchanged. Principle 7: canon English; visitor UI localized (`en`, `de`, `es`, `fil`). |
 
 ---
 
