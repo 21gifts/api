@@ -352,14 +352,17 @@ export interface MessageStore {
    * `nostrEvent === null` and non-string content. One-arg calls still select
    * bitcoin/21gifts only. When `extraHashtagsByAccountId` maps an account id
    * to extra hashtag names (without `#`), those accounts' rows are also
-   * listed when content lacks that token.
+   * listed when content lacks that token. Optional `excludeIds` is applied
+   * before the limit so profile notes cannot fill the batch.
    *
    * @param limit - Max rows.
    * @param extraHashtagsByAccountId - Optional extra Damus tokens per account.
+   * @param excludeIds - Optional ids dropped before sort/limit (profile notes).
    */
   listSignedMissingHashtags(
     limit: number,
     extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
   ): Promise<MessageRow[]>;
 
   /**
@@ -1267,6 +1270,7 @@ export class InMemoryMessageStore implements MessageStore {
   listSignedMissingHashtags(
     limit: number,
     extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
   ): Promise<MessageRow[]> {
     const rows = this.#rows
       .filter(
@@ -1278,6 +1282,7 @@ export class InMemoryMessageStore implements MessageStore {
           row.nostrPublishState === 'published' &&
           row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
+          (excludeIds === undefined || excludeIds.size === 0 || !excludeIds.has(row.id)) &&
           kind1MissingHashtags(
             row.nostrEvent,
             extraHashtagsByAccountId?.get(row.accountId ?? '') ?? [],
@@ -2169,6 +2174,7 @@ export class PostgresMessageStore implements MessageStore {
   async listSignedMissingHashtags(
     limit: number,
     extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+    excludeIds?: ReadonlySet<string>,
   ): Promise<MessageRow[]> {
     const extras = extraHashtagBindings(extraHashtagsByAccountId);
     const extraClause =
@@ -2181,8 +2187,17 @@ export class PostgresMessageStore implements MessageStore {
              WHERE message.account_id::text = extra.account_id
                AND NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ extra.pattern)
            )`;
-    const params: readonly unknown[] =
+    const excludeList = excludeIds === undefined || excludeIds.size === 0 ? null : [...excludeIds];
+    const excludeParamIndex = extras === null ? 2 : 4;
+    const excludeClause =
+      excludeList === null
+        ? ''
+        : `\n         AND NOT (id::text = ANY($${excludeParamIndex}::text[]))`;
+    const params: unknown[] =
       extras === null ? [limit] : [limit, extras.accountIds, extras.patterns];
+    if (excludeList !== null) {
+      params.push(excludeList);
+    }
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
@@ -2195,7 +2210,7 @@ export class PostgresMessageStore implements MessageStore {
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
            OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#21gifts([^a-z0-9_]|$)')
            OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')${extraClause}
-         )
+         )${excludeClause}
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,
       params,

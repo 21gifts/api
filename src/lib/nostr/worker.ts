@@ -447,21 +447,18 @@ async function resignVideoKind1(deps: NostrWorkerDeps): Promise<void> {
 
 async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
   const accounts = await deps.auth.listAccounts();
-  const extras = new Map<string, readonly string[]>();
-  for (const account of accounts) {
-    const name = locationHashtagName(account.location);
-    if (name !== null) extras.set(account.id, [name]);
-  }
-  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH, extras);
   const profileIds = new Set(
     accounts
       .map((account) => account.profileMessageId)
       .filter((id): id is string => typeof id === 'string' && id !== ''),
   );
-  await resetPublishedBatch(
-    deps,
-    rows.filter((row) => !profileIds.has(row.id)),
-  );
+  const extras = new Map<string, readonly string[]>();
+  for (const account of accounts) {
+    const name = locationHashtagName(account.location);
+    if (name !== null) extras.set(account.id, [name]);
+  }
+  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH, extras, profileIds);
+  await resetPublishedBatch(deps, rows);
 }
 
 function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {

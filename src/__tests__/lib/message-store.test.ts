@@ -1622,6 +1622,40 @@ describe('InMemoryMessageStore', () => {
     ).not.toContain('a');
   });
 
+  it('listSignedMissingHashtags applies excludeIds before the limit', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'profile',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      text: 'x',
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('profile', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      text: 'x',
+      eventId: 'ab'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['profile', 'a']);
+    expect(
+      (
+        await store.listSignedMissingHashtags(
+          1,
+          new Map([['acc', ['Berlin']]]),
+          new Set(['profile']),
+        )
+      ).map((row) => row.id),
+    ).toEqual(['a']);
+  });
+
   it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
     const store = new InMemoryMessageStore();
     await store.create(LATE);
@@ -2775,6 +2809,39 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#berlin([^a-z0-9_]|$)']]);
     await store.listSignedMissingHashtags(4, new Map([['acc', ['St.Gallen']]]));
     expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#st\\.gallen([^a-z0-9_]|$)']]);
+  });
+
+  it('listSignedMissingHashtags excludeIds binds before LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const berlinPattern = '#berlin([^a-z0-9_]|$)';
+
+    await store.listSignedMissingHashtags(4);
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map(), new Set());
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern]]);
+
+    await store.listSignedMissingHashtags(4, undefined, new Set([profileId]));
+    const excludeOnlySql = sql.queries.at(-1)?.text ?? '';
+    expect(excludeOnlySql).toMatch(/ANY/);
+    expect(excludeOnlySql).toMatch(/\$2::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, [profileId]]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]), new Set([profileId]));
+    const extraExcludeSql = sql.queries.at(-1)?.text ?? '';
+    expect(extraExcludeSql).toMatch(/ANY/);
+    expect(extraExcludeSql).toMatch(/unnest/i);
+    expect(extraExcludeSql).toMatch(/\$4::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern], [profileId]]);
   });
 
   it('propagates getPhoto query errors', async () => {
