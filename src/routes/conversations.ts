@@ -157,20 +157,23 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           CONVERSATION_LIST_LIMIT,
         );
         const conversations: PublicConversation[] = [];
+        const staff = isStaffRole(account.role);
+        const platformId = platform?.id ?? null;
         for (const thread of threads) {
-          if (
-            !(await deps.store.hasInboundMessage(
-              thread.id,
-              account.id,
-              isStaffRole(account.role),
-              platform?.id ?? null,
-            ))
-          ) {
+          const inbound = await deps.store.hasInboundMessage(
+            thread.id,
+            account.id,
+            staff,
+            platformId,
+          );
+          const ownContactTicket =
+            thread.kind === 'member_platform' &&
+            thread.accountA === account.id &&
+            thread.lastText !== '';
+          if (!inbound && !ownContactTicket) {
             continue;
           }
-          conversations.push(
-            await publicThread(thread, account, deps.authStore, platform?.id ?? null),
-          );
+          conversations.push(await publicThread(thread, account, deps.authStore, platformId));
         }
         return c.json({ conversations }, 200);
       } catch {

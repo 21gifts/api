@@ -124,6 +124,35 @@ describe('GET /conversations', () => {
     expect(body.conversations).toHaveLength(0);
   });
 
+  it('lists the member own platform thread when only the member sent', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm1',
+      conversationId: thread.id,
+      text: 'help',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; lastFromMe: boolean; lastText: string }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('member_platform');
+    expect(body.conversations[0]?.lastFromMe).toBe(true);
+    expect(body.conversations[0]?.lastText).toBe('help');
+  });
+
   it('lists a two-way thread with lastFromMe from the latest sender', async () => {
     const auth = await seeded();
     await withOther(auth);
@@ -1153,7 +1182,20 @@ describe('POST /conversations/:id', () => {
     });
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
     const conversations = new InMemoryConversationStore();
-    await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm1',
+      conversationId: thread.id,
+      text: 'hi',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
     const res = await mount(store, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { conversations: Array<{ name: string }> };
