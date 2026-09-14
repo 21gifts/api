@@ -13,11 +13,15 @@ import type { PushStore } from '@/lib/push-store';
  * No-ops (returns the input account, no `messages.create`) when the name or
  * Lightning Address is null/blank after trim. When both are set, the first
  * insert creates one kind:1-pipeline message and stores `profileMessageId`.
- * Rename does not insert a second note and does not change the note text. A
- * successful insert updates the account here, then re-reads the live row so a
- * later writer’s `profileMessageId` wins and this insert is deleted. A failed
- * insert returns the input account (name may still be persisted by the
- * caller; worker backfill creates the missing note once LN is linked).
+ * A `profileMessageId` whose row is missing or soft-hidden (`deletedAt` set)
+ * is treated as missing. Rename does not insert a second note and does not
+ * change the note text when the existing note is live. A successful insert
+ * updates the account here, then re-reads the live row so a later writer’s
+ * live `profileMessageId` wins and this insert is deleted. A hidden winner is
+ * missing: the created live note is kept and `profileMessageId` is persisted
+ * to it. A failed insert returns the input account (name may still be
+ * persisted by the caller; worker backfill creates the missing note once LN
+ * is linked).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
  *   push and notification stores.
@@ -43,7 +47,7 @@ export async function ensureProfileMessage(args: {
   const existingId = args.account.profileMessageId;
   if (typeof existingId === 'string' && existingId.trim() !== '') {
     const existing = await args.messages.getById(existingId);
-    if (existing !== undefined) {
+    if (existing !== undefined && existing.deletedAt === null) {
       return args.account;
     }
   }
@@ -76,7 +80,7 @@ export async function ensureProfileMessage(args: {
   const liveId = live.profileMessageId;
   if (typeof liveId === 'string' && liveId.trim() !== '') {
     const winner = await args.messages.getById(liveId);
-    if (winner !== undefined) {
+    if (winner !== undefined && winner.deletedAt === null) {
       await args.messages.deleteById(created.id);
       return live;
     }

@@ -283,7 +283,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
-          if (existing !== undefined) {
+          if (existing !== undefined && existing.deletedAt === null) {
             noteId = existingId;
           }
         }
@@ -298,7 +298,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           const ensuredId = owner.profileMessageId;
           if (typeof ensuredId === 'string' && ensuredId.trim() !== '') {
             const ensured = await deps.messages.getById(ensuredId);
-            if (ensured !== undefined) {
+            if (ensured !== undefined && ensured.deletedAt === null) {
               noteId = ensuredId;
             }
           }
@@ -325,7 +325,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           const liveId = live.profileMessageId;
           if (typeof liveId === 'string' && liveId.trim() !== '') {
             const winner = await deps.messages.getById(liveId);
-            if (winner !== undefined) {
+            if (winner !== undefined && winner.deletedAt === null) {
               await deps.messages.deleteById(created.id);
               owner = live;
               noteId = liveId;
@@ -343,7 +343,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
               const confirmedId = confirmed.profileMessageId;
               if (typeof confirmedId === 'string' && confirmedId.trim() !== '') {
                 const confirmedRow = await deps.messages.getById(confirmedId);
-                if (confirmedRow !== undefined) {
+                if (confirmedRow !== undefined && confirmedRow.deletedAt === null) {
                   owner = confirmed;
                   noteId = confirmedId;
                 }

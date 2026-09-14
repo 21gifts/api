@@ -222,6 +222,24 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
   });
 
+  it('creates a new live note when the profile note is soft-hidden and LN is missing', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote()]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null };
+    expect(body.aboutMe).toBe(BIO);
+    expect((await messages.getById(NOTE_ID))?.deletedAt).toBeInstanceOf(Date);
+    const stored = await store.getAccount('acc');
+    expect(stored?.profileMessageId).not.toBe(NOTE_ID);
+    expect(stored?.profileMessageId).toEqual(expect.any(String));
+    const live = await messages.getById(stored!.profileMessageId!);
+    expect(live?.deletedAt).toBeNull();
+    expect(live?.text).toBe(BIO);
+  });
+
   it('ensures a missing note when name and Lightning Address are set, then writes the bio', async () => {
     const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
     const messages = new InMemoryMessageStore();
@@ -260,6 +278,23 @@ describe('PUT /me/about', () => {
     const stored = await store.getAccount('acc');
     expect(stored?.profileMessageId).not.toBe('gone');
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
+  });
+
+  it('ensures a new live note when the profile note is soft-hidden and LN is set', async () => {
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote()]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null };
+    expect(body.aboutMe).toBe(BIO);
+    expect((await messages.getById(NOTE_ID))?.deletedAt).toBeInstanceOf(Date);
+    const stored = await store.getAccount('acc');
+    expect(stored?.profileMessageId).not.toBe(NOTE_ID);
+    const live = await messages.getById(stored!.profileMessageId!);
+    expect(live?.deletedAt).toBeNull();
+    expect(live?.text).toBe(BIO);
   });
 
   it('returns 503 when updateText throws', async () => {
