@@ -366,7 +366,8 @@ Store throw or missing FX day → **Response** `503`:
   "fx": {
     "quote": "BTC-USD",
     "dayBasis": "utc",
-    "source": "coinbase-exchange-daily-close"
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
   }
 }
 ```
