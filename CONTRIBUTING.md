@@ -454,8 +454,8 @@ More will be added as concrete subsystems that need runtime configuration
 | Workflow               | Trigger               | Action                                                                       |
 | ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
 | `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify infrastructure               |
-| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify infrastructure             |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy            |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy          |
 | `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
 
 Images target `linux/arm64`.
@@ -466,12 +466,14 @@ Deploy workflows require these GitHub Actions secrets:
 | ----------------- | --------------------------------------------------- |
 | `DOCKER_USERNAME` | Docker Hub username for image push                  |
 | `DOCKER_PASSWORD` | Docker Hub token for image push                     |
-| `DISPATCH_TOKEN`  | PAT used to fire `repository_dispatch` after push   |
+| `DISPATCH_TOKEN`  | PAT to dispatch `image-published` and read that run |
 | `DISPATCH_REPO`   | Target `owner/repo` that receives `image-published` |
 
-If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, notify warns and exits 0 —
-the image is already on Hub; DFXServer `probe-published-images.yml` dispatches
-`image-published` when the tag moves. Set the secrets for an immediate pull.
+If `DISPATCH_TOKEN` or `DISPATCH_REPO` is missing, deploy fails loud (the image
+may already be on Hub). After `image-published`, the job waits for the
+infrastructure run whose title is `image-published 21gifts/api:<tag> <sha>`
+and fails if that run does not succeed. The wait is what makes a failed DEV
+deploy visible on the develop→main PR.
 
 ## Related repos
 
