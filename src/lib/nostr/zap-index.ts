@@ -802,7 +802,6 @@ async function insertGiftReply(
     comment: args.text,
   });
   const receipt = await args.store.getZapReceiptGift(args.receiptEventId);
-  /* v8 ignore next 3 -- gift_reply_id already set (retry race) */
   if (receipt === undefined || receipt.giftReplyId !== null) {
     return;
   }

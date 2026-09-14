@@ -3009,6 +3009,164 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getZapReceiptGift('r-link'))?.giftReplyId).toBe(replies[0]?.id);
   });
 
+  it('skips gift-reply insert when the receipt vanishes after the payer link', async () => {
+    let giftGets = 0;
+    class VanishReceiptStore extends InMemoryMessageStore {
+      override getZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
+        giftGets += 1;
+        if (giftGets >= 2) {
+          return Promise.resolve(undefined);
+        }
+        return super.getZapReceiptGift(...args);
+      }
+    }
+    const store = new VanishReceiptStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-vanish-parent',
+      lightningAddress: 'zap-vanish-parent@example.com',
+      messageId: 'm-vanish-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-vanish',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Val',
+      lightningAddress: 'val@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-vanish'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-vanish',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-vanish',
+      authorAccountId: 'acc-vanish-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: '' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-vanish',
+      paymentHash: '22'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-vanish',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-vanish'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '22'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+  });
+
+  it('skips gift-reply insert when giftReplyId is already set', async () => {
+    let giftGets = 0;
+    class LinkedReceiptStore extends InMemoryMessageStore {
+      override getZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
+        giftGets += 1;
+        return super.getZapReceiptGift(...args).then((row) => {
+          if (giftGets >= 2 && row !== undefined) {
+            return { ...row, giftReplyId: 'already-linked' };
+          }
+          return row;
+        });
+      }
+    }
+    const store = new LinkedReceiptStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-linked-parent',
+      lightningAddress: 'zap-linked-parent@example.com',
+      messageId: 'm-linked-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-linked',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Lee',
+      lightningAddress: 'lee@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-linked'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-linked',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-linked',
+      authorAccountId: 'acc-linked-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: '' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-linked',
+      paymentHash: '33'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-linked',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-linked'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '33'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+  });
+
   it('drops a gift receipt when the parent row is gone', async () => {
     class MissingParentStore extends InMemoryMessageStore {
       override getById(): ReturnType<InMemoryMessageStore['getById']> {
