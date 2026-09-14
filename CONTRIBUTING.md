@@ -153,8 +153,6 @@ api/
 │       │   ├── usd-fiat-candles.test.ts
 │       │   ├── usd-fiat-store.test.ts
 │       │   ├── db-change.test.ts
-│       │   ├── account-activity.test.ts
-│       │   ├── about-me.test.ts
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
@@ -201,7 +199,6 @@ api/
 │           ├── me-about.test.ts
 │           ├── activity.test.ts
 │           ├── members.test.ts
-│           ├── activity.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
 │           ├── stats.test.ts

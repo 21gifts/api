@@ -78,15 +78,8 @@ export function matchConfirmedGivenZaps(
   invoices: readonly MessageInvoiceAttempt[],
   indexed: readonly ZapIngestRow[],
 ): GiftRow[] {
-  const oldestFirst = [...indexed].sort((a, b) => {
-    const byTime = a.createdAt.getTime() - b.createdAt.getTime();
-    if (byTime !== 0) {
-      return byTime;
-    }
-    return a.id.localeCompare(b.id);
-  });
   const byHash = new Map<string, ZapIngestRow>();
-  for (const ingest of oldestFirst) {
+  for (const ingest of indexed) {
     const hash = paymentHashFromReceipt(ingest.receipt);
     if (hash === null || byHash.has(hash)) {
       continue;
