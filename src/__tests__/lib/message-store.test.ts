@@ -21,6 +21,7 @@ class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
+  queryQueue: unknown[][] = [];
   queryError: unknown | undefined;
   executeError: unknown | undefined;
 
@@ -28,6 +29,9 @@ class MockSql implements SqlClient {
     this.queries.push({ text, params });
     if (this.queryError !== undefined) {
       throw this.queryError;
+    }
+    if (this.queryQueue.length > 0) {
+      return this.queryQueue.shift() as T[];
     }
     return this.nextRows as T[];
   }
@@ -2039,6 +2043,42 @@ describe('PostgresMessageStore', () => {
     await expect(
       readFile(videoFilePath(resolveMediaDir(), 'm-reply-dead-parent', 'video/mp4')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('create with non-null parentId returns getById on a 0-row insert when the id exists', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [],
+      [
+        {
+          id: 'c-hit',
+          account_id: 'acc',
+          name: 'Ada',
+          text: 'reply',
+          created_at: new Date(0),
+          has_photo: false,
+          parent_id: 'p-hit',
+          event_id: null,
+          nostr_publish_state: 'pending',
+          sats: 0,
+        },
+      ],
+    ];
+    const created = await new PostgresMessageStore(sql).create({
+      id: 'c-hit',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'other',
+      createdAt: new Date(0),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'p-hit',
+    });
+    expect(created.id).toBe('c-hit');
+    expect(created.text).toBe('reply');
+    expect(created.parentId).toBe('p-hit');
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.executes).toEqual([]);
   });
 
   it('create binds Uint8Array photo bytes', async () => {

@@ -1791,11 +1791,12 @@ export class PostgresMessageStore implements MessageStore {
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
-   * (`deletedAt` null): INSERT SELECT WHERE EXISTS refuses a missing or
-   * soft-hidden parent (throws, no insert). On unique violation (`23505`), if
-   * `getById(stored.id)` matches that id, return that row (no unlink —
-   * gift-reply retry), even if the parent is now deleted. Otherwise unlink any
-   * video written for the new id and return the existing live row from
+   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. A 0-row insert calls
+   * `getById(stored.id)` and returns that row when present (gift-reply retry
+   * after the parent was later deleted); otherwise throws, no insert. On unique
+   * violation (`23505`), if `getById(stored.id)` matches that id, return that
+   * row (no unlink — gift-reply retry). Otherwise unlink any video written for
+   * the new id and return the existing live row from
    * {@link findLiveByAccountContent}.
    *
    * @param row - Fully formed message.
@@ -1854,6 +1855,10 @@ export class PostgresMessageStore implements MessageStore {
           params,
         );
         if (inserted.length === 0) {
+          const byId = await this.getById(stored.id);
+          if (byId !== undefined && byId.id === stored.id) {
+            return byId;
+          }
           throw new Error('parent missing or deleted');
         }
       } else {
