@@ -411,11 +411,13 @@ Bearer required. `:accountId` must be a UUID. After auth,
 Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
 `replyCount`, or `null`), derived `aboutMe` (profile-note text when it
-is a real bio, else `null`; auto name-copy is not a bio), uncapped live
-`postCount` / `replyCount` from `countByAccount` (not the latest-200
-window), and `trust` (`verifiedBy` / `proposedBy` / `confirmedBy` /
-`appointedBy`, each `{ id, name }` or `null`). Default `trust` is
-all-null when no stored edges exist. Never `viewKey` / `eventId`.
+is a real bio, else `null` when the profile note is missing or
+soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy
+is not a bio; keep `profileMessage`), uncapped live `postCount` /
+`replyCount` from `countByAccount` (not the latest-200 window), and
+`trust` (`verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`,
+each `{ id, name }` or `null`). Default `trust` is all-null when no
+stored edges exist. Never `viewKey` / `eventId`.
 
 ### `GET /members/:accountId/posts`
 

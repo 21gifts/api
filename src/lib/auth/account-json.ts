@@ -59,8 +59,9 @@ export interface OwnerAccountResponse extends AccountResponse {
   /** True when this account has a live forum row that is not the profile note. */
   hasPosted: boolean;
   /**
-   * Profile-note text when it is a real bio, or `null` when empty or when
-   * the trimmed text equals the trimmed display name (case-insensitive).
+   * Profile-note text when it is a real bio, or `null` when empty, when
+   * the trimmed text equals the trimmed display name (case-insensitive),
+   * or when the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
 }
@@ -83,8 +84,9 @@ export interface ViewProfileResponse {
   /** True when the account has at least one passkey credential. */
   hasPasskey: boolean;
   /**
-   * Profile-note text when it is a real bio, or `null` when empty or when
-   * the trimmed text equals the trimmed display name (case-insensitive).
+   * Profile-note text when it is a real bio, or `null` when empty, when
+   * the trimmed text equals the trimmed display name (case-insensitive),
+   * or when the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
 }
@@ -177,7 +179,9 @@ export function serializeOwnerAccount(
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @returns Owner JSON including `hasPosted` and `aboutMe`.
+ * @returns Owner JSON including `hasPosted` and `aboutMe`. `aboutMe` is
+ *   `null` when the profile note is missing or `deletedAt` is set, else
+ *   `aboutMeFromNote`.
  */
 export async function serializeOwnerAccountWithPosts(
   account: Account,
