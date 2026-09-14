@@ -4,6 +4,7 @@ import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
 import { normalizeDisplayName } from '@/lib/name';
@@ -56,6 +57,11 @@ export interface MeRouteDeps {
    * Empty activity stays 200 without calling Coinbase.
    */
   rates?: BtcUsdRateBook;
+  /**
+   * Historical USD→CHF/EUR/PHP crosses (default: empty {@link InMemoryFiatStore}).
+   * Missing fiat never 503s the page.
+   */
+  fiatRates?: FiatRateBook;
 }
 
 /**
@@ -120,13 +126,14 @@ const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, location, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
   return new Hono()
     .get('/', async (c) => {
@@ -148,6 +155,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           messages: deps.messages,
           rates,
           now: deps.now,
+          fiatRates,
         });
         return c.json(activity, 200);
       } catch (err) {
