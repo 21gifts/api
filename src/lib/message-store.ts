@@ -127,6 +127,10 @@ export interface MessageStore {
    * unique-index hit returns the existing row instead of inserting a second
    * note. Rows that already carry an `eventId` leave `content_fp` null.
    *
+   * A non-null `parentId` requires a live parent (`deletedAt` null). A missing
+   * or soft-hidden parent throws and does not insert. An existing-id hit still
+   * returns the stored row even if that row's parent was later deleted.
+   *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
@@ -880,11 +884,14 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Append a copy of `row` and optional photo and video; return a copy.
-   * An existing `id` returns the stored row (gift-reply retries). A non-null
-   * `eventId` that already exists returns the stored row (same uniqueness as
+   * An existing `id` returns the stored row (gift-reply retries), even if that
+   * row's parent was later deleted. A non-null `eventId` that already exists
+   * returns the stored row (same uniqueness as
    * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
    * media (`eventId` null) with the same account, parent, and fingerprint
    * returns the existing row without appending or writing a second video file.
+   * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
+   * or soft-hidden parent throws and does not append.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -927,6 +934,12 @@ export class InMemoryMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
     });
+    if (stored.parentId !== null) {
+      const parent = this.#rows.find((item) => item.id === stored.parentId);
+      if (parent === undefined || parent.deletedAt !== null) {
+        throw new Error('parent missing or deleted');
+      }
+    }
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -1777,10 +1790,13 @@ export class PostgresMessageStore implements MessageStore {
    * Insert `row` (and optional photo and video) into `message` and return it.
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
-   * `eventId` is null. On unique violation (`23505`), if `getById(stored.id)`
-   * matches that id, return that row (no unlink — gift-reply retry). Otherwise
-   * unlink any video written for the new id and return the existing live row
-   * from {@link findLiveByAccountContent}.
+   * `eventId` is null. A non-null `parentId` requires a live parent
+   * (`deletedAt` null): INSERT SELECT WHERE EXISTS refuses a missing or
+   * soft-hidden parent (throws, no insert). On unique violation (`23505`), if
+   * `getById(stored.id)` matches that id, return that row (no unlink —
+   * gift-reply retry), even if the parent is now deleted. Otherwise unlink any
+   * video written for the new id and return the existing live row from
+   * {@link findLiveByAccountContent}.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
@@ -1808,32 +1824,49 @@ export class PostgresMessageStore implements MessageStore {
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
+    const params: readonly unknown[] = [
+      stored.id,
+      stored.accountId,
+      stored.name,
+      stored.text,
+      photo === undefined ? null : photo.bytes,
+      photo === undefined ? null : photo.contentType,
+      stored.videoContentType,
+      stored.createdAt,
+      stored.nostrPublishState,
+      stored.sats,
+      stored.parentId,
+      stored.authorPubkey,
+      stored.eventId,
+      stored.nostrEvent,
+      contentFp,
+    ];
     try {
-      await this.#sql.execute(
-        `INSERT INTO message (
+      if (stored.parentId !== null) {
+        const inserted = await this.#sql.query<{ id: string }>(
+          `INSERT INTO message (
+           id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+         )
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+         WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
+         RETURNING id`,
+          params,
+        );
+        if (inserted.length === 0) {
+          throw new Error('parent missing or deleted');
+        }
+      } else {
+        await this.#sql.execute(
+          `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
          )`,
-        [
-          stored.id,
-          stored.accountId,
-          stored.name,
-          stored.text,
-          photo === undefined ? null : photo.bytes,
-          photo === undefined ? null : photo.contentType,
-          stored.videoContentType,
-          stored.createdAt,
-          stored.nostrPublishState,
-          stored.sats,
-          stored.parentId,
-          stored.authorPubkey,
-          stored.eventId,
-          stored.nostrEvent,
-          contentFp,
-        ],
-      );
+          params,
+        );
+      }
     } catch (err) {
       if (isUniqueViolation(err)) {
         const byId = await this.getById(stored.id);

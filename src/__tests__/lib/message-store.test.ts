@@ -353,6 +353,7 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, id: 'p-hide', text: 'parent' }, JPEG);
     await store.create({ ...LATE, id: 'c-hide', parentId: 'p-hide', text: 'child' });
+    await store.create({ ...EARLY, id: 'other', text: 'other-parent' });
     await store.create({ ...LATE, id: 'c2-live', parentId: 'other', text: 'other-child' });
     const invoice: MessageInvoiceAttempt = {
       id: 'inv-hide',
@@ -391,16 +392,17 @@ describe('InMemoryMessageStore', () => {
   });
 
   it('markDeleted keeps original stamps on an already-tagged target and stamps live children', async () => {
-    const store = new InMemoryMessageStore();
     const firstAt = new Date('2026-08-01T00:00:00.000Z');
     const secondAt = new Date('2026-09-01T00:00:00.000Z');
-    await store.create({
-      ...EARLY,
-      id: 'p-retag',
-      deletedAt: firstAt,
-      deletedBy: 'first-staff',
-    });
-    await store.create({ ...LATE, id: 'c-retag', parentId: 'p-retag', text: 'child' });
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'p-retag',
+        deletedAt: firstAt,
+        deletedBy: 'first-staff',
+      },
+      { ...LATE, id: 'c-retag', parentId: 'p-retag', text: 'child' },
+    ]);
     expect(await store.markDeleted('p-retag', secondAt, 'second-staff')).toBe(true);
     const parent = await store.getById('p-retag');
     const child = await store.getById('c-retag');
@@ -821,6 +823,65 @@ describe('InMemoryMessageStore', () => {
     expect(created.hasPhoto).toBe(false);
     expect(created).not.toBe(EARLY);
     expect((await store.listLatest(10))[0]?.id).toBe('a');
+  });
+
+  it('create with non-null parentId when the parent is missing throws and does not append', async () => {
+    const store = new InMemoryMessageStore();
+    await expect(
+      store.create({ ...LATE, id: 'orphan', parentId: 'missing', text: 'reply' }),
+    ).rejects.toThrow('parent missing or deleted');
+    expect(await store.getById('orphan')).toBeUndefined();
+    expect(await store.listDebug(10)).toEqual([]);
+  });
+
+  it('create with non-null parentId when the parent has deletedAt set throws and does not append a live child', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'p-dead', text: 'parent' });
+    await store.markDeleted('p-dead', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    await expect(
+      store.create({ ...LATE, id: 'c-dead', parentId: 'p-dead', text: 'reply' }),
+    ).rejects.toThrow('parent missing or deleted');
+    expect(await store.getById('c-dead')).toBeUndefined();
+    expect((await store.listDebug(10)).map((row) => row.id)).toEqual(['p-dead']);
+  });
+
+  it('create with non-null parentId when the parent is live inserts', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    const child = await store.create({ ...LATE, id: 'child-live', parentId: 'a', text: 'reply' });
+    expect(child.parentId).toBe('a');
+    expect((await store.getById('child-live'))?.id).toBe('child-live');
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['child-live']);
+  });
+
+  it('create id-hit returns the stored reply after the parent is deleted', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'p-hit', text: 'parent' });
+    const first = await store.create({ ...LATE, id: 'c-hit', parentId: 'p-hit', text: 'reply' });
+    await store.markDeleted('p-hit', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    const stored = await store.getById('c-hit');
+    const again = await store.create({ ...LATE, id: 'c-hit', parentId: 'p-hit', text: 'other' });
+    expect(again.id).toBe(first.id);
+    expect(again.text).toBe('reply');
+    expect(again).toEqual(stored);
+    expect((await store.listDebug(10)).filter((row) => row.id === 'c-hit')).toHaveLength(1);
+  });
+
+  it('create with parentId null or undefined inserts a top-level row', async () => {
+    const store = new InMemoryMessageStore();
+    const withNull = await store.create({ ...EARLY, id: 'top-null', parentId: null });
+    expect(withNull.parentId).toBeNull();
+    expect((await store.getById('top-null'))?.id).toBe('top-null');
+    const withUndef = await store.create({
+      ...EARLY,
+      id: 'top-undef',
+      parentId: undefined as unknown as string | null,
+    });
+    expect(withUndef.parentId).toBeNull();
+    expect((await store.listLatest(10)).map((row) => row.id).sort()).toEqual([
+      'top-null',
+      'top-undef',
+    ]);
   });
 
   it('updates signed events, publish state, and sats', async () => {
@@ -1322,6 +1383,7 @@ describe('InMemoryMessageStore', () => {
       contentType: 'image/jpeg',
       bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
     };
+    await store.create(EARLY);
     await store.create({ ...EARLY, id: 'reply', parentId: 'a', text: '' }, jpeg);
     await store.updateSignedEvent('reply', '99'.repeat(32), { content: 'no url' });
     await store.updatePublishState('reply', 'published', 'space');
@@ -1332,6 +1394,7 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     const mp4 = new Uint8Array(32);
     mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create(EARLY);
     await store.create(
       { ...EARLY, id: 'reply', parentId: 'a', text: 'clip', hasPhoto: false },
       undefined,
@@ -1403,6 +1466,7 @@ describe('InMemoryMessageStore', () => {
 
   it('listSignedMissingHashtags skips replies', async () => {
     const store = new InMemoryMessageStore();
+    await store.create(EARLY);
     await store.create({
       ...EARLY,
       id: 'reply',
@@ -1896,6 +1960,85 @@ describe('PostgresMessageStore', () => {
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created).not.toBe(row);
+  });
+
+  it('create with non-null parentId uses INSERT SELECT WHERE EXISTS on a live parent', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'child-1' }];
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'child-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+    };
+    const created = await store.create(row);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/RETURNING id/);
+    expect(sql.queries[0]?.text).not.toMatch(/ON CONFLICT/i);
+    expect(sql.queries[0]?.params).toEqual([
+      'child-1',
+      'acc',
+      'Ada',
+      'reply',
+      null,
+      null,
+      null,
+      row.createdAt,
+      'pending',
+      0,
+      'parent-1',
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(sql.queries[0]?.params).toHaveLength(15);
+    expect(created.id).toBe('child-1');
+    expect(created.parentId).toBe('parent-1');
+  });
+
+  it('create with non-null parentId throws when the query returns zero rows and unlinks video', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await expect(
+      new PostgresMessageStore(sql).create(
+        {
+          id: 'm-reply-dead-parent',
+          accountId: 'acc',
+          name: 'Ada',
+          text: 'clip',
+          createdAt: new Date(0),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          parentId: 'missing-parent',
+        },
+        undefined,
+        { contentType: 'video/mp4', bytes: mp4 },
+      ),
+    ).rejects.toThrow('parent missing or deleted');
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
+    );
+    await expect(
+      readFile(videoFilePath(resolveMediaDir(), 'm-reply-dead-parent', 'video/mp4')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('create binds Uint8Array photo bytes', async () => {
