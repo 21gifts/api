@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
@@ -377,6 +378,11 @@ async function ingestOneReceipt(
     remembered === decisionKey('indexed', null) ||
     remembered === decisionKey('rejected', 'duplicate')
   ) {
+    const existing = await args.store.getZapReceiptGift(event.id);
+    if (existing === undefined || existing.giftReplyId !== null) {
+      return;
+    }
+    await tryEnsureGiftReply(event, args);
     return;
   }
   if (typeof event.pubkey !== 'string' || event.pubkey === '') {
@@ -588,21 +594,12 @@ async function ingestOneReceipt(
     }
   }
   if (indexed) {
-    await ensureGiftReplyFromReceipt({
-      store: args.store,
-      auth: args.auth,
-      now: args.now,
-      receiptEventId: event.id,
-      parent: row,
-      amountSats,
-      bolt11: pr,
-      paymentHash: decoded.paymentHash,
-      tags: event.tags,
-      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-      ...(args.notificationStore === undefined
-        ? {}
-        : { notificationStore: args.notificationStore }),
-    });
+    await tryEnsureGiftReply(event, args);
+    return;
+  }
+  const existing = await args.store.getZapReceiptGift(event.id);
+  if (existing !== undefined && existing.giftReplyId === null) {
+    await tryEnsureGiftReply(event, args);
   }
 }
 
@@ -652,6 +649,53 @@ interface GiftReplyDeps {
 }
 
 /**
+ * Decode the receipt's parent and bolt11, then insert a gift-reply.
+ * Never throws — lookup/create failures log `nostr.zap.gift_reply.failed`.
+ *
+ * @param event - Indexed kind:9735 frame.
+ * @param args - Store, auth, clock, optional notify collaborators.
+ */
+async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): Promise<void> {
+  /* v8 ignore next 3 -- ingestOneReceipt already requires a receipt id */
+  if (typeof event.id !== 'string' || event.id === '') {
+    return;
+  }
+  try {
+    const receipt = await args.store.getZapReceiptGift(event.id);
+    /* v8 ignore next 3 -- callers skip missing or already-linked receipts */
+    if (receipt === undefined || receipt.giftReplyId !== null) {
+      return;
+    }
+    const parent = await args.store.getById(receipt.messageId);
+    if (parent === undefined) {
+      await args.store.updateZapReceiptGift(event.id, { payerAccountId: null });
+      return;
+    }
+    const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+    const pr = typeof taggedPr === 'string' ? taggedPr : '';
+    const decoded = pr === '' ? null : decodeBolt11(pr);
+    const paymentHash = decoded === null ? '' : decoded.paymentHash;
+    await ensureGiftReplyFromReceipt({
+      store: args.store,
+      auth: args.auth,
+      now: args.now,
+      receiptEventId: event.id,
+      parent,
+      amountSats: receipt.sats,
+      bolt11: pr,
+      paymentHash,
+      tags: event.tags,
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      ...(args.notificationStore === undefined
+        ? {}
+        : { notificationStore: args.notificationStore }),
+    });
+  } catch {
+    logEvent('nostr.zap.gift_reply.failed', { receiptId: event.id });
+  }
+}
+
+/**
  * Create a forum reply for a newly indexed receipt (invoice first, then 9734).
  *
  * @param args - Receipt, parent, bolt11, tags.
@@ -673,8 +717,10 @@ async function ensureGiftReplyFromReceipt(
   if (invoice !== undefined) {
     payer = await args.auth.getAccount(invoice.payerAccountId);
     text = commentFromZapRequest(invoice.zapRequest);
-  }
-  if (payer === undefined) {
+    if (payer === undefined) {
+      return;
+    }
+  } else {
     const parsed = parseVerifiedZapRequest(args.tags);
     if (parsed !== null) {
       payer = await args.auth.getAccountByPubkey(parsed.pubkey);
@@ -686,24 +732,18 @@ async function ensureGiftReplyFromReceipt(
   if (payer === undefined) {
     return;
   }
-  try {
-    await insertGiftReply({
-      store: args.store,
-      auth: args.auth,
-      now: args.now,
-      receiptEventId: args.receiptEventId,
-      parent: args.parent,
-      amountSats: args.amountSats,
-      payer,
-      text,
-      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-      ...(args.notificationStore === undefined
-        ? {}
-        : { notificationStore: args.notificationStore }),
-    });
-  } catch {
-    logEvent('nostr.zap.gift_reply.failed', { receiptId: args.receiptEventId });
-  }
+  await insertGiftReply({
+    store: args.store,
+    auth: args.auth,
+    now: args.now,
+    receiptEventId: args.receiptEventId,
+    parent: args.parent,
+    amountSats: args.amountSats,
+    payer,
+    text,
+    ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.notificationStore === undefined ? {} : { notificationStore: args.notificationStore }),
+  });
 }
 
 /**
@@ -717,21 +757,15 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
     try {
       const parent = await args.store.getById(row.messageId);
       if (parent === undefined || parent.deletedAt !== null) {
+        await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
         continue;
       }
       const payer = await args.auth.getAccount(row.payerAccountId);
       if (payer === undefined) {
+        await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
         continue;
       }
-      const invoices = await args.store.listInvoiceAttempts(200);
-      const match = invoices.find(
-        (item) =>
-          item.result === 'ok' &&
-          item.payerAccountId === row.payerAccountId &&
-          item.messageId === row.messageId &&
-          item.amountSats === row.sats,
-      );
-      const text = commentFromZapRequest(match?.zapRequest ?? null);
+      const text = row.comment;
       await insertGiftReply({
         store: args.store,
         auth: args.auth,
@@ -768,10 +802,11 @@ async function insertGiftReply(
 ): Promise<void> {
   await args.store.updateZapReceiptGift(args.receiptEventId, {
     payerAccountId: args.payer.id,
+    comment: args.text,
   });
-  const awaiting = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);
+  const receipt = await args.store.getZapReceiptGift(args.receiptEventId);
   /* v8 ignore next 3 -- gift_reply_id already set (retry race) */
-  if (!awaiting.some((row) => row.receiptEventId === args.receiptEventId)) {
+  if (receipt === undefined || receipt.giftReplyId !== null) {
     return;
   }
   const pubkey = (await args.auth.getNostrPublicKey(args.payer.id)) ?? '';
@@ -779,7 +814,7 @@ async function insertGiftReply(
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
   const text = args.text;
   const created = await args.store.create({
-    id: crypto.randomUUID(),
+    id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: args.payer.id,
     name,
     text,
@@ -807,6 +842,19 @@ async function insertGiftReply(
   } catch {
     logEvent('messages.reply.notify.failed');
   }
+}
+
+/**
+ * Deterministic message id for a gift-reply so a retry of the same receipt
+ * is idempotent on `message.id`.
+ *
+ * @param receiptEventId - Kind:9735 event id.
+ * @returns UUID derived from SHA-256 of the receipt id.
+ */
+function giftReplyIdForReceipt(receiptEventId: string): string {
+  const hex = createHash('sha256').update(`21gifts-gift-reply:${receiptEventId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
 }
 
 /**

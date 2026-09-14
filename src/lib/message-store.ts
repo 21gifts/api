@@ -388,16 +388,20 @@ export interface MessageStore {
   findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined>;
 
   /**
-   * Patch payer / gift-reply id on a stored zap receipt. Missing receipts are
-   * a no-op. Omitted patch fields are left unchanged.
+   * Patch payer / gift-reply id / comment on a stored zap receipt. Missing
+   * receipts are a no-op. Omitted patch fields are left unchanged.
    *
    * @param receiptEventId - Kind:9735 event id.
-   * @param patch - Optional payer and gift-reply ids.
+   * @param patch - Optional payer, gift-reply id, and comment.
    */
-  updateZapReceiptGift(
-    receiptEventId: string,
-    patch: { payerAccountId?: string | null; giftReplyId?: string | null },
-  ): Promise<void>;
+  updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void>;
+
+  /**
+   * One stored zap receipt, or `undefined` when missing.
+   *
+   * @param receiptEventId - Kind:9735 event id.
+   */
+  getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined>;
 
   /**
    * Receipts with a known payer and no gift reply yet (retry queue).
@@ -405,6 +409,29 @@ export interface MessageStore {
    * @param limit - Max rows.
    */
   listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]>;
+}
+
+/** Patch fields for {@link MessageStore.updateZapReceiptGift}. */
+export type ZapReceiptGiftPatch = {
+  payerAccountId?: string | null;
+  giftReplyId?: string | null;
+  comment?: string;
+};
+
+/** Stored zap receipt including gift-reply link state. */
+export interface ZapReceiptGiftState {
+  /** Kind:9735 event id. */
+  receiptEventId: string;
+  /** Parent forum note id. */
+  messageId: string;
+  /** Whole sats credited on the parent. */
+  sats: number;
+  /** 21.gifts payer account id, or null when unresolved / abandoned. */
+  payerAccountId: string | null;
+  /** Gift-reply message id, or null when not inserted yet. */
+  giftReplyId: string | null;
+  /** Normalised zap comment to reuse on retry. */
+  comment: string;
 }
 
 /** Indexed zap receipt that still needs a forum gift-reply row. */
@@ -417,6 +444,8 @@ export interface ZapReceiptGiftRow {
   sats: number;
   /** 21.gifts payer account id. */
   payerAccountId: string;
+  /** Normalised zap comment to reuse on retry. */
+  comment: string;
 }
 
 /** Outcome of POST /messages/:id/invoice after auth. */
@@ -503,6 +532,8 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
 )`,
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_account_id uuid`,
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id)`,
+  `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS message_invoice (
   id uuid PRIMARY KEY,
   created_at timestamptz NOT NULL,
@@ -707,19 +738,20 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
   };
 }
 
-/**
- * Process-local {@link MessageStore}. Used in tests and when no database URL
- * is configured — the process still boots. Photos live in a private map, not
- * on listed rows.
- */
 /** In-memory zap receipt (parent credit + optional gift-reply link). */
 interface MemoryZapReceipt {
   messageId: string;
   sats: number;
   payerAccountId: string | null;
   giftReplyId: string | null;
+  comment: string;
 }
 
+/**
+ * Process-local {@link MessageStore}. Used in tests and when no database URL
+ * is configured — the process still boots. Photos live in a private map, not
+ * on listed rows.
+ */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
   /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
@@ -861,6 +893,10 @@ export class InMemoryMessageStore implements MessageStore {
    *   `hasVideo` / `videoContentType` from `video`.
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+    const existingById = this.#rows.find((item) => item.id === row.id);
+    if (existingById !== undefined) {
+      return copyRow(existingById);
+    }
     if (row.eventId !== null) {
       const existing = this.#rows.find((item) => item.eventId === row.eventId);
       if (existing !== undefined) {
@@ -1268,6 +1304,7 @@ export class InMemoryMessageStore implements MessageStore {
       sats,
       payerAccountId: null,
       giftReplyId: null,
+      comment: '',
     });
     await this.addSats(messageId, sats);
     return true;
@@ -1315,10 +1352,7 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(newestOkInvoice(this.#invoiceAttempts, (row) => row.pr === pr));
   }
 
-  updateZapReceiptGift(
-    receiptEventId: string,
-    patch: { payerAccountId?: string | null; giftReplyId?: string | null },
-  ): Promise<void> {
+  updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
     const receipt = this.#receipts.get(receiptEventId);
     if (receipt === undefined) {
       return Promise.resolve();
@@ -1329,7 +1363,25 @@ export class InMemoryMessageStore implements MessageStore {
     if (patch.giftReplyId !== undefined) {
       receipt.giftReplyId = patch.giftReplyId;
     }
+    if (patch.comment !== undefined) {
+      receipt.comment = patch.comment;
+    }
     return Promise.resolve();
+  }
+
+  getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined> {
+    const receipt = this.#receipts.get(receiptEventId);
+    if (receipt === undefined) {
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve({
+      receiptEventId,
+      messageId: receipt.messageId,
+      sats: receipt.sats,
+      payerAccountId: receipt.payerAccountId,
+      giftReplyId: receipt.giftReplyId,
+      comment: receipt.comment,
+    });
   }
 
   listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]> {
@@ -1343,6 +1395,7 @@ export class InMemoryMessageStore implements MessageStore {
         messageId: receipt.messageId,
         sats: receipt.sats,
         payerAccountId: receipt.payerAccountId,
+        comment: receipt.comment,
       });
     }
     rows.sort((a, b) => a.receiptEventId.localeCompare(b.receiptEventId));
@@ -1487,7 +1540,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     authorPubkey: row.author_pubkey ?? null,
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
-      state === 'pending' || state === 'published' || state === 'failed'
+      state === 'pending' || state === 'published' || state === 'failed' || state === 'skipped'
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
@@ -1780,6 +1833,12 @@ export class PostgresMessageStore implements MessageStore {
         ],
       );
     } catch (err) {
+      if (isUniqueViolation(err)) {
+        const byId = await this.getById(stored.id);
+        if (byId !== undefined && byId.id === stored.id) {
+          return byId;
+        }
+      }
       if (video !== undefined) {
         await removeForumVideo(stored.id, video.contentType);
       }
@@ -2226,10 +2285,7 @@ export class PostgresMessageStore implements MessageStore {
     return row === undefined ? undefined : mapInvoiceAttemptRow(row);
   }
 
-  async updateZapReceiptGift(
-    receiptEventId: string,
-    patch: { payerAccountId?: string | null; giftReplyId?: string | null },
-  ): Promise<void> {
+  async updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
     if (patch.payerAccountId !== undefined) {
       await this.#sql.execute(
         `UPDATE nostr_zap_receipt SET payer_account_id = $2 WHERE event_id = $1`,
@@ -2242,6 +2298,40 @@ export class PostgresMessageStore implements MessageStore {
         [receiptEventId, patch.giftReplyId],
       );
     }
+    if (patch.comment !== undefined) {
+      await this.#sql.execute(`UPDATE nostr_zap_receipt SET comment = $2 WHERE event_id = $1`, [
+        receiptEventId,
+        patch.comment,
+      ]);
+    }
+  }
+
+  async getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined> {
+    const rows = await this.#sql.query<{
+      event_id: string;
+      message_id: string;
+      sats: string | number;
+      payer_account_id: string | null;
+      gift_reply_id: string | null;
+      comment: string | null;
+    }>(
+      `SELECT event_id, message_id, sats, payer_account_id, gift_reply_id, comment
+       FROM nostr_zap_receipt
+       WHERE event_id = $1`,
+      [receiptEventId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      receiptEventId: row.event_id,
+      messageId: row.message_id,
+      sats: Number(row.sats),
+      payerAccountId: row.payer_account_id,
+      giftReplyId: row.gift_reply_id,
+      comment: row.comment ?? '',
+    };
   }
 
   async listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]> {
@@ -2250,8 +2340,9 @@ export class PostgresMessageStore implements MessageStore {
       message_id: string;
       sats: string | number;
       payer_account_id: string;
+      comment: string | null;
     }>(
-      `SELECT event_id, message_id, sats, payer_account_id
+      `SELECT event_id, message_id, sats, payer_account_id, comment
        FROM nostr_zap_receipt
        WHERE payer_account_id IS NOT NULL AND gift_reply_id IS NULL
        ORDER BY event_id ASC
@@ -2263,6 +2354,7 @@ export class PostgresMessageStore implements MessageStore {
       messageId: row.message_id,
       sats: Number(row.sats),
       payerAccountId: row.payer_account_id,
+      comment: row.comment ?? '',
     }));
   }
 

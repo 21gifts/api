@@ -171,6 +171,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     findOkInvoiceByPaymentHash: boom,
     findOkInvoiceByPr: boom,
     updateZapReceiptGift: boom,
+    getZapReceiptGift: boom,
     listZapReceiptsAwaitingGiftReply: boom,
     ...overrides,
   };
@@ -1570,6 +1571,7 @@ describe('POST /messages', () => {
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
+      getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
@@ -1642,6 +1644,7 @@ describe('POST /messages', () => {
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
+      getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const app = new Hono().route(
@@ -2854,6 +2857,7 @@ describe('POST /messages/:id/invoice', () => {
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
+      getZapReceiptGift: (id) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit) => base.listZapReceiptsAwaitingGiftReply(limit),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {

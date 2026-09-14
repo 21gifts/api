@@ -87,7 +87,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(42);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(44);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -103,6 +103,10 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/payer_account_id uuid/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/gift_reply_id uuid REFERENCES message/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt_gift_reply_id_uidx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
@@ -880,8 +884,25 @@ describe('InMemoryMessageStore', () => {
     await store.recordZapReceipt('r-gift', 'a', 21);
     await store.updateZapReceiptGift('r-gift', { payerAccountId: 'payer' });
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([
-      { receiptEventId: 'r-gift', messageId: 'a', sats: 21, payerAccountId: 'payer' },
+      {
+        receiptEventId: 'r-gift',
+        messageId: 'a',
+        sats: 21,
+        payerAccountId: 'payer',
+        comment: '',
+      },
     ]);
+    expect(await store.getZapReceiptGift('r-gift')).toEqual({
+      receiptEventId: 'r-gift',
+      messageId: 'a',
+      sats: 21,
+      payerAccountId: 'payer',
+      giftReplyId: null,
+      comment: '',
+    });
+    await store.updateZapReceiptGift('r-gift', { comment: 'hi' });
+    expect((await store.getZapReceiptGift('r-gift'))?.comment).toBe('hi');
+    expect(await store.getZapReceiptGift('missing')).toBeUndefined();
     await store.updateZapReceiptGift('r-gift', { giftReplyId: 'reply-1' });
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
     await store.updateZapReceiptGift('missing', { payerAccountId: 'x' });
@@ -1899,6 +1920,14 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['acc', null, 'ab'.repeat(32)]);
   });
 
+  it('create returns the existing row when the id is already stored', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    const again = await store.create({ ...EARLY, text: 'other' });
+    expect(again.text).toBe('first');
+    expect(await store.listDebug(10)).toHaveLength(1);
+  });
+
   it('create on 23505 returns the existing live row and unlinks the new video', async () => {
     const sql = new MockSql();
     const existingId = 'existing-id';
@@ -1936,6 +1965,34 @@ describe('PostgresMessageStore', () => {
     await expect(
       readFile(videoFilePath(resolveMediaDir(), 'm-new', 'video/mp4')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('create on 23505 returns the row when getById finds the same id', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const created = await new PostgresMessageStore(sql).create({
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(0),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    expect(created.id).toBe('m1');
   });
 
   it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {
@@ -2096,6 +2153,20 @@ describe('PostgresMessageStore', () => {
     ];
     const mapped = await store.getById('m2');
     expect(mapped?.nostrPublishState).toBe('pending');
+    sql.nextRows = [
+      {
+        id: 'm-skipped',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'skipped',
+        sats: 21,
+      },
+    ];
+    expect((await store.getById('m-skipped'))?.nostrPublishState).toBe('skipped');
     expect(mapped?.claimedUntil).toBe(Date.parse('2026-08-28T00:01:00.000Z'));
     sql.nextRows = [];
     expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
@@ -2829,8 +2900,53 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes).toHaveLength(2);
     const listed = await store.listZapReceiptsAwaitingGiftReply(10);
     expect(listed).toEqual([
-      { receiptEventId: 'r1', messageId: 'm1', sats: 21, payerAccountId: 'payer' },
+      {
+        receiptEventId: 'r1',
+        messageId: 'm1',
+        sats: 21,
+        payerAccountId: 'payer',
+        comment: '',
+      },
     ]);
+    sql.nextRows = [
+      {
+        event_id: 'r1',
+        message_id: 'm1',
+        sats: '21',
+        payer_account_id: 'payer',
+        gift_reply_id: null,
+        comment: null,
+      },
+    ];
+    expect(await store.getZapReceiptGift('r1')).toEqual({
+      receiptEventId: 'r1',
+      messageId: 'm1',
+      sats: 21,
+      payerAccountId: 'payer',
+      giftReplyId: null,
+      comment: '',
+    });
+    sql.nextRows = [
+      {
+        event_id: 'r1',
+        message_id: 'm1',
+        sats: '21',
+        payer_account_id: 'payer',
+        gift_reply_id: null,
+        comment: 'thanks',
+      },
+    ];
+    expect(await store.getZapReceiptGift('r1')).toEqual({
+      receiptEventId: 'r1',
+      messageId: 'm1',
+      sats: 21,
+      payerAccountId: 'payer',
+      giftReplyId: null,
+      comment: 'thanks',
+    });
+    expect(await new PostgresMessageStore(new MockSql()).getZapReceiptGift('x')).toBeUndefined();
+    await store.updateZapReceiptGift('r1', { comment: 'thanks' });
+    expect(sql.executes.some((e) => e.text.includes('SET comment = $2'))).toBe(true);
     await store.updateZapReceiptGift('r1', {});
   });
 });

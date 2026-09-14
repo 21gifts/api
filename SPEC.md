@@ -1828,7 +1828,11 @@ zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt still increme
 the **parent** `sats`. After that increment (never in the same SQL CTE), the worker
 inserts a reply from the payer (`text` from the zap-request comment or `""`,
 `sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
-`skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift. LNURL success with a non-NIP-57 invoice
+`skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
+After the gift-reply insert, `notifyForumReply` runs best-effort (notification
+row and/or `/notifications` push when those stores are set; it does not copy
+into the member↔member inbox). Notify failure logs `messages.reply.notify.failed`
+and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with
