@@ -127,6 +127,10 @@ export interface MessageStore {
    * unique-index hit returns the existing row instead of inserting a second
    * note. Rows that already carry an `eventId` leave `content_fp` null.
    *
+   * A non-null `parentId` requires a live parent (`deletedAt` null). A missing
+   * or soft-hidden parent throws and does not insert. An existing-id hit still
+   * returns the stored row even if that row's parent was later deleted.
+   *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
@@ -372,6 +376,80 @@ export interface MessageStore {
 
   /** Newest zap ingest rows first, capped at `limit`. */
   listZapIngests(limit: number): Promise<ZapIngestRow[]>;
+
+  /**
+   * Newest `result === 'ok'` invoice with this payment hash, or `undefined`.
+   *
+   * @param paymentHash - BOLT11 payment hash (hex).
+   */
+  findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined>;
+
+  /**
+   * Newest `result === 'ok'` invoice with this BOLT11 `pr`, or `undefined`.
+   *
+   * @param pr - BOLT11 payment request.
+   */
+  findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined>;
+
+  /**
+   * Patch payer / gift-reply id / comment on a stored zap receipt in one
+   * update. Missing receipts are a no-op. Omitted patch fields are left unchanged.
+   *
+   * @param receiptEventId - Kind:9735 event id.
+   * @param patch - Optional payer, gift-reply id, and comment.
+   */
+  updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void>;
+
+  /**
+   * One stored zap receipt, or `undefined` when missing.
+   *
+   * @param receiptEventId - Kind:9735 event id.
+   */
+  getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined>;
+
+  /**
+   * Receipts with a known payer and no gift reply yet (retry queue).
+   *
+   * @param limit - Max rows.
+   */
+  listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]>;
+}
+
+/** Patch fields for {@link MessageStore.updateZapReceiptGift}. */
+export type ZapReceiptGiftPatch = {
+  payerAccountId?: string | null;
+  giftReplyId?: string | null;
+  comment?: string;
+};
+
+/** Stored zap receipt including gift-reply link state. */
+export interface ZapReceiptGiftState {
+  /** Kind:9735 event id. */
+  receiptEventId: string;
+  /** Parent forum note id. */
+  messageId: string;
+  /** Whole sats credited on the parent. */
+  sats: number;
+  /** 21.gifts payer account id, or null when unresolved / abandoned. */
+  payerAccountId: string | null;
+  /** Gift-reply message id, or null when not inserted yet. */
+  giftReplyId: string | null;
+  /** Normalised zap comment to reuse on retry. */
+  comment: string;
+}
+
+/** Indexed zap receipt that still needs a forum gift-reply row. */
+export interface ZapReceiptGiftRow {
+  /** Kind:9735 event id. */
+  receiptEventId: string;
+  /** Parent forum note id. */
+  messageId: string;
+  /** Whole sats credited on the parent. */
+  sats: number;
+  /** 21.gifts payer account id. */
+  payerAccountId: string;
+  /** Normalised zap comment to reuse on retry. */
+  comment: string;
 }
 
 /** Outcome of POST /messages/:id/invoice after auth. */
@@ -456,6 +534,10 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   message_id uuid NOT NULL REFERENCES message (id),
   sats bigint NOT NULL
 )`,
+  `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_account_id uuid`,
+  `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id)`,
+  `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS message_invoice (
   id uuid PRIMARY KEY,
   created_at timestamptz NOT NULL,
@@ -624,7 +706,24 @@ function copyRow(row: MessageRow): MessageRow {
   };
 }
 
-/** Copy an invoice attempt so callers cannot mutate store internals. */
+/** Newest `result === 'ok'` invoice matching `predicate`, or `undefined`. */
+function newestOkInvoice(
+  rows: readonly MessageInvoiceAttempt[],
+  predicate: (row: MessageInvoiceAttempt) => boolean,
+): MessageInvoiceAttempt | undefined {
+  const matches = rows
+    .filter((row) => row.result === 'ok' && predicate(row))
+    .sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+  const first = matches[0];
+  return first === undefined ? undefined : copyInvoiceAttempt(first);
+}
+
 function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
   return {
     ...row,
@@ -643,6 +742,15 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
   };
 }
 
+/** In-memory zap receipt (parent credit + optional gift-reply link). */
+interface MemoryZapReceipt {
+  messageId: string;
+  sats: number;
+  payerAccountId: string | null;
+  giftReplyId: string | null;
+  comment: string;
+}
+
 /**
  * Process-local {@link MessageStore}. Used in tests and when no database URL
  * is configured — the process still boots. Photos live in a private map, not
@@ -650,8 +758,8 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
-  /** Kind:9735 event id → message id; cleared when that message is deleted. */
-  readonly #receiptIds = new Map<string, string>();
+  /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
+  readonly #receipts = new Map<string, MemoryZapReceipt>();
   readonly #photos = new Map<string, ForumPhoto>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
@@ -776,11 +884,14 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Append a copy of `row` and optional photo and video; return a copy.
-   * A non-null `eventId` that already exists returns the stored row (same
-   * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
-   * Live unsigned media (`eventId` null) with the same account, parent, and
-   * fingerprint returns the existing row without appending or writing a
-   * second video file.
+   * An existing `id` returns the stored row (gift-reply retries), even if that
+   * row's parent was later deleted. A non-null `eventId` that already exists
+   * returns the stored row (same uniqueness as
+   * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
+   * media (`eventId` null) with the same account, parent, and fingerprint
+   * returns the existing row without appending or writing a second video file.
+   * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
+   * or soft-hidden parent throws and does not append.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -789,6 +900,10 @@ export class InMemoryMessageStore implements MessageStore {
    *   `hasVideo` / `videoContentType` from `video`.
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+    const existingById = this.#rows.find((item) => item.id === row.id);
+    if (existingById !== undefined) {
+      return copyRow(existingById);
+    }
     if (row.eventId !== null) {
       const existing = this.#rows.find((item) => item.eventId === row.eventId);
       if (existing !== undefined) {
@@ -819,6 +934,12 @@ export class InMemoryMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
     });
+    if (stored.parentId !== null) {
+      const parent = this.#rows.find((item) => item.id === stored.parentId);
+      if (parent === undefined || parent.deletedAt !== null) {
+        throw new Error('parent missing or deleted');
+      }
+    }
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -1188,10 +1309,16 @@ export class InMemoryMessageStore implements MessageStore {
     messageId: string,
     sats: number,
   ): Promise<boolean> {
-    if (this.#receiptIds.has(receiptEventId)) {
+    if (this.#receipts.has(receiptEventId)) {
       return false;
     }
-    this.#receiptIds.set(receiptEventId, messageId);
+    this.#receipts.set(receiptEventId, {
+      messageId,
+      sats,
+      payerAccountId: null,
+      giftReplyId: null,
+      comment: '',
+    });
     await this.addSats(messageId, sats);
     return true;
   }
@@ -1228,6 +1355,66 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
   }
 
+  findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined> {
+    return Promise.resolve(
+      newestOkInvoice(this.#invoiceAttempts, (row) => row.paymentHash === paymentHash),
+    );
+  }
+
+  findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined> {
+    return Promise.resolve(newestOkInvoice(this.#invoiceAttempts, (row) => row.pr === pr));
+  }
+
+  updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
+    const receipt = this.#receipts.get(receiptEventId);
+    if (receipt === undefined) {
+      return Promise.resolve();
+    }
+    if (patch.payerAccountId !== undefined) {
+      receipt.payerAccountId = patch.payerAccountId;
+    }
+    if (patch.giftReplyId !== undefined) {
+      receipt.giftReplyId = patch.giftReplyId;
+    }
+    if (patch.comment !== undefined) {
+      receipt.comment = patch.comment;
+    }
+    return Promise.resolve();
+  }
+
+  getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined> {
+    const receipt = this.#receipts.get(receiptEventId);
+    if (receipt === undefined) {
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve({
+      receiptEventId,
+      messageId: receipt.messageId,
+      sats: receipt.sats,
+      payerAccountId: receipt.payerAccountId,
+      giftReplyId: receipt.giftReplyId,
+      comment: receipt.comment,
+    });
+  }
+
+  listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]> {
+    const rows: ZapReceiptGiftRow[] = [];
+    for (const [receiptEventId, receipt] of this.#receipts) {
+      if (receipt.payerAccountId === null || receipt.giftReplyId !== null) {
+        continue;
+      }
+      rows.push({
+        receiptEventId,
+        messageId: receipt.messageId,
+        sats: receipt.sats,
+        payerAccountId: receipt.payerAccountId,
+        comment: receipt.comment,
+      });
+    }
+    rows.sort((a, b) => a.receiptEventId.localeCompare(b.receiptEventId));
+    return Promise.resolve(rows.slice(0, limit));
+  }
+
   async deleteById(id: string): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
     if (row === undefined) {
@@ -1249,9 +1436,9 @@ export class InMemoryMessageStore implements MessageStore {
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
     this.#invoiceAttempts.length = 0;
     this.#invoiceAttempts.push(...kept);
-    for (const [receiptEventId, messageId] of this.#receiptIds) {
-      if (ids.has(messageId)) {
-        this.#receiptIds.delete(receiptEventId);
+    for (const [receiptEventId, receipt] of this.#receipts) {
+      if (ids.has(receipt.messageId)) {
+        this.#receipts.delete(receiptEventId);
       }
     }
     return true;
@@ -1366,7 +1553,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     authorPubkey: row.author_pubkey ?? null,
     eventId: row.event_id ?? defaults.eventId,
     nostrPublishState:
-      state === 'pending' || state === 'published' || state === 'failed'
+      state === 'pending' || state === 'published' || state === 'failed' || state === 'skipped'
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
@@ -1603,8 +1790,13 @@ export class PostgresMessageStore implements MessageStore {
    * Insert `row` (and optional photo and video) into `message` and return it.
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
-   * `eventId` is null. On unique violation (`23505`), unlinks any video
-   * written for the new id and returns the existing live row from
+   * `eventId` is null. A non-null `parentId` requires a live parent
+   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. A 0-row insert calls
+   * `getById(stored.id)` and returns that row when present (gift-reply retry
+   * after the parent was later deleted); otherwise throws, no insert. On unique
+   * violation (`23505`), if `getById(stored.id)` matches that id, return that
+   * row (no unlink — gift-reply retry). Otherwise unlink any video written for
+   * the new id and return the existing live row from
    * {@link findLiveByAccountContent}.
    *
    * @param row - Fully formed message.
@@ -1612,7 +1804,8 @@ export class PostgresMessageStore implements MessageStore {
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
    * @returns The stored row after a successful insert (a copy) with `hasPhoto`
    *   from `photo` and `hasVideo` / `videoContentType` from `video`. INSERT
-   *   failure unlinks the video (`removeForumVideo`).
+   *   failure unlinks the video (`removeForumVideo`), except unique violation
+   *   when `getById(stored.id)` matches that id (gift-reply retry, no unlink).
    */
   async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
     const hasPhoto = photo !== undefined;
@@ -1632,33 +1825,60 @@ export class PostgresMessageStore implements MessageStore {
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
+    const params: readonly unknown[] = [
+      stored.id,
+      stored.accountId,
+      stored.name,
+      stored.text,
+      photo === undefined ? null : photo.bytes,
+      photo === undefined ? null : photo.contentType,
+      stored.videoContentType,
+      stored.createdAt,
+      stored.nostrPublishState,
+      stored.sats,
+      stored.parentId,
+      stored.authorPubkey,
+      stored.eventId,
+      stored.nostrEvent,
+      contentFp,
+    ];
     try {
-      await this.#sql.execute(
-        `INSERT INTO message (
+      if (stored.parentId !== null) {
+        const inserted = await this.#sql.query<{ id: string }>(
+          `INSERT INTO message (
+           id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+         )
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+         WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
+         RETURNING id`,
+          params,
+        );
+        if (inserted.length === 0) {
+          const byId = await this.getById(stored.id);
+          if (byId !== undefined && byId.id === stored.id) {
+            return byId;
+          }
+          throw new Error('parent missing or deleted');
+        }
+      } else {
+        await this.#sql.execute(
+          `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
          )`,
-        [
-          stored.id,
-          stored.accountId,
-          stored.name,
-          stored.text,
-          photo === undefined ? null : photo.bytes,
-          photo === undefined ? null : photo.contentType,
-          stored.videoContentType,
-          stored.createdAt,
-          stored.nostrPublishState,
-          stored.sats,
-          stored.parentId,
-          stored.authorPubkey,
-          stored.eventId,
-          stored.nostrEvent,
-          contentFp,
-        ],
-      );
+          params,
+        );
+      }
     } catch (err) {
+      if (isUniqueViolation(err)) {
+        const byId = await this.getById(stored.id);
+        if (byId !== undefined && byId.id === stored.id) {
+          return byId;
+        }
+      }
       if (video !== undefined) {
         await removeForumVideo(stored.id, video.contentType);
       }
@@ -2069,6 +2289,116 @@ export class PostgresMessageStore implements MessageStore {
       [limit],
     );
     return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  async findOkInvoiceByPaymentHash(
+    paymentHash: string,
+  ): Promise<MessageInvoiceAttempt | undefined> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response
+       FROM message_invoice
+       WHERE payment_hash = $1 AND result = 'ok'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [paymentHash],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapInvoiceAttemptRow(row);
+  }
+
+  async findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response
+       FROM message_invoice
+       WHERE pr = $1 AND result = 'ok'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [pr],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapInvoiceAttemptRow(row);
+  }
+
+  async updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
+    const assignments: string[] = [];
+    const params: unknown[] = [receiptEventId];
+    if (patch.payerAccountId !== undefined) {
+      params.push(patch.payerAccountId);
+      assignments.push(`payer_account_id = $${params.length}`);
+    }
+    if (patch.giftReplyId !== undefined) {
+      params.push(patch.giftReplyId);
+      assignments.push(`gift_reply_id = $${params.length}`);
+    }
+    if (patch.comment !== undefined) {
+      params.push(patch.comment);
+      assignments.push(`comment = $${params.length}`);
+    }
+    if (assignments.length === 0) {
+      return;
+    }
+    await this.#sql.execute(
+      `UPDATE nostr_zap_receipt SET ${assignments.join(', ')} WHERE event_id = $1`,
+      params,
+    );
+  }
+
+  async getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined> {
+    const rows = await this.#sql.query<{
+      event_id: string;
+      message_id: string;
+      sats: string | number;
+      payer_account_id: string | null;
+      gift_reply_id: string | null;
+      comment: string | null;
+    }>(
+      `SELECT event_id, message_id, sats, payer_account_id, gift_reply_id, comment
+       FROM nostr_zap_receipt
+       WHERE event_id = $1`,
+      [receiptEventId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      receiptEventId: row.event_id,
+      messageId: row.message_id,
+      sats: Number(row.sats),
+      payerAccountId: row.payer_account_id,
+      giftReplyId: row.gift_reply_id,
+      comment: row.comment ?? '',
+    };
+  }
+
+  async listZapReceiptsAwaitingGiftReply(limit: number): Promise<ZapReceiptGiftRow[]> {
+    const rows = await this.#sql.query<{
+      event_id: string;
+      message_id: string;
+      sats: string | number;
+      payer_account_id: string;
+      comment: string | null;
+    }>(
+      `SELECT event_id, message_id, sats, payer_account_id, comment
+       FROM nostr_zap_receipt
+       WHERE payer_account_id IS NOT NULL AND gift_reply_id IS NULL
+       ORDER BY event_id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      receiptEventId: row.event_id,
+      messageId: row.message_id,
+      sats: Number(row.sats),
+      payerAccountId: row.payer_account_id,
+      comment: row.comment ?? '',
+    }));
   }
 
   /**

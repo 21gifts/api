@@ -27,7 +27,7 @@ export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 export const MESSAGE_LIST_LIMIT = 200;
 
 /** Worker publish state for a forum row. */
-export type NostrPublishState = 'pending' | 'published' | 'failed';
+export type NostrPublishState = 'pending' | 'published' | 'failed' | 'skipped';
 
 /** Maximum decoded photo size in bytes (1 MiB). */
 export const MESSAGE_PHOTO_MAX_BYTES = 1_048_576;

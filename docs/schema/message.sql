@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   message_id uuid NOT NULL REFERENCES message (id),
   sats bigint NOT NULL
 );
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_account_id uuid;
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id);
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;
 
 -- Invoice attempts from POST /messages/:id/invoice (success and failure).
 -- No FK on message_id so not_found attempts still persist.

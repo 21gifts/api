@@ -173,7 +173,10 @@ composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
 notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign; forum `text` unchanged; pending notes EVENT before any hashtag/photo re-sign so the sign lease cannot starve fan-out);
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
-`POST /messages/:id/invoice`. Do not invent `/events` or `/comments` paths.
+`POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
+validated kind:9735 is indexed, the same payment appears as a forum reply from
+the payer. Gift-only (empty text) replies are not published to Nostr. Unpaid
+replies from `basis`/`verified` (not the parent author) are **403**. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
@@ -214,7 +217,7 @@ The api enqueues (does not send inline):
 
 - a **forum** payload when someone else posts (`tag: forum`)
 - a **zap** payload when a zap receipt is newly indexed onto the author's note
-- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`). The notification row is stored first, then the push is enqueued; if either fails, the reply POST is still 200.
+- a **reply** payload when someone replies to the author's note (`url: /notifications`, `tag: forum_reply:<parentId>`). That includes an unpaid `POST /messages` reply, an inbound member reply the worker persisted, and a zap gift-reply after a validated kind:9735. The notification row is stored first, then the push is enqueued; if either fails, the reply persist still succeeds (HTTP 200 on `POST /messages`; worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. A reply push opens `/notifications`.

@@ -517,8 +517,11 @@ const postBody = z
   })
   .refine((body) => body.text !== undefined || body.photo !== undefined);
 
-/** Body schema for a note invoice. */
-const invoiceBody = z.object({ sats: z.number().int().positive() });
+/** Body schema for a note invoice. Optional `text` is the NIP-57 comment. */
+const invoiceBody = z.object({
+  sats: z.number().int().positive(),
+  text: z.string().optional(),
+});
 
 /**
  * Build the `/messages` route group.
@@ -639,6 +642,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         // One-level only: replies to replies are not parents. Soft-hidden parents are missing.
         if (parent === undefined || parent.parentId !== null || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        const exempt = account.id === parent.accountId || isStaffRole(account.role);
+        if (!exempt) {
+          return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
         }
         parentId = parent.id;
       }
@@ -809,6 +816,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
+      const invoiceText = normalizeForumText(parsed.data.text ?? '');
+      if (invoiceText === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+      }
       if (amountMsat > GIFT_INVOICE_MAX_MSAT) {
         await persistInvoiceAttempt(
           deps.store,
@@ -1011,6 +1040,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         eventId: row.eventId,
         amountMsat,
         relays,
+        content: invoiceText,
       });
       let signed;
       try {

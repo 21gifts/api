@@ -84,7 +84,7 @@ export interface NostrWorkerDeps {
   verifyKind1?: (event: NostrEventFrame) => boolean;
   /** Optional private-message store (skip DMs when omitted). */
   conversations?: ConversationStore;
-  /** Optional in-app notification store (inbound member replies). */
+  /** Optional in-app notification store (inbound member replies and zap gift-replies). */
   notificationStore?: NotificationStore;
 }
 
@@ -158,7 +158,9 @@ function reservedContent(
  * After a member reply is stored, `notifyForumReply` always runs; it writes a
  * notification only when `notificationStore` is set and enqueues a
  * `/notifications` push only when `pushStore` is set. Failures log
- * `nostr.reply.notify.failed` and do not undo persist. When a conversation store is present, also
+ * `nostr.reply.notify.failed` and do not undo persist. Zap ingest uses the
+ * same helper after a gift-reply insert (`messages.reply.notify.failed` on
+ * throw; parent `sats` and the reply row stay). When a conversation store is present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *
@@ -179,6 +181,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     fetchImpl: deps.fetchImpl,
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+    ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
