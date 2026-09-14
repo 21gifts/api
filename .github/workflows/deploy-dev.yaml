@@ -16,9 +16,10 @@ permissions:
   contents: read
 
 jobs:
-  build-and-push:
-    name: Build and push :beta
+  build-and-deploy:
+    name: Build and deploy to DEV
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,15 +46,23 @@ jobs:
       - name: Notify infrastructure to pull :beta
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
         run: |
           set -euo pipefail
-          repo="${{ secrets.DISPATCH_REPO }}"
-          if [ -z "${GH_TOKEN}" ] || [ -z "${repo}" ]; then
-            echo "::warning::DISPATCH_TOKEN or DISPATCH_REPO unset — infra probe-published-images.yml will pick up the tag"
-            exit 0
+          if [ -z "${GH_TOKEN}" ] || [ -z "${DISPATCH_REPO}" ]; then
+            echo "::error::DISPATCH_TOKEN or DISPATCH_REPO unset — cannot deploy this image"
+            exit 1
           fi
-          gh api "repos/${repo}/dispatches" \
+          gh api "repos/${DISPATCH_REPO}/dispatches" \
             -f event_type=image-published \
             -f "client_payload[image]=21gifts/api" \
             -f "client_payload[tag]=beta" \
             -f "client_payload[sha]=${GITHUB_SHA}"
+
+      - name: Wait for infrastructure deploy
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
+          IMAGE: 21gifts/api
+          TAG: beta
+        run: bash .github/scripts/wait-for-image-published.sh
