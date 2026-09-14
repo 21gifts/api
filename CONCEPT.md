@@ -51,11 +51,11 @@ received; freely give.”
 
 ### 2. Direct giving, with no middleman, is the best and most beautiful way to give
 
-A gift that travels from the giver’s hands to the receiver’s hands
-is the short path. Advantages:
+A gift that goes straight to the receiver’s own address is the short
+path. Advantages:
 
-- The whole gift arrives. No take rate, no platform fee, no program
-  overhead.
+- The whole gift arrives: 21.gifts takes no cut, charges no fee, and
+  adds no program overhead.
 - No charity, platform, or program sits between giver and receiver
   to skim, delay, or politicize the gift; the only party in the path
   is the wallet the receiver chose.
@@ -79,7 +79,8 @@ put in a person’s hand.
 
 - **Censorship-resistant.** Bitcoin itself cannot be told to refuse a
   gift that the sender and receiver have agreed. Capital controls,
-  frozen accounts, war, a closed branch — the gift can still land.
+  frozen bank accounts, war, a closed branch — none of them can stop
+  the network.
 - **Permissionless.** No account application, no ID gate, no banking
   hours. A phone and a Wallet of Satoshi address are enough, also for
   people no bank will open a file for.
@@ -663,8 +664,9 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
   welcome: no inclusion slogan, and no FAQ entry asking whether the project
   is Christian.
 - **Signature verse**: Matthew 10:8 — "Freely you have received; freely
-  give." It says in one line what the living-room rules say at length: a
-  gift has no price. Shown quietly in the marketing footer; not on the hero.
+  give." It is the gift principle of the living-room rules (`/rules` in the
+  app) in one line: a gift has no price. Shown quietly in the marketing
+  footer; not on the hero.
 - **Visual**: minimal, photo-driven, large typography. Receiver photos and
   stories are the hero. Tech is invisible. No cross, fish, or second typeface
   as brand marks; Bitcoin orange stays the accent.
