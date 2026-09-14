@@ -18,9 +18,9 @@ import {
 import { logEvent } from '@/lib/log';
 
 /**
- * Spend-worker invoice routes: check passkey eligibility and a live forum
- * post, fetch a recipient BOLT11 via LNURL-pay, then accept the payment
- * preimage as proof. The api does not pay.
+ * Spend-worker invoice routes: check passkey eligibility and a live
+ * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
+ * the payment preimage as proof. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -35,10 +35,10 @@ export interface InvoiceRouteDeps {
    */
   authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
   /**
-   * Forum store for Lightning Address → live non-profile post lookup.
+   * Forum store for Lightning Address → live top-level non-profile post lookup.
    * Distinct from {@link InvoiceStore} (`store`).
    */
-  messageStore: Pick<MessageStore, 'accountHasLivePost'>;
+  messageStore: Pick<MessageStore, 'accountHasLiveTopLevelPost'>;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for LNURL-pay. */
@@ -101,13 +101,13 @@ async function addressHasPasskey(
 
 /**
  * Whether a normalised Lightning Address belongs to an account that has at
- * least one live forum row that is not the auto-created profile note.
- * Missing account → false (fail closed).
+ * least one live top-level forum row that is not the auto-created profile
+ * note. Replies do not count. Missing account → false (fail closed).
  *
  * @param authStore - Account lookup.
- * @param messageStore - Live-post lookup.
+ * @param messageStore - Live top-level post lookup.
  * @param address - Normalised `local@domain`.
- * @returns `true` only when the account has a live non-profile forum row.
+ * @returns `true` only when the account has a live top-level non-profile forum row.
  */
 async function addressHasPosted(
   authStore: InvoiceRouteDeps['authStore'],
@@ -117,7 +117,7 @@ async function addressHasPosted(
   const account = await authStore.getAccountByLightningAddress(address);
   return (
     account !== undefined &&
-    (await messageStore.accountHasLivePost(account.id, account.profileMessageId ?? null))
+    (await messageStore.accountHasLiveTopLevelPost(account.id, account.profileMessageId ?? null))
   );
 }
 

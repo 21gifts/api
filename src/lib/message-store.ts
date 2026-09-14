@@ -204,6 +204,19 @@ export interface MessageStore {
   accountHasLivePost(accountId: string, excludeId: string | null): Promise<boolean>;
 
   /**
+   * Whether `accountId` has at least one live **top-level** forum row that
+   * is not `excludeId`. Live = `deletedAt` null, `parentId` null, and
+   * `accountId` equals the argument (Damus-only `accountId: null` rows
+   * never match). `excludeId` is the auto profile note id; `null` excludes
+   * nothing extra. Replies do not count.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching live top-level row exists.
+   */
+  accountHasLiveTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean>;
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * Live = `deletedAt` null and `accountId` equals the argument (Damus-only
@@ -1070,6 +1083,25 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Whether `accountId` has at least one live top-level forum row that is
+   * not `excludeId`.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching live top-level row exists.
+   */
+  accountHasLiveTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const found = this.#rows.some(
+      (row) =>
+        row.accountId === accountId &&
+        row.deletedAt === null &&
+        row.parentId === null &&
+        (excludeId === null || row.id !== excludeId),
+    );
+    return Promise.resolve(found);
+  }
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * @param accountId - Author account id.
@@ -1808,6 +1840,27 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT 1 FROM message
        WHERE account_id = $1
          AND deleted_at IS NULL
+         AND ($2::uuid IS NULL OR id <> $2::uuid)
+       LIMIT 1`,
+      [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  /**
+   * Whether `accountId` has at least one live top-level forum row that is
+   * not `excludeId`.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param excludeId - Auto profile note id (`$2`), or `null` to exclude nothing extra.
+   * @returns `true` when a matching live top-level row exists.
+   */
+  async accountHasLiveTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM message
+       WHERE account_id = $1
+         AND deleted_at IS NULL
+         AND parent_id IS NULL
          AND ($2::uuid IS NULL OR id <> $2::uuid)
        LIMIT 1`,
       [accountId, excludeId],

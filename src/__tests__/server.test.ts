@@ -39,6 +39,12 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('accepts an injected spendPing', async () => {
+    const app = createApp({ spendPing: { ping: async () => undefined } });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
   it('mounts /favicon.ico', async () => {
     const app = createApp();
     const res = await app.request('/favicon.ico');

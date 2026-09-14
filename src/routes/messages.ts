@@ -33,6 +33,7 @@ import { notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { enqueueForumPushes } from '@/lib/push-worker';
+import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -174,6 +175,12 @@ export interface MessagesRouteDeps {
   invoiceLimiter?: InvoiceRateLimiter;
   /** Optional push outbox; forum create enqueues when present. */
   pushStore?: PushStore;
+  /**
+   * Optional spend ping. After a new top-level persist with a Lightning
+   * Address, the route awaits `ping(address)`. Omitted → skip. Failures
+   * are logged and do not fail the 200.
+   */
+  spendPing?: SpendPing;
   /**
    * Optional in-app notification store. When present, a 21.gifts-author
    * reply creates a notification for the parent author (via {@link notifyForumReply}).
@@ -349,7 +356,7 @@ async function serveForumVideo(
  * is present) when `parentId` is a 21.gifts-author note. Shared by JSON and
  * multipart after body parse / normalize / decode.
  *
- * @param deps - Store, clock, optional push / notification stores.
+ * @param deps - Store, clock, optional push / spend ping / notification stores.
  * @param postLimiter - Per-account burst limiter.
  * @param c - Request context (JSON / headers).
  * @param account - Authenticated account.
@@ -418,6 +425,18 @@ async function persistForumPost(
         await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
       } catch {
         logEvent('push.enqueue.failed');
+      }
+    }
+    if (
+      !isReplay &&
+      parentId === null &&
+      account.lightningAddress !== null &&
+      deps.spendPing !== undefined
+    ) {
+      try {
+        await deps.spendPing.ping(account.lightningAddress);
+      } catch {
+        logEvent('spend.ping.failed');
       }
     }
     if (!isReplay && parentId !== null) {
