@@ -63,8 +63,10 @@ export function paymentHashFromReceipt(receipt: Record<string, unknown>): string
 
 /**
  * Confirmed given forum zaps: `result === 'ok'` invoices joined to indexed
- * ingests by payment hash, then a unique `(messageId, amountSats)` fallback.
- * Unmatched invoices are skipped. Each ingest is emitted at most once.
+ * ingests by payment hash. Invoices with a hash that does not match any ingest
+ * are skipped (no tuple fallback). Hashless invoices may match a unique
+ * `(messageId, amountSats)` ingest. Unmatched invoices are skipped. Each
+ * ingest is emitted at most once.
  *
  * @param invoices - Payer invoice attempts (any order).
  * @param indexed - Indexed zap ingests (first hash wins on duplicates).
@@ -94,13 +96,11 @@ export function matchConfirmedGivenZaps(
     const hash = invoicePaymentHash(invoice);
     if (hash !== null) {
       const ingest = byHash.get(hash);
-      if (ingest !== undefined) {
-        if (!used.has(ingest.id)) {
-          given.push(zapGiftRow(invoice, ingest));
-          used.add(ingest.id);
-        }
-        continue;
+      if (ingest !== undefined && !used.has(ingest.id)) {
+        given.push(zapGiftRow(invoice, ingest));
+        used.add(ingest.id);
       }
+      continue;
     }
     unmatched.push(invoice);
   }

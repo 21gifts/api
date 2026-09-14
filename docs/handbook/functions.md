@@ -16,7 +16,7 @@
 
 ## Function: matchConfirmedGivenZaps
 
-- **Purpose:** Join `result === 'ok'` invoices to indexed zap ingests by payment hash, then a unique `(messageId, amountSats)` fallback. Skip unmatched and non-ok invoices. Each ingest is used at most once.
+- **Purpose:** Join `result === 'ok'` invoices to indexed zap ingests by payment hash. A hashed invoice that misses the ingest map is skipped (no tuple fallback). Hashless invoices may match a unique `(messageId, amountSats)` ingest. Skip unmatched and non-ok invoices. Each ingest is used at most once.
 - **Inputs:** `readonly MessageInvoiceAttempt[]` and `readonly ZapIngestRow[]`.
 - **Returns / side effects:** `GiftRow[]` with `paidAt` from the ingest. No I/O.
 - **Used by:** `buildAccountActivity`.

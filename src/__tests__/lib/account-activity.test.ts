@@ -201,13 +201,22 @@ describe('matchConfirmedGivenZaps', () => {
     ).toEqual([]);
   });
 
-  it('falls back to a unique (messageId, amountSats) pair when the hash misses', () => {
+  it('falls back to a unique (messageId, amountSats) pair when the invoice has no hash', () => {
     const given = matchConfirmedGivenZaps(
       [invoice({ paymentHash: null, pr: 'lnbc-bad' })],
       [ingest({ receipt: { tags: [['e', 'note']] } })],
     );
     expect(given).toHaveLength(1);
     expect(given[0]?.amountSats).toBe(21);
+  });
+
+  it('does not fall back to messageId+amount when the invoice has a payment hash', () => {
+    const otherHash = 'bb'.repeat(32);
+    const given = matchConfirmedGivenZaps(
+      [invoice({ paymentHash: otherHash, pr: null })],
+      [ingest({ receipt: { tags: [] } })],
+    );
+    expect(given).toEqual([]);
   });
 
   it('skips an ambiguous (messageId, amountSats) fallback when two ingests match', () => {
