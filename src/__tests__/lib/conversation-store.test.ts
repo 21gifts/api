@@ -53,6 +53,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     lastMessageAt: NOW,
     name: '',
     lastText: '',
+    lastSenderAccountId: null,
     ...partial,
   };
 }
@@ -129,6 +130,7 @@ describe('InMemoryConversationStore', () => {
     expect(first.accountA).toBe('a');
     expect(first.accountB).toBe('b');
     expect(first.kind).toBe('member_member');
+    expect(first.lastSenderAccountId).toBeNull();
   });
 
   it('opens unique member_platform and member_damus threads', async () => {
@@ -199,6 +201,7 @@ describe('InMemoryConversationStore', () => {
     expect(listed[0]?.text).toBe('hi');
     const got = await store.getById(opened.id);
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastSenderAccountId).toBe('acc-a');
   });
 
   it('returns the existing row when appending a duplicate event id', async () => {
@@ -321,6 +324,57 @@ describe('InMemoryConversationStore', () => {
       message({ conversationId: opened.id, senderAccountId: null, eventId: null }),
     );
     expect(await store.claimUnsigned(10, 1, 10)).toEqual([]);
+    expect((await store.getById(opened.id))?.lastSenderAccountId).toBeNull();
+  });
+
+  it('hasInboundMessage is false for an empty thread', async () => {
+    const store = new InMemoryConversationStore();
+    const empty = await store.openMemberMember('a', 'b', NOW);
+    const other = await store.openMemberMember('a', 'c', NOW);
+    await store.appendMessage(message({ conversationId: other.id, senderAccountId: 'c' }));
+    expect(await store.hasInboundMessage(empty.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasInboundMessage is false when every message is from the viewer', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'a' }));
+    expect(await store.hasInboundMessage(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasInboundMessage is true when a counterpart sent a message', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    expect(await store.hasInboundMessage(opened.id, 'a', false, null)).toBe(true);
+  });
+
+  it('hasInboundMessage is true for a Damus null sender', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: null }));
+    expect(await store.hasInboundMessage(opened.id, 'acc', false, null)).toBe(true);
+  });
+
+  it('hasInboundMessage is false when staff sees only a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(false);
+  });
+
+  it('hasInboundMessage is true when staff sees a member send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'mem' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasInboundMessage is true when a member views a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'mem', false, 'plat')).toBe(true);
   });
 });
 
@@ -343,6 +397,7 @@ describe('PostgresConversationStore', () => {
     const got = await store.getById('c1');
     expect(got?.accountA).toBe('a');
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastSenderAccountId).toBeNull();
     expect(got?.lastMessageAt.toISOString()).toBe('2026-08-29T13:00:00.000Z');
     expect(sql.queries[0]?.params).toEqual(['c1']);
   });
@@ -369,6 +424,7 @@ describe('PostgresConversationStore', () => {
     ];
     const got = await new PostgresConversationStore(sql).getById('c1');
     expect(got?.lastText).toBe('');
+    expect(got?.lastSenderAccountId).toBeNull();
   });
 
   it('listVisible binds staff and platform filters', async () => {
@@ -377,6 +433,46 @@ describe('PostgresConversationStore', () => {
     await store.listVisible('acc', true, 'plat', 50);
     expect(sql.queries[0]?.params).toEqual(['acc', true, 'plat', 50]);
     expect(sql.queries[0]?.text).toMatch(/member_platform/);
+    expect(sql.queries[0]?.text).toMatch(/AS last_sender_account_id/);
+  });
+
+  it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: true }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.hasInboundMessage('c1', 'acc', true, 'plat')).toBe(true);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
+    expect(sql.queries[0]?.text).toContain('EXISTS');
+    expect(sql.queries[0]?.text).toContain('sender_account_id IS NULL');
+    expect(sql.queries[0]?.text).toContain('IS DISTINCT FROM');
+    expect(sql.queries[0]?.text).toContain(
+      'NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)',
+    );
+  });
+
+  it('hasInboundMessage is false when EXISTS is false', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: false }];
+    expect(await new PostgresConversationStore(sql).hasInboundMessage('c1', 'a', false, null)).toBe(
+      false,
+    );
+    expect(sql.queries[0]?.params).toEqual(['c1', 'a', false, null]);
+  });
+
+  it('hasInboundMessage is false when the EXISTS row is missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'staff', true, 'plat'),
+    ).toBe(false);
+  });
+
+  it('hasInboundMessage is false when exists is not boolean true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(
+      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'mem', false, 'plat'),
+    ).toBe(false);
   });
 
   it('openMemberMember returns an existing row without inserting', async () => {
@@ -438,6 +534,7 @@ describe('PostgresConversationStore', () => {
         created_at: NOW,
         last_message_at: NOW,
         last_text: 'hi',
+        last_sender_account_id: 'mem',
       },
     ];
     const store = new PostgresConversationStore(sql);
@@ -445,6 +542,7 @@ describe('PostgresConversationStore', () => {
     expect(opened.id).toBe('c1');
     expect(opened.accountB).toBe('plat');
     expect(opened.lastText).toBe('hi');
+    expect(opened.lastSenderAccountId).toBe('mem');
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/UPDATE conversation SET account_b/);
     expect(sql.executes[0]?.params).toEqual(['plat', 'c1']);

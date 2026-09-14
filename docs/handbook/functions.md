@@ -234,8 +234,8 @@
 
 ## Function: PostgresConversationStore
 
-- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id. `retargetMemberPlatform` bulk-updates `account_b` on every `member_platform` row whose `account_a` is not the new platform id.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
+- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, `hasInboundMessage` (EXISTS matching inbound = `conversationIsInbound`), append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id. `retargetMemberPlatform` bulk-updates `account_b` on every `member_platform` row whose `account_a` is not the new platform id.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). `hasInboundMessage(conversationId, viewerId, staff, platformId)` is parameter-bound EXISTS over `conversation_message`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -500,8 +500,8 @@
 
 ## Function: InMemoryConversationStore
 
-- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database.
-- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible` is newest `lastMessageAt` then `id` DESC.
+- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`.
+- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`).
 - **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `eventId` append returns the existing row. No I/O.
 - **Used by:** `createApp` default `conversationStore`.
 
@@ -795,8 +795,8 @@
 ## Function: serializeConversation
 
 - **Purpose:** Project a stored thread to its public list JSON shape.
-- **Inputs:** `ConversationThread` with resolved `name` / `lastText`.
-- **Returns / side effects:** `{ id, kind, name, lastText, lastAt }`. Omits account ids, event ids, npubs. No I/O.
+- **Inputs:** `ConversationThread` with resolved `name` / `lastText`, and `lastFromMe` boolean.
+- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe }`. Omits account ids, event ids, npubs. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeNotification
@@ -816,9 +816,23 @@
 ## Function: serializeConversationMessage
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
-- **Inputs:** `ConversationMessageRow`.
-- **Returns / side effects:** `{ id, name, text, createdAt }`. Omits account ids and event ids. No I/O.
+- **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe }`. Omits account ids and event ids. No I/O.
 - **Used by:** `conversationRoutes`.
+
+## Function: conversationFromMe
+
+- **Purpose:** Viewer-relative direction for a stored sender: true when the sender is the session account, or when staff is acting as the platform identity that sent the message.
+- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`. `senderAccountId` null (empty thread / Damus inbound) is false.
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `conversationRoutes` (list `lastFromMe`, thread `fromMe`); `conversationIsInbound`.
+
+## Function: conversationIsInbound
+
+- **Purpose:** Whether a stored sender is inbound for the viewer (not the viewer, and not staff-as-platform). Null Damus sender is inbound.
+- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`.
+- **Returns / side effects:** `!conversationFromMe(args)`. No I/O.
+- **Used by:** `InMemoryConversationStore.hasInboundMessage`.
 
 ## Function: unsignedConversationDefaults
 

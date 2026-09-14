@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog).
+**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
 
 ---
 
@@ -2155,9 +2155,15 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-`role` is `founder` or `moderator`) every platform thread. Newest
-`lastMessageAt` first. Cap 200. Member JSON never includes `accountId`,
-event ids, or npubs; Damus-only counterpart `name` may be a truncated npub.
+`role` is `founder` or `moderator`) every platform thread. Empty threads
+and outbound-only member/Damus threads (every stored sender is
+`conversationFromMe` for the viewer, including staff-as-platform) are
+omitted. The member's own `member_platform` contact thread is listed when
+it has a message, even if outbound-only. Damus inbound (null sender) is
+inbound and listed. `GET /conversations/:id` and `POST` still return/open
+outbound-only and empty threads. Newest `lastMessageAt` first.
+Cap 200. Member JSON never includes `accountId`, event ids, or npubs;
+Damus-only counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2181,7 +2187,8 @@ Success → **Response** `200`:
       "kind": "member_member",
       "name": "Ada",
       "lastText": "Hello",
-      "lastAt": "2026-08-29T12:00:00.000Z"
+      "lastAt": "2026-08-29T12:00:00.000Z",
+      "lastFromMe": false
     }
   ]
 }
@@ -2216,7 +2223,8 @@ Success → **Response** `200`:
       "id": "<uuid>",
       "name": "Ada",
       "text": "Hello",
-      "createdAt": "2026-08-29T12:00:00.000Z"
+      "createdAt": "2026-08-29T12:00:00.000Z",
+      "fromMe": true
     }
   ]
 }

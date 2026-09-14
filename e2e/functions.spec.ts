@@ -1225,6 +1225,16 @@ test('Function: serializeConversation — GET /conversations without bearer is 4
 }) => {
   expect((await request.get('/conversations')).status()).toBe(401);
 });
+test('Function: conversationFromMe — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: conversationIsInbound — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
 test('Function: serializeNotification — GET /notifications without bearer is 401', async ({
   request,
 }) => {
