@@ -16,6 +16,7 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,

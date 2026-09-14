@@ -151,12 +151,12 @@ Operator `PATCH /debug/accounts/:id` can still set `role` and does not
 write trust edges; `POST /debug/trust-edges` backfills stored edges without
 changing `role`.
 
-| Role      | Capabilities                                                                                             |
-| --------- | -------------------------------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                       |
+| Role      | Capabilities                                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                  |
 | Verified  | Basis, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. |
-| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                      |
-| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                             |
+| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                                 |
+| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                                        |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator, and

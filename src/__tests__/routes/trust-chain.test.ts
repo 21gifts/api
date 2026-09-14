@@ -20,6 +20,7 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
+    location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
     createdAt: 1,
     rulesAgreedAt: null,
