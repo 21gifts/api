@@ -16,19 +16,21 @@ const account: Account = {
   lightningAddress: 'ada@walletofsatoshi.com',
   lightningAddressVerified: false,
   forumLawsDismissed: false,
+  location: null,
   viewKey: 'a'.repeat(64),
   createdAt: 1,
   rulesAgreedAt: null,
 };
 
 describe('serializeAccount', () => {
-  it('emits only the nine public fields without viewKey', () => {
+  it('emits only the ten public fields without viewKey', () => {
     const json = serializeAccount(account);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
@@ -37,7 +39,7 @@ describe('serializeAccount', () => {
     });
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
-    expect(Object.keys(json)).toHaveLength(9);
+    expect(Object.keys(json)).toHaveLength(10);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
 });
@@ -53,13 +55,14 @@ describe('serializeDebugAccount', () => {
 });
 
 describe('serializeOwnerAccount', () => {
-  it('includes viewKey, setup, missing, and hasPosted false alongside the nine public fields', () => {
+  it('includes viewKey, setup, missing, and hasPosted false alongside the ten public fields', () => {
     const json = serializeOwnerAccount(account, false);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
       forumLawsDismissed: false,
@@ -126,10 +129,11 @@ describe('serializeOwnerAccountWithPosts', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly five public profile fields', () => {
+  it('emits exactly six public profile fields', () => {
     const json = serializeViewProfile(account, false);
     expect(json).toEqual({
       name: 'Ada',
+      location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
       createdAt: 1,
@@ -140,7 +144,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
-    expect(Object.keys(json)).toHaveLength(5);
+    expect(Object.keys(json)).toHaveLength(6);
   });
 
   it('passes through hasPasskey true', () => {

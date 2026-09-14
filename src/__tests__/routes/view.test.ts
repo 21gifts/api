@@ -34,7 +34,7 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the five-field public profile without Authorization', async () => {
+  it('returns the six-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
       id: 'acc',
@@ -44,6 +44,7 @@ describe('GET /view/:viewKey', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -53,6 +54,7 @@ describe('GET /view/:viewKey', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
       name: 'Ada',
+      location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
       createdAt: 1_000_000,
@@ -68,6 +70,7 @@ describe('GET /view/:viewKey', () => {
       'hasPasskey',
       'lightningAddress',
       'lightningAddressVerified',
+      'location',
       'name',
     ]);
   });
@@ -82,6 +85,7 @@ describe('GET /view/:viewKey', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -97,6 +101,7 @@ describe('GET /view/:viewKey', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       name: 'Ada',
+      location: null,
       lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: 1_000_000,
@@ -114,6 +119,7 @@ describe('GET /view/:viewKey', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -126,6 +132,7 @@ describe('GET /view/:viewKey', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 2,
       rulesAgreedAt: null,

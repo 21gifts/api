@@ -146,6 +146,10 @@ export interface PublicMessage {
    * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
    */
   replyCount?: number;
+  /**
+   * Parent note id for a reply. Omitted on top-level notes (`parentId` null).
+   */
+  parentId?: string;
 }
 
 /**
@@ -220,8 +224,10 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * When `row.name` is empty after trim, JSON `name` is
  * {@link truncatePubkeyDisplay} of `row.authorPubkey` (`'npub'` when the
  * pubkey is missing). Non-empty names are unchanged. Invalid `createdAt`
- * is not guarded here: `toISOString()` still throws. The replies route omits
- * that child; list and public GET return 503.
+ * is not guarded here: `toISOString()` still throws. `GET /messages/:id/replies`
+ * and `GET /members/:accountId/replies` omit that child (200, siblings remain);
+ * `GET /messages` (list), `GET /members/:accountId/posts`, and public
+ * `GET /messages/:id` return 503.
  *
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
@@ -232,8 +238,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
  * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
- * when requested); `createdAt` ISO-8601. Never includes photo or video bytes,
- * and never includes `contentFp`.
+ * when requested; optional `parentId` when `row.parentId !== null`);
+ * `createdAt` ISO-8601. Never includes photo or video bytes, and never
+ * includes `contentFp`. Omits the `parentId` key on top-level notes.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
@@ -262,6 +269,9 @@ export function serializeMessage(
   }
   if (includeAccountId === true && row.accountId !== null) {
     body.accountId = row.accountId;
+  }
+  if (row.parentId !== null) {
+    body.parentId = row.parentId;
   }
   return body;
 }

@@ -214,6 +214,119 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('other', null)).toBe(false);
   });
 
+  it('countByAccount and member feeds are empty on an empty store', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.countByAccount('acc')).toEqual({ postCount: 0, replyCount: 0 });
+    expect(await store.listPostsByAccount('acc', 10)).toEqual([]);
+    expect(await store.listRepliesByAccount('acc', 10)).toEqual([]);
+  });
+
+  it('countByAccount and member feeds keep only live rows for the asked account', async () => {
+    const store = new InMemoryMessageStore([
+      EARLY,
+      { ...LATE, id: 'r-acc', parentId: 'a', text: 'reply' },
+      { ...LATE, id: 'other-post', accountId: 'other', text: 'other' },
+      { ...LATE, id: 'other-reply', accountId: 'other', parentId: 'a', text: 'other-reply' },
+      {
+        ...LATE,
+        id: 'dead',
+        text: 'hidden',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...LATE, id: 'damus', accountId: null, name: 'aabbccdd…8899', text: 'damus' },
+    ]);
+    expect(await store.countByAccount('acc')).toEqual({ postCount: 1, replyCount: 1 });
+    expect((await store.listPostsByAccount('acc', 10)).map((row) => row.id)).toEqual(['a']);
+    expect((await store.listRepliesByAccount('acc', 10)).map((row) => row.id)).toEqual(['r-acc']);
+  });
+
+  it('counts a profile note as a post', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, id: 'profile', parentId: null }]);
+    expect(await store.countByAccount('acc')).toEqual({ postCount: 1, replyCount: 0 });
+    expect((await store.listPostsByAccount('acc', 10)).map((row) => row.id)).toEqual(['profile']);
+  });
+
+  it('listPostsByAccount is newest-first and honors limit', async () => {
+    const store = new InMemoryMessageStore([EARLY, LATE, TIE_LOW, TIE_HIGH]);
+    expect((await store.listPostsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'z',
+      'm',
+      'b',
+      'a',
+    ]);
+    expect((await store.listPostsByAccount('acc', 1)).map((row) => row.id)).toEqual(['z']);
+  });
+
+  it('listRepliesByAccount is newest-first and honors limit', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-early',
+      parentId: 'a',
+      text: 'early',
+      createdAt: new Date('2026-08-01T12:00:00.000Z'),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-late',
+      parentId: 'a',
+      text: 'late',
+      createdAt: new Date('2026-08-01T13:00:00.000Z'),
+    });
+    const same = new Date('2026-08-01T14:00:00.000Z');
+    await store.create({ ...LATE, id: 'rb', parentId: 'a', text: 'tie-b', createdAt: same });
+    await store.create({ ...LATE, id: 'ra', parentId: 'a', text: 'tie-a', createdAt: same });
+    expect((await store.listRepliesByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'rb',
+      'ra',
+      'r-late',
+      'r-early',
+    ]);
+    expect((await store.listRepliesByAccount('acc', 1)).map((row) => row.id)).toEqual(['rb']);
+  });
+
+  it('listPostsByAccount includes replyCount of live member children only', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({ ...LATE, id: 'r-member', parentId: 'a', text: 'member child' });
+    await store.create({
+      ...LATE,
+      id: 'r-damus',
+      parentId: 'a',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'damus child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-hidden',
+      parentId: 'a',
+      text: 'hidden member',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    const listed = await store.listPostsByAccount('acc', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.replyCount).toBe(1);
+  });
+
+  it('listPostsByAccount and listRepliesByAccount copy photo and video flags', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: '' }, JPEG);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create({ ...LATE, id: 'vid', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
+    await store.create({ ...LATE, id: 'r-photo', parentId: 'vid', text: 're' }, JPEG);
+    const posts = await store.listPostsByAccount('acc', 10);
+    expect(posts.find((row) => row.id === 'a')?.hasPhoto).toBe(true);
+    expect(posts.find((row) => row.id === 'vid')?.hasVideo).toBe(true);
+    const replies = await store.listRepliesByAccount('acc', 10);
+    expect(replies[0]?.hasPhoto).toBe(true);
+  });
+
   it('deleteById removes the row and returns false when missing', async () => {
     const store = new InMemoryMessageStore([EARLY, LATE]);
     expect(await store.deleteById('missing')).toBe(false);
@@ -1502,6 +1615,83 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 
+  it('countByAccount aggregates live posts and replies for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.countByAccount('acc')).toEqual({ postCount: 0, replyCount: 0 });
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/FILTER \(WHERE parent_id IS NULL\)/);
+    expect(sql.queries[0]?.text).toMatch(/FILTER \(WHERE parent_id IS NOT NULL\)/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ post_count: '3', reply_count: '12' }];
+    expect(await store.countByAccount('acc')).toEqual({ postCount: 3, replyCount: 12 });
+  });
+
+  it('listPostsByAccount selects live top-level notes for the account with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listPostsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/reply_count/);
+    expect(sql.queries[0]?.text).toMatch(/child\.account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 50]);
+    expect(listed[0]?.id).toBe('m1');
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'm2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'no count',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    const listedNull = await store.listPostsByAccount('acc', 10);
+    expect(listedNull[0]?.replyCount).toBe(0);
+  });
+
+  it('listRepliesByAccount selects live replies for the account newest-first', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'r1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        parent_id: 'm1',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listRepliesByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 50]);
+    expect(listed[0]?.id).toBe('r1');
+    expect(listed[0]?.parentId).toBe('m1');
+    expect(listed[0]).not.toHaveProperty('replyCount');
+  });
+
   it('maps rows with has_photo and uses list SQL without selecting photo bytes', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -1962,6 +2152,9 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     await store.listLatest(10);
     await store.listReplies('p1', 10);
+    await store.countByAccount('acc');
+    await store.listPostsByAccount('acc', 10);
+    await store.listRepliesByAccount('acc', 10);
     await store.listPublishedEventIds(10);
     await store.listPendingSigned(10);
     await store.listSignedMissingPhoto(10);

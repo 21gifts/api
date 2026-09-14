@@ -33,6 +33,11 @@ export interface Account {
   role: AccountRole;
   /** Display name, or `null` until the user sets one. */
   name: string | null;
+  /**
+   * Free-text location set by the owner, or `null` when unset.
+   * Not unique. Not a setup step. Public on member and view cards.
+   */
+  location: string | null;
   /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
   lightningAddress: string | null;
   /**

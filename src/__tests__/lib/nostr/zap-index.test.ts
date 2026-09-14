@@ -48,6 +48,7 @@ async function seedStore(args: {
         args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: viewKeyFor(args.accountId),
       createdAt: 1,
       rulesAgreedAt: null,
@@ -273,6 +274,7 @@ describe('indexOpenZapReceipts', () => {
       lightningAddress: 'zap-chunk@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
@@ -995,6 +997,12 @@ describe('indexOpenZapReceipts', () => {
       ) => base.findLiveByAccountContent(...args),
       accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
         base.accountHasLivePost(...args),
+      countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
+        base.countByAccount(...args),
+      listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
+        base.listPostsByAccount(...args),
+      listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
+        base.listRepliesByAccount(...args),
       getPhoto: (id: string) => base.getPhoto(id),
       deleteById: (id: string) => base.deleteById(id),
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1155,6 +1163,12 @@ describe('indexOpenZapReceipts', () => {
         ) => base.findLiveByAccountContent(...args),
         accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
           base.accountHasLivePost(...args),
+        countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
+          base.countByAccount(...args),
+        listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
+          base.listPostsByAccount(...args),
+        listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
+          base.listRepliesByAccount(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
@@ -1412,6 +1426,12 @@ describe('indexOpenZapReceipts', () => {
         ) => base.findLiveByAccountContent(...args),
         accountHasLivePost: (...args: Parameters<InMemoryMessageStore['accountHasLivePost']>) =>
           base.accountHasLivePost(...args),
+        countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
+          base.countByAccount(...args),
+        listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
+          base.listPostsByAccount(...args),
+        listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
+          base.listRepliesByAccount(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),

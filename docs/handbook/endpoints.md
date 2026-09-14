@@ -51,7 +51,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`) **without** `viewKey`.
+- **Purpose:** Operator listing of registered accounts (`id`, `linkingKey`, `role`, `name`, `location` (`string | null`, never omit, never `""`), lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`) **without** `viewKey`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -198,15 +198,15 @@
 
 ## Endpoint: GET /gifts
 
-- **Purpose:** Public JSON of outbound gifts for one UTC day (`?day=YYYY-MM-DD`): `giftCount`, totals, `gifts[]` (`paidAt`, `amountSats`, `amountBtc`, `amountUsd`, `recipient`), and `fx`. USD uses that UTC day's Coinbase close. Empty day is 200 with zeros (no Coinbase). No invoices.
-- **Errors:** 400 `{ "error": "Expected a UTC day (YYYY-MM-DD)" }` when `day` is missing or not a real date; 503 `{ "error": "Gift stats are unavailable" }` on store/rate failure (`gifts.day.fx_incomplete` / `gifts.day.failed`).
+- **Purpose:** Public JSON of outbound gifts for one UTC day (`?day=YYYY-MM-DD`): `giftCount`, totals (`totalSats` / `totalBtc` / `totalUsd` plus additive `totalChf` / `totalEur` / `totalPhp`), `gifts[]` (`paidAt`, `amountSats`, `amountBtc`, `amountUsd`, `amountChf` / `amountEur` / `amountPhp`, `recipient`), and `fx` (`quote` stays BTC-USD; `fx.quotes` lists USD always and CHF/EUR/PHP when that day has the cross). USD uses that UTC day's Coinbase close; CHF/EUR/PHP are USD × that UTC day's Frankfurter ECB rate. Empty day is 200 with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). A gift day that lacks a fiat cross returns that currency as JSON `null`. No invoices.
+- **Errors:** 400 `{ "error": "Expected a UTC day (YYYY-MM-DD)" }` when `day` is missing or not a real date; 503 `{ "error": "Gift stats are unavailable" }` on store failure or missing BTC-USD (`gifts.day.fx_incomplete` / `gifts.day.failed`). Missing CHF/EUR/PHP is never 503 (`gifts.day.fiat_failed` still 200).
 - **Used by:** App day page (`GET /gifts` same-origin proxy).
 - **Auth:** Public.
 
 ## Endpoint: GET /gifts/stats
 
-- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD), `byRecipient`, `byMonth`, and `fx`. USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and `fx` (no Coinbase call). Empty boots are empty **200** with zeros and `fx` (no Coinbase call). No invoices.
-- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when `ensureDays` fails, or when any selected gift day still lacks a rate after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`).
+- **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd` plus additive `totalChf` / `totalEur` / `totalPhp`, `giftCount`, `recipientCount`, date range, `spendOverTime` (sats+BTC+USD+fiat), `byRecipient`, `byMonth`, and `fx` (`quote` stays BTC-USD; `fx.quotes` lists USD always and CHF/EUR/PHP when at least one selected gift day has that cross). USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot); CHF/EUR/PHP are USD × that UTC day's Frankfurter ECB rate. A gift day that lacks a fiat cross returns that currency as JSON `null` (totals go null if any selected gift lacks that cross). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). Empty boots are empty **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). No invoices.
+- **Errors:** 503 `{ "error": "Gift stats are unavailable" }` when the gift store throws, when BTC-USD `ensureDays` fails, or when any selected gift day still lacks BTC-USD after ensure (`gifts.stats.fx_incomplete` / `gifts.stats.failed`). Missing CHF/EUR/PHP is never 503 (`gifts.stats.fiat_failed` still 200).
 - **Used by:** App statistics page (`GET /gifts/stats` same-origin proxy); optional per-recipient view via `?recipient=`.
 - **Auth:** Public.
 
@@ -261,21 +261,35 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `role`, `lightningAddress`, ISO `createdAt`, and `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), and uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /members/:accountId/posts
+
+- **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when `eventId` and a Lightning Address are set). Omits `parentId`. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live 21.gifts-author direct-reply count minus those dropped.
+- **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.posts.failed`).
+- **Used by:** App member profile post feed.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /members/:accountId/replies
+
+- **Purpose:** Bearer required. Live-only replies by `:accountId` newest-first, capped at 200 (`listRepliesByAccount`). `serializeMessage` with `payable` false, `accountId`, and optional `parentId` when set; omits `replyCount`. Top-level notes by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. A child that cannot serialize (invalid `createdAt`) is omitted; remaining siblings still 200 `{ messages }`.
+- **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.replies.failed`). Invalid `createdAt` on one child is not 503.
+- **Used by:** App member profile reply feed.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only profile card (`name`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
 - **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown.
 - **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
 - **Auth:** none.
@@ -447,6 +461,13 @@
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/location
+
+- **Purpose:** Bearer required. Body `{ location }`. Stores the trimmed free-text location on the account (at most 80 characters after trim, no C0/DEL control characters). Empty or whitespace-only input stores `null` (clear). Does not call `ensureProfileMessage`. Field is always present on owner JSON as `location` (`string | null`, never omitted, never `""`). Not a setup step, not a posting requirement, not a profile forum note, not Nostr `kind:0`.
+- **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a \"location\" string" }` when the body is not `{ location: string }`; 400 `{ error: "Location must be at most 80 characters" }` when `normalizeLocation` returns `{ ok: false }`.
+- **Used by:** App owner profile location.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/setup/skip
 

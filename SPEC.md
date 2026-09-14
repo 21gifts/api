@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-12 (forum replies notify via in-app Notifications + Web Push `/notifications`, not inbox copy).
+**Status**: living document. Last revised 2026-09-12 (forum replies notify via in-app Notifications + Web Push `/notifications`, not inbox copy; `GET /gifts` and `GET /gifts/stats` additive CHF/EUR/PHP).
 
 ---
 
@@ -21,11 +21,14 @@ KEK throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and historical USD using the UTC-calendar-day
-BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`).
+BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`),
+plus additive CHF/EUR/PHP (USD × that UTC day's Frankfurter ECB rate,
+persisted in `usd_fiat_daily`; last business day if the market is closed).
 GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
 is older than one hour, and a past day whose `fetched_at` is still on that
 same UTC calendar day (intraday print not yet the settled close). Settled
-stored days are not re-fetched. A missing rate after ensure/fetch is **503**.
+stored days are not re-fetched. A missing BTC-USD rate after ensure/fetch is
+**503**. A missing CHF/EUR/PHP cross is JSON `null`, never 503.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -74,13 +77,16 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
+| POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                            |
 | POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                |
 | POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                         |
 | DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                   |
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
-| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note                                               |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + uncapped counts                             |
+| GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
+| GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
@@ -248,6 +254,7 @@ ID).
     "linkingKey": null,
     "role": "basis",
     "name": null,
+    "location": null,
     "lightningAddress": null,
     "lightningAddressVerified": false,
     "forumLawsDismissed": false,
@@ -299,6 +306,7 @@ Missing or invalid bearer → **Response** `401`:
   "linkingKey": "<hex>",
   "role": "basis",
   "name": null,
+  "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "forumLawsDismissed": false,
@@ -317,6 +325,7 @@ Missing or invalid bearer → **Response** `401`:
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                      |
 | `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                               |
 | `name`                     | string \| null | Display name, or `null` until set                                                                                                                            |
+| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                     |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                             |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                            |
 | `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                           |
@@ -345,9 +354,29 @@ Bearer required. `:accountId` must be a UUID. After auth,
 `requireAction(caller, 'forum.read')` — missing rules → **409**
 `{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
-Success → live `id` / `name` / `role` / `lightningAddress` / ISO
+Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
-`replyCount`, or `null`). Never `viewKey` / `eventId`.
+`replyCount`, or `null`) and uncapped live `postCount` / `replyCount`
+from `countByAccount` (not the latest-200 window). Never `viewKey` /
+`eventId`.
+
+### `GET /members/:accountId/posts`
+
+Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
+(`members.posts.failed` on 503). Live-only top-level notes by the member,
+newest-first, capped at 200. Body `{ "messages": [...] }` via
+`serializeMessage` like signed-in `GET /messages` (`accountId`,
+`replyCount`, `payable` when `eventId` and a Lightning Address are set).
+Omits `parentId`. Replies by that member are not listed.
+
+### `GET /members/:accountId/replies`
+
+Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
+(`members.replies.failed` on 503). Live-only replies by the member,
+newest-first, capped at 200. Body `{ "messages": [...] }` via
+`serializeMessage` with `payable` false, `accountId`, and optional
+`parentId` when set; omits `replyCount`. Top-level notes by that member
+are not listed.
 
 ### `GET /view/:viewKey`
 
@@ -361,11 +390,12 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (five fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (six fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
   "name": null,
+  "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0,
@@ -408,6 +438,35 @@ stores `profileMessageId` (not on owner JSON). Without a Lightning
 Address the name is stored and no profile note is inserted (linking the
 address later creates it). Rename does not create a second note and does
 not change the note text.
+
+### `POST /me/location`
+
+Set, change, or clear the account free-text location. Body:
+
+```json
+{ "location": "Berlin" }
+```
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `location` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"location\" string" }
+```
+
+Location is longer than 80 characters after trim, or contains a C0
+control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
+
+```json
+{ "error": "Location must be at most 80 characters" }
+```
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`). Empty or whitespace-only input stores `null` (clears). The
+stored non-empty value is trimmed. Location is not unique, not a setup
+step, and not a posting requirement. It is public on member and view
+cards. Does not create or update a profile forum note.
 
 ### `POST /me/forum-laws-dismissed`
 
@@ -694,6 +753,7 @@ Success → **Response** `200`:
       "linkingKey": "<hex>",
       "role": "basis",
       "name": null,
+      "location": null,
       "lightningAddress": null,
       "lightningAddressVerified": false,
       "forumLawsDismissed": false,
@@ -705,7 +765,7 @@ Success → **Response** `200`:
 }
 ```
 
-The listing uses `serializeDebugAccount` (the nine public fields plus
+The listing uses `serializeDebugAccount` (the ten public fields plus
 `isPlatform`) and never includes `viewKey`. Member `GET /me` does not
 include `isPlatform`.
 
@@ -1222,10 +1282,14 @@ Missing, blank, or impossible `day` (`2026-02-31`) → **400**
 `{ "error": "Expected a UTC day (YYYY-MM-DD)" }`.
 
 When `DATABASE_URL` is unset the in-memory gift store is empty — **200** with
-zeros, `gifts: []`, and `fx` (no Coinbase). When gifts exist for that day, the
-api ensures a BTC-USD close for that UTC day and converts each gift at **that
-day's** close. An empty matching set is 200 without Coinbase. A query failure
-or a still-missing rate is **503**.
+zeros (`totalUsd` / `totalChf` / `totalEur` / `totalPhp` `"0.00"`), `gifts: []`,
+and `fx` with USD-only `quotes` (no Coinbase / Frankfurter). When gifts exist
+for that day, the api ensures a BTC-USD close for that UTC day and converts
+each gift at **that day's** close. CHF/EUR/PHP are USD × that UTC day's
+Frankfurter ECB rate (last business day if closed). An empty matching set is
+200 without Coinbase or Frankfurter. A query failure or a still-missing
+BTC-USD rate is **503**. A missing CHF/EUR/PHP cross is JSON `null` on the
+matching total and per-gift amount, never 503.
 
 **Response** `200` (empty day):
 
@@ -1236,62 +1300,84 @@ or a still-missing rate is **503**.
   "totalSats": 0,
   "totalBtc": "0.00000000",
   "totalUsd": "0.00",
+  "totalChf": "0.00",
+  "totalEur": "0.00",
+  "totalPhp": "0.00",
   "gifts": [],
   "fx": {
     "quote": "BTC-USD",
     "dayBasis": "utc",
-    "source": "coinbase-exchange-daily-close"
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
   }
 }
 ```
 
-**Response** `200` (one gift):
+**Response** `200` (one gift; 1000 sats at BTC-USD 100000 and CHF 0.80 / EUR 0.90 / PHP 50):
 
 ```json
 {
   "day": "2026-06-01",
   "giftCount": 1,
-  "totalSats": 500,
-  "totalBtc": "0.00000500",
-  "totalUsd": "0.50",
+  "totalSats": 1000,
+  "totalBtc": "0.00001000",
+  "totalUsd": "1.00",
+  "totalChf": "0.80",
+  "totalEur": "0.90",
+  "totalPhp": "50.00",
   "gifts": [
     {
-      "paidAt": "2026-06-01T08:00:00.000Z",
-      "amountSats": 500,
-      "amountBtc": "0.00000500",
-      "amountUsd": "0.50",
+      "paidAt": "2026-06-01T12:00:00.000Z",
+      "amountSats": 1000,
+      "amountBtc": "0.00001000",
+      "amountUsd": "1.00",
+      "amountChf": "0.80",
+      "amountEur": "0.90",
+      "amountPhp": "50.00",
       "recipient": "alice"
     }
   ],
   "fx": {
     "quote": "BTC-USD",
     "dayBasis": "utc",
-    "source": "coinbase-exchange-daily-close"
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [
+      { "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" },
+      { "code": "CHF", "pair": "USD-CHF", "source": "frankfurter-ecb" },
+      { "code": "EUR", "pair": "USD-EUR", "source": "frankfurter-ecb" },
+      { "code": "PHP", "pair": "USD-PHP", "source": "frankfurter-ecb" }
+    ]
   }
 }
 ```
 
-| Field       | Type                                                        | Meaning                                                      |
-| ----------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
-| `day`       | string                                                      | UTC `YYYY-MM-DD` of the query                                |
-| `giftCount` | number                                                      | Number of gifts that UTC day                                 |
-| `totalSats` | number                                                      | Sum of gift amounts (sats; fees excluded)                    |
-| `totalBtc`  | string                                                      | `totalSats` as BTC with eight decimals                       |
-| `totalUsd`  | string                                                      | Sum of per-gift USD at **this** day's close (`"0.50"`)       |
-| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`              |
-| `fx`        | `{ quote, dayBasis, source }`                               | Always present; Coinbase Exchange daily close, UTC day basis |
+| Field       | Type                                                                                         | Meaning                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `day`       | string                                                                                       | UTC `YYYY-MM-DD` of the query                                                                             |
+| `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                              |
+| `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                 |
+| `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                    |
+| `totalUsd`  | string                                                                                       | Sum of per-gift USD at **this** day's close (`"1.00"`)                                                    |
+| `totalChf`  | string or null                                                                               | USD × this day's ECB CHF; `"0.00"` when empty; `null` if this day lacks CHF                               |
+| `totalEur`  | string or null                                                                               | USD × this day's ECB EUR; `"0.00"` when empty; `null` if this day lacks EUR                               |
+| `totalPhp`  | string or null                                                                               | USD × this day's ECB PHP; `"0.00"` when empty; `null` if this day lacks PHP                               |
+| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                           |
+| `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when that day has the cross |
 
 `gifts[]` item:
 
-| Field        | Type   | Meaning                                   |
-| ------------ | ------ | ----------------------------------------- |
-| `paidAt`     | string | ISO-8601 instant (`toISOString`, UTC `Z`) |
-| `amountSats` | number | Gift amount in sats                       |
-| `amountBtc`  | string | Same amount as BTC with eight decimals    |
-| `amountUsd`  | string | USD at this UTC day's close (`"0.50"`)    |
-| `recipient`  | string | Recipient handle (`recipient_wos_user`)   |
+| Field        | Type           | Meaning                                                 |
+| ------------ | -------------- | ------------------------------------------------------- |
+| `paidAt`     | string         | ISO-8601 instant (`toISOString`, UTC `Z`)               |
+| `amountSats` | number         | Gift amount in sats                                     |
+| `amountBtc`  | string         | Same amount as BTC with eight decimals                  |
+| `amountUsd`  | string         | USD at this UTC day's close (`"1.00"`)                  |
+| `amountChf`  | string or null | CHF at this UTC day's ECB cross, or `null` when missing |
+| `amountEur`  | string or null | EUR at this UTC day's ECB cross, or `null` when missing |
+| `amountPhp`  | string or null | PHP at this UTC day's ECB cross, or `null` when missing |
+| `recipient`  | string         | Recipient handle (`recipient_wos_user`)                 |
 
-**Response** `503`: `{ "error": "Gift stats are unavailable" }`.
+**Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
 
 ### `GET /gifts/stats`
 
@@ -1299,24 +1385,31 @@ Public aggregated outbound gift statistics. No auth. The body never includes
 invoices, fees, or wallet identifiers.
 
 When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
-**200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd`
-`"0.00"`, and `fx` present (no Coinbase call). When it is set, the process
+**200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd` /
+`totalChf` / `totalEur` / `totalPhp` `"0.00"`, and `fx` with USD-only
+`quotes` (no Coinbase / Frankfurter call). When it is set, the process
 queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
 only) and ensures a BTC-USD daily close for each gift's UTC calendar day
 (from `btc_usd_daily`, fetching Coinbase only for missing days / stale
 UTC-today / after-midnight finalize of an intraday print). Each gift's sats
-are converted at **that day's** close (not spot). Gap days in
-`spendOverTime` are zero sats/BTC/USD and need no rate. Gap months in
-`byMonth` are zero sats/BTC/USD and need no rate.
-A query failure or a still-missing rate after ensure is **503**.
+are converted at **that day's** close (not spot). CHF/EUR/PHP are USD × that
+UTC day's Frankfurter ECB rate (last business day if closed; persisted in
+`usd_fiat_daily`). A gift day that lacks a cross returns that currency as
+JSON `null`; a running total goes `null` if any selected gift lacks that
+cross. Gap days in `spendOverTime` are zero sats/BTC/USD and `"0.00"` fiat
+and need no rate. Gap months in `byMonth` are zero sats/BTC/USD and
+`"0.00"` fiat and need no rate.
+A query failure or a still-missing BTC-USD rate after ensure is **503**.
+A missing CHF/EUR/PHP cross is never 503.
 
 Optional query `recipient` filters to one Wallet of Satoshi handle
 (case-insensitive). The value is trimmed first. When the trimmed value
 contains `@` after the first character, the local-part before `@` is used;
 otherwise the whole trimmed string is the handle. Missing or blank
 (after trim) `recipient` is unfiltered.
-An unknown handle is empty **200** (zeros, `fx` present) without a Coinbase
-call. Rates are ensured only for the selected gifts' UTC days.
+An unknown handle is empty **200** (zeros, USD-only `fx.quotes`) without a
+Coinbase or Frankfurter call. Rates are ensured only for the selected
+gifts' UTC days.
 
 **Response** `200`:
 
@@ -1325,6 +1418,9 @@ call. Rates are ensured only for the selected gifts' UTC days.
   "totalSats": 0,
   "totalBtc": "0.00000000",
   "totalUsd": "0.00",
+  "totalChf": "0.00",
+  "totalEur": "0.00",
+  "totalPhp": "0.00",
   "giftCount": 0,
   "recipientCount": 0,
   "firstPaidAt": null,
@@ -1335,30 +1431,37 @@ call. Rates are ensured only for the selected gifts' UTC days.
   "fx": {
     "quote": "BTC-USD",
     "dayBasis": "utc",
-    "source": "coinbase-exchange-daily-close"
+    "source": "coinbase-exchange-daily-close",
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
   }
 }
 ```
 
-| Field            | Type                                                                      | Meaning                                                         |
-| ---------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `totalSats`      | number                                                                    | Sum of gift amounts (sats; fees excluded)                       |
-| `totalBtc`       | string                                                                    | `totalSats` as BTC with eight decimals                          |
-| `totalUsd`       | string                                                                    | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)  |
-| `giftCount`      | number                                                                    | Number of outbound gifts                                        |
-| `recipientCount` | number                                                                    | Distinct recipient handles                                      |
-| `firstPaidAt`    | string or null                                                            | ISO-8601 of the earliest gift                                   |
-| `lastPaidAt`     | string or null                                                            | ISO-8601 of the latest gift                                     |
-| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd }[]` | UTC days from first through last; gaps are zero sats/BTC/USD    |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd }[]`                              | Sorted by sats descending, then name                            |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd }[]`                                  | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD |
-| `fx`             | `{ quote, dayBasis, source }`                                             | Always present; Coinbase Exchange daily close, UTC day basis    |
+| Field            | Type                                                                                                                                  | Meaning                                                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                | Sum of gift amounts (sats; fees excluded)                                                                               |
+| `totalBtc`       | string                                                                                                                                | `totalSats` as BTC with eight decimals                                                                                  |
+| `totalUsd`       | string                                                                                                                                | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)                                                          |
+| `totalChf`       | string or null                                                                                                                        | USD × each gift day's ECB CHF; `"0.00"` when empty; `null` if any gift day lacks CHF                                    |
+| `totalEur`       | string or null                                                                                                                        | USD × each gift day's ECB EUR; `"0.00"` when empty; `null` if any gift day lacks EUR                                    |
+| `totalPhp`       | string or null                                                                                                                        | USD × each gift day's ECB PHP; `"0.00"` when empty; `null` if any gift day lacks PHP                                    |
+| `giftCount`      | number                                                                                                                                | Number of outbound gifts                                                                                                |
+| `recipientCount` | number                                                                                                                                | Distinct recipient handles                                                                                              |
+| `firstPaidAt`    | string or null                                                                                                                        | ISO-8601 of the earliest gift                                                                                           |
+| `lastPaidAt`     | string or null                                                                                                                        | ISO-8601 of the latest gift                                                                                             |
+| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                          |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                           | Sorted by sats descending, then name; fiat `null` if any gift to that recipient lacks the cross                         |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                               | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                       |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                 | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when any selected gift day has that cross |
 
 **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
 ```
+
+503 is store failure or missing BTC-USD only. Missing CHF/EUR/PHP is JSON
+`null`, never 503.
 
 ### `GET /invoices/passkey`
 

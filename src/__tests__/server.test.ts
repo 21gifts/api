@@ -95,6 +95,7 @@ describe('createApp', () => {
       lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
+      location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1_000_000,
       rulesAgreedAt: null,
@@ -177,6 +178,9 @@ describe('createApp', () => {
       totalSats: 0,
       totalBtc: '0.00000000',
       totalUsd: '0.00',
+      totalChf: '0.00',
+      totalEur: '0.00',
+      totalPhp: '0.00',
       giftCount: 0,
       recipientCount: 0,
       firstPaidAt: null,
@@ -188,6 +192,7 @@ describe('createApp', () => {
         quote: 'BTC-USD',
         dayBasis: 'utc',
         source: 'coinbase-exchange-daily-close',
+        quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
       },
     });
   });

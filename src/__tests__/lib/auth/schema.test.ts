@@ -53,6 +53,9 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS profile_message_id uuid/i,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS location text/i,
+    );
     expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/account_profile_message_id_fkey/);
   });
 });

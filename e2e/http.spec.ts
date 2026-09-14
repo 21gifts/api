@@ -77,6 +77,16 @@ test('GET /members/:accountId without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /members/:accountId/posts without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/posts');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /members/:accountId/replies without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/replies');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /view/not-a-key is 404', async ({ request }) => {
   const res = await request.get('/view/not-a-key');
   expect(res.status()).toBe(404);
@@ -219,6 +229,13 @@ test('POST /me/name without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/location without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/location', {
+    data: { location: 'Berlin' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/forum-laws-dismissed');
   expect(res.status()).toBe(401);
@@ -349,6 +366,9 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
     totalSats: 0,
     totalBtc: '0.00000000',
     totalUsd: '0.00',
+    totalChf: '0.00',
+    totalEur: '0.00',
+    totalPhp: '0.00',
     giftCount: 0,
     recipientCount: 0,
     firstPaidAt: null,
@@ -356,7 +376,12 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
     spendOverTime: [],
     byRecipient: [],
     byMonth: [],
-    fx: { quote: 'BTC-USD', dayBasis: 'utc', source: 'coinbase-exchange-daily-close' },
+    fx: {
+      quote: 'BTC-USD',
+      dayBasis: 'utc',
+      source: 'coinbase-exchange-daily-close',
+      quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
+    },
   });
 });
 
@@ -368,6 +393,9 @@ test('GET /gifts/stats?recipient=alice is empty without a database', async ({ re
     totalSats: 0,
     totalBtc: '0.00000000',
     totalUsd: '0.00',
+    totalChf: '0.00',
+    totalEur: '0.00',
+    totalPhp: '0.00',
     giftCount: 0,
     recipientCount: 0,
     firstPaidAt: null,
@@ -375,7 +403,35 @@ test('GET /gifts/stats?recipient=alice is empty without a database', async ({ re
     spendOverTime: [],
     byRecipient: [],
     byMonth: [],
-    fx: { quote: 'BTC-USD', dayBasis: 'utc', source: 'coinbase-exchange-daily-close' },
+    fx: {
+      quote: 'BTC-USD',
+      dayBasis: 'utc',
+      source: 'coinbase-exchange-daily-close',
+      quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
+    },
+  });
+});
+
+test('GET /gifts?day=2026-06-01 is empty without a database', async ({ request }) => {
+  const res = await request.get('/gifts?day=2026-06-01');
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual({
+    day: '2026-06-01',
+    giftCount: 0,
+    totalSats: 0,
+    totalBtc: '0.00000000',
+    totalUsd: '0.00',
+    totalChf: '0.00',
+    totalEur: '0.00',
+    totalPhp: '0.00',
+    gifts: [],
+    fx: {
+      quote: 'BTC-USD',
+      dayBasis: 'utc',
+      source: 'coinbase-exchange-daily-close',
+      quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
+    },
   });
 });
 
