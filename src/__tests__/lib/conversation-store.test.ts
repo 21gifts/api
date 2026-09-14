@@ -453,9 +453,9 @@ describe('PostgresConversationStore', () => {
   it('hasInboundMessage is false when EXISTS is false', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ exists: false }];
-    expect(
-      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'a', false, null),
-    ).toBe(false);
+    expect(await new PostgresConversationStore(sql).hasInboundMessage('c1', 'a', false, null)).toBe(
+      false,
+    );
     expect(sql.queries[0]?.params).toEqual(['c1', 'a', false, null]);
   });
 
