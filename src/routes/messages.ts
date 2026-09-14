@@ -181,9 +181,9 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional in-app notification store. When present with `pushStore`,
-   * living-room events fan out via {@link notifyForumPost} /
-   * {@link notifyForumReply}.
+   * Optional in-app notification store. When present, living-room events
+   * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
+   * account except the actor; Web Push still uses `pushStore` subscriptions.
    */
   notificationStore?: NotificationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
@@ -352,11 +352,10 @@ async function serveForumVideo(
 
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
- * (bell subscribers except the actor) for a top-level note, or
- * {@link notifyForumReply} (bell subscribers except the actor) when
- * `parentId` is set. Missing `pushStore` is a no-op even if
- * `notificationStore` is set. Shared by JSON and multipart after body
- * parse / normalize / decode.
+ * (every account except the actor) for a top-level note, or
+ * {@link notifyForumReply} (every account except the actor) when
+ * `parentId` is set. Web Push still uses `pushStore` subscriptions.
+ * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
  * @param postLimiter - Per-account burst limiter.
@@ -427,6 +426,7 @@ async function persistForumPost(
         await notifyForumPost({
           account,
           created,
+          auth: deps.authStore,
           ...(deps.notificationStore === undefined
             ? {}
             : { notifications: deps.notificationStore }),
@@ -455,6 +455,7 @@ async function persistForumPost(
           account,
           created,
           parentId,
+          auth: deps.authStore,
           ...(deps.notificationStore === undefined
             ? {}
             : { notifications: deps.notificationStore }),

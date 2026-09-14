@@ -399,6 +399,7 @@ async function indexInboundForumReplies(
             account: { id: accountId },
             created,
             parentId: parentNote.id,
+            auth: deps.auth,
             ...(deps.notificationStore === undefined
               ? {}
               : { notifications: deps.notificationStore }),

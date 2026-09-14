@@ -607,6 +607,7 @@ async function ingestOneReceipt(
         receiptId: event.id,
         amountSats,
         nowMs: args.now(),
+        auth: args.auth,
         ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
         ...(payer === undefined
@@ -878,6 +879,7 @@ async function insertGiftReply(
       account: args.payer,
       created,
       parentId: args.parent.id,
+      auth: args.auth,
       ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
       ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     });

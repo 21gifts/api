@@ -1802,11 +1802,12 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
-`tag` `forum_reply:<replyId>`) fan out to every bell subscriber except the
-actor. Damus-only parents still fan out. A self-reply skips only the actor.
+`tag` `forum_reply:<replyId>`) fan out in-app to every account except the
+actor. Web Push still goes only to bell subscribers. Damus-only parents still
+fan out. A self-reply skips only the actor.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
-notifies. Missing `pushStore` is a no-op (no in-app rows). Notification or
+notifies. Missing `pushStore` still writes in-app rows. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video

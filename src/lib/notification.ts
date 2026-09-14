@@ -1,12 +1,14 @@
 /**
- * In-app notification domain: public JSON projection and bell fan-out.
+ * In-app notification domain: public JSON projection and living-room fan-out.
  *
- * Bell subscribers (accounts with ≥1 `push_subscription` row) get an in-app
- * row and a Web Push for every living-room event: top-level post, reply, and
- * newly indexed zap. Member HTTP never exposes recipient or actor account
- * ids. Callers catch failures so persist still succeeds.
+ * Every account except the skip id gets an in-app row when `auth` is set
+ * (Web Push is still only for `push_subscription` rows). Without `auth`,
+ * in-app recipients fall back to the subscription table. Member HTTP never
+ * exposes recipient or actor account ids. Callers catch failures so persist
+ * still succeeds.
  */
 
+import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -89,22 +91,34 @@ function zapReplyIdFromReceipt(receiptId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
+/** Drop `skip` from `ids` (`null` skip keeps everyone). */
+function exceptSkip(ids: readonly string[], skip: string | null): string[] {
+  if (skip === null) {
+    return [...ids];
+  }
+  return ids.filter((id) => id !== skip);
+}
+
 /**
- * Fan out one in-app row and one pending outbox row to every bell subscriber
- * except `skipAccountId`. Recipients come from the subscription table; missing
- * `pushStore` is a no-op. Unique duplicate `create` is fine.
+ * Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`.
+ * In-app recipients are `auth.listAccounts()` when `auth` is set, otherwise
+ * `push_subscription` account ids. Web Push outbox rows go only to
+ * `push_subscription` accounts. Missing both `auth` and `pushStore` is a
+ * no-op. Unique duplicate `create` is fine.
  *
  * @param args - Optional stores, skip id, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
- * @throws If `listAccountIdsWithSubscriptions` rejects. Per-recipient
- *   `create`/`enqueue` failures log `push.fanout.failed`, continue, then
- *   throw after the loop so callers still wrap persist.
+ * @throws If recipient listing rejects. Per-recipient `create`/`enqueue`
+ *   failures log `push.fanout.failed`, continue, then throw after the loops
+ *   so callers still wrap persist.
  */
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
   notifications?: NotificationStore;
-  /** Optional push outbox; also the bell-subscriber list. */
+  /** Optional push outbox; also the fallback in-app recipient list. */
   pushStore?: PushStore;
+  /** Optional auth; when set, in-app rows go to every account except skip. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
   /** Account id to skip (actor); `null` skips nobody. */
   skipAccountId: string | null;
   /** Row fields copied to each recipient (`id` / `recipientAccountId` filled here). */
@@ -118,40 +132,52 @@ export async function fanoutToBellSubscribers(args: {
   /** Enqueue clock. */
   nowMs: number;
 }): Promise<void> {
-  if (args.pushStore === undefined) {
-    return;
-  }
-  const accountIds = await args.pushStore.listAccountIdsWithSubscriptions();
+  const fromAuth =
+    args.auth === undefined ? [] : (await args.auth.listAccounts()).map((account) => account.id);
+  const fromPush =
+    args.pushStore === undefined ? [] : await args.pushStore.listAccountIdsWithSubscriptions();
+  const inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
+  const pushIds =
+    args.pushStore === undefined
+      ? []
+      : exceptSkip(await args.pushStore.listAccountIdsWithSubscriptions(), args.skipAccountId);
+  logEvent('push.fanout', { inApp: inAppIds.length, push: pushIds.length });
   const createdAt = new Date(args.nowMs);
   let failed = false;
-  for (const accountId of accountIds) {
-    if (args.skipAccountId !== null && accountId === args.skipAccountId) {
-      continue;
-    }
-    try {
-      if (args.notifications !== undefined) {
+  if (args.notifications !== undefined) {
+    for (const accountId of inAppIds) {
+      try {
         await args.notifications.create({
           ...args.template,
           id: crypto.randomUUID(),
           recipientAccountId: accountId,
         });
+      } catch {
+        failed = true;
+        logEvent('push.fanout.failed');
       }
-      const row: PushOutboxRow = {
-        id: crypto.randomUUID(),
-        accountId,
-        type: args.outboxType,
-        messageId: args.outboxMessageId,
-        payload: args.payload,
-        status: 'pending',
-        attempts: 0,
-        claimedUntil: null,
-        createdAt,
-        deliveredEndpoints: [],
-      };
-      await args.pushStore.enqueue(row);
-    } catch {
-      failed = true;
-      logEvent('push.fanout.failed');
+    }
+  }
+  if (args.pushStore !== undefined) {
+    for (const accountId of pushIds) {
+      try {
+        const row: PushOutboxRow = {
+          id: crypto.randomUUID(),
+          accountId,
+          type: args.outboxType,
+          messageId: args.outboxMessageId,
+          payload: args.payload,
+          status: 'pending',
+          attempts: 0,
+          claimedUntil: null,
+          createdAt,
+          deliveredEndpoints: [],
+        };
+        await args.pushStore.enqueue(row);
+      } catch {
+        failed = true;
+        logEvent('push.fanout.failed');
+      }
     }
   }
   if (failed) {
@@ -160,10 +186,11 @@ export async function fanoutToBellSubscribers(args: {
 }
 
 /**
- * Notify every bell subscriber of a new top-level forum post except the
- * actor. Persist a `forum_post` row when `notifications` is set and enqueue a
- * `/notifications` Web Push when `pushStore` is set. Missing `pushStore` is a
- * no-op (the subscription table is the recipient list). This helper may throw;
+ * Notify living-room members of a new top-level forum post except the actor.
+ * Persist a `forum_post` row for every account (when `auth` is set) or every
+ * bell subscriber (otherwise) when `notifications` is set, and enqueue a
+ * `/notifications` Web Push when `pushStore` is set. Missing `pushStore`
+ * still writes in-app rows when `auth` is set. This helper may throw;
  * callers wrap it.
  *
  * @param args - Optional stores, actor, persisted post.
@@ -175,6 +202,8 @@ export async function notifyForumPost(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
+  /** Optional auth; when set, in-app rows go to every account except the actor. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
   /** Post author (never notified). */
   account: { id: string };
   /** Persisted top-level post row. */
@@ -183,6 +212,7 @@ export async function notifyForumPost(args: {
   await fanoutToBellSubscribers({
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId: args.account.id,
     template: {
       actorAccountId: args.account.id,
@@ -202,14 +232,14 @@ export async function notifyForumPost(args: {
 }
 
 /**
- * Notify every bell subscriber of a forum reply except the actor. Persist a
+ * Notify living-room members of a forum reply except the actor. Persist a
  * `forum_reply` row when `notifications` is set and enqueue a `/notifications`
  * Web Push when `pushStore` is set. No-op when the parent is missing. Damus-only
  * parents and self-replies still fan out (the actor is skipped). Photo-only
  * empty text still notifies. Unique duplicate create is fine. This helper may
  * throw; callers wrap it.
  *
- * @param args - Message store, optional notification/push stores, actor, reply, parent id.
+ * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
  * @throws If parent lookup, notification `create`, or outbox `enqueue` rejects.
  */
@@ -220,6 +250,8 @@ export async function notifyForumReply(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
+  /** Optional auth; when set, in-app rows go to every account except the actor. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
   /** Reply author (never notified). */
   account: { id: string };
   /** Persisted reply row. */
@@ -234,6 +266,7 @@ export async function notifyForumReply(args: {
   await fanoutToBellSubscribers({
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId: args.account.id,
     template: {
       actorAccountId: args.account.id,
@@ -253,11 +286,11 @@ export async function notifyForumReply(args: {
 }
 
 /**
- * Notify every bell subscriber of a newly indexed zap/payment. Persist a `zap`
+ * Notify living-room members of a newly indexed zap/payment. Persist a `zap`
  * row when `notifications` is set and enqueue a `/notifications` Web Push when
  * `pushStore` is set. No-op when the note has no `accountId`. Does not skip the
- * note author unless they are also `payerAccountId`. Missing `pushStore` is a
- * no-op. This helper may throw; callers wrap it.
+ * note author unless they are also `payerAccountId`. Missing `pushStore` still
+ * writes in-app rows when `auth` is set. This helper may throw; callers wrap it.
  *
  * @param args - Optional stores, zapped note, receipt id, amount, clock, optional payer.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -268,6 +301,8 @@ export async function notifyZap(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
+  /** Optional auth; when set, in-app rows go to every account except the payer skip. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
   /** Zapped forum note; requires `note.accountId`. */
   note: MessageRow;
   /** Kind:9735 event id (64 hex). */
@@ -291,6 +326,7 @@ export async function notifyZap(args: {
   await fanoutToBellSubscribers({
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId,
     template: {
       actorAccountId,
