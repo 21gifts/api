@@ -85,7 +85,7 @@ export interface NostrWorkerDeps {
   verifyKind1?: (event: NostrEventFrame) => boolean;
   /** Optional private-message store (skip DMs when omitted). */
   conversations?: ConversationStore;
-  /** Optional in-app notification store (inbound member replies and zap gift-replies). */
+  /** Optional in-app store: inbound replies, zap gift-replies, notifyZap, profile-note notifyForumPost. */
   notificationStore?: NotificationStore;
 }
 
