@@ -69,7 +69,7 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the six-field public profile without Authorization', async () => {
+  it('returns the seven-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
