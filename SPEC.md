@@ -1731,7 +1731,7 @@ with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
 Text-only posts are unchanged (still **429** on burst). The worker signs a
-top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`;
+top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`, and when the author's `location` is non-null also `#<locationHashtagName>` plus a `t` tag (not on the profile note);
 forum `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
 
 Missing/invalid/expired bearer → **Response** `401`:

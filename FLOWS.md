@@ -171,7 +171,7 @@ snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
-notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign; forum `text` unchanged; pending notes EVENT before any hashtag/photo re-sign so the sign lease cannot starve fan-out);
+notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign, plus `#<locationHashtagName>` and a `t` tag when account `location` is non-null (not on the profile note, not kind:0); forum `text` unchanged; pending notes EVENT before any hashtag/photo re-sign so the sign lease cannot starve fan-out);
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
 validated kind:9735 is indexed, the same payment appears as a forum reply from

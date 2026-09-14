@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LOCATION_MAX_LENGTH, normalizeLocation } from '@/lib/location';
+import { LOCATION_MAX_LENGTH, locationHashtagName, normalizeLocation } from '@/lib/location';
 
 describe('normalizeLocation', () => {
   it('trims surrounding whitespace', () => {
@@ -37,5 +37,21 @@ describe('normalizeLocation', () => {
 
   it('rejects a DEL character', () => {
     expect(normalizeLocation(`Berlin${String.fromCharCode(127)}`)).toEqual({ ok: false });
+  });
+});
+
+describe('locationHashtagName', () => {
+  it('returns null for null, empty, hashes-only, and whitespace-only input', () => {
+    expect(locationHashtagName(null)).toBeNull();
+    expect(locationHashtagName('')).toBeNull();
+    expect(locationHashtagName('###')).toBeNull();
+    expect(locationHashtagName('  ')).toBeNull();
+  });
+
+  it('preserves case and Unicode letters and strips spaces and leading hashes', () => {
+    expect(locationHashtagName('Berlin')).toBe('Berlin');
+    expect(locationHashtagName('New York')).toBe('NewYork');
+    expect(locationHashtagName('Zürich')).toBe('Zürich');
+    expect(locationHashtagName('#Berlin')).toBe('Berlin');
   });
 });

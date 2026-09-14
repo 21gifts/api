@@ -44,12 +44,40 @@ function kind1MissingVideoUrl(event: Record<string, unknown> | null, messageId: 
   return typeof content !== 'string' || !content.includes(`/messages/${messageId}/video.`);
 }
 
-function kind1MissingHashtags(event: Record<string, unknown> | null): boolean {
+function kind1MissingHashtags(
+  event: Record<string, unknown> | null,
+  extraHashtags: readonly string[] = [],
+): boolean {
   if (event === null) {
     return true;
   }
   const content = event['content'];
-  return typeof content !== 'string' || kind1ContentWithHashtags(content) !== content;
+  return (
+    typeof content !== 'string' || kind1ContentWithHashtags(content, extraHashtags) !== content
+  );
+}
+
+const POSIX_REGEX_META = /[\\^$.|?*+()[\]{}]/g;
+
+function posixHashtagTokenPattern(name: string): string {
+  return `#${name.toLowerCase().replace(POSIX_REGEX_META, '\\$&')}([^a-z0-9_]|$)`;
+}
+
+function extraHashtagBindings(
+  extraHashtagsByAccountId: ReadonlyMap<string, readonly string[]> | undefined,
+): { accountIds: string[]; patterns: string[] } | null {
+  if (extraHashtagsByAccountId === undefined || extraHashtagsByAccountId.size === 0) {
+    return null;
+  }
+  const accountIds: string[] = [];
+  const patterns: string[] = [];
+  for (const [accountId, names] of extraHashtagsByAccountId) {
+    for (const name of names) {
+      accountIds.push(accountId);
+      patterns.push(posixHashtagTokenPattern(name));
+    }
+  }
+  return { accountIds, patterns };
 }
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -321,11 +349,18 @@ export interface MessageStore {
    * renews the sign lease and they never EVENT. Oldest `createdAt` then `id`
    * first. Rows at or above `MAX_PUBLISH_ATTEMPTS` (5) are excluded so a row
    * that can never satisfy a repair scan is not reset forever. Includes
-   * `nostrEvent === null` and non-string content.
+   * `nostrEvent === null` and non-string content. One-arg calls still select
+   * bitcoin/21gifts only. When `extraHashtagsByAccountId` maps an account id
+   * to extra hashtag names (without `#`), those accounts' rows are also
+   * listed when content lacks that token.
    *
    * @param limit - Max rows.
+   * @param extraHashtagsByAccountId - Optional extra Damus tokens per account.
    */
-  listSignedMissingHashtags(limit: number): Promise<MessageRow[]>;
+  listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+  ): Promise<MessageRow[]>;
 
   /**
    * Clear the signed event and park the row `pending` so it is signed again.
@@ -1229,7 +1264,10 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(rows);
   }
 
-  listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+  listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+  ): Promise<MessageRow[]> {
     const rows = this.#rows
       .filter(
         (row) =>
@@ -1240,7 +1278,10 @@ export class InMemoryMessageStore implements MessageStore {
           row.nostrPublishState === 'published' &&
           row.nostrAttempts < MAX_PUBLISH_ATTEMPTS &&
           !this.#rows.some((child) => child.parentId === row.id) &&
-          kind1MissingHashtags(row.nostrEvent),
+          kind1MissingHashtags(
+            row.nostrEvent,
+            extraHashtagsByAccountId?.get(row.accountId ?? '') ?? [],
+          ),
       )
       .sort((left, right) => {
         const byTime = left.createdAt.getTime() - right.createdAt.getTime();
@@ -2125,7 +2166,23 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => mapMessageRow(row));
   }
 
-  async listSignedMissingHashtags(limit: number): Promise<MessageRow[]> {
+  async listSignedMissingHashtags(
+    limit: number,
+    extraHashtagsByAccountId?: ReadonlyMap<string, readonly string[]>,
+  ): Promise<MessageRow[]> {
+    const extras = extraHashtagBindings(extraHashtagsByAccountId);
+    const extraClause =
+      extras === null
+        ? ''
+        : `
+           OR EXISTS (
+             SELECT 1
+             FROM unnest($2::text[], $3::text[]) AS extra(account_id, pattern)
+             WHERE message.account_id::text = extra.account_id
+               AND NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ extra.pattern)
+           )`;
+    const params: readonly unknown[] =
+      extras === null ? [limit] : [limit, extras.accountIds, extras.patterns];
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
@@ -2137,11 +2194,11 @@ export class PostgresMessageStore implements MessageStore {
            nostr_event IS NULL
            OR jsonb_typeof(nostr_event->'content') IS DISTINCT FROM 'string'
            OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#21gifts([^a-z0-9_]|$)')
-           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')
+           OR NOT (LOWER(COALESCE(nostr_event->>'content', '')) ~ '#bitcoin([^a-z0-9_]|$)')${extraClause}
          )
        ORDER BY created_at ASC, id ASC
        LIMIT $1`,
-      [limit],
+      params,
     );
     return rows.map((row) => mapMessageRow(row));
   }
