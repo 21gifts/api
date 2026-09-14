@@ -373,7 +373,7 @@
 
 ## Endpoint: GET /conversations
 
-- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; empty threads and Damus inbound (`senderAccountId` null) are false. `DEBUG_TOKEN` cannot read this inbox.
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists only threads with at least one inbound message for the viewer (empty and outbound-only omitted). Inbound = not `conversationFromMe`; Damus null sender is inbound. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe }] }` — no account ids, event ids, or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `DEBUG_TOKEN` cannot read this inbox.
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
 - **Auth:** `Authorization: Bearer` session.

@@ -123,6 +123,22 @@ export function conversationFromMe(args: {
 }
 
 /**
+ * Whether a stored sender is inbound for the viewer (not the viewer, and
+ * not staff-as-platform). Null Damus sender is inbound.
+ *
+ * @param args - Sender account, viewer, staff flag, and platform id.
+ * @returns True when the sender is inbound for the viewer.
+ */
+export function conversationIsInbound(args: {
+  senderAccountId: string | null;
+  viewerId: string;
+  staff: boolean;
+  platformId: string | null;
+}): boolean {
+  return !conversationFromMe(args);
+}
+
+/**
  * Project a thread to its public list JSON shape.
  *
  * @param thread - Persisted thread with resolved `name` / `lastText`.

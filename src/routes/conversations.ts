@@ -158,6 +158,16 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         const conversations: PublicConversation[] = [];
         for (const thread of threads) {
+          if (
+            !(await deps.store.hasInboundMessage(
+              thread.id,
+              account.id,
+              isStaffRole(account.role),
+              platform?.id ?? null,
+            ))
+          ) {
+            continue;
+          }
           conversations.push(
             await publicThread(thread, account, deps.authStore, platform?.id ?? null),
           );

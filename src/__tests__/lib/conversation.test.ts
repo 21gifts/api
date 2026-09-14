@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   conversationFromMe,
+  conversationIsInbound,
   serializeConversation,
   serializeConversationMessage,
   unsignedConversationDefaults,
@@ -100,6 +101,52 @@ describe('conversationFromMe', () => {
         platformId: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe('conversationIsInbound', () => {
+  it('is true when the sender is unknown', () => {
+    expect(
+      conversationIsInbound({
+        senderAccountId: null,
+        viewerId: 'acc',
+        staff: true,
+        platformId: 'plat',
+      }),
+    ).toBe(true);
+  });
+
+  it('is false when the sender is the viewer', () => {
+    expect(
+      conversationIsInbound({
+        senderAccountId: 'acc',
+        viewerId: 'acc',
+        staff: false,
+        platformId: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('is false when staff is acting as the platform sender', () => {
+    expect(
+      conversationIsInbound({
+        senderAccountId: 'plat',
+        viewerId: 'staff',
+        staff: true,
+        platformId: 'plat',
+      }),
+    ).toBe(false);
+  });
+
+  it('is true when a member views the platform sender', () => {
+    expect(
+      conversationIsInbound({
+        senderAccountId: 'plat',
+        viewerId: 'acc',
+        staff: false,
+        platformId: 'plat',
+      }),
+    ).toBe(true);
   });
 });
 

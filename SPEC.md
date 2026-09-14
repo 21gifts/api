@@ -2155,9 +2155,13 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-`role` is `founder` or `moderator`) every platform thread. Newest
-`lastMessageAt` first. Cap 200. Member JSON never includes `accountId`,
-event ids, or npubs; Damus-only counterpart `name` may be a truncated npub.
+`role` is `founder` or `moderator`) every platform thread. Empty threads
+and outbound-only threads (every stored sender is `conversationFromMe` for
+the viewer, including staff-as-platform) are omitted. Damus inbound (null
+sender) is inbound and listed. `GET /conversations/:id` and `POST` still
+return/open outbound-only and empty threads. Newest `lastMessageAt` first.
+Cap 200. Member JSON never includes `accountId`, event ids, or npubs;
+Damus-only counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

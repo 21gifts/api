@@ -326,6 +326,56 @@ describe('InMemoryConversationStore', () => {
     expect(await store.claimUnsigned(10, 1, 10)).toEqual([]);
     expect((await store.getById(opened.id))?.lastSenderAccountId).toBeNull();
   });
+
+  it('hasInboundMessage is false for an empty thread', async () => {
+    const store = new InMemoryConversationStore();
+    const empty = await store.openMemberMember('a', 'b', NOW);
+    const other = await store.openMemberMember('a', 'c', NOW);
+    await store.appendMessage(message({ conversationId: other.id, senderAccountId: 'c' }));
+    expect(await store.hasInboundMessage(empty.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasInboundMessage is false when every message is from the viewer', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'a' }));
+    expect(await store.hasInboundMessage(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasInboundMessage is true when a counterpart sent a message', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    expect(await store.hasInboundMessage(opened.id, 'a', false, null)).toBe(true);
+  });
+
+  it('hasInboundMessage is true for a Damus null sender', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: null }));
+    expect(await store.hasInboundMessage(opened.id, 'acc', false, null)).toBe(true);
+  });
+
+  it('hasInboundMessage is false when staff sees only a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(false);
+  });
+
+  it('hasInboundMessage is true when staff sees a member send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'mem' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasInboundMessage is true when a member views a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'mem', false, 'plat')).toBe(true);
+  });
 });
 
 describe('PostgresConversationStore', () => {
@@ -384,6 +434,45 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['acc', true, 'plat', 50]);
     expect(sql.queries[0]?.text).toMatch(/member_platform/);
     expect(sql.queries[0]?.text).toMatch(/AS last_sender_account_id/);
+  });
+
+  it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: true }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.hasInboundMessage('c1', 'acc', true, 'plat')).toBe(true);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
+    expect(sql.queries[0]?.text).toContain('EXISTS');
+    expect(sql.queries[0]?.text).toContain('sender_account_id IS NULL');
+    expect(sql.queries[0]?.text).toContain('IS DISTINCT FROM');
+    expect(sql.queries[0]?.text).toContain(
+      'NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)',
+    );
+  });
+
+  it('hasInboundMessage is false when EXISTS is false', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: false }];
+    expect(
+      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'a', false, null),
+    ).toBe(false);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'a', false, null]);
+  });
+
+  it('hasInboundMessage is false when the EXISTS row is missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'staff', true, 'plat'),
+    ).toBe(false);
+  });
+
+  it('hasInboundMessage is false when exists is not boolean true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(
+      await new PostgresConversationStore(sql).hasInboundMessage('c1', 'mem', false, 'plat'),
+    ).toBe(false);
   });
 
   it('openMemberMember returns an existing row without inserting', async () => {

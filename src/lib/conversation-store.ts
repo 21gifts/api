@@ -8,6 +8,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  conversationIsInbound,
   type ConversationKind,
   type ConversationMessageRow,
   type ConversationThread,
@@ -38,6 +39,18 @@ export interface ConversationStore {
     platformId: string | null,
     limit: number,
   ): Promise<ConversationThread[]>;
+
+  /**
+   * True when the thread has at least one inbound message for the viewer
+   * (`conversationIsInbound`). Used by GET /conversations to omit empty
+   * and outbound-only threads.
+   */
+  hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean>;
 
   /**
    * Open or return the member↔member thread (`account_a`/`account_b`
@@ -262,6 +275,26 @@ export class InMemoryConversationStore implements ConversationStore {
       .slice(0, limit)
       .map((thread) => this.#hydrate(thread));
     return Promise.resolve(listed);
+  }
+
+  hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    return Promise.resolve(
+      this.#messages.some(
+        (row) =>
+          row.conversationId === conversationId &&
+          conversationIsInbound({
+            senderAccountId: row.senderAccountId,
+            viewerId,
+            staff,
+            platformId,
+          }),
+      ),
+    );
   }
 
   openMemberMember(accountA: string, accountB: string, now: Date): Promise<ConversationThread> {
@@ -561,6 +594,30 @@ export class PostgresConversationStore implements ConversationStore {
       [accountId, staff, platformId, limit],
     );
     return rows.map((row) => mapThread(row));
+  }
+
+  async hasInboundMessage(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM conversation_message
+         WHERE conversation_id = $1
+           AND (
+             sender_account_id IS NULL
+             OR (
+               sender_account_id IS DISTINCT FROM $2
+               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
+             )
+           )
+       ) AS exists`,
+      [conversationId, viewerId, staff, platformId],
+    );
+    return rows[0]?.exists === true;
   }
 
   async openMemberMember(
