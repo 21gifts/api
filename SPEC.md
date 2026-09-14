@@ -487,15 +487,18 @@ Body is not JSON with an `accountId` string → **400**
 `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
 `accountId` is not a UUID or the subject is missing → **404**
 `{ "error": "Not found" }`.
-Subject is the caller, subject role is not `basis`, or a verify edge
-already exists → **409** `{ "error": "Conflict" }`.
+Subject is the caller, a verify edge belongs to someone else, or the
+subject is ineligible (`role` is not `basis`, except the caller-owned
+retry below) → **409** `{ "error": "Conflict" }`.
 Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
 logged as `trust.write.failed`.
 
-Idempotent **200** when the subject is already `verified` and the existing
-verify edge's actor is the caller (no second insert).
+Idempotent **200** when the existing verify edge's actor is the caller and
+the subject is already `verified` (no second insert). If that caller-owned
+edge exists and the subject is still `basis`, completes the role write and
+returns **200**.
 
-Otherwise update role, insert the edge, log `trust.verified`
+Otherwise insert the edge then update role, log `trust.verified`
 `{ subjectId, actorId }`.
 
 **Response** `200`:
@@ -518,18 +521,23 @@ Logs `trust.moderator_proposed`. Same 401/403/400/404/409/503 shapes as
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
 `moderator_propose` must exist; the caller id must not equal the proposer's
 actor id (independent second staff member). Subject must still be
-`verified`. Sets role to `moderator`, inserts `moderator_confirm`, logs
-`trust.moderator_confirmed`. Same 401/403/400/404/409/503 JSON shapes.
-**200** `{ id, name, role }` with `role: "moderator"`.
+`verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs
+`trust.moderator_confirmed`. If the caller already stored `moderator_confirm`
+and the subject is still `verified`, completes the role write and returns
+**200**; already-moderator with that caller-owned edge is idempotent **200**.
+Same 401/403/400/404/409/503 JSON shapes (409 when a confirm edge belongs
+to someone else). **200** `{ id, name, role }` with `role: "moderator"`.
 
 ### `POST /trust/appoint-moderator`
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
 (moderators → **403**). Subject must not be self, not `founder`, and not
-already `moderator`; subject may be `basis` or `verified`. Sets role to
-`moderator`, inserts `moderator_appoint`, logs `trust.moderator_appointed`.
-Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403 when the
-caller is not a founder). **200** `{ id, name, role }` with
+already `moderator`; subject may be `basis` or `verified`. Inserts
+`moderator_appoint` then sets role to `moderator`, logs
+`trust.moderator_appointed`. If the caller already stored `moderator_appoint`
+and the subject is not yet `moderator`, completes the role write and returns
+**200**. Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
+when the caller is not a founder). **200** `{ id, name, role }` with
 `role: "moderator"`.
 
 ### `GET /view/:viewKey`
