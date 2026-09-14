@@ -20,7 +20,7 @@ export interface ViewRouteDeps {
   store: AuthStore;
   /**
    * Forum persistence (default: empty {@link InMemoryMessageStore}).
-   * Used by `GET /:viewKey/activity`.
+   * Used by About me and `GET /:viewKey/activity`.
    */
   messageStore?: MessageStore;
   /**
@@ -102,7 +102,7 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
         let aboutMe: string | null = null;
         const profileId = account.profileMessageId;
         if (typeof profileId === 'string' && profileId.trim() !== '') {
-          const row = await messages.getById(profileId);
+          const row = await messageStore.getById(profileId);
           aboutMe =
             row !== undefined && row.deletedAt === null
               ? aboutMeFromNote(account.name, row.text, row.name)

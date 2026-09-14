@@ -12,7 +12,7 @@ import type { PushStore } from '@/lib/push-store';
  *
  * No-ops (returns the input account, no `messages.create`) when the name or
  * Lightning Address is null/blank after trim. When both are set, the first
- * insert creates one kind:1-pipeline message and stores `profileMessageId`.
+ * insert creates one kind:1-pipeline message and claims `profileMessageId`.
  * A `profileMessageId` whose row is missing or soft-hidden (`deletedAt` set)
  * is treated as missing. Rename does not insert a second note and does not
  * change the note text when the existing note is live. A successful insert
