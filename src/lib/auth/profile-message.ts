@@ -16,12 +16,13 @@ import type { PushStore } from '@/lib/push-store';
  * A `profileMessageId` whose row is missing or soft-hidden (`deletedAt` set)
  * is treated as missing. Rename does not insert a second note and does not
  * change the note text when the existing note is live. A successful insert
- * updates the account here, then re-reads the live row so a later writer’s
- * live `profileMessageId` wins and this insert is deleted. A hidden winner is
- * missing: the created live note is kept and `profileMessageId` is persisted
- * to it. A failed insert returns the input account (name may still be
- * persisted by the caller; worker backfill creates the missing note once LN
- * is linked).
+ * claims `profileMessageId` here (`claimProfileMessageId`), then re-reads
+ * the live row so a later writer's live `profileMessageId` wins and this
+ * insert is deleted. A lost claim deletes the insert and adopts a live
+ * winner when one exists. A hidden winner is missing: the created live note
+ * is kept and `profileMessageId` is claimed onto it. A failed insert returns
+ * the input account (name may still be persisted by the caller; worker
+ * backfill creates the missing note once LN is linked).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
  *   push and notification stores.
@@ -86,12 +87,27 @@ export async function ensureProfileMessage(args: {
     }
   }
 
-  const updated: Account = {
-    ...live,
-    profileMessageId: created.id,
-  };
+  const expectedId =
+    typeof live.profileMessageId === 'string' && live.profileMessageId.trim() !== ''
+      ? live.profileMessageId
+      : null;
   try {
-    await args.auth.updateAccount(updated);
+    const claimed = await args.auth.claimProfileMessageId(live.id, expectedId, created.id);
+    if (!claimed) {
+      await args.messages.deleteById(created.id);
+      const after = await args.auth.getAccount(args.account.id);
+      if (after === undefined) {
+        return live;
+      }
+      const afterId = after.profileMessageId;
+      if (typeof afterId === 'string' && afterId.trim() !== '') {
+        const winner = await args.messages.getById(afterId);
+        if (winner !== undefined && winner.deletedAt === null) {
+          return after;
+        }
+      }
+      return after;
+    }
   } catch {
     await args.messages.deleteById(created.id);
     return live;
@@ -114,5 +130,5 @@ export async function ensureProfileMessage(args: {
   } catch {
     logEvent('push.enqueue.failed');
   }
-  return updated;
+  return { ...live, profileMessageId: created.id };
 }

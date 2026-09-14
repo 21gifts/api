@@ -273,7 +273,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               account.lightningAddress.trim() !== '';
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
             profileMessage = serializeMessage(row, payable, account.role, children.length, true);
-            aboutMe = aboutMeFromNote(account.name, row.text);
+            aboutMe = aboutMeFromNote(account.name, row.text, row.name);
           }
         }
         const counts = await deps.messageStore.countByAccount(account.id);

@@ -60,8 +60,8 @@ export interface OwnerAccountResponse extends AccountResponse {
   hasPosted: boolean;
   /**
    * Profile-note text when it is a real bio, or `null` when empty, when
-   * the trimmed text equals the trimmed display name (case-insensitive),
-   * or when the profile note is missing or soft-hidden (`deletedAt` set).
+   * the trimmed text equals the display name or stored note name, or when
+   * the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
 }
@@ -85,8 +85,8 @@ export interface ViewProfileResponse {
   hasPasskey: boolean;
   /**
    * Profile-note text when it is a real bio, or `null` when empty, when
-   * the trimmed text equals the trimmed display name (case-insensitive),
-   * or when the profile note is missing or soft-hidden (`deletedAt` set).
+   * the trimmed text equals the display name or stored note name, or when
+   * the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
 }
@@ -181,7 +181,7 @@ export function serializeOwnerAccount(
  * @param messages - Message store (live-post lookup and profile-note read).
  * @returns Owner JSON including `hasPosted` and `aboutMe`. `aboutMe` is
  *   `null` when the profile note is missing or `deletedAt` is set, else
- *   `aboutMeFromNote`.
+ *   `aboutMeFromNote(account.name, row.text, row.name)`.
  */
 export async function serializeOwnerAccountWithPosts(
   account: Account,
@@ -189,12 +189,14 @@ export async function serializeOwnerAccountWithPosts(
 ): Promise<OwnerAccountResponse> {
   const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
-  let noteText: string | null = null;
+  let aboutMe: string | null = null;
   if (typeof profileId === 'string' && profileId.trim() !== '') {
     const row = await messages.getById(profileId);
-    noteText = row !== undefined && row.deletedAt === null ? row.text : null;
+    if (row !== undefined && row.deletedAt === null) {
+      aboutMe = aboutMeFromNote(account.name, row.text, row.name);
+    }
   }
-  return serializeOwnerAccount(account, hasPosted, aboutMeFromNote(account.name, noteText));
+  return serializeOwnerAccount(account, hasPosted, aboutMe);
 }
 
 /**

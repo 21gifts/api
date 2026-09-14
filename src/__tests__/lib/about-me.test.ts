@@ -24,4 +24,11 @@ describe('aboutMeFromNote', () => {
     expect(aboutMeFromNote('   ', 'Hello')).toBe('Hello');
     expect(aboutMeFromNote(null, '   ')).toBeNull();
   });
+
+  it('treats trimmed text equal to the stored note name as unfilled after a rename', () => {
+    expect(aboutMeFromNote('Grace', 'Ada', 'Ada')).toBeNull();
+    expect(aboutMeFromNote('Grace', 'I build on Bitcoin', 'Ada')).toBe('I build on Bitcoin');
+    expect(aboutMeFromNote('Ada', 'Ada')).toBeNull();
+    expect(aboutMeFromNote('Ada', 'Ada Lovelace', 'Ada')).toBe('Ada Lovelace');
+  });
 });

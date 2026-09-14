@@ -332,28 +332,60 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
           if (noteId === undefined) {
-            const updated: Account = { ...live, profileMessageId: created.id };
-            await deps.store.updateAccount(updated);
-            const confirmed = await deps.store.getAccount(owner.id);
-            if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
-              await deps.messages.deleteById(created.id);
-              if (confirmed === undefined) {
-                return c.json({ error: 'Unauthorized' }, 401);
-              }
-              const confirmedId = confirmed.profileMessageId;
-              if (typeof confirmedId === 'string' && confirmedId.trim() !== '') {
-                const confirmedRow = await deps.messages.getById(confirmedId);
-                if (confirmedRow !== undefined && confirmedRow.deletedAt === null) {
-                  owner = confirmed;
-                  noteId = confirmedId;
+            const expectedId =
+              typeof live.profileMessageId === 'string' && live.profileMessageId.trim() !== ''
+                ? live.profileMessageId
+                : null;
+            try {
+              const claimed = await deps.store.claimProfileMessageId(
+                live.id,
+                expectedId,
+                created.id,
+              );
+              if (!claimed) {
+                await deps.messages.deleteById(created.id);
+                const after = await deps.store.getAccount(owner.id);
+                if (after === undefined) {
+                  return c.json({ error: 'Unauthorized' }, 401);
+                }
+                const afterId = after.profileMessageId;
+                if (typeof afterId === 'string' && afterId.trim() !== '') {
+                  const afterRow = await deps.messages.getById(afterId);
+                  if (afterRow !== undefined && afterRow.deletedAt === null) {
+                    owner = after;
+                    noteId = afterId;
+                  }
+                }
+                if (noteId === undefined) {
+                  return c.json({ error: 'Messages are unavailable' }, 503);
                 }
               }
-              if (noteId === undefined) {
-                return c.json({ error: 'Messages are unavailable' }, 503);
+            } catch (err) {
+              await deps.messages.deleteById(created.id);
+              throw err;
+            }
+            if (noteId === undefined) {
+              const confirmed = await deps.store.getAccount(owner.id);
+              if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
+                await deps.messages.deleteById(created.id);
+                if (confirmed === undefined) {
+                  return c.json({ error: 'Unauthorized' }, 401);
+                }
+                const confirmedId = confirmed.profileMessageId;
+                if (typeof confirmedId === 'string' && confirmedId.trim() !== '') {
+                  const confirmedRow = await deps.messages.getById(confirmedId);
+                  if (confirmedRow !== undefined && confirmedRow.deletedAt === null) {
+                    owner = confirmed;
+                    noteId = confirmedId;
+                  }
+                }
+                if (noteId === undefined) {
+                  return c.json({ error: 'Messages are unavailable' }, 503);
+                }
+              } else {
+                owner = { ...live, profileMessageId: created.id };
+                noteId = created.id;
               }
-            } else {
-              owner = updated;
-              noteId = created.id;
             }
           }
         }

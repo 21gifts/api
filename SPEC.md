@@ -334,25 +334,28 @@ Missing or invalid bearer → **Response** `401`:
 }
 ```
 
-About me is the profile-note text when it is a real bio, else null (auto name-copy is not a bio).
+About me is the profile-note text when it is a real bio, else null (auto
+name-copy is not a bio, including after a display-name rename when the note
+text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`)).
 
-| Field                      | Type           | Meaning                                                                                                                                                                              |
-| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                       | string         | Opaque account id                                                                                                                                                                    |
-| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                              |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                       |
-| `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                    |
-| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                             |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                     |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                    |
-| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                   |
-| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                        |
-| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                             |
-| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                             |
-| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                         |
-| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                |
-| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only). |
-| `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio)                                                         |
+| Field                      | Type           | Meaning                                                                                                                                                                                                                                                                     |
+| -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                                                                                                                                                                                                                           |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                     |
+| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                                                                                                              |
+| `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                           |
+| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                    |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                                                                                                            |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                                                                                                           |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                                                                                                          |
+| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                               |
+| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                    |
+| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                    |
+| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                                                                                                                |
+| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                       |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only).                                                                                        |
+| `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
 
 ### `GET /me/activity`
 
@@ -412,7 +415,9 @@ Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
 `replyCount`, or `null`), derived `aboutMe` (profile-note text when it
 is a real bio, else `null` when the profile note is missing or
 soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy
-is not a bio; keep `profileMessage`), uncapped live `postCount` /
+is not a bio, including after a display-name rename when the note text
+still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`); keep `profileMessage`), uncapped live `postCount` /
 `replyCount` from `countByAccount` (not the latest-200 window), and
 `trust` (`verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`,
 each `{ id, name }` or `null`). Default `trust` is all-null when no
@@ -582,7 +587,9 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 otherwise `false`. Clients use it to show an activation banner only while the
 profile is still unclaimed. `aboutMe` is the profile-note text when it is a
 real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto
-name-copy is not a bio). Store throw on the profile-note read → **503**
+name-copy is not a bio, including after a display-name rename when the note
+text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`)). Store throw on the profile-note read → **503**
 `{ "error": "Messages are unavailable" }` (`view.get.failed`).
 
 ### `GET /view/:viewKey/activity`
@@ -686,7 +693,9 @@ Lightning Address is not required. Empty `text` clears the bio
 (`aboutMe` becomes `null`; the note row is kept with empty text). When
 no profile note exists, or the stored note is soft-hidden (`deletedAt`
 set), a new live note is created even without a Lightning Address and
-`profileMessageId` is pointed at it (not on owner JSON). The hidden row
+`profileMessageId` is claimed via `claimProfileMessageId` only while the
+pointer still matches the missing/hidden read (not on owner JSON); a
+lost claim deletes the insert and adopts a live winner. The hidden row
 stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
 so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
@@ -694,7 +703,9 @@ Store throw → **503** `{ "error": "Messages are unavailable" }`
 
 Success → **Response** `200` with the account (same shape as `GET /me`).
 About me is the profile-note text when it is a real bio, else null (auto
-name-copy is not a bio).
+name-copy is not a bio, including after a display-name rename when the
+note text still equals the stored profile-note `name` (Ada→Grace with
+text `Ada` stays `null`)).
 
 ### `POST /me/forum-laws-dismissed`
 
