@@ -19,7 +19,7 @@ jobs:
   build-and-deploy:
     name: Build and deploy to DEV
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,6 +53,10 @@ jobs:
             echo "::error::DISPATCH_TOKEN or DISPATCH_REPO unset — cannot deploy this image"
             exit 1
           fi
+          # Five-second slack so a run created just before this clock is still
+          # eligible; the wait script still matches image+tag+sha.
+          dispatched_at="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+          echo "DISPATCHED_AT=${dispatched_at}" >> "$GITHUB_ENV"
           gh api "repos/${DISPATCH_REPO}/dispatches" \
             -f event_type=image-published \
             -f "client_payload[image]=21gifts/api" \
