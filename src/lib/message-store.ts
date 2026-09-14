@@ -388,8 +388,8 @@ export interface MessageStore {
   findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined>;
 
   /**
-   * Patch payer / gift-reply id / comment on a stored zap receipt. Missing
-   * receipts are a no-op. Omitted patch fields are left unchanged.
+   * Patch payer / gift-reply id / comment on a stored zap receipt in one
+   * update. Missing receipts are a no-op. Omitted patch fields are left unchanged.
    *
    * @param receiptEventId - Kind:9735 event id.
    * @param patch - Optional payer, gift-reply id, and comment.
@@ -2287,24 +2287,27 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   async updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
+    const assignments: string[] = [];
+    const params: unknown[] = [receiptEventId];
     if (patch.payerAccountId !== undefined) {
-      await this.#sql.execute(
-        `UPDATE nostr_zap_receipt SET payer_account_id = $2 WHERE event_id = $1`,
-        [receiptEventId, patch.payerAccountId],
-      );
+      params.push(patch.payerAccountId);
+      assignments.push(`payer_account_id = $${params.length}`);
     }
     if (patch.giftReplyId !== undefined) {
-      await this.#sql.execute(
-        `UPDATE nostr_zap_receipt SET gift_reply_id = $2 WHERE event_id = $1`,
-        [receiptEventId, patch.giftReplyId],
-      );
+      params.push(patch.giftReplyId);
+      assignments.push(`gift_reply_id = $${params.length}`);
     }
     if (patch.comment !== undefined) {
-      await this.#sql.execute(`UPDATE nostr_zap_receipt SET comment = $2 WHERE event_id = $1`, [
-        receiptEventId,
-        patch.comment,
-      ]);
+      params.push(patch.comment);
+      assignments.push(`comment = $${params.length}`);
     }
+    if (assignments.length === 0) {
+      return;
+    }
+    await this.#sql.execute(
+      `UPDATE nostr_zap_receipt SET ${assignments.join(', ')} WHERE event_id = $1`,
+      params,
+    );
   }
 
   async getZapReceiptGift(receiptEventId: string): Promise<ZapReceiptGiftState | undefined> {

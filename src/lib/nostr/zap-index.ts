@@ -380,10 +380,6 @@ async function ingestOneReceipt(
     remembered === decisionKey('indexed', null) ||
     remembered === decisionKey('rejected', 'duplicate')
   ) {
-    const existing = await args.store.getZapReceiptGift(event.id);
-    if (existing === undefined || existing.giftReplyId !== null) {
-      return;
-    }
     await tryEnsureGiftReply(event, args);
     return;
   }
@@ -595,14 +591,7 @@ async function ingestOneReceipt(
       logEvent('push.enqueue.failed');
     }
   }
-  if (indexed) {
-    await tryEnsureGiftReply(event, args);
-    return;
-  }
-  const existing = await args.store.getZapReceiptGift(event.id);
-  if (existing !== undefined && existing.giftReplyId === null) {
-    await tryEnsureGiftReply(event, args);
-  }
+  await tryEnsureGiftReply(event, args);
 }
 
 /**
@@ -653,6 +642,7 @@ interface GiftReplyDeps {
 /**
  * Decode the receipt's parent and bolt11, then insert a gift-reply.
  * Never throws — lookup/create failures log `nostr.zap.gift_reply.failed`.
+ * A soft-deleted parent is treated as missing (`payerAccountId` cleared).
  *
  * @param event - Indexed kind:9735 frame.
  * @param args - Store, auth, clock, optional notify collaborators.
@@ -664,12 +654,11 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
   }
   try {
     const receipt = await args.store.getZapReceiptGift(event.id);
-    /* v8 ignore next 3 -- callers skip missing or already-linked receipts */
     if (receipt === undefined || receipt.giftReplyId !== null) {
       return;
     }
     const parent = await args.store.getById(receipt.messageId);
-    if (parent === undefined) {
+    if (parent === undefined || parent.deletedAt !== null) {
       await args.store.updateZapReceiptGift(event.id, { payerAccountId: null });
       return;
     }

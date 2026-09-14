@@ -2897,7 +2897,17 @@ describe('PostgresMessageStore', () => {
     ];
     const store = new PostgresMessageStore(sql);
     await store.updateZapReceiptGift('r1', { payerAccountId: 'payer', giftReplyId: 'g1' });
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toBe(
+      'UPDATE nostr_zap_receipt SET payer_account_id = $2, gift_reply_id = $3 WHERE event_id = $1',
+    );
+    expect(sql.executes[0]?.params).toEqual(['r1', 'payer', 'g1']);
+    await store.updateZapReceiptGift('r1', { payerAccountId: null, comment: 'thanks' });
     expect(sql.executes).toHaveLength(2);
+    expect(sql.executes[1]?.text).toBe(
+      'UPDATE nostr_zap_receipt SET payer_account_id = $2, comment = $3 WHERE event_id = $1',
+    );
+    expect(sql.executes[1]?.params).toEqual(['r1', null, 'thanks']);
     const listed = await store.listZapReceiptsAwaitingGiftReply(10);
     expect(listed).toEqual([
       {
@@ -2947,6 +2957,8 @@ describe('PostgresMessageStore', () => {
     expect(await new PostgresMessageStore(new MockSql()).getZapReceiptGift('x')).toBeUndefined();
     await store.updateZapReceiptGift('r1', { comment: 'thanks' });
     expect(sql.executes.some((e) => e.text.includes('SET comment = $2'))).toBe(true);
+    const executesBeforeEmptyPatch = sql.executes.length;
     await store.updateZapReceiptGift('r1', {});
+    expect(sql.executes).toHaveLength(executesBeforeEmptyPatch);
   });
 });
