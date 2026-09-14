@@ -499,8 +499,8 @@
 
 ## Endpoint: POST /trust/verify
 
-- **Purpose:** Bearer staff (founder or moderator). Body `{ "accountId": "<uuid>" }`. Confirms the subject in real life: `updateAccount` role=`verified`, insert `verify` edge, log `trust.verified` `{ subjectId, actorId }`, `200 { id, name, role }`. Idempotent 200 when the subject is already `verified` and the existing verify edge actor is the caller.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without session; 403 `{ error: 'Forbidden' }` when the caller is not founder/moderator; 400 `{ error: 'Expected a JSON body with an "accountId" string' }`; 404 `{ error: 'Not found' }` for a non-UUID or missing subject; 409 `{ error: 'Conflict' }` when the subject is self, role is not `basis`, or a verify edge already exists; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`trust.write.failed`).
+- **Purpose:** Bearer staff (founder or moderator). Body `{ "accountId": "<uuid>" }`. Confirms the subject in real life: insert `verify` edge then `updateAccount` role=`verified`, log `trust.verified` `{ subjectId, actorId }`, `200 { id, name, role }`. Idempotent 200 when the existing verify edge actor is the caller and the subject is already `verified`. If that caller-owned edge exists and the subject is still `basis`, completes the role write and returns 200.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without session; 403 `{ error: 'Forbidden' }` when the caller is not founder/moderator; 400 `{ error: 'Expected a JSON body with an "accountId" string' }`; 404 `{ error: 'Not found' }` for a non-UUID or missing subject; 409 `{ error: 'Conflict' }` when the subject is self, a verify edge belongs to someone else, or the subject is ineligible (`role` is not `basis` except the caller-owned retry above); 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`trust.write.failed`).
 - **Used by:** Staff verify flow in the app.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
@@ -513,14 +513,14 @@
 
 ## Endpoint: POST /trust/confirm-moderator
 
-- **Purpose:** Bearer staff. Body `{ "accountId" }`. A pending `moderator_propose` must exist and the caller id must differ from the proposer's actor id. Subject must still be `verified`. Sets role to `moderator`, inserts `moderator_confirm`, logs `trust.moderator_confirmed`, `200 { id, name, role }`.
-- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when there is no pending propose, the caller proposed, or the subject is no longer verified).
+- **Purpose:** Bearer staff. Body `{ "accountId" }`. A pending `moderator_propose` must exist and the caller id must differ from the proposer's actor id. Subject must still be `verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs `trust.moderator_confirmed`, `200 { id, name, role }`. If the caller already stored `moderator_confirm` and the subject is still `verified`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200.
+- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when there is no pending propose, the caller proposed, the subject is no longer verified, or a confirm edge belongs to someone else).
 - **Used by:** Independent second staff confirmation.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
 ## Endpoint: POST /trust/appoint-moderator
 
-- **Purpose:** Bearer founder (moderators → 403). Body `{ "accountId" }`. Subject must not be self, not founder, and not already moderator; may be `basis` or `verified`. Sets role to `moderator`, inserts `moderator_appoint`, logs `trust.moderator_appointed`, `200 { id, name, role }`.
+- **Purpose:** Bearer founder (moderators → 403). Body `{ "accountId" }`. Subject must not be self, not founder, and not already moderator; may be `basis` or `verified`. Inserts `moderator_appoint` then sets role to `moderator`, logs `trust.moderator_appointed`, `200 { id, name, role }`. If the caller already stored `moderator_appoint` and the subject is not yet `moderator`, completes the role write and returns 200.
 - **Errors:** 401 without session; 403 when the caller is not `founder`; 400/404/409/503 same JSON shapes as `POST /trust/verify`.
 - **Used by:** Founder appointment of a moderator.
 - **Auth:** `Authorization: Bearer` session. Founder only.
