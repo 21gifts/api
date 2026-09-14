@@ -229,6 +229,16 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapAccount(row);
   }
 
+  async getAccountByPubkey(pubkey: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS}
+       FROM account WHERE lower(nostr_pubkey) = lower(trim($1))`,
+      [pubkey],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
   async accountHasPasskey(accountId: string): Promise<boolean> {
     const rows = await this.#sql.query<Record<string, unknown>>(
       'SELECT 1 FROM passkey_credential WHERE account_id = $1 LIMIT 1',

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
-#               forum-note debug reads, and forum-video restore for 21.gifts
-#               (GET /debug/accounts, PATCH /debug/accounts/:id,
+#               forum-note debug reads, forum-video restore, and spend live
+#               roster for 21.gifts (GET /debug/accounts, PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
-#               PUT /debug/messages/:id/video). No raw SQL.
+#               PUT /debug/messages/:id/video,
+#               GET {DEBUG_SPEND_URL}/debug/recipients). No raw SQL.
 #
 # Credentials (never in this script, never printed):
-#   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL
+#   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
+#                                    optional DEBUG_SPEND_URL (default https://spend.21.gifts)
 #   Override path with GIFTS_DEBUG_ENV.
 #
 # Usage:
@@ -18,6 +20,7 @@
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
 #   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
+#   gifts-debug spend [--raw]        # spend live roster table (default) or JSON
 #
 # Example:
 #   gifts-debug accounts
@@ -27,6 +30,8 @@
 #   gifts-debug messages
 #   gifts-debug message <message-id>
 #   gifts-debug video-put <message-id> ./clip.mp4
+#   gifts-debug spend
+#   gifts-debug spend --raw
 #
 set -euo pipefail
 
@@ -51,10 +56,23 @@ read_env_var() {
   printf '%s' "$val"
 }
 
+read_env_var_optional() {
+  local key="$1" file="$2" val
+  val=$(awk -v k="$key" 'index($0, k"=")==1 { v=substr($0, length(k)+2) } END { print v }' "$file")
+  case "$val" in
+    \"*\") val="${val#\"}"; val="${val%\"}" ;;
+    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+  esac
+  printf '%s' "$val"
+}
+
 [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
 DEBUG_TOKEN=$(read_env_var DEBUG_TOKEN "$ENV_FILE")
 DEBUG_API_URL=$(read_env_var DEBUG_API_URL "$ENV_FILE")
 DEBUG_API_URL="${DEBUG_API_URL%/}"
+DEBUG_SPEND_URL=$(read_env_var_optional DEBUG_SPEND_URL "$ENV_FILE")
+DEBUG_SPEND_URL="${DEBUG_SPEND_URL:-https://spend.21.gifts}"
+DEBUG_SPEND_URL="${DEBUG_SPEND_URL%/}"
 
 fetch_accounts() {
   local tmp status body
@@ -218,6 +236,46 @@ cmd_video_put() {
   fi
 }
 
+fetch_recipients() {
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_SPEND_URL}/debug/recipients") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_spend() {
+  local body
+  body=$(fetch_recipients)
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+comment = data.get("comment")
+if comment is None:
+    comment = ""
+print("comment\t%s" % comment)
+rows = data.get("recipients") or []
+keys = ["address", "amountUsd", "comment"]
+print("\t".join(keys))
+for row in rows:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("%s rows" % len(rows), file=sys.stderr)
+'
+}
+
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -238,6 +296,7 @@ case "${1:-}" in
   messages) cmd_messages ;;
   message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
+  spend) cmd_spend ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

@@ -290,21 +290,18 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('lists hidden rows and replies', async () => {
-    const store = new InMemoryMessageStore();
-    await store.create(
+    const store = new InMemoryMessageStore([
       forumRow({
         deletedAt: HIDDEN_AT,
         deletedBy: 'staff',
       }),
-    );
-    await store.create(
       forumRow({
         id: REPLY_ID,
         parentId: HIDDEN_ID,
         text: 'a reply',
         createdAt: new Date('2026-08-02T00:00:00.000Z'),
       }),
-    );
+    ]);
     const app = mount(store, 'secret');
     const res = await app.request('/debug/messages', {
       headers: { authorization: 'Bearer secret' },
