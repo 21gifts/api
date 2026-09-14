@@ -880,11 +880,11 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Append a copy of `row` and optional photo and video; return a copy.
-   * A non-null `eventId` that already exists returns the stored row (same
-   * uniqueness as `message_event_id_uidx` and conversation `appendMessage`).
-   * Live unsigned media (`eventId` null) with the same account, parent, and
-   * fingerprint returns the existing row without appending or writing a
-   * second video file.
+   * An existing `id` returns the stored row (gift-reply retries). A non-null
+   * `eventId` that already exists returns the stored row (same uniqueness as
+   * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
+   * media (`eventId` null) with the same account, parent, and fingerprint
+   * returns the existing row without appending or writing a second video file.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -1777,9 +1777,10 @@ export class PostgresMessageStore implements MessageStore {
    * Insert `row` (and optional photo and video) into `message` and return it.
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
-   * `eventId` is null. On unique violation (`23505`), unlinks any video
-   * written for the new id and returns the existing live row from
-   * {@link findLiveByAccountContent}.
+   * `eventId` is null. On unique violation (`23505`), if `getById(stored.id)`
+   * matches that id, return that row (no unlink — gift-reply retry). Otherwise
+   * unlink any video written for the new id and return the existing live row
+   * from {@link findLiveByAccountContent}.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.

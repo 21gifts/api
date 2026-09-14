@@ -271,10 +271,12 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query zap relays for kind:9735 receipts on recent forum notes and index
- * validated ones.
+ * Query zap relays for kind:9735 receipts on recent forum notes, index
+ * validated ones, then insert a payer gift-reply and notify the parent
+ * author. Retries receipts that have a payer and no gift-reply id yet.
  *
- * @param args - Store, auth, querier, relay urls, timeout, clock, fetch.
+ * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
+ *   optional `pushStore` and `notificationStore`.
  * @returns Resolves when the tick's ingest pass finishes.
  */
 export async function indexOpenZapReceipts(args: {
