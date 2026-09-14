@@ -23,6 +23,7 @@ const FX = {
   quote: 'BTC-USD',
   dayBasis: 'utc',
   source: 'coinbase-exchange-daily-close',
+  quotes: [{ code: 'USD' as const, pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
 };
 const EMPTY = {
   donatedSats: 0,

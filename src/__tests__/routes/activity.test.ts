@@ -17,6 +17,7 @@ const EMPTY = {
     quote: 'BTC-USD',
     dayBasis: 'utc',
     source: 'coinbase-exchange-daily-close',
+    quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
   },
 };
 
