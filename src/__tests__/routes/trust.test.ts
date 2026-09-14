@@ -331,6 +331,29 @@ describe('POST /trust/*', () => {
       expect(await trustStore.listEdges()).toHaveLength(1);
       spy.mockRestore();
     });
+
+    it('returns 503 when updateAccount throws on a caller-owned verify retry', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'verify',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'verify',
+        createdAt: 1,
+      });
+      const spy = vi
+        .spyOn(authStore, 'updateAccount')
+        .mockRejectedValueOnce(new Error('role boom'));
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      spy.mockRestore();
+    });
   });
 
   describe('POST /trust/propose-moderator', () => {
@@ -654,6 +677,24 @@ describe('POST /trust/*', () => {
       expect(
         (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_confirm'),
       ).toHaveLength(1);
+    });
+
+    it('returns 409 when the caller owns a confirm edge but the subject is not verified', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 2,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
     });
 
     it('returns 503 when updateAccount throws on a caller-owned confirm retry', async () => {
