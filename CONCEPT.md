@@ -501,8 +501,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Read endpoints: feed, profile, replies-to-event, recent campaigns
 - LN-Address (LUD-16) resolution + cache + health check
 - Basic anti-abuse: rate-limit per account, malformed-input rejection
-- Moderation: hide/unhide content endpoints (Moderator role); role
-  assignment stays operator-side in v1
+- Moderation: hide/unhide content endpoints (Moderator role); staff POST
+  /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
+  write role + edge; PATCH /debug/accounts/:id may still set role and
+  does not write edges
 - USD → sats conversion for recurring-gift amounts via an exchange-rate
   source (fail-closed on a missing or implausible rate; paying stays in
   the spend worker)
