@@ -110,7 +110,9 @@ describe('serializeNotification', () => {
   });
 
   it('accepts type zap', () => {
-    expect(serializeNotification(notification({ type: 'zap', replyId: ZAP_REPLY_ID })).type).toBe('zap');
+    expect(serializeNotification(notification({ type: 'zap', replyId: ZAP_REPLY_ID })).type).toBe(
+      'zap',
+    );
   });
 });
 

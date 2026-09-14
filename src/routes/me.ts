@@ -207,9 +207,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         account: withName,
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-        ...(deps.notificationStore === undefined
-          ? {}
-          : { notifications: deps.notificationStore }),
+        ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
@@ -371,9 +369,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         account: stored,
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-        ...(deps.notificationStore === undefined
-          ? {}
-          : { notifications: deps.notificationStore }),
+        ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

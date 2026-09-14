@@ -10,11 +10,7 @@
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
-import {
-  buildForumPushPayload,
-  buildReplyPushPayload,
-  buildZapPushPayload,
-} from '@/lib/push';
+import { buildForumPushPayload, buildReplyPushPayload, buildZapPushPayload } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
 /** Cap for `GET /notifications`. */

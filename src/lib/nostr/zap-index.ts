@@ -594,9 +594,7 @@ async function ingestOneReceipt(
         receiptId: event.id,
         amountSats,
         nowMs: args.now(),
-        ...(args.notificationStore === undefined
-          ? {}
-          : { notifications: args.notificationStore }),
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
       });
     } catch {

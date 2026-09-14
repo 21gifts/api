@@ -603,9 +603,7 @@ async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
       account,
       now: deps.now,
       ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-      ...(deps.notificationStore === undefined
-        ? {}
-        : { notifications: deps.notificationStore }),
+      ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
     });
   }
 }
