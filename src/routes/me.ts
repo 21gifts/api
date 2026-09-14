@@ -35,7 +35,7 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (profile notes when name + Lightning Address are set). */
+  /** Forum persistence (About me without LN, activity zaps/invoices, profile notes). */
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
