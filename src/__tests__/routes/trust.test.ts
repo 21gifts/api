@@ -332,6 +332,24 @@ describe('POST /trust/*', () => {
       spy.mockRestore();
     });
 
+    it('returns 409 when the caller owns a verify edge but the subject is not basis', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'verify',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'verify',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+    });
+
     it('returns 503 when updateAccount throws on a caller-owned verify retry', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
