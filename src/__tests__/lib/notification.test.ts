@@ -129,7 +129,7 @@ describe('fanoutToBellSubscribers', () => {
     readAt: null,
   };
 
-  it('is a no-op when pushStore is omitted (no in-app rows)', async () => {
+  it('is a no-op when auth and pushStore are omitted (no in-app rows)', async () => {
     const notifications = new InMemoryNotificationStore();
     await fanoutToBellSubscribers({
       notifications,
@@ -493,7 +493,7 @@ describe('notifyForumReply', () => {
     });
   });
 
-  it('creates no in-app row when pushStore is omitted', async () => {
+  it('creates no in-app row when auth and pushStore are omitted', async () => {
     const messages = new InMemoryMessageStore();
     await seedParent(messages);
     const created = await messages.create(
@@ -600,7 +600,7 @@ describe('notifyForumPost', () => {
     expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
-  it('is a no-op when pushStore is omitted', async () => {
+  it('is a no-op when auth and pushStore are omitted', async () => {
     const created = message({ id: 'post-1', accountId: 'actor' });
     const notifications = new InMemoryNotificationStore();
     await notifyForumPost({
@@ -720,7 +720,7 @@ describe('notifyZap', () => {
     expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
-  it('is a no-op when pushStore is omitted', async () => {
+  it('is a no-op when auth and pushStore are omitted', async () => {
     const note = message({ id: 'note-1', accountId: 'author' });
     const notifications = new InMemoryNotificationStore();
     await notifyZap({

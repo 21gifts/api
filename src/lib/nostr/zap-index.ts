@@ -292,7 +292,7 @@ export async function indexOpenZapReceipts(args: {
   verifyReceipt?: (event: NostrEventFrame) => boolean;
   /** Optional push store; newly indexed receipts call `notifyZap`. */
   pushStore?: PushStore;
-  /** Optional notification store; gift-replies and zaps fan out when `pushStore` is set. */
+  /** Optional notification store; in-app rows via `auth` even without `pushStore`. */
   notificationStore?: NotificationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {

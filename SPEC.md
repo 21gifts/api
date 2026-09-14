@@ -1918,11 +1918,13 @@ the **parent** `sats`. After that increment (never in the same SQL CTE), the wor
 inserts a reply from the payer (`text` from the zap-request comment or `""`,
 `sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
-After a newly indexed receipt, `notifyZap` runs best-effort (bell-subscriber
-fan-out except the resolved payer when `pushStore` is set; enqueue failure
-logs `push.enqueue.failed`). After the gift-reply insert, `notifyForumReply`
-runs best-effort (bell-subscriber fan-out except the actor when `pushStore`
-is set; it does not copy into the member↔member inbox). Notify failure logs
+After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
+every account except the resolved payer; Web Push only to bell subscribers;
+missing `pushStore` still writes in-app rows when `auth` is set; enqueue
+failure logs `push.enqueue.failed`). After the gift-reply insert,
+`notifyForumReply` runs best-effort (in-app rows for every account except the
+actor; Web Push only to bell subscribers; it does not copy into the
+member↔member inbox). Notify failure logs
 `messages.reply.notify.failed` and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**

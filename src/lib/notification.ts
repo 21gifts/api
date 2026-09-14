@@ -1,11 +1,10 @@
 /**
  * In-app notification domain: public JSON projection and living-room fan-out.
  *
- * Every account except the skip id gets an in-app row when `auth` is set
- * (Web Push is still only for `push_subscription` rows). Without `auth`,
- * in-app recipients fall back to the subscription table. Member HTTP never
- * exposes recipient or actor account ids. Callers catch failures so persist
- * still succeeds.
+ * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
+ * set) and `push_subscription` account ids, except skip. Web Push is still
+ * only for `push_subscription` rows. Member HTTP never exposes recipient or
+ * actor account ids. Callers catch failures so persist still succeeds.
  */
 
 import type { AuthStore } from '@/lib/auth/store';
@@ -101,8 +100,8 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
 
 /**
  * Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`.
- * In-app recipients are `auth.listAccounts()` when `auth` is set, otherwise
- * `push_subscription` account ids. Web Push outbox rows go only to
+ * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
+ * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. Missing both `auth` and `pushStore` is a
  * no-op. Unique duplicate `create` is fine.
  *
@@ -115,7 +114,7 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
   notifications?: NotificationStore;
-  /** Optional push outbox; also the fallback in-app recipient list. */
+  /** Optional push outbox; also contributes `push_subscription` ids to the in-app union. */
   pushStore?: PushStore;
   /** Optional auth; when set, in-app rows go to every account except skip. */
   auth?: Pick<AuthStore, 'listAccounts'>;
@@ -236,7 +235,8 @@ export async function notifyForumPost(args: {
  * `forum_reply` row when `notifications` is set and enqueue a `/notifications`
  * Web Push when `pushStore` is set. No-op when the parent is missing. Damus-only
  * parents and self-replies still fan out (the actor is skipped). Photo-only
- * empty text still notifies. Unique duplicate create is fine. This helper may
+ * empty text still notifies. Missing `pushStore` still writes in-app rows when
+ * `auth` is set. Unique duplicate create is fine. This helper may
  * throw; callers wrap it.
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
