@@ -1277,6 +1277,17 @@ test('Function: serializeNotification — GET /notifications without bearer is 4
 test('Function: notifyForumReply — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });
+test('Function: notifyForumPost — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: notifyZap — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: fanoutToBellSubscribers — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
 test('Function: migrateNotificationSchema — default boot has no DATABASE_URL', async ({
   request,
 }) => {

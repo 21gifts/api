@@ -17,6 +17,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount } from '@/lib/nostr/sign';
+import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { confirmVerification, startVerification } from '@/lib/verification';
 
@@ -41,8 +42,10 @@ export interface MeRouteDeps {
   fetchImpl: FetchFn;
   /** AES KEK for signing the NIP-57 mint probe; omit when unset. */
   nostrKek?: Uint8Array;
-  /** Optional push outbox; profile-note create enqueues when present. */
+  /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
+  /** Optional in-app notification store for profile-note create. */
+  notificationStore?: NotificationStore;
   /**
    * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
    * Used by `GET /activity`.
@@ -204,6 +207,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         account: withName,
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+        ...(deps.notificationStore === undefined
+          ? {}
+          : { notifications: deps.notificationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
@@ -365,6 +371,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         account: stored,
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+        ...(deps.notificationStore === undefined
+          ? {}
+          : { notifications: deps.notificationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

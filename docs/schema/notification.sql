@@ -1,7 +1,8 @@
--- In-app notifications for forum replies (GET /notifications; mark-read POST).
--- Actor display name and reply text are snapshotted at reply time. Unique on
--- (recipient, type, reply) so a duplicate persist is idempotent. Indexed
--- newest-first for listByRecipient.
+-- In-app notifications for forum posts, replies, and zaps
+-- (GET /notifications; mark-read POST). Kinds: forum_post, forum_reply, zap.
+-- Actor display name and event text are snapshotted at event time. Unique
+-- still on (recipient, type, reply_id) so a duplicate persist is
+-- idempotent. Indexed newest-first for listByRecipient.
 
 CREATE TABLE IF NOT EXISTS notification (
   id uuid PRIMARY KEY,

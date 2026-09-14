@@ -29,10 +29,9 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
-import { notifyForumReply } from '@/lib/notification';
+import { notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueForumPushes } from '@/lib/push-worker';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 import {
@@ -173,7 +172,7 @@ export interface MessagesRouteDeps {
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
-  /** Optional push outbox; forum create enqueues when present. */
+  /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
@@ -182,8 +181,9 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional in-app notification store. When present, a 21.gifts-author
-   * reply creates a notification for the parent author (via {@link notifyForumReply}).
+   * Optional in-app notification store. When present with `pushStore`,
+   * living-room events fan out via {@link notifyForumPost} /
+   * {@link notifyForumReply}.
    */
   notificationStore?: NotificationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
@@ -351,10 +351,12 @@ async function serveForumVideo(
 }
 
 /**
- * Media collapse → burst limiter → create → optional top-level push, or
- * {@link notifyForumReply} (notification and/or push, each if that store
- * is present) when `parentId` is a 21.gifts-author note. Shared by JSON and
- * multipart after body parse / normalize / decode.
+ * Media collapse → burst limiter → create → optional {@link notifyForumPost}
+ * (bell subscribers except the actor) for a top-level note, or
+ * {@link notifyForumReply} (bell subscribers except the actor) when
+ * `parentId` is set. Missing `pushStore` is a no-op even if
+ * `notificationStore` is set. Shared by JSON and multipart after body
+ * parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
  * @param postLimiter - Per-account burst limiter.
@@ -420,9 +422,16 @@ async function persistForumPost(
         ? await deps.store.create(row)
         : await deps.store.create(row, photo, video);
     const isReplay = created.id !== id;
-    if (!isReplay && parentId === null && deps.pushStore !== undefined) {
+    if (!isReplay && parentId === null) {
       try {
-        await enqueueForumPushes(deps.pushStore, account.id, created.id, deps.now());
+        await notifyForumPost({
+          account,
+          created,
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notifications: deps.notificationStore }),
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+        });
       } catch {
         logEvent('push.enqueue.failed');
       }

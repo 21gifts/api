@@ -79,7 +79,7 @@ export interface NostrWorkerDeps {
   now: () => number;
   /** Env slice for write-set flags. */
   env: Record<string, string | undefined>;
-  /** Optional push store for zap enqueue after a newly indexed receipt. */
+  /** Optional push store (bell-subscriber list and outbox). */
   pushStore?: PushStore;
   /** Optional signature check for inbound kind:1 replies (tests inject). */
   verifyKind1?: (event: NostrEventFrame) => boolean;
@@ -158,12 +158,13 @@ function reservedContent(
  * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
  * note event ids) and persists inbound replies whose pubkey maps to a
  * 21.gifts account (even when publish is off). Unknown npubs are skipped.
- * After a member reply is stored, `notifyForumReply` always runs; it writes a
- * notification only when `notificationStore` is set and enqueues a
- * `/notifications` push only when `pushStore` is set. Failures log
+ * After a member reply is stored, `notifyForumReply` always runs; missing
+ * `pushStore` is a no-op even if `notificationStore` is set (recipients come
+ * from the subscription table). Failures log
  * `nostr.reply.notify.failed` and do not undo persist. Zap ingest uses the
  * same helper after a gift-reply insert (`messages.reply.notify.failed` on
- * throw; parent `sats` and the reply row stay). When a conversation store is present, also
+ * throw; parent `sats` and the reply row stay) and `notifyZap` after a newly
+ * indexed receipt. When a conversation store is present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *
@@ -293,9 +294,9 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
  * over-long content, events that equal the parent note id, and unknown
  * npubs (same silent skip as an empty event id). Member replies posted
  * from Damus with the custodial key still persist (named, or nameless via
- * {@link truncatePubkeyDisplay}). After a successful persist, notifies the
- * parent author via {@link notifyForumReply}; notify failure logs
- * `nostr.reply.notify.failed` and does not fail persist.
+ * {@link truncatePubkeyDisplay}). After a successful persist, fans out via
+ * {@link notifyForumReply} to every bell subscriber except the actor; notify
+ * failure logs `nostr.reply.notify.failed` and does not fail persist.
  *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
@@ -581,7 +582,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
  * Address that lack one (or whose stored id no longer points at a message
  * row). `ensureProfileMessage` no-ops without LN.
  *
- * @param deps - Auth and message stores (and optional push).
+ * @param deps - Auth and message stores (and optional push / notifications).
  */
 async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
   const accounts = await deps.auth.listAccounts();
@@ -601,6 +602,10 @@ async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
       messages: deps.messages,
       account,
       now: deps.now,
+      ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+      ...(deps.notificationStore === undefined
+        ? {}
+        : { notifications: deps.notificationStore }),
     });
   }
 }

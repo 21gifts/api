@@ -4555,6 +4555,13 @@ describe('runNostrWorkerTick', () => {
     ];
     const notificationStore = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
     await inboundTick(
       auth,
       messages,
@@ -4632,6 +4639,14 @@ describe('runNostrWorkerTick', () => {
     notificationStore.create = async () => {
       throw new Error('boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1_700_000_000_000),
+    });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await inboundTick(
@@ -4640,6 +4655,7 @@ describe('runNostrWorkerTick', () => {
         new InMemoryConversationStore(),
         querier,
         notificationStore,
+        pushStore,
       );
       expect(await messages.getByEventId(replyEventId)).toBeDefined();
       const events = warn.mock.calls

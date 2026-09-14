@@ -15,10 +15,9 @@ import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
-import { notifyForumReply } from '@/lib/notification';
+import { notifyForumReply, notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueZapPush } from '@/lib/push-worker';
 import { verifyEvent } from 'nostr-tools/pure';
 
 /** Minimal zap receipt fields we validate. */
@@ -272,8 +271,9 @@ export async function indexZapReceipt(args: {
 
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, index
- * validated ones, then insert a payer gift-reply and notify the parent
- * author. Retries receipts that have a payer and no gift-reply id yet.
+ * validated ones, then insert a payer gift-reply and fan out zap/reply
+ * notifications to bell subscribers. Retries receipts that have a payer
+ * and no gift-reply id yet.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
@@ -289,9 +289,9 @@ export async function indexOpenZapReceipts(args: {
   fetchImpl: FetchFn;
   /** Signature check; production uses nostr-tools `verifyEvent`. */
   verifyReceipt?: (event: NostrEventFrame) => boolean;
-  /** Optional push store; newly indexed receipts enqueue a zap push. */
+  /** Optional push store; newly indexed receipts call `notifyZap`. */
   pushStore?: PushStore;
-  /** Optional notification store; gift-replies notify the parent author. */
+  /** Optional notification store; gift-replies and zaps fan out when `pushStore` is set. */
   notificationStore?: NotificationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
@@ -587,9 +587,18 @@ async function ingestOneReceipt(
     receiptEvent: receipt,
     noteEventId,
   });
-  if (indexed && args.pushStore !== undefined && row.accountId !== null) {
+  if (indexed && row.accountId !== null) {
     try {
-      await enqueueZapPush(args.pushStore, row.accountId, row.id, args.now());
+      await notifyZap({
+        note: row,
+        receiptId: event.id,
+        amountSats,
+        nowMs: args.now(),
+        ...(args.notificationStore === undefined
+          ? {}
+          : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      });
     } catch {
       logEvent('push.enqueue.failed');
     }

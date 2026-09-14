@@ -1018,9 +1018,9 @@ describe('POST /messages', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('parent');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'Reply on your post',
+      title: 'New reply on 21.gifts',
       url: '/notifications',
-      tag: `forum_reply:${parentId}`,
+      tag: `forum_reply:${listed[0]?.replyId}`,
     });
   });
 
@@ -1092,8 +1092,17 @@ describe('POST /messages', () => {
     notificationStore.create = async () => {
       throw new Error('boom');
     };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
     const res = await mount(authStore, messageStore, {
       notificationStore,
+      pushStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -1187,8 +1196,9 @@ describe('POST /messages', () => {
     const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
     expect(claimed).toHaveLength(1);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'New reply on 21.gifts',
       url: '/notifications',
-      tag: `forum_reply:${parentId}`,
+      tag: `forum_reply:${claimed[0]?.messageId}`,
     });
   });
 
@@ -1221,8 +1231,17 @@ describe('POST /messages', () => {
       ...unsignedNostrDefaults(),
     });
     const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
     const res = await mount(authStore, messageStore, {
       notificationStore,
+      pushStore,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },

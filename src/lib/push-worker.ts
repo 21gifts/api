@@ -32,11 +32,13 @@ function buildDebugPushPayload(): PushPayload {
 }
 
 /**
- * Enqueue one forum notification per subscriber except the author.
+ * Enqueue one forum notification per bell subscriber except the skip id.
+ * Production path is {@link notifyForumPost}; this helper’s `messageId` is
+ * both the outbox id and the payload tag id.
  *
  * @param store - Push store.
- * @param authorId - Message author (never notified).
- * @param messageId - Forum message id.
+ * @param authorId - Skip id (post actor; never notified).
+ * @param messageId - Forum message id (outbox `messageId` and payload tag).
  * @param nowMs - Enqueue clock.
  */
 export async function enqueueForumPushes(
@@ -46,7 +48,7 @@ export async function enqueueForumPushes(
   nowMs: number,
 ): Promise<void> {
   const accountIds = await store.listAccountIdsWithSubscriptions();
-  const payload = JSON.stringify(buildForumPushPayload());
+  const payload = JSON.stringify(buildForumPushPayload(messageId));
   const createdAt = new Date(nowMs);
   for (const accountId of accountIds) {
     if (accountId === authorId) {
@@ -69,16 +71,17 @@ export async function enqueueForumPushes(
 }
 
 /**
- * Enqueue one targeted reply notification for the parent-note author when they
- * have a subscription. Payload URL is `/notifications`.
+ * Enqueue one reply notification per bell subscriber except the skip id.
+ * Production path is {@link notifyForumReply}. `parentId` is unused; the
+ * payload tag is always `forum_reply:<messageId>` (the reply id).
  *
  * @param store - Push store.
- * @param authorId - Parent-note author to notify.
- * @param messageId - Reply forum message id (stored on the outbox row).
- * @param parentId - Forum note that was replied to (payload tag `forum_reply:<parentId>`).
+ * @param authorId - Skip id (reply actor; never notified).
+ * @param messageId - Reply forum message id (outbox `messageId` and payload tag).
+ * @param parentId - Unused (kept for call-site compatibility).
  * @param nowMs - Enqueue clock.
- * @returns Resolves after enqueue, or immediately when the author has no subscriptions.
- * @throws If `listByAccount` or `enqueue` rejects.
+ * @returns Resolves after each recipient is enqueued (including no-ops).
+ * @throws If `listAccountIdsWithSubscriptions` or `enqueue` rejects.
  */
 export async function enqueueReplyPush(
   store: PushStore,
@@ -87,31 +90,40 @@ export async function enqueueReplyPush(
   parentId: string,
   nowMs: number,
 ): Promise<void> {
-  const subs = await store.listByAccount(authorId);
-  if (subs.length === 0) {
-    return;
+  void parentId;
+  const accountIds = await store.listAccountIdsWithSubscriptions();
+  const payload = JSON.stringify(buildReplyPushPayload(messageId));
+  const createdAt = new Date(nowMs);
+  for (const accountId of accountIds) {
+    if (accountId === authorId) {
+      continue;
+    }
+    const row: PushOutboxRow = {
+      id: crypto.randomUUID(),
+      accountId,
+      type: 'forum',
+      messageId,
+      payload,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt,
+      deliveredEndpoints: [],
+    };
+    await store.enqueue(row);
   }
-  const row: PushOutboxRow = {
-    id: crypto.randomUUID(),
-    accountId: authorId,
-    type: 'forum',
-    messageId,
-    payload: JSON.stringify(buildReplyPushPayload(parentId)),
-    status: 'pending',
-    attempts: 0,
-    claimedUntil: null,
-    createdAt: new Date(nowMs),
-    deliveredEndpoints: [],
-  };
-  await store.enqueue(row);
 }
 
 /**
- * Enqueue one zap notification for the note author when they have a subscription.
+ * Enqueue one zap notification per bell subscriber except the skip id.
+ * `authorId` is a skip id (the payer), not “notify only this author”. The
+ * note author is notified unless they are the skip id. Production path is
+ * {@link notifyZap}; this helper’s `messageId` is the tag id (callers that
+ * pass the forum note id collapse two zaps onto one tag).
  *
  * @param store - Push store.
- * @param authorId - Note author to notify.
- * @param messageId - Forum message id.
+ * @param authorId - Skip id (payer; may be the note author).
+ * @param messageId - Tag id (also stored as outbox `messageId` here).
  * @param nowMs - Enqueue clock.
  */
 export async function enqueueZapPush(
@@ -120,23 +132,27 @@ export async function enqueueZapPush(
   messageId: string,
   nowMs: number,
 ): Promise<void> {
-  const subs = await store.listByAccount(authorId);
-  if (subs.length === 0) {
-    return;
+  const accountIds = await store.listAccountIdsWithSubscriptions();
+  const payload = JSON.stringify(buildZapPushPayload(messageId));
+  const createdAt = new Date(nowMs);
+  for (const accountId of accountIds) {
+    if (accountId === authorId) {
+      continue;
+    }
+    const row: PushOutboxRow = {
+      id: crypto.randomUUID(),
+      accountId,
+      type: 'zap',
+      messageId,
+      payload,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt,
+      deliveredEndpoints: [],
+    };
+    await store.enqueue(row);
   }
-  const row: PushOutboxRow = {
-    id: crypto.randomUUID(),
-    accountId: authorId,
-    type: 'zap',
-    messageId,
-    payload: JSON.stringify(buildZapPushPayload(messageId)),
-    status: 'pending',
-    attempts: 0,
-    claimedUntil: null,
-    createdAt: new Date(nowMs),
-    deliveredEndpoints: [],
-  };
-  await store.enqueue(row);
 }
 
 /**

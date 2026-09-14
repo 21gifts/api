@@ -274,6 +274,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       payer: invoicePayer,
       fetchImpl,
       pushStore,
+      notificationStore,
       giftStore,
       rates: btcUsdRates,
       ...(nostrKek === undefined ? {} : { nostrKek }),
@@ -297,6 +298,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
       messageStore,
       pushStore,
+      notificationStore,
       now,
     }),
   );
