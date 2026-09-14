@@ -1008,9 +1008,10 @@ resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. `GET /me` then returns `setup: "lightning-address"` when a
 name is already stored, so any client that follows `setup` (or a missing
 `lightningAddress`) shows the address form. `verified` as a **role** is a
-human-identity badge (a moderator physically met the person); it is not
-`lightningAddressVerified`. New passkey accounts stay `basis` until an
-operator changes them here. This route does **not** write trust edges;
+human-identity badge (a founder or moderator physically met the person); it
+is not `lightningAddressVerified`. New passkey accounts stay `basis` until
+staff confirm them via `POST /trust/verify` or an operator overrides `role`
+here. This route does **not** write trust edges;
 use `POST /debug/trust-edges` to backfill stored grants without changing
 `role`.
 

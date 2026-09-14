@@ -154,7 +154,7 @@ changing `role`.
 | Role      | Capabilities                                                                                             |
 | --------- | -------------------------------------------------------------------------------------------------------- |
 | Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                       |
-| Verified  | Basis, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. |
+| Verified  | Basis, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. |
 | Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                      |
 | Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                             |
 
@@ -396,8 +396,8 @@ reputation (who follows / vouches for whom).
 identities are custodial, server-held. Proof of Lightning-Address control is
 the account flag `lightningAddressVerified` via micro-payment nonce, see
 "Receiver address verification". That flag is not the forum role **Verified**,
-which means a moderator physically met the person (`account.role`, assigned
-with `PATCH /debug/accounts/:id`).)
+which means a founder or moderator physically met the person (`account.role`,
+via `POST /trust/verify` or an edge-less operator `PATCH /debug/accounts/:id`).)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
 a receiver doesn't meet website requirements, they can still use a different
