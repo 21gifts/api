@@ -4,11 +4,12 @@
 #               forum-note debug reads, forum-video restore, and spend live
 #               roster for 21.gifts (GET /debug/accounts, PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
-#               PUT /debug/messages/:id/video, GET /debug/recipients). No raw SQL.
+#               PUT /debug/messages/:id/video,
+#               GET {DEBUG_SPEND_URL}/debug/recipients). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
-#                                    optional DEBUG_SPEND_URL
+#                                    optional DEBUG_SPEND_URL (default https://spend.21.gifts)
 #   Override path with GIFTS_DEBUG_ENV.
 #
 # Usage:
