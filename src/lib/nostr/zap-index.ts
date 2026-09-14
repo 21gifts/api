@@ -781,7 +781,9 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
 }
 
 /**
- * Persist the gift-reply row and notify. Logs and returns on create/notify failure.
+ * Persist the gift-reply row and notify. Create/link failures propagate
+ * so `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
+ * Only `notifyForumReply` is caught here (`messages.reply.notify.failed`).
  *
  * @param args - Payer, parent, text, receipt id.
  */
