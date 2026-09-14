@@ -51,6 +51,7 @@ import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
+import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -112,6 +113,12 @@ export interface AppDeps {
    * and `POST /invoices/proof` return 503.
    */
   spendApiToken?: string;
+  /**
+   * Spend-worker ping after a new top-level forum post (default:
+   * `resolveSpendPing(process.env, fetchImpl)`). Unset `SPEND_URL` or
+   * `SPEND_API_TOKEN` → omitted; `POST /messages` still 200.
+   */
+  spendPing?: SpendPing;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
@@ -180,7 +187,7 @@ export interface AppDeps {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store,
- *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, and gift invoice store.
+ *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, spend ping, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -206,6 +213,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
+  const spendPing = deps.spendPing ?? resolveSpendPing(process.env, fetchImpl);
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
 
@@ -320,6 +328,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route(
