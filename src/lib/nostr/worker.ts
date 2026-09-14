@@ -12,6 +12,7 @@ import {
   truncatePubkeyDisplay,
   type MessageRow,
 } from '@/lib/message';
+import { locationHashtagName } from '@/lib/location';
 import type { MessageStore } from '@/lib/message-store';
 import { notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -133,9 +134,11 @@ function reservedContent(
  * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
  * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
  * signed. Then published unpaid rows missing a photo URL or a video URL
- * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` in content are reset
+ * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` (and, when
+ * `account.location` is set, the location hashtag) in content are reset
  * for the next tick (`profileMessageId` rows are skipped so a name note is
- * not rewritten with those hashtags). Pending rows EVENT as-is — resetting them first renews
+ * not rewritten with those hashtags; location is never applied to profile
+ * notes). Pending rows EVENT as-is — resetting them first renews
  * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
  * keep their event id so receipts still resolve. An empty API base skips
  * photo- and video-URL resign so it cannot un-publish and loop. When
@@ -443,17 +446,19 @@ async function resignVideoKind1(deps: NostrWorkerDeps): Promise<void> {
 }
 
 async function resignHashtagKind1(deps: NostrWorkerDeps): Promise<void> {
-  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH);
   const accounts = await deps.auth.listAccounts();
   const profileIds = new Set(
     accounts
       .map((account) => account.profileMessageId)
       .filter((id): id is string => typeof id === 'string' && id !== ''),
   );
-  await resetPublishedBatch(
-    deps,
-    rows.filter((row) => !profileIds.has(row.id)),
-  );
+  const extras = new Map<string, readonly string[]>();
+  for (const account of accounts) {
+    const name = locationHashtagName(account.location);
+    if (name !== null) extras.set(account.id, [name]);
+  }
+  const rows = await deps.messages.listSignedMissingHashtags(WORKER_BATCH, extras, profileIds);
+  await resetPublishedBatch(deps, rows);
 }
 
 function kind1HasBitcoinTag(event: Record<string, unknown> | null): boolean {
@@ -543,11 +548,14 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           noteAuthorPubkey,
         };
       }
+      const account = await deps.auth.getAccount(row.accountId);
+      const isProfile = account?.profileMessageId === row.id;
+      const location = isProfile ? null : (account?.location ?? null);
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           photo === undefined
-            ? buildKind1Event(row.text, createdAt, undefined, replyTo)
-            : buildKind1Event(row.text, createdAt, photo, replyTo);
+            ? buildKind1Event(row.text, createdAt, undefined, replyTo, location)
+            : buildKind1Event(row.text, createdAt, photo, replyTo, location);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,

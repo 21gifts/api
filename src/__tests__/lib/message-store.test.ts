@@ -1588,6 +1588,74 @@ describe('InMemoryMessageStore', () => {
     ]);
   });
 
+  it('listSignedMissingHashtags lists notes missing an extra location hashtag', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      text: 'x',
+      eventId: 'ab'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      id: 'damus',
+      accountId: null,
+      text: 'x',
+      eventId: 'cc'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('damus', 'published', 'space');
+    expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).not.toContain('a');
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['a']);
+    await store.updateSignedEvent('a', 'ab'.repeat(32), {
+      content: 'x\n\n#bitcoin #21gifts #Berlin',
+    });
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).not.toContain('a');
+  });
+
+  it('listSignedMissingHashtags applies excludeIds before the limit', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'profile',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      text: 'x',
+      eventId: 'aa'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('profile', 'published', 'space');
+    await store.create({
+      ...EARLY,
+      text: 'x',
+      eventId: 'ab'.repeat(32),
+      nostrEvent: { content: 'x\n\n#bitcoin #21gifts' },
+    });
+    await store.updatePublishState('a', 'published', 'space');
+    expect(
+      (await store.listSignedMissingHashtags(10, new Map([['acc', ['Berlin']]]))).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['profile', 'a']);
+    expect(
+      (
+        await store.listSignedMissingHashtags(
+          1,
+          new Map([['acc', ['Berlin']]]),
+          new Set(['profile']),
+        )
+      ).map((row) => row.id),
+    ).toEqual(['a']);
+  });
+
   it('listPendingSigned skips pending rows that already have t=bitcoin', async () => {
     const store = new InMemoryMessageStore();
     await store.create(LATE);
@@ -2707,6 +2775,73 @@ describe('PostgresMessageStore', () => {
     expect(listSql).toContain('#21gifts([^a-z0-9_]|$)');
     expect(listSql).toContain('#bitcoin([^a-z0-9_]|$)');
     expect(listSql).toMatch(/ORDER BY created_at ASC,\s*id ASC/);
+  });
+
+  it('listSignedMissingHashtags extras map extends the Postgres hashtag scan', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 0,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    await store.listSignedMissingHashtags(4, new Map());
+    const emptySql = sql.queries.at(-1)?.text ?? '';
+    expect(emptySql).toContain('#21gifts([^a-z0-9_]|$)');
+    expect(emptySql).toContain('#bitcoin([^a-z0-9_]|$)');
+    expect(emptySql).not.toMatch(/unnest/i);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+    const missing = await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
+    expect(missing[0]?.id).toBe('m1');
+    const extraSql = sql.queries.at(-1)?.text ?? '';
+    expect(extraSql).toContain('#21gifts([^a-z0-9_]|$)');
+    expect(extraSql).toContain('#bitcoin([^a-z0-9_]|$)');
+    expect(extraSql).toMatch(/unnest/i);
+    expect(extraSql).toMatch(/extra\.pattern/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#berlin([^a-z0-9_]|$)']]);
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['St.Gallen']]]));
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], ['#st\\.gallen([^a-z0-9_]|$)']]);
+  });
+
+  it('listSignedMissingHashtags excludeIds binds before LIMIT', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const berlinPattern = '#berlin([^a-z0-9_]|$)';
+
+    await store.listSignedMissingHashtags(4);
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map(), new Set());
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]));
+    expect(sql.queries.at(-1)?.text ?? '').not.toMatch(/ANY/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern]]);
+
+    await store.listSignedMissingHashtags(4, undefined, new Set([profileId]));
+    const excludeOnlySql = sql.queries.at(-1)?.text ?? '';
+    expect(excludeOnlySql).toMatch(/ANY/);
+    expect(excludeOnlySql).toMatch(/\$2::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, [profileId]]);
+
+    await store.listSignedMissingHashtags(4, new Map([['acc', ['Berlin']]]), new Set([profileId]));
+    const extraExcludeSql = sql.queries.at(-1)?.text ?? '';
+    expect(extraExcludeSql).toMatch(/ANY/);
+    expect(extraExcludeSql).toMatch(/unnest/i);
+    expect(extraExcludeSql).toMatch(/\$4::text\[\]/);
+    expect(sql.queries.at(-1)?.params).toEqual([4, ['acc'], [berlinPattern], [profileId]]);
   });
 
   it('propagates getPhoto query errors', async () => {
