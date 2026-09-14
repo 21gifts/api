@@ -44,6 +44,12 @@ export interface ConversationStore {
    * True when the thread has at least one inbound message for the viewer
    * (`conversationIsInbound`). Used by GET /conversations to omit empty
    * and outbound-only threads.
+   *
+   * @param conversationId - Thread to inspect.
+   * @param viewerId - Session account.
+   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @returns Whether any stored message is inbound for that viewer.
    */
   hasInboundMessage(
     conversationId: string,

@@ -98,7 +98,7 @@ describe('GET /conversations', () => {
     expect(res.status).toBe(401);
   });
 
-  it('lists the session threads newest last-message first', async () => {
+  it('omits a member thread when only the viewer sent', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -225,7 +225,7 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
-  it('sets lastFromMe true when staff views a platform-sent last message', async () => {
+  it('omits a platform thread when staff sees only a platform send', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     await withOther(auth, 'someone');
