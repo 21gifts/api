@@ -105,7 +105,7 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
           const row = await messages.getById(profileId);
           aboutMe =
             row !== undefined && row.deletedAt === null
-              ? aboutMeFromNote(account.name, row.text)
+              ? aboutMeFromNote(account.name, row.text, row.name)
               : null;
         }
         return c.json(serializeViewProfile(account, hasPasskey, aboutMe), 200);

@@ -192,6 +192,28 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.aboutMe).toBe('I build on Bitcoin');
   });
 
+  it('sets aboutMe null when the note is the stored name after a rename', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, name: 'Grace', profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => note('Ada'),
+      },
+    );
+    expect(json.aboutMe).toBeNull();
+  });
+
+  it('sets aboutMe to a real bio after a display-name rename', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, name: 'Grace', profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => note('I build on Bitcoin'),
+      },
+    );
+    expect(json.aboutMe).toBe('I build on Bitcoin');
+  });
+
   it('sets aboutMe null when the profile note is soft-hidden', async () => {
     const json = await serializeOwnerAccountWithPosts(
       { ...account, profileMessageId: 'note-1' },

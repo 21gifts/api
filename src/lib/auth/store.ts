@@ -157,6 +157,25 @@ export interface AuthStore {
     lightningAddress: string,
     name: string,
   ): Promise<Account | undefined>;
+  /**
+   * Set `profileMessageId` to `nextId` only when the stored pointer still
+   * matches `expectedId`. Does not change other columns. Does not touch
+   * viewKey or linkingKey indexes.
+   *
+   * `undefined` and `null` stored pointers both match `expectedId === null`.
+   *
+   * @param accountId - Account id.
+   * @param expectedId - Missing or blank pointer as `null`; a hidden id as
+   *   the stored string.
+   * @param nextId - Profile-note id to store on success.
+   * @returns `true` when this caller's `nextId` is now stored; `false` when
+   *   the account is unknown or the stored pointer is not `expectedId`.
+   */
+  claimProfileMessageId(
+    accountId: string,
+    expectedId: string | null,
+    nextId: string,
+  ): Promise<boolean>;
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
@@ -342,6 +361,22 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
     return undefined;
+  }
+
+  async claimProfileMessageId(
+    accountId: string,
+    expectedId: string | null,
+    nextId: string,
+  ): Promise<boolean> {
+    const previous = this.#accounts.get(accountId);
+    if (previous === undefined) {
+      return false;
+    }
+    if ((previous.profileMessageId ?? null) === (expectedId ?? null)) {
+      this.#accounts.set(accountId, { ...previous, profileMessageId: nextId });
+      return true;
+    }
+    return false;
   }
 
   async deleteAccount(id: string): Promise<void> {

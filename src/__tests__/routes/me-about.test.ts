@@ -465,6 +465,94 @@ describe('PUT /me/about', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
     expect(await messages.listLatest(10)).toHaveLength(0);
   });
+
+  it('returns 503 and deletes the insert when claimProfileMessageId throws after create', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(store, 'claimProfileMessageId').mockRejectedValue(new Error('store down'));
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.about.failed')).toBe(true);
+  });
+
+  it('returns 401 and deletes the insert when claimProfileMessageId loses and the account vanishes', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(store, 'claimProfileMessageId').mockResolvedValue(false);
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      let calls = 0;
+      vi.spyOn(store, 'getAccount').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return account;
+        }
+        return undefined;
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns 503 and deletes the insert when claimProfileMessageId loses and the pointer is not live', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const originalCreate = messages.create.bind(messages);
+    const originalGet = store.getAccount.bind(store);
+    const account = await originalGet('acc');
+    expect(account).toBeDefined();
+    vi.spyOn(store, 'claimProfileMessageId').mockResolvedValue(false);
+    vi.spyOn(messages, 'create').mockImplementation(async (row) => {
+      const created = await originalCreate(row);
+      let calls = 0;
+      vi.spyOn(store, 'getAccount').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return account;
+        }
+        return { ...account!, profileMessageId: 'missing-winner' };
+      });
+      return created;
+    });
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('keeps exactly one live top-level note when two PUTs race without a profile note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const app = mount(store, { messages });
+    const [first, second] = await Promise.all([
+      app.request('/me/about', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: 'One' }),
+      }),
+      app.request('/me/about', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: 'Two' }),
+      }),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const live = (await messages.listLatest(10)).filter((row) => row.parentId === null);
+    expect(live).toHaveLength(1);
+    const stored = await store.getAccount('acc');
+    expect(stored?.profileMessageId).toBe(live[0]?.id);
+    expect(await messages.getById(live[0]!.id)).toBeDefined();
+  });
 });
 
 describe('GET /me aboutMe', () => {

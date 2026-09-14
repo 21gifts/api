@@ -199,6 +199,22 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapAccount(row);
   }
 
+  async claimProfileMessageId(
+    accountId: string,
+    expectedId: string | null,
+    nextId: string,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `UPDATE account
+       SET profile_message_id = $3
+       WHERE id = $1
+         AND profile_message_id IS NOT DISTINCT FROM $2
+       RETURNING id`,
+      [accountId, expectedId, nextId],
+    );
+    return rows.length > 0;
+  }
+
   async getAccount(id: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT ${ACCOUNT_SELECT_COLUMNS}

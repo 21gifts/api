@@ -499,7 +499,7 @@
 
 ## Endpoint: PUT /me/about
 
-- **Purpose:** Bearer required. Body `{ text }`. Writes About me onto the profile forum note (creates a new live note without a Lightning Address when the note is missing or soft-hidden via `deletedAt`, then points `profileMessageId` at it; the hidden row stays hidden). Empty text clears the bio (`aboutMe` null; the live note row is kept). Name-only auto-copy is not a bio. Requires a display name (not LN). Success is owner JSON with `aboutMe`.
+- **Purpose:** Bearer required. Body `{ text }`. Writes About me onto the profile forum note (creates a new live note without a Lightning Address when the note is missing or soft-hidden via `deletedAt`, then claims `profileMessageId` via `claimProfileMessageId` only while the pointer still matches the missing/hidden read; a lost claim deletes the insert and adopts a live winner). The hidden row stays hidden. Empty text clears the bio (`aboutMe` null; the live note row is kept). Name-only auto-copy is not a bio, including after a display-name rename (Ada→Grace with note text still `Ada` stays `null`). Requires a display name (not LN). Success is owner JSON with `aboutMe`.
 - **Errors:** 401 without session; 400 if the body is not `{ text: string }`, text is longer than 500 characters (`About me must be at most 500 characters`), or text contains C0/DEL control characters; 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
 - **Used by:** App profile About me editor.
 - **Auth:** `Authorization: Bearer` session.

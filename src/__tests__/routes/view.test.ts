@@ -189,6 +189,30 @@ describe('GET /view/:viewKey', () => {
     expect(((await nameRes.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
   });
 
+  it('returns aboutMe null when the note is the stored name after a rename', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, name: 'Grace' });
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string | null; aboutMe: string | null };
+    expect(body.name).toBe('Grace');
+    expect(body.aboutMe).toBeNull();
+  });
+
   it('returns aboutMe null when the profile note is soft-hidden', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store, { profileMessageId: NOTE_ID });
