@@ -48,7 +48,6 @@ async function seedStore(args: {
       lightningAddress:
         args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
       lightningAddressVerified: true,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(args.accountId),
@@ -275,7 +274,6 @@ describe('indexOpenZapReceipts', () => {
       name: 'Ada',
       lightningAddress: 'zap-chunk@example.com',
       lightningAddressVerified: true,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),

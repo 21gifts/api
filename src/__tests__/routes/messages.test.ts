@@ -75,7 +75,6 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     name: null,
     lightningAddress: null,
     lightningAddressVerified: false,
-    location: null,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
@@ -849,7 +848,6 @@ describe('POST /messages', () => {
       name: 'Pat',
       lightningAddress: 'pat@walletofsatoshi.com',
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1067,7 +1065,6 @@ describe('POST /messages', () => {
       name: 'Pat',
       lightningAddress: null,
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1150,7 +1147,6 @@ describe('POST /messages', () => {
       name: 'Pat',
       lightningAddress: null,
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1201,7 +1197,6 @@ describe('POST /messages', () => {
       name: 'Pat',
       lightningAddress: null,
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2147,7 +2142,6 @@ describe('POST /messages/:id/invoice', () => {
       name: 'Bob',
       lightningAddress: null,
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2305,6 +2299,17 @@ describe('POST /messages/:id/invoice', () => {
 
   it('returns 400 no_author when invoicing a Damus-only reply', async () => {
     const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '14141414-1414-4141-8141-141414141414',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
     await messageStore.create({
       id: '13131313-1313-4131-8131-131313131313',
       accountId: null,
@@ -3072,6 +3077,17 @@ describe('GET /messages/:id', () => {
   it('returns 404 for a Damus-only reply', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
       id: '14141414-1414-4141-8141-141414141414',
       accountId: null,
       name: 'aabbccdd…8899',
@@ -3650,7 +3666,6 @@ describe('GET /messages/:id/replies', () => {
       name: 'Thrower',
       lightningAddress: null,
       lightningAddressVerified: false,
-      location: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
