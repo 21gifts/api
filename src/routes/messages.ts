@@ -176,8 +176,8 @@ export interface MessagesRouteDeps {
   pushStore?: PushStore;
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
-   * Address, the route awaits `ping(address)`. Omitted → skip. Failures
-   * are logged and do not fail the 200.
+   * Address, the route awaits `ping(address, created.id)`. Omitted → skip.
+   * Failures are logged and do not fail the 200.
    */
   spendPing?: SpendPing;
   /**
@@ -443,7 +443,7 @@ async function persistForumPost(
       deps.spendPing !== undefined
     ) {
       try {
-        await deps.spendPing.ping(account.lightningAddress);
+        await deps.spendPing.ping(account.lightningAddress, created.id);
       } catch {
         logEvent('spend.ping.failed');
       }

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-14 (Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
+**Status**: living document. Last revised 2026-09-15 (spend ping/posted/proof now carry `messageId` and a platform gift-reply; Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
 
 ---
 
@@ -46,7 +46,10 @@ routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
-`gifts.record_failed` and still returns **200**.
+`gifts.record_failed` and still returns **200**. When the issued invoice stored
+`messageId`, proof inserts a platform-account gift-reply first, then
+`addSats` (idempotent). Optional `messageId` on
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -349,7 +352,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Store throw or missing FX day → **Response** `503`:
+Store throw or missing BTC-USD day → **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
@@ -372,7 +375,7 @@ Store throw or missing FX day → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`. Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
 
 ### `POST /me/setup/skip`
 
@@ -420,7 +423,8 @@ are not listed.
 
 Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
-stats are unavailable" }` when the gift store throws or a gift day lacks FX.
+stats are unavailable" }` when the gift store throws or a gift day lacks
+BTC-USD.
 
 ### `GET /view/:viewKey`
 
@@ -456,7 +460,7 @@ profile is still unclaimed.
 Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
 the same JSON as `GET /me/activity` for the account behind the key. 503
 `{ "error": "Gift stats are unavailable" }` when the gift store throws or a
-gift day lacks FX.
+gift day lacks BTC-USD.
 
 ### `POST /me/name`
 
@@ -1544,13 +1548,16 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true }
+{ "hasPosted": true, "messageId": "<uuid>" }
 ```
 
-or `{ "hasPosted": false }` when there is no account for the address or the
-account has no live **top-level** forum message other than the auto-created
-profile note. Replies do not count. Photo-only / empty-text top-level notes
-still count.
+or `{ "hasPosted": false, "messageId": null }` when there is no account for the
+address or the account has no live **top-level** forum message other than the
+auto-created profile note. Replies do not count. Photo-only / empty-text
+top-level notes still count. When `hasPosted` is true, `messageId` is usually
+the newest live top-level non-profile post id; it can still be `null` if
+`listPostsByAccount` yields no non-profile row. Replies and the auto profile
+note never become `messageId`.
 
 ### `POST /invoices`
 
@@ -1564,11 +1571,17 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 **Body:**
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional" }
+{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "messageId": "<uuid>" }
 ```
 
 `comment` is optional and at most 255 characters. `amountMsat` must be an
-integer in `1000..10000000000`.
+integer in `1000..10000000000`. `messageId` is optional (current spend without
+the field still works). Invalid UUID → **400**
+`{ "error": "Expected a JSON body with address and amountMsat" }`. When set,
+the post must be that address's live top-level non-profile note (else **403**
+`Forum post required` before LNURL). Missing `isPlatform` account → **503**
+`{ "error": "Platform account is not configured" }` (no LNURL). Stores
+`messageId` and `comment` (or `''`) on the invoice.
 
 When `SPEND_API_TOKEN` is unset or blank:
 
@@ -1580,8 +1593,8 @@ When `SPEND_API_TOKEN` is unset or blank:
 
 Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
 
-Bad JSON, `amountMsat` outside `1000..10000000000`, or `comment` longer than
-255 → **400**
+Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
+255, or invalid `messageId` UUID → **400**
 `{ "error": "Expected a JSON body with address and amountMsat" }`.
 
 Invalid Lightning Address → **400**
@@ -1595,11 +1608,19 @@ No account for the address, or the account has no passkey credential →
 ```
 
 The account has a passkey but no live **top-level** forum message other than
-the auto-created profile note → **403** (after the passkey check, before any
-LNURL fetch; no invoice is stored):
+the auto-created profile note, or `messageId` is set but is not that
+address's live top-level non-profile note → **403** (after the passkey check,
+before any LNURL fetch; no invoice is stored):
 
 ```json
 { "error": "Forum post required" }
+```
+
+Missing `isPlatform` account (when `messageId` is set) → **503** (before any
+LNURL fetch; no invoice is stored):
+
+```json
+{ "error": "Platform account is not configured" }
 ```
 
 LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
@@ -1649,6 +1670,13 @@ handle from the invoice address, description `21gifts daily`,
 `source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
+
+When the invoice has `messageId`, the api inserts a platform-account
+gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
+`messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
+on that post. Repeat proof with the same preimage is idempotent (existing
+reply id skips `addSats`). Parent missing/deleted or platform missing: skip
+attach, log `invoice.gift_reply.failed`, still **200** + gift persist.
 
 Success → **Response** `200`:
 
@@ -1785,8 +1813,9 @@ with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
 POST with the same account, parent, normalised text, and media bytes returns
 **200** with the existing row (no extra burst slot, no second top-level push).
 Text-only posts are unchanged (still **429** on burst). After a **new**
-top-level persist, the api POSTs `{ address }` to `{SPEND_URL}/ping` with
-Bearer `SPEND_API_TOKEN` (fire-and-await). Errors are logged; the POST still
+top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
+Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
+top-level row). Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the
 process still boots. The worker signs a
@@ -2379,8 +2408,9 @@ deposit route.
 **Recurring gifts.** Donors will configure fixed USD amounts to
 recipients. They are paid by the external spend worker **when the recipient
 posts a top-level note**, not on a daily timer. Invoice HTTP (`POST /invoices`
-/ `POST /invoices/proof`) is unchanged. No `/me/recurring` or in-process
-scheduler.
+/ `POST /invoices/proof`) is unchanged except proof now attaches a gift-reply
+when `messageId` was stored; do not invent new paths. No `/me/recurring` or
+in-process scheduler.
 
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
 NOSTR events (profiles, campaigns, replies). Not wired yet. Custodial nsec

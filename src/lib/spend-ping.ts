@@ -15,11 +15,13 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 export interface SpendPing {
   /**
-   * Notify spend that `address` just created a top-level forum post.
+   * Notify spend that `address` just created the top-level forum post
+   * `messageId`.
    *
    * @param address - Recipient Lightning Address.
+   * @param messageId - New top-level forum post id to attach a gift-reply under.
    */
-  ping(address: string): Promise<void>;
+  ping(address: string, messageId: string): Promise<void>;
 }
 
 /**
@@ -27,17 +29,18 @@ export interface SpendPing {
  */
 export class NoopSpendPing implements SpendPing {
   /**
-   * Ignore the address.
+   * Ignore the address and message id.
    *
    * @param _address - Unused.
+   * @param _messageId - Unused.
    */
-  ping(_address: string): Promise<void> {
+  ping(_address: string, _messageId: string): Promise<void> {
     return Promise.resolve();
   }
 }
 
 /**
- * POST `{ address }` to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`.
+ * POST `{ address, messageId }` to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
  * Network, abort, and non-2xx log `spend.ping.failed` and resolve.
@@ -61,11 +64,12 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * POST `{ address }` to `{spendUrl}/ping`. Resolves on success and failure.
+   * POST `{ address, messageId }` to `{spendUrl}/ping`. Resolves on success and failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
+   * @param messageId - New top-level forum post id (JSON body).
    */
-  async ping(address: string): Promise<void> {
+  async ping(address: string, messageId: string): Promise<void> {
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',
@@ -73,7 +77,7 @@ export class HttpSpendPing implements SpendPing {
           Authorization: `Bearer ${this.#token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ address }),
+        body: JSON.stringify({ address, messageId }),
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
       if (response.ok) {

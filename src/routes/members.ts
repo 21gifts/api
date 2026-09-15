@@ -5,6 +5,7 @@ import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requiremen
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -35,6 +36,11 @@ export interface MembersRouteDeps {
    * Empty activity stays 200 without calling Coinbase.
    */
   rates?: BtcUsdRateBook;
+  /**
+   * Historical USD→CHF/EUR/PHP crosses (default: empty {@link InMemoryFiatStore}).
+   * Missing fiat never 503s the page.
+   */
+  fiatRates?: FiatRateBook;
 }
 
 /** Auth or member-load outcome. */
@@ -129,12 +135,13 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * `GET /members/:accountId/replies`. More-specific paths register before
  * `/:accountId`.
  *
- * @param deps - Auth store, message store, clock, and optional gift/rate stores.
+ * @param deps - Auth store, message store, clock, and optional gift/rate/fiat stores.
  * @returns A Hono app with activity, posts, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
@@ -153,6 +160,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           messages: deps.messageStore,
           rates,
           now: deps.now,
+          fiatRates,
         });
         return c.json(activity, 200);
       } catch (err) {

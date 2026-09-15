@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryBtcUsdStore } from '@/lib/btc-usd-store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { createApp } from '@/server';
 
 const now = (): number => 1_700_000_000_000;
@@ -29,7 +32,11 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 async function seedSession(
-  overrides: { rulesAgreedAt?: number | null; viewKey?: string } = {},
+  overrides: {
+    rulesAgreedAt?: number | null;
+    viewKey?: string;
+    lightningAddress?: string | null;
+  } = {},
 ): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
@@ -38,7 +45,7 @@ async function seedSession(
     role: 'basis',
     name: 'Ada',
     location: null,
-    lightningAddress: null,
+    lightningAddress: overrides.lightningAddress ?? null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
     viewKey: overrides.viewKey ?? 'a'.repeat(64),
@@ -261,6 +268,95 @@ describe('account activity routes', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
+      true,
+    );
+  });
+
+  it('GET /me/activity converts CHF from a seeded fiat book', async () => {
+    const authStore = await seedSession({ lightningAddress: 'ada@walletofsatoshi.com' });
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+    ]);
+    const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
+    const fiatRates = new InMemoryFiatStore({
+      '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+    });
+    const res = await createApp({
+      authStore,
+      giftStore,
+      btcUsdRates,
+      fiatRates,
+      now,
+    }).request('/me/activity', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedOverTime: Array<{
+        cumulativeUsd: string;
+        cumulativeChf: string | null;
+        cumulativeEur: string | null;
+        cumulativePhp: string | null;
+      }>;
+    };
+    expect(body.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+    expect(body.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
+    expect(body.receivedOverTime[0]?.cumulativeEur).toBe('0.90');
+    expect(body.receivedOverTime[0]?.cumulativePhp).toBe('50.00');
+  });
+
+  it('GET /view/:viewKey/activity converts CHF from a seeded fiat book', async () => {
+    const authStore = await seedSession();
+    const messageStore = await seedMember(authStore);
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+    ]);
+    const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
+    const fiatRates = new InMemoryFiatStore({
+      '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+    });
+    const res = await createApp({
+      authStore,
+      messageStore,
+      giftStore,
+      btcUsdRates,
+      fiatRates,
+      now,
+    }).request(`/view/${VIEW_KEY}/activity`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedOverTime: Array<{
+        cumulativeChf: string | null;
+      }>;
+    };
+    expect(body.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
+  });
+
+  it('GET /me/activity stays 200 with null CHF when fiat ensureDays throws', async () => {
+    const authStore = await seedSession({ lightningAddress: 'ada@walletofsatoshi.com' });
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+    ]);
+    const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
+    const res = await createApp({
+      authStore,
+      giftStore,
+      btcUsdRates,
+      fiatRates: {
+        ensureDays: async () => {
+          throw new Error('frankfurter down');
+        },
+      },
+      now,
+    }).request('/me/activity', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedOverTime: Array<{
+        cumulativeUsd: string;
+        cumulativeChf: string | null;
+      }>;
+    };
+    expect(body.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+    expect(body.receivedOverTime[0]?.cumulativeChf).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fiat_failed')).toBe(
       true,
     );
   });

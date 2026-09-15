@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
@@ -7,8 +8,12 @@ import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
+import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { notifyForumReply } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
 import { preimageMatchesHash } from '@/lib/proof';
+import type { PushStore } from '@/lib/push-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   NoopGiftRecorder,
@@ -16,11 +21,13 @@ import {
   type GiftRecorder,
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Spend-worker invoice routes: check passkey eligibility and a live
  * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
- * the payment preimage as proof. The api does not pay.
+ * the payment preimage as proof. A proof with `messageId` attaches a platform
+ * gift-reply under that post. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -30,15 +37,25 @@ export interface InvoiceRouteDeps {
   /** Issued-invoice store. */
   store: InvoiceStore;
   /**
-   * Auth store for Lightning Address → account and passkey credential lookup.
-   * Distinct from {@link InvoiceStore} (`store`).
+   * Auth store for Lightning Address → account, passkey, platform, and
+   * custodial pubkey lookup. Distinct from {@link InvoiceStore} (`store`).
    */
-  authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
+  authStore: Pick<
+    AuthStore,
+    | 'getAccountByLightningAddress'
+    | 'accountHasPasskey'
+    | 'listAccounts'
+    | 'getNostrPublicKey'
+    | 'getAccount'
+  >;
   /**
-   * Forum store for Lightning Address → live top-level non-profile post lookup.
-   * Distinct from {@link InvoiceStore} (`store`).
+   * Forum store for live top-level post lookup, gift-reply insert, and
+   * GET `/posted` `messageId`. Distinct from {@link InvoiceStore} (`store`).
    */
-  messageStore: Pick<MessageStore, 'accountHasLiveTopLevelPost'>;
+  messageStore: Pick<
+    MessageStore,
+    'accountHasLiveTopLevelPost' | 'getById' | 'addSats' | 'create' | 'listPostsByAccount'
+  >;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for LNURL-pay. */
@@ -48,6 +65,15 @@ export interface InvoiceRouteDeps {
    * Insert failures are logged; proof still returns 200.
    */
   giftRecorder?: GiftRecorder;
+  /**
+   * Optional in-app notification store. When present with `pushStore`, a spend
+   * gift-reply fans out via {@link notifyForumReply}.
+   */
+  notificationStore?: NotificationStore;
+  /**
+   * Optional push outbox; also the bell-subscriber list.
+   */
+  pushStore?: PushStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -56,12 +82,26 @@ const issueBodySchema = z.object({
   address: z.string(),
   amountMsat: z.number().int(),
   comment: z.string().max(255).optional(),
+  messageId: z.string().optional(),
 });
 
 const proofBodySchema = z.object({
   id: z.string().min(1),
   preimage: z.string(),
 });
+
+/**
+ * Deterministic gift-reply id for a spend invoice so a retry of the same
+ * proof is idempotent on `message.id`.
+ *
+ * @param invoiceId - Gift invoice id.
+ * @returns UUID derived from SHA-256 of the spend-gift prefix and invoice id.
+ */
+function spendGiftReplyId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
 
 /**
  * Map {@link checkSpendAuth} to a Hono JSON response, or `null` when ok.
@@ -125,7 +165,7 @@ async function addressHasPosted(
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder.
+ *   optional gift recorder, optional notification and push stores.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
@@ -145,6 +185,70 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
     } catch {
       logEvent('gifts.record_failed', { id: invoice.id });
     }
+  }
+
+  async function attachSpendGiftReply(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+    if (invoice.messageId === undefined) {
+      return;
+    }
+    try {
+      const replyId = spendGiftReplyId(invoice.id);
+      const existing = await deps.messageStore.getById(replyId);
+      if (existing !== undefined) {
+        return;
+      }
+      const parent = await deps.messageStore.getById(invoice.messageId);
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (parent === undefined || parent.deletedAt !== null || platform === undefined) {
+        logEvent('invoice.gift_reply.failed');
+        return;
+      }
+      const sats = Math.floor(invoice.amountMsat / 1000);
+      const nameTrim = platform.name?.trim() ?? '';
+      const name = nameTrim !== '' ? nameTrim : '21.gifts';
+      const text = invoice.comment ?? '';
+      const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
+      const created = await deps.messageStore.create({
+        id: replyId,
+        accountId: platform.id,
+        name,
+        text,
+        createdAt: new Date(paidAtMs),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        contentFp: null,
+        ...unsignedNostrDefaults(),
+        parentId: invoice.messageId,
+        sats,
+        nostrPublishState: text === '' ? 'skipped' : 'pending',
+        authorPubkey,
+      });
+      await deps.messageStore.addSats(invoice.messageId, sats);
+      try {
+        await notifyForumReply({
+          messages: deps.messageStore as MessageStore,
+          account: platform,
+          created,
+          parentId: invoice.messageId,
+          /* v8 ignore next 4 -- createApp always injects notificationStore and pushStore */
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notifications: deps.notificationStore }),
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+        });
+      } catch {
+        logEvent('messages.reply.notify.failed');
+      }
+    } catch {
+      logEvent('invoice.gift_reply.failed');
+    }
+  }
+
+  async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+    await persistProvenGift(invoice, paidAtMs);
+    await attachSpendGiftReply(invoice, paidAtMs);
   }
 
   return new Hono()
@@ -179,8 +283,21 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
-      return c.json({ hasPosted }, 200);
+      const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined) {
+        return c.json({ hasPosted: false, messageId: null }, 200);
+      }
+      const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(
+        account.id,
+        account.profileMessageId ?? null,
+      );
+      if (!hasPosted) {
+        return c.json({ hasPosted: false, messageId: null }, 200);
+      }
+      const posts = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
+      const profileId = account.profileMessageId ?? null;
+      const newest = posts.find((row) => row.id !== profileId);
+      return c.json({ hasPosted: true, messageId: newest === undefined ? null : newest.id }, 200);
     })
     .post('/', async (c) => {
       const denied = authGate(
@@ -202,6 +319,9 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
+      if (parsed.data.messageId !== undefined && !MESSAGE_ID_RE.test(parsed.data.messageId)) {
+        return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
+      }
 
       const address = normalizeLightningAddress(parsed.data.address);
       if (address === null) {
@@ -212,16 +332,43 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
-      const hasPasskey = await addressHasPasskey(deps.authStore, address);
-      if (!hasPasskey) {
+      const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined || !(await deps.authStore.accountHasPasskey(account.id))) {
         logEvent('invoice.passkey_required', { address });
         return c.json({ error: 'Passkey required' }, 403);
       }
 
-      const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
-      if (!hasPosted) {
-        logEvent('invoice.forum_post_required', { address });
-        return c.json({ error: 'Forum post required' }, 403);
+      if (parsed.data.messageId !== undefined) {
+        const message = await deps.messageStore.getById(parsed.data.messageId);
+        if (
+          message === undefined ||
+          message.deletedAt !== null ||
+          message.parentId !== null ||
+          message.id === (account.profileMessageId ?? null) ||
+          message.accountId === null ||
+          message.accountId !== account.id
+        ) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
+        const author = await deps.authStore.getAccount(message.accountId);
+        const authorAddress =
+          author === undefined ? null : normalizeLightningAddress(author.lightningAddress ?? '');
+        if (author === undefined || authorAddress !== address) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
+        const accounts = await deps.authStore.listAccounts();
+        const platform = accounts.find((item) => item.isPlatform === true);
+        if (platform === undefined) {
+          return c.json({ error: 'Platform account is not configured' }, 503);
+        }
+      } else {
+        const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
+        if (!hasPosted) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
       }
 
       const fetchArgs: {
@@ -259,6 +406,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         amountMsat,
         createdAt: now,
         expiresAt: now + GIFT_INVOICE_TTL_MS,
+        ...(parsed.data.messageId === undefined
+          ? {}
+          : {
+              messageId: parsed.data.messageId,
+              comment: parsed.data.comment ?? '',
+            }),
       });
       logEvent('invoice.issued', { id, address, amountMsat });
       return c.json(
@@ -302,7 +455,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           invoice.preimage === parsed.data.preimage.trim().toLowerCase() &&
           preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)
         ) {
-          await persistProvenGift(invoice, invoice.paidAt);
+          await finishPaid(invoice, invoice.paidAt);
           return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
         }
         return c.json({ error: 'Invoice already paid' }, 409);
@@ -311,7 +464,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         const preimage = parsed.data.preimage.trim().toLowerCase();
         deps.store.markPaid(invoice.id, preimage, now);
         logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
-        await persistProvenGift(invoice, now);
+        await finishPaid(invoice, now);
         return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
       }
       if (now >= invoice.expiresAt) {

@@ -4,6 +4,7 @@ import { serializeViewProfile } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 
@@ -31,6 +32,11 @@ export interface ViewRouteDeps {
    * Empty activity stays 200 without calling Coinbase.
    */
   rates?: BtcUsdRateBook;
+  /**
+   * Historical USD→CHF/EUR/PHP crosses (default: empty {@link InMemoryFiatStore}).
+   * Missing fiat never 503s the page.
+   */
+  fiatRates?: FiatRateBook;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
 }
@@ -45,13 +51,14 @@ const VIEW_KEY_RE = /^[0-9a-f]{64}$/;
  * `GET /view/:viewKey/activity`. No auth. Never calls `resolveSession`.
  * Never accepts the key as Bearer.
  *
- * @param deps - Shared auth store and optional activity collaborators.
+ * @param deps - Shared auth store and optional activity collaborators including the fiat book.
  * @returns A Hono app exposing `GET /:viewKey/activity` and `GET /:viewKey`.
  */
 export function viewRoutes(deps: ViewRouteDeps): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const now = deps.now ?? Date.now;
 
   return new Hono()
@@ -71,6 +78,7 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
           messages: messageStore,
           rates,
           now,
+          fiatRates,
         });
         return c.json(activity, 200);
       } catch (err) {

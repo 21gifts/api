@@ -132,8 +132,9 @@ export interface AppDeps {
    */
   btcUsdRates?: BtcUsdRateBook;
   /**
-   * Historical USD→CHF/EUR/PHP crosses for gift stats (default: empty
-   * {@link InMemoryFiatStore} — missing fiat is JSON `null`, never 503).
+   * Historical USD→CHF/EUR/PHP crosses for gift stats and account activity
+   * (`/me`, `/members`, `/view`; default: empty {@link InMemoryFiatStore} —
+   * missing fiat is JSON `null`, never 503).
    */
   fiatRates?: FiatRateBook;
   /**
@@ -277,14 +278,25 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       giftStore,
       rates: btcUsdRates,
+      fiatRates,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
   app.route(
     '/members',
-    membersRoutes({ authStore: store, messageStore, now, giftStore, rates: btcUsdRates }),
+    membersRoutes({
+      authStore: store,
+      messageStore,
+      now,
+      giftStore,
+      rates: btcUsdRates,
+      fiatRates,
+    }),
   );
-  app.route('/view', viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, now }));
+  app.route(
+    '/view',
+    viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, fiatRates, now }),
+  );
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
@@ -359,6 +371,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
+      notificationStore,
+      pushStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );
