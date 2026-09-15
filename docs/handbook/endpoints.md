@@ -254,7 +254,7 @@
 
 ## Endpoint: GET /invoices/posted
 
-- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ hasPosted, messageId }` (`messageId` newest live top-level non-profile id, or null when hasPosted is false) so spend can filter before preflight. Fail closed: unknown address, or account with no live **top-level** forum message that is not the auto-created profile note → `hasPosted: false`, `messageId: null` (always HTTP 200 on success; never 404). Replies do not count. Photo-only / empty-text top-level notes still count. Damus-only rows (`accountId` null) and soft-deleted rows do not.
+- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ hasPosted, messageId }` (`messageId` newest live top-level non-profile id, or null). `hasPosted: false` always pairs with `messageId: null`. `hasPosted: true` can still have `messageId: null` when `listPostsByAccount` yields no non-profile row. Fail closed: unknown address, or account with no live **top-level** forum message that is not the auto-created profile note → `hasPosted: false`, `messageId: null` (always HTTP 200 on success; never 404). Replies do not count. Photo-only / empty-text top-level notes still count. Damus-only rows (`accountId` null) and soft-deleted rows do not.
 - **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 missing or invalid Lightning Address (`Not a valid Lightning Address (expected name@domain)`).
 - **Used by:** the external spend worker before issuing a gift invoice.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.

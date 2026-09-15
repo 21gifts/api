@@ -205,10 +205,10 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return;
       }
       const sats = Math.floor(invoice.amountMsat / 1000);
-      await deps.messageStore.addSats(invoice.messageId, sats);
       const nameTrim = platform.name?.trim() ?? '';
       const name = nameTrim !== '' ? nameTrim : '21.gifts';
       const text = invoice.comment ?? '';
+      const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
       const created = await deps.messageStore.create({
         id: replyId,
         accountId: platform.id,
@@ -223,8 +223,9 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         parentId: invoice.messageId,
         sats,
         nostrPublishState: text === '' ? 'skipped' : 'pending',
-        authorPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
+        authorPubkey,
       });
+      await deps.messageStore.addSats(invoice.messageId, sats);
       try {
         await notifyForumReply({
           messages: deps.messageStore as MessageStore,

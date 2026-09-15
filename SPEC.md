@@ -1554,9 +1554,10 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null }` when there is no account for the
 address or the account has no live **top-level** forum message other than the
 auto-created profile note. Replies do not count. Photo-only / empty-text
-top-level notes still count. When `hasPosted` is true, `messageId` is the
-newest live top-level non-profile post id; replies and the auto profile note
-do not count.
+top-level notes still count. When `hasPosted` is true, `messageId` is usually
+the newest live top-level non-profile post id; it can still be `null` if
+`listPostsByAccount` yields no non-profile row. Replies and the auto profile
+note never become `messageId`.
 
 ### `POST /invoices`
 
@@ -1670,12 +1671,12 @@ handle from the invoice address, description `21gifts daily`,
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
 
-When the invoice has `messageId`, the api also `addSats(floor(msat/1000))` on
-that post and inserts a platform-account gift-reply (name trimmed or
-`21.gifts`, text = comment, `parentId` = `messageId`, same visual as a zap
-gift-reply). Repeat proof with the same preimage is idempotent (no second
-`addSats`/row). Parent missing/deleted or platform missing: skip attach, log
-`invoice.gift_reply.failed`, still **200** + gift persist.
+When the invoice has `messageId`, the api inserts a platform-account
+gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
+`messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
+on that post. Repeat proof with the same preimage is idempotent (existing
+reply id skips `addSats`). Parent missing/deleted or platform missing: skip
+attach, log `invoice.gift_reply.failed`, still **200** + gift persist.
 
 Success → **Response** `200`:
 

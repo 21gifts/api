@@ -1639,7 +1639,49 @@ describe('POST /invoices/proof', () => {
     );
     expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
-    expect(await inner.listReplies(POST_ID, 200)).toHaveLength(0);
+    expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
+    expect((await inner.getById(POST_ID))?.sats).toBe(0);
+  });
+
+  it('does not addSats when create throws, then credits once on retry', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const inner = uuidPostStore();
+    let createCalls = 0;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'create') {
+          return async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
+            createCalls += 1;
+            if (createCalls === 1) {
+              throw new Error('create');
+            }
+            return target.create(row);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(POST_ID))?.sats).toBe(0);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(POST_ID))?.sats).toBe(1);
+    expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 
   it('returns 200 and logs messages.reply.notify.failed when notifyForumReply throws', async () => {
