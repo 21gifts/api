@@ -3,6 +3,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
 
 const ADDRESS = 'ada@walletofsatoshi.com';
+const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';
 
@@ -16,7 +17,7 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 describe('NoopSpendPing', () => {
   it('resolves without calling fetch', async () => {
     const fetchImpl = vi.fn<FetchFn>();
-    await expect(new NoopSpendPing().ping(ADDRESS)).resolves.toBeUndefined();
+    await expect(new NoopSpendPing().ping(ADDRESS, MESSAGE_ID)).resolves.toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
@@ -53,7 +54,7 @@ describe('resolveSpendPing', () => {
       recording,
     );
     expect(ping).toBeInstanceOf(HttpSpendPing);
-    await ping?.ping(ADDRESS);
+    await ping?.ping(ADDRESS, MESSAGE_ID);
     expect(seen).toBe('https://spend.example/ping');
   });
 });
@@ -69,7 +70,7 @@ describe('HttpSpendPing', () => {
     warn.mockRestore();
   });
 
-  it('POSTs JSON { address } with Bearer token and logs spend.ping.ok on 200', async () => {
+  it('POSTs JSON { address, messageId } with Bearer token and logs spend.ping.ok on 200', async () => {
     let seenInput = '';
     let seenInit: RequestInit | undefined;
     const fetchImpl: FetchFn = async (input, init) => {
@@ -77,12 +78,15 @@ describe('HttpSpendPing', () => {
       seenInit = init;
       return new Response(null, { status: 200 });
     };
-    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS);
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+    );
     expect(seenInput).toBe(`${SPEND_URL}/ping`);
     expect(seenInit?.method).toBe('POST');
     expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
     expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
-    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS }));
+    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS, messageId: MESSAGE_ID }));
     expect(seenInit?.signal).toBeDefined();
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
@@ -92,21 +96,27 @@ describe('HttpSpendPing', () => {
 
   it('logs spend.ping.ok on 202 accepted', async () => {
     const fetchImpl: FetchFn = async () => new Response(null, { status: 202 });
-    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS);
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+    );
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
   });
 
   it('uses AbortSignal.timeout of 5000 by default and the injected timeoutMs', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const fetchImpl: FetchFn = async () => new Response(null, { status: 200 });
-    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS);
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+    );
     expect(timeoutSpy).toHaveBeenCalledWith(5000);
     await new HttpSpendPing({
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
       timeoutMs: 1_000,
-    }).ping(ADDRESS);
+    }).ping(ADDRESS, MESSAGE_ID);
     expect(timeoutSpy).toHaveBeenCalledWith(1_000);
     timeoutSpy.mockRestore();
   });
@@ -114,7 +124,7 @@ describe('HttpSpendPing', () => {
   it('logs spend.ping.failed on non-2xx and does not throw', async () => {
     const fetchImpl: FetchFn = async () => new Response(null, { status: 500 });
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(
       parsedEvents(warn).some(
@@ -129,7 +139,7 @@ describe('HttpSpendPing', () => {
       throw new Error('network down');
     };
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
@@ -141,7 +151,7 @@ describe('HttpSpendPing', () => {
       throw err;
     };
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });

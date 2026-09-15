@@ -52,6 +52,22 @@ describe('InMemoryInvoiceStore', () => {
     });
   });
 
+  it('preserves messageId and comment through markPaid', () => {
+    const store = new InMemoryInvoiceStore();
+    const row: GiftInvoice = {
+      ...sample('d'.repeat(32)),
+      messageId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      comment: 'gm',
+    };
+    store.put(row);
+    store.markPaid(row.id, 'ff'.repeat(32), 7);
+    expect(store.get(row.id)).toEqual({
+      ...row,
+      paidAt: 7,
+      preimage: 'ff'.repeat(32),
+    });
+  });
+
   it('sweep drops unpaid rows after the 409 tombstone window', () => {
     const store = new InMemoryInvoiceStore();
     const unpaid = sample('e'.repeat(32));

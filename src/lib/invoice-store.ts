@@ -29,6 +29,10 @@ export interface GiftInvoice {
   paidAt?: number;
   /** Preimage that settled the invoice, lowercase hex. */
   preimage?: string;
+  /** Forum post to attach a gift-reply under on proof. */
+  messageId?: string;
+  /** LUD-12 comment / gift-reply text (may be `''`). */
+  comment?: string;
 }
 
 /**
@@ -102,13 +106,7 @@ export class InMemoryInvoiceStore implements InvoiceStore {
       return;
     }
     const paid: GiftInvoice = {
-      id: current.id,
-      address: current.address,
-      pr: current.pr,
-      paymentHash: current.paymentHash,
-      amountMsat: current.amountMsat,
-      createdAt: current.createdAt,
-      expiresAt: current.expiresAt,
+      ...current,
       paidAt: now,
       preimage,
     };
