@@ -8,6 +8,7 @@ import type { Account } from '@/lib/auth/store';
 import * as bolt11 from '@/lib/bolt11';
 import { InMemoryBtcUsdStore } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import {
   InMemoryMessageStore,
@@ -125,6 +126,7 @@ async function activity(args: {
   gifts?: InMemoryGiftStore;
   messages?: InMemoryMessageStore;
   rates?: InMemoryBtcUsdStore;
+  fiatRates?: FiatRateBook;
 }): Promise<Awaited<ReturnType<typeof buildAccountActivity>>> {
   return buildAccountActivity({
     account: args.acc ?? account(),
@@ -132,6 +134,7 @@ async function activity(args: {
     messages: args.messages ?? new InMemoryMessageStore(),
     rates: args.rates ?? RATES,
     now: () => PAID_AT.getTime(),
+    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
   });
 }
 
@@ -379,5 +382,61 @@ describe('buildAccountActivity', () => {
     await expect(activity({ messages, rates: new InMemoryBtcUsdStore() })).rejects.toThrow(
       'fx.rate.missing',
     );
+  });
+
+  it('converts CHF/EUR/PHP on received house gifts when a fiat book is seeded', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
+    ]);
+    const stats = await activity({
+      gifts,
+      fiatRates: new InMemoryFiatStore({ [DAY]: { CHF: '0.80', EUR: '0.90', PHP: '50' } }),
+    });
+    expect(stats.receivedSats).toBe(1000);
+    expect(stats.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+    expect(stats.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
+    expect(stats.receivedOverTime[0]?.cumulativeEur).toBe('0.90');
+    expect(stats.receivedOverTime[0]?.cumulativePhp).toBe('50.00');
+    expect(stats.fx.quotes).toEqual([
+      { code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' },
+      { code: 'CHF', pair: 'USD-CHF', source: 'frankfurter-ecb' },
+      { code: 'EUR', pair: 'USD-EUR', source: 'frankfurter-ecb' },
+      { code: 'PHP', pair: 'USD-PHP', source: 'frankfurter-ecb' },
+    ]);
+  });
+
+  it('omits fiat ensureDays when activity is empty', async () => {
+    const ensureDays = vi.fn(async () => new Map());
+    await expect(activity({ fiatRates: { ensureDays } })).resolves.toEqual(EMPTY);
+    expect(ensureDays).not.toHaveBeenCalled();
+  });
+
+  it('logs account.activity.fiat_failed and still returns USD when fiat throws', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const stats = await activity({
+        gifts,
+        fiatRates: {
+          ensureDays: async () => {
+            throw new Error('frankfurter down');
+          },
+        },
+      });
+      expect(stats.receivedSats).toBe(1000);
+      expect(stats.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+      expect(stats.receivedOverTime[0]?.cumulativeChf).toBeNull();
+      expect(stats.receivedOverTime[0]?.cumulativeEur).toBeNull();
+      expect(stats.receivedOverTime[0]?.cumulativePhp).toBeNull();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((e) => e['event'] === 'account.activity.fiat_failed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

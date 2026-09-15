@@ -205,22 +205,22 @@
 
 ## Endpoint: GET /me/activity
 
-- **Purpose:** Bearer session JSON of given and received sats for the signed-in account (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Given is confirmed forum zaps this account paid plus all outbound house gifts when the account is platform. Received is zaps on authored notes (including hidden and replies) plus `message.sats` remainder on **top-level** notes only (so a ₿21 post cannot sit under an empty chart; gift-as-reply `sats` are not Received) plus house gifts to the Lightning handle. Empty activity is 200 zeros without Coinbase. No invoices or payment hashes.
-- **Errors:** 401 `{ "error": "Unauthorized" }` without session; 503 `{ "error": "Gift stats are unavailable" }` on store throw or missing FX (`account.activity.failed` / `account.activity.fx_incomplete`).
+- **Purpose:** Bearer session JSON of given and received sats for the signed-in account (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Given is confirmed forum zaps this account paid plus all outbound house gifts when the account is platform. Received is zaps on authored notes (including hidden and replies) plus `message.sats` remainder on **top-level** notes only (so a ₿21 post cannot sit under an empty chart; gift-as-reply `sats` are not Received) plus house gifts to the Lightning handle. Series are the same `spendOverTime` day objects as `GET /gifts/stats` including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Missing CHF/EUR/PHP is JSON `null`. No invoices or payment hashes.
+- **Errors:** 401 `{ "error": "Unauthorized" }` without session; 503 `{ "error": "Gift stats are unavailable" }` on store throw or missing BTC-USD (`account.activity.failed` / `account.activity.fx_incomplete`). Missing CHF/EUR/PHP is never 503 (`account.activity.fiat_failed` still 200).
 - **Used by:** App `/me/activity` proxy, signed-in profile chart and menu totals.
 - **Auth:** Bearer session. No living-room-rules gate.
 
 ## Endpoint: GET /members/:accountId/activity
 
 - **Purpose:** Same activity JSON as `GET /me/activity` for the member `:accountId`. Auth matches `GET /members/:accountId`.
-- **Errors:** 401 without session; 409 `missing_requirements` when the caller lacks rules; 404 non-uuid or unknown account; 503 gift stats unavailable.
+- **Errors:** 401 without session; 409 `missing_requirements` when the caller lacks rules; 404 non-uuid or unknown account; 503 gift stats unavailable. Missing fiat is never 503 (same as `GET /me/activity`).
 - **Used by:** App `/forum/members/[accountId]/activity` proxy and member profile chart.
 - **Auth:** Bearer session with `forum.read`.
 
 ## Endpoint: GET /view/:viewKey/activity
 
 - **Purpose:** Public activity JSON for the account behind the 64-hex view key. Same body as `GET /me/activity`.
-- **Errors:** 404 `{ "error": "Not found" }` for a bad or unknown key (same as `GET /view/:viewKey`); 503 gift stats unavailable.
+- **Errors:** 404 `{ "error": "Not found" }` for a bad or unknown key (same as `GET /view/:viewKey`); 503 gift stats unavailable. Missing fiat is never 503 (same as `GET /me/activity`).
 - **Used by:** App `/view-key/[viewKey]/activity` proxy and public view profile chart.
 - **Auth:** none.
 

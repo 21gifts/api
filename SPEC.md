@@ -349,7 +349,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Store throw or missing FX day → **Response** `503`:
+Store throw or missing BTC-USD day → **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
@@ -372,7 +372,7 @@ Store throw or missing FX day → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`. Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
 
 ### `POST /me/setup/skip`
 
@@ -420,7 +420,8 @@ are not listed.
 
 Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
-stats are unavailable" }` when the gift store throws or a gift day lacks FX.
+stats are unavailable" }` when the gift store throws or a gift day lacks
+BTC-USD.
 
 ### `GET /view/:viewKey`
 
@@ -456,7 +457,7 @@ profile is still unclaimed.
 Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
 the same JSON as `GET /me/activity` for the account behind the key. 503
 `{ "error": "Gift stats are unavailable" }` when the gift store throws or a
-gift day lacks FX.
+gift day lacks BTC-USD.
 
 ### `POST /me/name`
 

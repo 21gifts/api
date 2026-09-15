@@ -16,7 +16,9 @@ import {
   type SpendDay,
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
+import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
 
 const PAYMENT_HASH_RE = /^[0-9a-f]{64}$/;
 const FALLBACK_RECIPIENT = 'zap';
@@ -142,12 +144,18 @@ export function matchConfirmedGivenZaps(
  * amounts on **top-level** notes (so a visible ₿21 post is never “no gifts”;
  * gift-as-reply `sats` do not inflate the payer's Received), plus house gifts whose
  * recipient handle matches the account Lightning Address. Self-zaps count on
- * both sides. Empty input is zeros without Coinbase. Missing FX throws the
- * same `fx.rate.missing` as {@link buildGiftStats}.
+ * both sides. Empty input is zeros without Coinbase and without Frankfurter.
+ * Missing BTC-USD throws the same `fx.rate.missing` as {@link buildGiftStats}.
+ * Missing CHF/EUR/PHP is JSON `null`, never a throw; when fiat `ensureDays`
+ * throws, log `account.activity.fiat_failed` and continue with an empty fiat
+ * map. Series (`donatedOverTime` / `receivedOverTime`) are the same
+ * `spendOverTime` day objects as `GET /gifts/stats`, including additive
+ * CHF/EUR/PHP.
  *
- * @param args - Account, stores, rate book, and clock.
+ * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
+ *   book, and clock.
  * @returns Activity totals and series.
- * @throws `Error('fx.rate.missing')` when a gift day has no rate.
+ * @throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate.
  */
 export async function buildAccountActivity(args: {
   account: Account;
@@ -155,6 +163,11 @@ export async function buildAccountActivity(args: {
   messages: MessageStore;
   rates: BtcUsdRateBook;
   now: () => number;
+  /**
+   * USD→CHF/EUR/PHP book. Default empty `InMemoryFiatStore`.
+   * Missing fiat is JSON null, never a throw.
+   */
+  fiatRates?: FiatRateBook;
 }): Promise<AccountActivity> {
   const house = await args.gifts.listOutbound();
   const handle = args.account.lightningAddress;
@@ -166,6 +179,7 @@ export async function buildAccountActivity(args: {
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
+  const fiatRates = args.fiatRates ?? new InMemoryFiatStore();
 
   if (givenRows.length === 0 && receivedRows.length === 0) {
     const empty = buildGiftStats([], new Map());
@@ -188,8 +202,15 @@ export async function buildAccountActivity(args: {
     }
   }
 
-  const givenStats = buildGiftStats(givenRows, rateMap);
-  const receivedStats = buildGiftStats(receivedRows, rateMap);
+  let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
+  try {
+    fiatMap = await fiatRates.ensureDays(days, args.now());
+  } catch {
+    logEvent('account.activity.fiat_failed');
+  }
+
+  const givenStats = buildGiftStats(givenRows, rateMap, fiatMap);
+  const receivedStats = buildGiftStats(receivedRows, rateMap, fiatMap);
   return {
     donatedSats: givenStats.totalSats,
     receivedSats: receivedStats.totalSats,
