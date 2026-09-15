@@ -163,7 +163,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted` and `aboutMe`.
 - **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -177,7 +177,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted` and `aboutMe`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
@@ -282,14 +282,14 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -310,8 +310,8 @@
 
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`). `hasPasskey` is true when the account already has a passkey credential. No auth. Not a session.
-- **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown.
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`). `hasPasskey` is true when the account already has a passkey credential. `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). No auth. Not a session.
+- **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown. 503 `{ "error": "Messages are unavailable" }` when the profile-note read throws (`view.get.failed`).
 - **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
 - **Auth:** none.
 
@@ -478,7 +478,7 @@
 
 ## Endpoint: POST /me/name
 
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and stores `profileMessageId` (not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -488,6 +488,13 @@
 - **Purpose:** Bearer required. Body `{ location }`. Stores the trimmed free-text location on the account (at most 80 characters after trim, no C0/DEL control characters). Empty or whitespace-only input stores `null` (clear). Does not call `ensureProfileMessage`. Field is always present on owner JSON as `location` (`string | null`, never omitted, never `""`). Not a setup step, not a posting requirement, not a profile forum note, not Nostr `kind:0`.
 - **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a \"location\" string" }` when the body is not `{ location: string }`; 400 `{ error: "Location must be at most 80 characters" }` when `normalizeLocation` returns `{ ok: false }`.
 - **Used by:** App owner profile location.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: PUT /me/about
+
+- **Purpose:** Bearer required. Body `{ text }`. Writes About me onto the profile forum note (creates a new live note without a Lightning Address when the note is missing or soft-hidden via `deletedAt`, then claims `profileMessageId` via `claimProfileMessageId` only while the pointer still matches the missing/hidden read; a lost claim deletes the insert and adopts a live winner). A won inline claim create calls `notifyForumPost` after `updateText` with the bio (best-effort; enqueue failure still 200). Adopting a live CAS winner does not notify. PUT `/about` does not call `ensureProfileMessage` (no name-copy insert). Updating an already-live note does not notify. Empty text with no live note does not create or notify. The hidden row stays hidden. Empty text clears the bio (`aboutMe` null; the live note row is kept). Name-only auto-copy is not a bio, including after a display-name rename (Ada→Grace with note text still `Ada` stays `null`). Requires a display name (not LN). Success is owner JSON with `aboutMe`.
+- **Errors:** 401 without session; 400 if the body is not `{ text: string }`, text is longer than 500 characters (`About me must be at most 500 characters`), or text contains C0/DEL control characters; 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
+- **Used by:** App profile About me editor.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /trust-chain

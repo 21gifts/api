@@ -54,7 +54,7 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+`POST`, `PUT`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
@@ -76,13 +76,14 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                 |
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                    |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                   |
-| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted`)                               |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe`)                   |
 | GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound) |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
 | GET    | `/view/:viewKey/activity`                    | none                       | Public given/received payload for the account behind the view key                 |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
 | POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
+| PUT    | `/me/about`                                  | Bearer                     | Set/clear About me on the profile note (creates the note without LN)              |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                            |
 | POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                |
 | POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                         |
@@ -275,12 +276,13 @@ ID).
     "rulesAgreedAt": null,
     "setup": "name",
     "missing": ["name", "lightning-address", "rules"],
-    "hasPosted": false
+    "hasPosted": false,
+    "aboutMe": null
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, and `hasPosted`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, and `aboutMe`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -327,26 +329,33 @@ Missing or invalid bearer → **Response** `401`:
   "rulesAgreedAt": null,
   "setup": "name",
   "missing": ["name", "lightning-address", "rules"],
-  "hasPosted": false
+  "hasPosted": false,
+  "aboutMe": null
 }
 ```
 
-| Field                      | Type           | Meaning                                                                                                                                                                              |
-| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                       | string         | Opaque account id                                                                                                                                                                    |
-| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                              |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                       |
-| `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                    |
-| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                             |
-| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                     |
-| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                    |
-| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                   |
-| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                        |
-| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                             |
-| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                             |
-| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                         |
-| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                |
-| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only). |
+About me is the profile-note text when it is a real bio, else null (auto
+name-copy is not a bio, including after a display-name rename when the note
+text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`)).
+
+| Field                      | Type           | Meaning                                                                                                                                                                                                                                                                     |
+| -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                       | string         | Opaque account id                                                                                                                                                                                                                                                           |
+| `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                     |
+| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                                                                                                              |
+| `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                           |
+| `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                    |
+| `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                                                                                                            |
+| `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                                                                                                           |
+| `forumLawsDismissed`       | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                                                                                                          |
+| `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                               |
+| `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                    |
+| `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                    |
+| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                                                                                                                |
+| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                       |
+| hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only).                                                                                        |
+| `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
 
 ### `GET /me/activity`
 
@@ -403,11 +412,16 @@ Bearer required. `:accountId` must be a UUID. After auth,
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
 Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
-`replyCount`, or `null`), uncapped live `postCount` / `replyCount`
-from `countByAccount` (not the latest-200 window), and `trust`
-(`verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each
-`{ id, name }` or `null`). Default `trust` is all-null when no stored
-edges exist. Never `viewKey` / `eventId`.
+`replyCount`, or `null`), derived `aboutMe` (profile-note text when it
+is a real bio, else `null` when the profile note is missing or
+soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy
+is not a bio, including after a display-name rename when the note text
+still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`); keep `profileMessage`), uncapped live `postCount` /
+`replyCount` from `countByAccount` (not the latest-200 window), and
+`trust` (`verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`,
+each `{ id, name }` or `null`). Default `trust` is all-null when no
+stored edges exist. Never `viewKey` / `eventId`.
 
 ### `GET /members/:accountId/posts`
 
@@ -555,7 +569,7 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (six fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (seven fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
@@ -564,13 +578,19 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
   "lightningAddress": null,
   "lightningAddressVerified": false,
   "createdAt": 0,
-  "hasPasskey": false
+  "hasPasskey": false,
+  "aboutMe": null
 }
 ```
 
 `hasPasskey` is `true` when the account has at least one passkey credential,
 otherwise `false`. Clients use it to show an activation banner only while the
-profile is still unclaimed.
+profile is still unclaimed. `aboutMe` is the profile-note text when it is a
+real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto
+name-copy is not a bio, including after a display-name rename when the note
+text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
+stays `null`)). Store throw on the profile-note read → **503**
+`{ "error": "Messages are unavailable" }` (`view.get.failed`).
 
 ### `GET /view/:viewKey/activity`
 
@@ -606,7 +626,7 @@ Success → **Response** `200` with the updated account (same shape as
 `GET /me`). The stored value is trimmed. Names are not unique. When a
 non-blank Lightning Address is already linked, the first persisted
 non-empty name also creates exactly one top-level profile forum note and
-stores `profileMessageId` (not on owner JSON). Without a Lightning
+claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not on owner JSON). Without a Lightning
 Address the name is stored and no profile note is inserted (linking the
 address later creates it). Rename does not create a second note and does
 not change the note text.
@@ -639,6 +659,57 @@ Success → **Response** `200` with the updated account (same shape as
 stored non-empty value is trimmed. Location is not unique, not a setup
 step, and not a posting requirement. It is public on member and view
 cards. Does not create or update a profile forum note.
+
+### `PUT /me/about`
+
+Set or clear About me on the profile forum note. Body:
+
+```json
+{ "text": "I build on Bitcoin" }
+```
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `text` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"text\" string" }
+```
+
+Text longer than 500 characters after trim (or containing a disallowed
+control character) → **Response** `400`:
+
+```json
+{ "error": "About me must be at most 500 characters" }
+```
+
+Display name is blank → **Response** `409`:
+
+```json
+{ "error": "missing_requirements", "missing": ["name"] }
+```
+
+Lightning Address is not required. Empty `text` clears the bio
+(`aboutMe` becomes `null`; a live note row is kept with empty text).
+When no live profile note exists (missing or soft-hidden), empty text
+does not create a note and does not notify. A non-empty write with no
+live note (missing or soft-hidden) creates a new live note even without
+a Lightning Address and claims `profileMessageId` via
+`claimProfileMessageId` only while the pointer still matches the
+missing/hidden read (not on owner JSON); a lost claim deletes the
+insert and adopts a live winner. A won inline create calls
+`notifyForumPost` after the text write (best-effort; enqueue failure
+still 200). Updating an already-live note does not notify. The hidden
+row stays hidden. A published sats=0 note is unsigned
+(`resetSignedEvent`) so kind:1 can be rewritten.
+Store throw → **503** `{ "error": "Messages are unavailable" }`
+(`account.about.failed`).
+
+Success → **Response** `200` with the account (same shape as `GET /me`).
+About me is the profile-note text when it is a real bio, else null (auto
+name-copy is not a bio, including after a display-name rename when the
+note text still equals the stored profile-note `name` (Ada→Grace with
+text `Ada` stays `null`)).
 
 ### `POST /me/forum-laws-dismissed`
 

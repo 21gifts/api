@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
@@ -16,7 +17,7 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * `/members` — signed-in member profile cards (live identity + profile note),
+ * `/members` — signed-in member profile cards (live identity + profile note + About me),
  * given/received activity, and on-demand latest-200 post/reply feeds.
  */
 
@@ -24,7 +25,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 export interface MembersRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
-  /** Forum persistence (profile notes and member feeds). */
+  /** Forum persistence (About me, member feeds, and activity zaps/invoices). */
   messageStore: MessageStore;
   /** Stored trust edges for the `trust` object on GET JSON. */
   trustStore: TrustStore;
@@ -261,6 +262,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         }
         const account = member.account;
         let profileMessage: ReturnType<typeof serializeMessage> | null = null;
+        let aboutMe: string | null = null;
         const profileId = account.profileMessageId;
         if (typeof profileId === 'string' && profileId.trim() !== '') {
           const row = await deps.messageStore.getById(profileId);
@@ -271,6 +273,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               account.lightningAddress.trim() !== '';
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
             profileMessage = serializeMessage(row, payable, account.role, children.length, true);
+            aboutMe = aboutMeFromNote(account.name, row.text, row.name);
           }
         }
         const counts = await deps.messageStore.countByAccount(account.id);
@@ -285,6 +288,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             lightningAddress: account.lightningAddress,
             createdAt: new Date(account.createdAt).toISOString(),
             profileMessage,
+            aboutMe,
             postCount: counts.postCount,
             replyCount: counts.replyCount,
             trust: accountTrust(account.id, accounts, edges),

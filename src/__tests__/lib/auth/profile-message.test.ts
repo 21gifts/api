@@ -234,13 +234,52 @@ describe('ensureProfileMessage', () => {
     expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
-  it('deletes the note when updateAccount fails after insert', async () => {
+  it('deletes the note when claimProfileMessageId fails after insert', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
-    vi.spyOn(auth, 'updateAccount').mockRejectedValueOnce(new Error('fail'));
+    vi.spyOn(auth, 'claimProfileMessageId').mockRejectedValueOnce(new Error('fail'));
     const result = await ensureProfileMessage({ auth, messages, account, now });
     expect(result.profileMessageId).toBeUndefined();
     expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns the live snapshot when claimProfileMessageId loses and the account is gone', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const get = vi.spyOn(auth, 'getAccount');
+    get.mockResolvedValueOnce({ ...account });
+    vi.spyOn(auth, 'claimProfileMessageId').mockResolvedValueOnce(false);
+    get.mockResolvedValueOnce(undefined);
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBeUndefined();
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns the after snapshot when claimProfileMessageId loses and the pointer is not live', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const get = vi.spyOn(auth, 'getAccount');
+    get.mockResolvedValueOnce({ ...account });
+    vi.spyOn(auth, 'claimProfileMessageId').mockResolvedValueOnce(false);
+    get.mockResolvedValueOnce({ ...account, profileMessageId: 'missing-or-hidden-id' });
+    const result = await ensureProfileMessage({ auth, messages, account, now });
+    expect(result.profileMessageId).toBe('missing-or-hidden-id');
+    expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(0);
+  });
+
+  it('keeps exactly one live top-level note when two ensures race', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const [first, second] = await Promise.all([
+      ensureProfileMessage({ auth, messages, account, now }),
+      ensureProfileMessage({ auth, messages, account, now }),
+    ]);
+    const live = (await messages.listLatest(10)).filter((row) => row.parentId === null);
+    expect(live).toHaveLength(1);
+    const stored = await auth.getAccount(account.id);
+    expect(stored?.profileMessageId).toBe(live[0]?.id);
+    expect(first.profileMessageId).toBe(live[0]?.id);
+    expect(second.profileMessageId).toBe(live[0]?.id);
   });
 
   it('does not set profileMessageId when create throws', async () => {

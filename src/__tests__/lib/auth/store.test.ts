@@ -1231,4 +1231,31 @@ describe('InMemoryAuthStore', () => {
     await store.deleteAccount('acc');
     expect(await store.getNostrPublicKey('acc')).toBeUndefined();
   });
+
+  it('claimProfileMessageId sets the pointer only when it still matches', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.claimProfileMessageId('missing', null, 'note-1')).toBe(false);
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.claimProfileMessageId('acc', null, 'note-1')).toBe(true);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBe('note-1');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
+    expect((await store.getAccountByViewKey('a'.repeat(64)))?.id).toBe('acc');
+    expect(await store.claimProfileMessageId('acc', null, 'note-2')).toBe(false);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBe('note-1');
+    expect(await store.claimProfileMessageId('acc', 'note-1', 'note-3')).toBe(true);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBe('note-3');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
+  });
 });
