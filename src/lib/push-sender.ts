@@ -117,8 +117,9 @@ export class WebPushSender implements PushSender {
     const topic = topicFromPayload(payload);
     const options: {
       TTL: number;
+      urgency: 'high';
       topic?: string;
-    } = { TTL: 86400 };
+    } = { TTL: 86400, urgency: 'high' };
     if (topic !== undefined) {
       options.topic = topic;
     }
