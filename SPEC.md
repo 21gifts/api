@@ -698,7 +698,7 @@ live note (missing or soft-hidden) creates a new live note even without
 a Lightning Address and claims `profileMessageId` via
 `claimProfileMessageId` only while the pointer still matches the
 missing/hidden read (not on owner JSON); a lost claim deletes the
-insert and adopts a live winner. A won no-LN create calls
+insert and adopts a live winner. A won create (no-LN inline or LN ensure) calls
 `notifyForumPost` after the text write (best-effort; enqueue failure
 still 200). Updating an already-live note does not notify. The hidden
 row stays hidden. A published sats=0 note is unsigned

@@ -410,6 +410,36 @@ describe('PUT /me/about', () => {
     expect(await messages.listLatest(10)).toHaveLength(1);
   });
 
+  it('notifies with the bio, not the name-copy, when PUT ensures a note with LN', async () => {
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    await store.createAccount({
+      id: 'other',
+      linkingKey: `03${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bob',
+      location: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    const messages = new InMemoryMessageStore();
+    const notificationStore = new InMemoryNotificationStore();
+    const res = await mount(store, { messages, notificationStore }).request('/me/about', {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: BIO }),
+    });
+    expect(res.status).toBe(200);
+    const listed = await notificationStore.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.text).toBe(BIO);
+    expect(listed[0]?.text).not.toBe('Ada');
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
+  });
+
   it('ensures a missing note with a defined pushStore, then writes the bio', async () => {
     const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
     const res = await mount(store, { pushStore: new InMemoryPushStore() }).request('/me/about', {
