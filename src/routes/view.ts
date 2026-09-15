@@ -52,7 +52,7 @@ const VIEW_KEY_RE = /^[0-9a-f]{64}$/;
  * `GET /view/:viewKey/activity`. No auth. Never calls `resolveSession`.
  * Never accepts the key as Bearer.
  *
- * @param deps - Shared auth store and optional activity collaborators including the fiat book.
+ * @param deps - Shared auth store, optional message store for About me, and optional activity collaborators including the fiat book.
  * @returns A Hono app exposing `GET /:viewKey/activity` and `GET /:viewKey`.
  */
 export function viewRoutes(deps: ViewRouteDeps): Hono {
