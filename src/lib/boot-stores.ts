@@ -36,8 +36,9 @@ import {
   type NotificationStore,
 } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
+import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 
-/** Auth, gift, forum, contact, conversation, notification, push, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, contact, conversation, notification, push, trust, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -81,6 +82,11 @@ export interface BootStores {
    * opened so the entry point keeps an in-memory default.
    */
   pushStore: PushStore | undefined;
+  /**
+   * Postgres-backed trust-edge store, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  trustStore: TrustStore | undefined;
 }
 
 /** Optional FX wiring so tests never hit the network. */
@@ -96,30 +102,34 @@ export interface BootFxOptions {
 }
 
 /**
- * Open auth, optional gift, forum, contact, conversation, notification, and
- * push persistence, and the BTC-USD and USD-fiat rate books from
+ * Open auth, optional gift, forum, contact, conversation, notification,
+ * push, and trust persistence, and the BTC-USD and USD-fiat rate books from
  * `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `contactStore: undefined`, `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `nostrKek: undefined`, an empty {@link InMemoryBtcUsdStore}, and an empty
- * {@link InMemoryFiatStore}. A set URL asks `createClient` for one
- * `SqlClient`, migrates auth (via `openAuthStore`) then the FX tables
- * (`btc_usd_daily` then `usd_fiat_daily`), `message`, `contact`,
- * `conversation`, `push`, `notification`, and `db_change` schemas
- * (notification after push before `db_change`), builds a
- * {@link QueryGiftStore}, {@link SqlGiftRecorder},
- * {@link PostgresMessageStore}, {@link PostgresContactStore},
- * {@link PostgresConversationStore}, {@link PostgresNotificationStore}, and
- * {@link PostgresPushStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
+ * `trustStore: undefined`, `nostrKek: undefined`, an empty
+ * {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}. A set
+ * URL asks `createClient` for one `SqlClient`, migrates auth (via
+ * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
+ * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
+ * and `db_change` schemas (notification after push, trust after notification,
+ * both before `db_change`), builds a {@link QueryGiftStore},
+ * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
+ * {@link PostgresContactStore}, {@link PostgresConversationStore},
+ * {@link PostgresNotificationStore}, {@link PostgresPushStore}, and
+ * {@link PostgresTrustStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
  * constructs {@link PostgresBtcUsdStore} and {@link PostgresFiatStore}, and
  * best-effort fills rates for the outbound gift day range (BTC-USD failures
  * log `gifts.fx.boot_fill.failed`; fiat failures log
  * `gifts.fx.fiat_boot_fill.failed`; neither throws). Memory boots omit
- * `notificationStore`, leave `nostrKek` undefined, and do not run the
- * `db_change` migrate. SQL boots return {@link PostgresNotificationStore}.
+ * `notificationStore` and `trustStore`, leave `nostrKek` undefined, and do
+ * not run the `db_change` migrate. SQL boots return
+ * {@link PostgresNotificationStore} and {@link PostgresTrustStore}.
+ * `migrateTrustSchema` runs after auth/`account` exists and before
+ * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -156,6 +166,7 @@ export async function openBootStores(
       conversationStore: undefined,
       notificationStore: undefined,
       pushStore: undefined,
+      trustStore: undefined,
     };
   }
 
@@ -168,6 +179,7 @@ export async function openBootStores(
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
+  await migrateTrustSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
@@ -209,6 +221,7 @@ export async function openBootStores(
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
+  const trustStore = new PostgresTrustStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -221,5 +234,6 @@ export async function openBootStores(
     conversationStore,
     notificationStore,
     pushStore,
+    trustStore,
   };
 }
