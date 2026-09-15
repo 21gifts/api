@@ -569,6 +569,11 @@ test('Function: WebPushSender — GET /push/vapid-public without bearer is 401',
 }) => {
   expect((await request.get('/push/vapid-public')).status()).toBe(401);
 });
+test('Function: webPushTopicFromTag — GET /push/vapid-public without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/push/vapid-public')).status()).toBe(401);
+});
 test('Function: parsePushSubscription — POST /me/push-subscriptions without bearer is 401', async ({
   request,
 }) => {
