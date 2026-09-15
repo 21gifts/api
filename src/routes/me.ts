@@ -281,7 +281,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       try {
         let owner = current;
         let noteId: string | undefined;
-        let createdInline = false;
+        let createdThisRequest = false;
         const pointerBefore =
           typeof owner.profileMessageId === 'string' && owner.profileMessageId.trim() !== ''
             ? owner.profileMessageId
@@ -314,6 +314,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             const ensured = await deps.messages.getById(ensuredId);
             if (ensured !== undefined && ensured.deletedAt === null) {
               noteId = ensuredId;
+              if (ensuredId !== pointerBefore) {
+                createdThisRequest = true;
+              }
             }
           }
         }
@@ -399,7 +402,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
               } else {
                 owner = { ...live, profileMessageId: created.id };
                 noteId = created.id;
-                createdInline = true;
+                createdThisRequest = true;
               }
             }
           }
@@ -409,8 +412,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
         }
-        const createdThisRequest =
-          createdInline || (typeof noteId === 'string' && noteId !== pointerBefore);
         if (createdThisRequest && liveRow !== undefined) {
           try {
             await notifyForumPost({
