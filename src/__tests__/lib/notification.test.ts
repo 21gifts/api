@@ -17,6 +17,14 @@ const NOW = new Date('2026-08-29T12:00:00.000Z');
 const ZAP_RECEIPT_ID = 'aa'.repeat(32);
 const ZAP_REPLY_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
+function payloadObject(raw: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(raw);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('expected object payload');
+  }
+  return value as Record<string, unknown>;
+}
+
 function message(partial: Partial<MessageRow> & Pick<MessageRow, 'id' | 'accountId'>): MessageRow {
   return {
     name: 'Ada',
@@ -209,7 +217,7 @@ describe('fanoutToBellSubscribers', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(2);
     for (const row of claimed) {
-      expect(JSON.parse(row.payload).unreadCount).toBe(
+      expect(payloadObject(row.payload)['unreadCount']).toBe(
         await notifications.unreadCount(row.accountId),
       );
     }
@@ -233,7 +241,7 @@ describe('fanoutToBellSubscribers', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.payload).toBe(payload);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
   });
 
   it('enqueues { unreadCount } when the payload template is not a JSON object', async () => {
@@ -252,7 +260,7 @@ describe('fanoutToBellSubscribers', () => {
         nowMs: NOW.getTime(),
       });
       const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
-      expect(JSON.parse(claimed[0]?.payload ?? '{}')).toEqual({
+      expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
         unreadCount: await notifications.unreadCount('one'),
       });
     }
@@ -286,7 +294,7 @@ describe('fanoutToBellSubscribers', () => {
     expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed.map((row) => row.accountId)).toEqual(['two']);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}').unreadCount).toBe(
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(
       await notifications.unreadCount('two'),
     );
   });
@@ -396,7 +404,7 @@ describe('notifyForumReply', () => {
     expect(listed[0]?.text).toBe('child');
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toEqual({
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'forum',
       title: 'New reply on 21.gifts',
       body: 'Someone replied in the living room.',
@@ -594,11 +602,11 @@ describe('notifyForumReply', () => {
     });
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
       url: '/notifications',
       tag: 'forum_reply:reply-1',
     });
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
   });
 
   it('creates no in-app row when auth and pushStore are omitted', async () => {
@@ -684,7 +692,7 @@ describe('notifyForumPost', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toEqual({
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'forum',
       title: 'New post on 21.gifts',
       body: 'Someone posted in the living room.',
@@ -744,7 +752,7 @@ describe('notifyZap', () => {
     expect(listed[0]?.name).toBe('Someone');
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
-    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toEqual({
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'zap',
       title: 'Bitcoin on 21.gifts',
       body: 'Someone sent sats.',

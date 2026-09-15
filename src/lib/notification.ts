@@ -208,7 +208,7 @@ export async function fanoutToBellSubscribers(args: {
  *
  * @param args - Optional stores, actor, persisted post.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If fan-out `create` or `enqueue` rejects.
+ * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
 export async function notifyForumPost(args: {
   /** Optional notification persistence. */
@@ -255,7 +255,7 @@ export async function notifyForumPost(args: {
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If parent lookup, notification `create`, or outbox `enqueue` rejects.
+ * @throws If parent lookup, notification `create`, `unreadCount`, or outbox `enqueue` rejects.
  */
 export async function notifyForumReply(args: {
   /** Forum persistence (parent lookup). */
@@ -308,7 +308,7 @@ export async function notifyForumReply(args: {
  *
  * @param args - Optional stores, zapped note, receipt id, amount, clock, optional payer.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If fan-out `create` or `enqueue` rejects.
+ * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
 export async function notifyZap(args: {
   /** Optional notification persistence. */
