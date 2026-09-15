@@ -874,7 +874,7 @@
 - **Purpose:** Notify living-room members of a new top-level forum post except the actor. Persist a `forum_post` row when `notifications` is set (`parentId` and `replyId` are the post id) for every account when `auth` is set (otherwise bell subscribers) and enqueue a `/notifications` Web Push (`tag` `forum_post:<postId>`) when `pushStore` is set. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, auth?, account, created }`.
 - **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id` and payload from `buildForumPushPayload(created.id)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
-- **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create; `ensureProfileMessage` after a profile-note insert.
+- **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create; `ensureProfileMessage` after a profile-note insert; `meRoutes` after a won inline `PUT /me/about` create (`notifyForumPost` after `updateText` with the bio).
 
 ## Function: notifyForumReply
 

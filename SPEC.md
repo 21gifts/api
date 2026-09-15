@@ -691,16 +691,18 @@ Display name is blank → **Response** `409`:
 ```
 
 Lightning Address is not required. Empty `text` clears the bio
-(`aboutMe` becomes `null`; the note row is kept with empty text). When
-no profile note exists, or the stored note is soft-hidden (`deletedAt`
-set), a new live note is created even without a Lightning Address and
-`profileMessageId` is claimed via `claimProfileMessageId` only while the
-pointer still matches the missing/hidden read (not on owner JSON); a
-lost claim deletes the insert and adopts a live winner. A won no-LN
-create calls `notifyForumPost` after the text write (best-effort;
-enqueue failure still 200). Updating an already-live note does not
-notify. The hidden row stays hidden. A published sats=0 note is
-unsigned (`resetSignedEvent`) so kind:1 can be rewritten.
+(`aboutMe` becomes `null`; a live note row is kept with empty text).
+When no live profile note exists (missing or soft-hidden), empty text
+does not create a note and does not notify. A non-empty write with no
+live note (missing or soft-hidden) creates a new live note even without
+a Lightning Address and claims `profileMessageId` via
+`claimProfileMessageId` only while the pointer still matches the
+missing/hidden read (not on owner JSON); a lost claim deletes the
+insert and adopts a live winner. A won no-LN create calls
+`notifyForumPost` after the text write (best-effort; enqueue failure
+still 200). Updating an already-live note does not notify. The hidden
+row stays hidden. A published sats=0 note is unsigned
+(`resetSignedEvent`) so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
 

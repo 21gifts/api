@@ -199,6 +199,46 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(NOTE_ID))?.text).toBe('');
   });
 
+  it('does not create a note when empty text and no live profile note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    const notificationStore = new InMemoryNotificationStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(store, { messages, pushStore, notificationStore }).request(
+      '/me/about',
+      {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: '   ' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    expect(await messages.listLatest(10)).toEqual([]);
+    expect((await store.getAccount('acc'))?.profileMessageId ?? null).toBeNull();
+    expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
+    expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
+  });
+
+  it('does not create a note when empty text and the profile note is hidden', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    expect(await messages.listLatest(10)).toEqual([]);
+    expect((await store.getAccount('acc'))?.profileMessageId).toBe(NOTE_ID);
+  });
+
   it('creates a profile note without a Lightning Address', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
@@ -241,6 +281,31 @@ describe('PUT /me/about', () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]?.type).toBe('forum_post');
     expect(listed[0]?.text).toBe(BIO);
+  });
+
+  it('returns 200 when forum push enqueue throws on a no-LN create', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    vi.spyOn(pushStore, 'enqueue').mockRejectedValueOnce(new Error('fail'));
+    const res = await mount(store, { messages, pushStore }).request('/me/about', {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: BIO }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: BIO });
+    const stored = await store.getAccount('acc');
+    expect(typeof stored?.profileMessageId).toBe('string');
+    expect(await messages.getById(stored!.profileMessageId!)).toBeDefined();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'push.enqueue.failed')).toBe(true);
   });
 
   it('does not notify when PUT writes an already-live profile note', async () => {

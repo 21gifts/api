@@ -289,6 +289,15 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             noteId = existingId;
           }
         }
+        if (noteId === undefined && normalized === '') {
+          const latest = await storedAccount(deps, owner.id);
+          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+          if (latest === null) {
+            return c.json({ error: 'Unauthorized' }, 401);
+          }
+          logEvent('account.about.set', { accountId: latest.id });
+          return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+        }
         if (noteId === undefined) {
           owner = await ensureProfileMessage({
             auth: deps.store,
