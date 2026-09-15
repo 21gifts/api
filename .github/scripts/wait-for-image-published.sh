@@ -37,8 +37,9 @@ find_run() {
   json="$(gh run list --repo "$repo" --event repository_dispatch --limit 30 \
     --json databaseId,displayTitle,status,conclusion,createdAt)"
   printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" --arg s "$skipped_ids" \
-    '[.[] | select(.displayTitle == $n and .createdAt >= $t
-        and (($s == "") or (($s | split(" ")) | index(.databaseId | tostring) | not)))]
+    '[.[] | (.databaseId | tostring) as $id
+      | select(.displayTitle == $n and .createdAt >= $t
+          and ($s == "" or (($s | split(" ") | index($id)) == null)))]
      | sort_by(.createdAt) | reverse | .[0].databaseId // empty'
 }
 
