@@ -8,7 +8,9 @@ import type { PushSubscriptionRecord } from '@/lib/push-store';
 
 /** Outcome of one `send` attempt. */
 export type PushSendResult =
-  { ok: true } | { ok: false; reason: 'gone' | 'fail' | 'not_configured' };
+  | { ok: true }
+  | { ok: false; reason: 'gone' | 'not_configured' }
+  | { ok: false; reason: 'fail'; status?: number };
 
 /**
  * Sends a JSON payload to one browser subscription.
@@ -65,7 +67,20 @@ function statusCodeOf(err: unknown): number | undefined {
   return typeof code === 'number' ? code : undefined;
 }
 
-/** Build an optional ASCII topic from payload JSON `tag` (max 32). */
+/**
+ * RFC 8030 Topic from a Web Push payload tag: at most 32 characters from
+ * the URL-and-filename-safe Base64 alphabet (`A-Za-z0-9_-`). Empty after
+ * sanitizing → omit the header.
+ *
+ * @param tag - Payload `tag` string (may contain colons, emoji, other ASCII).
+ * @returns Sanitized topic, or `undefined` when empty.
+ */
+export function webPushTopicFromTag(tag: string): string | undefined {
+  const sanitized = tag.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+  return sanitized === '' ? undefined : sanitized;
+}
+
+/** Parse payload JSON `tag` and sanitize it into an optional Topic. */
 function topicFromPayload(payload: string): string | undefined {
   try {
     const parsed = JSON.parse(payload) as unknown;
@@ -76,11 +91,7 @@ function topicFromPayload(payload: string): string | undefined {
     if (typeof tag !== 'string') {
       return undefined;
     }
-    const ascii = [...tag].filter((ch) => ch.charCodeAt(0) <= 127).join('');
-    if (ascii === '') {
-      return undefined;
-    }
-    return ascii.slice(0, 32);
+    return webPushTopicFromTag(tag);
   } catch {
     return undefined;
   }
@@ -137,6 +148,9 @@ export class WebPushSender implements PushSender {
       const status = statusCodeOf(err);
       if (status === 404 || status === 410) {
         return { ok: false, reason: 'gone' };
+      }
+      if (typeof status === 'number') {
+        return { ok: false, reason: 'fail', status };
       }
       return { ok: false, reason: 'fail' };
     }

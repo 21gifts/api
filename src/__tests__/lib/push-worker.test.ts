@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PushSendResult, PushSender } from '@/lib/push-sender';
 import {
   InMemoryPushStore,
   type PushOutboxRow,
   type PushSubscriptionRecord,
 } from '@/lib/push-store';
+
+const logEvent = vi.fn();
+vi.mock('@/lib/log', () => ({
+  logEvent: (...args: unknown[]) => logEvent(...args),
+}));
+
 import {
   PUSH_WORKER_BATCH,
   PUSH_WORKER_INTERVAL_MS,
@@ -170,6 +176,10 @@ describe('enqueueDebugPush', () => {
 });
 
 describe('runPushWorkerTick', () => {
+  beforeEach(() => {
+    logEvent.mockReset();
+  });
+
   it('returns immediately when sender is unconfigured', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_B);
@@ -219,6 +229,21 @@ describe('runPushWorkerTick', () => {
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.attempts).toBe(1);
+    expect(logEvent).toHaveBeenCalledWith('push.send.failed');
+    expect(logEvent.mock.calls[0]).toEqual(['push.send.failed']);
+  });
+
+  it('logs numeric HTTP status on push.send.failed', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail', status: 400 }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.attempts).toBe(1);
+    expect(logEvent).toHaveBeenCalledWith('push.send.failed', { status: 400 });
+    expect(logEvent.mock.calls[0]?.[1]).toEqual({ status: 400 });
   });
 
   it('marks sent when at least one ok and none fail (gone ok)', async () => {
