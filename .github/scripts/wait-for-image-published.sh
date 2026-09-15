@@ -30,12 +30,15 @@ echo "Waiting for infrastructure run titled: ${needle}"
 deadline=$((SECONDS + timeout_sec))
 run_id=""
 redispatched=0
+# Space-separated databaseIds of cancelled runs we already handled.
+skipped_ids=""
 
 find_run() {
   json="$(gh run list --repo "$repo" --event repository_dispatch --limit 30 \
     --json databaseId,displayTitle,status,conclusion,createdAt)"
-  printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" \
-    '[.[] | select(.displayTitle == $n and .createdAt >= $t)]
+  printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" --arg s "$skipped_ids" \
+    '[.[] | select(.displayTitle == $n and .createdAt >= $t
+        and (($s == "") or (($s | split(" ")) | index(.databaseId | tostring) | not)))]
      | sort_by(.createdAt) | reverse | .[0].databaseId // empty'
 }
 
@@ -75,6 +78,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     fi
     echo "Infrastructure run ${run_id} ended (${conclusion})"
     if [ "$conclusion" = "cancelled" ] && [ "$redispatched" -eq 0 ]; then
+      skipped_ids="${skipped_ids} ${run_id}"
       redispatch
       sleep "$poll_sec"
       continue
