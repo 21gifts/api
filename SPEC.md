@@ -47,8 +47,8 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**. When the issued invoice stored
-`messageId`, proof also `addSats` on that forum post and inserts a
-platform-account gift-reply (idempotent). Optional `messageId` on
+`messageId`, proof inserts a platform-account gift-reply first, then
+`addSats` (idempotent). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
