@@ -436,14 +436,16 @@ BTC-USD.
 
 ### `GET /trust-chain`
 
-Public stored trust graph. No auth. Nodes are accounts whose `role` is
-`founder`, `moderator`, or `verified` (never `basis`), sorted founder then
-moderator then verified, then oldest `createdAt`, then `id`. Edges are
-**stored** rows whose kind is `verify`, `moderator_confirm`, or
-`moderator_appoint` and whose actor and subject are both in the node set.
-`moderator_propose` is omitted. No synthetic or inferred edges — a node
-with no stored incoming edge stays disconnected. Lightning addresses, view
-keys, and linking keys are omitted.
+Public stored trust graph. No auth. Bare `GET /trust-chain` returns
+**founder seeds only** (`edges` empty) so a large chain is not dumped on
+first paint. `GET /trust-chain?around=<id>` returns that chain member plus
+one hop of **stored** public edges (`verify` / `moderator_confirm` /
+`moderator_appoint`; `moderator_propose` omitted) whose actor or subject
+is `<id>`. Nodes are `founder` / `moderator` / `verified` (never `basis`).
+No synthetic or inferred edges. Lightning addresses, view keys, and
+linking keys are omitted. Omitting `around` (or empty) is founder seeds.
+A supplied `around` that is not a uuid (including Postgres `22P02`),
+unknown, or `basis` → **404** `{ "error": "Not found" }`.
 
 Store throw → **Response** `503`:
 
