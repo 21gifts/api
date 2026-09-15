@@ -282,6 +282,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         let owner = current;
         let noteId: string | undefined;
         let createdInline = false;
+        const pointerBefore =
+          typeof owner.profileMessageId === 'string' && owner.profileMessageId.trim() !== ''
+            ? owner.profileMessageId
+            : null;
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
@@ -304,10 +308,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             messages: deps.messages,
             account: owner,
             now: deps.now,
-            ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-            ...(deps.notificationStore === undefined
-              ? {}
-              : { notifications: deps.notificationStore }),
           });
           const ensuredId = owner.profileMessageId;
           if (typeof ensuredId === 'string' && ensuredId.trim() !== '') {
@@ -409,7 +409,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
         }
-        if (createdInline && liveRow !== undefined) {
+        const createdThisRequest =
+          createdInline || (typeof noteId === 'string' && noteId !== pointerBefore);
+        if (createdThisRequest && liveRow !== undefined) {
           try {
             await notifyForumPost({
               account: owner,
