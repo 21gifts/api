@@ -24,6 +24,11 @@ export interface PushPayload {
   url: string;
   /** Collapse / topic tag. */
   tag: string;
+  /**
+   * Recipient's current unread in-app notification count, for the home-screen
+   * badge. Omit from shared templates; fan-out adds it per recipient.
+   */
+  unreadCount?: number;
 }
 
 /** Url-safe base64 charset with optional `=` padding. */

@@ -472,23 +472,23 @@
 
 ## Function: buildForumPushPayload
 
-- **Purpose:** English forum-post payload for every bell subscriber except the actor (`type: 'forum'`, title `New post on 21.gifts`, url `/notifications`, tag `forum_post:<postId>`).
+- **Purpose:** English forum-post payload for every bell subscriber except the actor (`type: 'forum'`, title `New post on 21.gifts`, url `/notifications`, tag `forum_post:<postId>`). Shared template: omits optional `unreadCount` (fan-out adds the recipient's current unread in-app count per push recipient when `notifications` is set).
 - **Inputs:** `postId` string used in `tag`.
-- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify` before enqueue/send.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueForumPushes`, `notifyForumPost`.
 
 ## Function: buildReplyPushPayload
 
-- **Purpose:** English forum-reply payload for every bell subscriber except the actor (`type: 'forum'`, title `New reply on 21.gifts`, url `/notifications`, tag `forum_reply:<replyId>`; not the parent id).
+- **Purpose:** English forum-reply payload for every bell subscriber except the actor (`type: 'forum'`, title `New reply on 21.gifts`, url `/notifications`, tag `forum_reply:<replyId>`; not the parent id). Shared template: omits optional `unreadCount` (fan-out adds it per recipient).
 - **Inputs:** `replyId` string (reply forum message id; `tag` / collapse key).
-- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify`.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
 - **Used by:** `enqueueReplyPush`, `notifyForumReply`.
 
 ## Function: buildZapPushPayload
 
-- **Purpose:** English zap payload for every bell subscriber except the payer skip id (`type: 'zap'`, title `Bitcoin on 21.gifts`, body `Someone sent sats.`, url `/notifications`, tag `zap:<id>`).
+- **Purpose:** English zap payload for every bell subscriber except the payer skip id (`type: 'zap'`, title `Bitcoin on 21.gifts`, body `Someone sent sats.`, url `/notifications`, tag `zap:<id>`). Shared template: omits optional `unreadCount` (fan-out adds it per recipient).
 - **Inputs:** `messageId` string used only in `tag` (receipt UUID on the `notifyZap` path).
-- **Returns / side effects:** `PushPayload` object; callers `JSON.stringify` before enqueue/send.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueZapPush`, `notifyZap`.
 
 ## Function: pushRoutes
@@ -857,30 +857,30 @@
 
 ## Function: fanoutToBellSubscribers
 
-- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine.
-- **Inputs:** `{ notifications?, pushStore?, auth?, skipAccountId, template, outboxType, outboxMessageId, payload, nowMs }`. `skipAccountId` `null` skips nobody. `template` is copied to each in-app recipient (`id` / `recipientAccountId` filled here).
-- **Returns / side effects:** Void. Logs `push.fanout` with `inApp` and `push` counts. Writes a notification row per in-app id when `notifications` is set, then enqueues one pending outbox row per push id when `pushStore` is set. Per-recipient `create`/`enqueue` failures log `push.fanout.failed`, continue, then throw after the loops. Does not copy into the member↔member inbox.
+- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine. Outbox JSON may include optional `unreadCount` for the home-screen badge (recipient's current unread in-app count): builders omit it on the shared template; fan-out merges it per push recipient after in-app create when `notifications` is set, and omits it when `notifications` is omitted.
+- **Inputs:** `{ notifications?, pushStore?, auth?, skipAccountId, template, outboxType, outboxMessageId, payload, nowMs }`. `skipAccountId` `null` skips nobody. `template` is copied to each in-app recipient (`id` / `recipientAccountId` filled here). `payload` is the shared JSON template (no `unreadCount`).
+- **Returns / side effects:** Void. Logs `push.fanout` with `inApp` and `push` counts. Writes a notification row per in-app id when `notifications` is set, then enqueues one pending outbox row per push id when `pushStore` is set. When `notifications` is set, each outbox JSON is the parsed template plus `unreadCount` for that recipient (invalid JSON or a non-object template becomes `{ unreadCount }`). When `notifications` is omitted, the payload is unchanged. Per-recipient `create`/`unreadCount`/`enqueue` failures log `push.fanout.failed`, continue, then throw after the loops. Does not copy into the member↔member inbox.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap`.
 
 ## Function: notifyForumPost
 
 - **Purpose:** Notify living-room members of a new top-level forum post except the actor. Persist a `forum_post` row when `notifications` is set (`parentId` and `replyId` are the post id) for every account when `auth` is set (otherwise bell subscribers) and enqueue a `/notifications` Web Push (`tag` `forum_post:<postId>`) when `pushStore` is set. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, auth?, account, created }`.
-- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id` and payload from `buildForumPushPayload(created.id)`.
+- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id` and payload from `buildForumPushPayload(created.id)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
 - **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create; `ensureProfileMessage` after a profile-note insert.
 
 ## Function: notifyForumReply
 
 - **Purpose:** Notify living-room members of a forum reply except the actor. Persist a `forum_reply` row when `notifications` is set and enqueue a `/notifications` Web Push (`tag` `forum_reply:<replyId>`, not the parent id) when `pushStore` is set. No-op when the parent is missing. Damus-only parents and self-replies still fan out (the actor is skipped). Photo-only empty text still notifies. Missing `pushStore` still writes in-app rows when `auth` is set. Unique duplicate create is fine. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ messages, notifications?, pushStore?, auth?, account, created, parentId }`.
-- **Returns / side effects:** Void. After parent lookup, calls `fanoutToBellSubscribers` with skip id `account.id` and payload from `buildReplyPushPayload(created.id)`. Does not copy into the member↔member inbox.
+- **Returns / side effects:** Void. After parent lookup, calls `fanoutToBellSubscribers` with skip id `account.id` and payload from `buildReplyPushPayload(created.id)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted). Does not copy into the member↔member inbox.
 - **Used by:** `messagesRoutes` after a 21.gifts-author reply `POST /messages`; `runNostrWorkerTick` after inbound member reply persist; zap ingest after a gift-reply insert.
 
 ## Function: notifyZap
 
 - **Purpose:** Notify living-room members of a newly indexed zap/payment except the payer. Persist a `zap` row when `notifications` is set (`text` is `String(amountSats)`, name default `'Someone'`, `replyId` is the first 32 hex of the 64-hex receipt id hyphenated 8-4-4-4-12) and enqueue a `/notifications` Web Push (`tag` `zap:<replyId>`) when `pushStore` is set. No-op when the note has no `accountId`. Does not skip the note author unless they are also `payerAccountId`. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName? }`.
-- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null` and payload from `buildZapPushPayload(replyId)`.
+- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null` and payload from `buildZapPushPayload(replyId)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
 - **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a receipt.
 
 ## Function: serializeConversationMessage

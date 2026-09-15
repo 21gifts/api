@@ -185,6 +185,112 @@ describe('fanoutToBellSubscribers', () => {
     expect(await notifications.listByRecipient('one', 10)).toHaveLength(1);
   });
 
+  it('merges each recipient unreadCount into the outbox payload after create', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await subscribe(pushStore, 'two');
+    await notifications.create({
+      ...template,
+      id: 'seed-two',
+      recipientAccountId: 'two',
+      replyId: 'seed-reply',
+    });
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{"tag":"forum_reply:reply-1"}',
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(2);
+    for (const row of claimed) {
+      expect(JSON.parse(row.payload).unreadCount).toBe(
+        await notifications.unreadCount(row.accountId),
+      );
+    }
+    expect(await notifications.unreadCount('one')).toBe(1);
+    expect(await notifications.unreadCount('two')).toBe(2);
+  });
+
+  it('enqueues the payload unchanged when notifications is omitted', async () => {
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    const payload = '{"tag":"forum_reply:reply-1"}';
+    await fanoutToBellSubscribers({
+      pushStore,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload,
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.payload).toBe(payload);
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
+  });
+
+  it('enqueues { unreadCount } when the payload template is not a JSON object', async () => {
+    for (const payload of ['not-json', '[]', 'null', '1']) {
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribe(pushStore, 'one');
+      await fanoutToBellSubscribers({
+        notifications,
+        pushStore,
+        skipAccountId: 'actor',
+        template,
+        outboxType: 'forum',
+        outboxMessageId: 'reply-1',
+        payload,
+        nowMs: NOW.getTime(),
+      });
+      const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+      expect(JSON.parse(claimed[0]?.payload ?? '{}')).toEqual({
+        unreadCount: await notifications.unreadCount('one'),
+      });
+    }
+  });
+
+  it('continues fan-out when one recipient unreadCount rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await subscribe(pushStore, 'two');
+    const original = notifications.unreadCount.bind(notifications);
+    notifications.unreadCount = async (accountId) => {
+      if (accountId === 'one') {
+        throw new Error('boom');
+      }
+      return original(accountId);
+    };
+    await expect(
+      fanoutToBellSubscribers({
+        notifications,
+        pushStore,
+        skipAccountId: 'actor',
+        template,
+        outboxType: 'forum',
+        outboxMessageId: 'reply-1',
+        payload: '{}',
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+    expect(await notifications.listByRecipient('one', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['two']);
+    expect(JSON.parse(claimed[0]?.payload ?? '{}').unreadCount).toBe(
+      await notifications.unreadCount('two'),
+    );
+  });
+
   it('continues fan-out when one recipient create rejects', async () => {
     const notifications = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
@@ -296,6 +402,7 @@ describe('notifyForumReply', () => {
       body: 'Someone replied in the living room.',
       url: '/notifications',
       tag: 'forum_reply:reply-1',
+      unreadCount: 1,
     });
   });
 
@@ -491,6 +598,7 @@ describe('notifyForumReply', () => {
       url: '/notifications',
       tag: 'forum_reply:reply-1',
     });
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
   });
 
   it('creates no in-app row when auth and pushStore are omitted', async () => {
@@ -582,6 +690,7 @@ describe('notifyForumPost', () => {
       body: 'Someone posted in the living room.',
       url: '/notifications',
       tag: 'forum_post:post-1',
+      unreadCount: 1,
     });
   });
 
@@ -641,6 +750,7 @@ describe('notifyZap', () => {
       body: 'Someone sent sats.',
       url: '/notifications',
       tag: `zap:${ZAP_REPLY_ID}`,
+      unreadCount: 1,
     });
   });
 

@@ -103,13 +103,16 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
  * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. Missing both `auth` and `pushStore` is a
- * no-op. Unique duplicate `create` is fine.
+ * no-op. Unique duplicate `create` is fine. When `notifications` is set,
+ * each outbox JSON includes that recipient's current unread count after
+ * in-app create (`unreadCount`, for the home-screen badge). When
+ * `notifications` is omitted, `payload` is enqueued unchanged.
  *
  * @param args - Optional stores, skip id, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
- * @throws If recipient listing rejects. Per-recipient `create`/`enqueue`
- *   failures log `push.fanout.failed`, continue, then throw after the loops
- *   so callers still wrap persist.
+ * @throws If recipient listing rejects. Per-recipient `create` /
+ *   `unreadCount` / `enqueue` failures log `push.fanout.failed`, continue,
+ *   then throw after the loops so callers still wrap persist.
  */
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
@@ -157,12 +160,26 @@ export async function fanoutToBellSubscribers(args: {
   if (args.pushStore !== undefined) {
     for (const accountId of pushIds) {
       try {
+        let payload = args.payload;
+        if (args.notifications !== undefined) {
+          const unread = await args.notifications.unreadCount(accountId);
+          let base: Record<string, unknown> = {};
+          try {
+            const raw: unknown = JSON.parse(args.payload);
+            if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+              base = raw as Record<string, unknown>;
+            }
+          } catch {
+            base = {};
+          }
+          payload = JSON.stringify({ ...base, unreadCount: unread });
+        }
         const row: PushOutboxRow = {
           id: crypto.randomUUID(),
           accountId,
           type: args.outboxType,
           messageId: args.outboxMessageId,
-          payload: args.payload,
+          payload,
           status: 'pending',
           attempts: 0,
           claimedUntil: null,
