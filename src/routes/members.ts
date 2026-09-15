@@ -17,7 +17,7 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * `/members` — signed-in member profile cards (live identity + About me),
+ * `/members` — signed-in member profile cards (live identity + profile note + About me),
  * given/received activity, and on-demand latest-200 post/reply feeds.
  */
 

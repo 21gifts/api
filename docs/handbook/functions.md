@@ -797,7 +797,7 @@
 - **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (after trim, longer than `maxLength`) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
 - **Inputs:** `raw` string; optional `maxLength` (default `MESSAGE_MAX_LENGTH` 500). Inbound Nostr worker passes `MESSAGE_INBOUND_REPLY_MAX_LENGTH` (8192) for Damus kind:1 replies and NIP-17/kind:4 plaintext.
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
-- **Used by:** `POST /messages`, `POST /contact`, `POST /conversations/:id`, `runNostrWorkerTick` inbound indexing.
+- **Used by:** `POST /messages`, `POST /contact`, `POST /conversations/:id`, `PUT /me/about`, `runNostrWorkerTick` inbound indexing.
 
 ## Function: detectImageContentType
 
