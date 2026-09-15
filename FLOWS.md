@@ -101,9 +101,10 @@ after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
 not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text }`): a
 non-blank name is required (409 otherwise); Lightning Address is not; empty
-text clears the bio (`aboutMe` null; a live note row is kept); missing or
-hidden notes stay missing (no create, no notify); auto name-copy is not a
-bio (`aboutMe` is `null`).
+text clears the bio (`aboutMe` null; a live note row is kept). When no live
+note exists, empty text does not create or notify; a non-empty write against
+a missing or hidden note creates a live note without LN and notifies after
+the bio write. Auto name-copy is not a bio (`aboutMe` is `null`).
 `POST /me/name` still no-ops the note without LN; `POST /me/lightning-address`
 still creates the name-copy note. Rename does not create a second note.
 Other members read live identity plus `aboutMe` via `GET /members/:accountId`
