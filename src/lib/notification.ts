@@ -103,13 +103,16 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
  * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. Missing both `auth` and `pushStore` is a
- * no-op. Unique duplicate `create` is fine.
+ * no-op. Unique duplicate `create` is fine. When `notifications` is set,
+ * each outbox JSON includes that recipient's current unread count after
+ * in-app create (`unreadCount`, for the home-screen badge). When
+ * `notifications` is omitted, `payload` is enqueued unchanged.
  *
  * @param args - Optional stores, skip id, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
- * @throws If recipient listing rejects. Per-recipient `create`/`enqueue`
- *   failures log `push.fanout.failed`, continue, then throw after the loops
- *   so callers still wrap persist.
+ * @throws If recipient listing rejects. Per-recipient `create` /
+ *   `unreadCount` / `enqueue` failures log `push.fanout.failed`, continue,
+ *   then throw after the loops so callers still wrap persist.
  */
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
@@ -157,12 +160,26 @@ export async function fanoutToBellSubscribers(args: {
   if (args.pushStore !== undefined) {
     for (const accountId of pushIds) {
       try {
+        let payload = args.payload;
+        if (args.notifications !== undefined) {
+          const unread = await args.notifications.unreadCount(accountId);
+          let base: Record<string, unknown> = {};
+          try {
+            const raw: unknown = JSON.parse(args.payload);
+            if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+              base = raw as Record<string, unknown>;
+            }
+          } catch {
+            base = {};
+          }
+          payload = JSON.stringify({ ...base, unreadCount: unread });
+        }
         const row: PushOutboxRow = {
           id: crypto.randomUUID(),
           accountId,
           type: args.outboxType,
           messageId: args.outboxMessageId,
-          payload: args.payload,
+          payload,
           status: 'pending',
           attempts: 0,
           claimedUntil: null,
@@ -191,7 +208,7 @@ export async function fanoutToBellSubscribers(args: {
  *
  * @param args - Optional stores, actor, persisted post.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If fan-out `create` or `enqueue` rejects.
+ * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
 export async function notifyForumPost(args: {
   /** Optional notification persistence. */
@@ -238,7 +255,7 @@ export async function notifyForumPost(args: {
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If parent lookup, notification `create`, or outbox `enqueue` rejects.
+ * @throws If parent lookup, notification `create`, `unreadCount`, or outbox `enqueue` rejects.
  */
 export async function notifyForumReply(args: {
   /** Forum persistence (parent lookup). */
@@ -291,7 +308,7 @@ export async function notifyForumReply(args: {
  *
  * @param args - Optional stores, zapped note, receipt id, amount, clock, optional payer.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If fan-out `create` or `enqueue` rejects.
+ * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
 export async function notifyZap(args: {
   /** Optional notification persistence. */
