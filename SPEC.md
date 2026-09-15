@@ -695,9 +695,11 @@ no profile note exists, or the stored note is soft-hidden (`deletedAt`
 set), a new live note is created even without a Lightning Address and
 `profileMessageId` is claimed via `claimProfileMessageId` only while the
 pointer still matches the missing/hidden read (not on owner JSON); a
-lost claim deletes the insert and adopts a live winner. The hidden row
-stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
-so kind:1 can be rewritten.
+lost claim deletes the insert and adopts a live winner. A won no-LN
+create calls `notifyForumPost` after the text write (best-effort;
+enqueue failure still 200). Updating an already-live note does not
+notify. The hidden row stays hidden. A published sats=0 note is
+unsigned (`resetSignedEvent`) so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
 

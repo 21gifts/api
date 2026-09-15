@@ -5,6 +5,7 @@ import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { meRoutes } from '@/routes/me';
 
@@ -38,6 +39,7 @@ const JSON_HEADERS = { ...AUTH, 'content-type': 'application/json' };
 interface MountOpts {
   messages?: InMemoryMessageStore;
   pushStore?: InMemoryPushStore;
+  notificationStore?: InMemoryNotificationStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -51,6 +53,9 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       fetchImpl: globalThis.fetch,
       nostrKek: NOSTR_KEK,
       ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
+      ...(opts.notificationStore === undefined
+        ? {}
+        : { notificationStore: opts.notificationStore }),
     }),
   );
 }
@@ -207,6 +212,61 @@ describe('PUT /me/about', () => {
     expect(note?.text).toBe(BIO);
     expect(note?.accountId).toBe('acc');
     expect(await messages.listLatest(10)).toHaveLength(1);
+  });
+
+  it('notifies bell subscribers when PUT creates a profile note without LN', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const pushStore = new InMemoryPushStore();
+    const notificationStore = new InMemoryNotificationStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(store, { messages, pushStore, notificationStore }).request(
+      '/me/about',
+      {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: BIO }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const pending = await pushStore.claimPending(10, now(), 60_000);
+    expect(pending.some((row) => row.type === 'forum')).toBe(true);
+    const listed = await notificationStore.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    expect(listed[0]?.text).toBe(BIO);
+  });
+
+  it('does not notify when PUT writes an already-live profile note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote()]);
+    const pushStore = new InMemoryPushStore();
+    const notificationStore = new InMemoryNotificationStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/1',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(store, { messages, pushStore, notificationStore }).request(
+      '/me/about',
+      {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: BIO }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
+    expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
   });
 
   it('creates a note when a stale profileMessageId has no row and LN is missing', async () => {

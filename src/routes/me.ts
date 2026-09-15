@@ -17,6 +17,7 @@ import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import { normalizeForumText, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
+import { notifyForumPost } from '@/lib/notification';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -280,6 +281,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       try {
         let owner = current;
         let noteId: string | undefined;
+        let createdInline = false;
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
@@ -294,6 +296,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             account: owner,
             now: deps.now,
             ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            ...(deps.notificationStore === undefined
+              ? {}
+              : { notifications: deps.notificationStore }),
           });
           const ensuredId = owner.profileMessageId;
           if (typeof ensuredId === 'string' && ensuredId.trim() !== '') {
@@ -385,6 +390,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
               } else {
                 owner = { ...live, profileMessageId: created.id };
                 noteId = created.id;
+                createdInline = true;
               }
             }
           }
@@ -393,6 +399,20 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         const liveRow = await deps.messages.getById(noteId);
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
+        }
+        if (createdInline && liveRow !== undefined) {
+          try {
+            await notifyForumPost({
+              account: owner,
+              created: liveRow,
+              ...(deps.notificationStore === undefined
+                ? {}
+                : { notifications: deps.notificationStore }),
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            });
+          } catch {
+            logEvent('push.enqueue.failed');
+          }
         }
         const latest = await storedAccount(deps, owner.id);
         /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
