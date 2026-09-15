@@ -74,7 +74,7 @@
 
 - **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, and/or the official platform flag. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`; no `viewKey`). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean' }` for unknown/missing/non-JSON body or a non-null `lightningAddress`; 404 `{ error: 'Not found' }` when the account id is unknown.
-- **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` CLI and platform-account setup.
+- **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` CLI and platform-account setup. Does not write trust edges (`POST /debug/trust-edges` is the backfill path).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: GET /debug/contacts
@@ -289,7 +289,7 @@
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), and uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -489,6 +489,48 @@
 - **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a \"location\" string" }` when the body is not `{ location: string }`; 400 `{ error: "Location must be at most 80 characters" }` when `normalizeLocation` returns `{ ok: false }`.
 - **Used by:** App owner profile location.
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /trust-chain
+
+- **Purpose:** Public stored trust graph. No auth. Bare `GET` returns founder seeds only (`edges` empty) so a large chain is not dumped on first paint. `?around=<id>` returns that chain member plus one hop of stored public edges (`verify` / `moderator_confirm` / `moderator_appoint`; never `moderator_propose`). Nodes are founder/moderator/verified (never basis). Never invents edges; omits lightning addresses, view keys, and linking keys.
+- **Errors:** 404 `{ error: 'Not found' }` when `around` is supplied but is not a uuid, is unknown, or is not a chain member (including Postgres `22P02`). Omitting `around` (or empty) is founder seeds, not 404. 503 `{ error: 'Trust chain is unavailable' }` when listing accounts or edges throws (`trust.chain.failed`).
+- **Used by:** Public trust-chain page and any unauthenticated client.
+- **Auth:** none.
+
+## Endpoint: POST /trust/verify
+
+- **Purpose:** Bearer staff (founder or moderator). Body `{ "accountId": "<uuid>" }`. Confirms the subject in real life: insert `verify` edge then `updateAccount` role=`verified`, log `trust.verified` `{ subjectId, actorId }`, `200 { id, name, role }`. Idempotent 200 when the existing verify edge actor is the caller and the subject is already `verified`. If that caller-owned edge exists and the subject is still `basis`, completes the role write and returns 200.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without session; 403 `{ error: 'Forbidden' }` when the caller is not founder/moderator; 400 `{ error: 'Expected a JSON body with an "accountId" string' }`; 404 `{ error: 'Not found' }` for a non-UUID or missing subject; 409 `{ error: 'Conflict' }` when the subject is self, a verify edge belongs to someone else, or the subject is ineligible (`role` is not `basis` except the caller-owned retry above); 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`trust.write.failed`).
+- **Used by:** Staff verify flow in the app.
+- **Auth:** `Authorization: Bearer` session. Staff only.
+
+## Endpoint: POST /trust/propose-moderator
+
+- **Purpose:** Bearer staff. Body `{ "accountId" }`. Subject must be `verified`, not self, and must not already have `moderator_propose` / `moderator_confirm` / `moderator_appoint` (and not already moderator/founder). Inserts `moderator_propose` without changing role; logs `trust.moderator_proposed`; `200 { id, name, role }`.
+- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when the subject is not verified, is self, or already has a staff-grant edge).
+- **Used by:** Staff moderator-proposal flow.
+- **Auth:** `Authorization: Bearer` session. Staff only.
+
+## Endpoint: POST /trust/confirm-moderator
+
+- **Purpose:** Bearer staff. Body `{ "accountId" }`. A pending `moderator_propose` must exist and the caller id must differ from the proposer's actor id. Subject must still be `verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs `trust.moderator_confirmed`, `200 { id, name, role }`. If the caller already stored `moderator_confirm` and the subject is still `verified`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200.
+- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when there is no pending propose, the caller proposed, the subject is no longer verified, or a confirm edge belongs to someone else).
+- **Used by:** Independent second staff confirmation.
+- **Auth:** `Authorization: Bearer` session. Staff only.
+
+## Endpoint: POST /trust/appoint-moderator
+
+- **Purpose:** Bearer founder (moderators → 403). Body `{ "accountId" }`. Subject must not be self, not founder, and not already moderator; may be `basis` or `verified`. Inserts `moderator_appoint` then sets role to `moderator`, logs `trust.moderator_appointed`, `200 { id, name, role }`. If the caller already stored `moderator_appoint` and the subject is not yet `moderator`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200.
+- **Errors:** 401 without session; 403 when the caller is not `founder`; 400/404/409/503 same JSON shapes as `POST /trust/verify`.
+- **Used by:** Founder appointment of a moderator.
+- **Auth:** `Authorization: Bearer` session. Founder only.
+
+## Endpoint: POST /debug/trust-edges
+
+- **Purpose:** Operator backfill of a stored trust edge. Body `{ "subjectId", "actorId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Inserts the edge, logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`, and returns `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' }`; 404 `{ error: 'Not found' }` when subject or actor is missing or not a UUID; 409 `{ error: 'Conflict' }` on duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
+- **Used by:** Operator `gifts-debug trust-edge` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /me/setup/skip
 

@@ -139,6 +139,7 @@ function extractEndpoints() {
     'debug-messages.ts': '/debug/messages',
     'debug-payments.ts': '/debug',
     'debug-push.ts': '/debug/push-ping',
+    'debug-trust.ts': '/debug/trust-edges',
     'well-known.ts': '/.well-known',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;

@@ -9,10 +9,13 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  */
 
 /**
- * Account permission / forum display tier. Role assignment stays operator-side
- * in v1 (`PATCH /debug/accounts/:id`). New passkey accounts stay `basis`.
- * `verified` is a human-identity badge (moderator met the person), not
- * `lightningAddressVerified`.
+ * Account permission / forum display tier. Staff `POST /trust/verify`,
+ * `POST /trust/confirm-moderator`, and `POST /trust/appoint-moderator`
+ * write `role` plus a trust edge; `POST /trust/propose-moderator` writes
+ * the propose edge only. `PATCH /debug/accounts/:id` may still set `role`
+ * and does not write edges. New passkey accounts stay `basis`.
+ * `verified` is a founder or moderator confirming this person in real
+ * life (forum badge), not `lightningAddressVerified`.
  */
 export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
 

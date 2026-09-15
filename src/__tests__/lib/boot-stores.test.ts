@@ -12,6 +12,7 @@ import { PostgresConversationStore } from '@/lib/conversation-store';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { PostgresNotificationStore } from '@/lib/notification-store';
 import { PostgresPushStore } from '@/lib/push-store';
+import { PostgresTrustStore } from '@/lib/trust-store';
 
 function unusedClient(): SqlClient {
   return {
@@ -57,6 +58,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      trustStore,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -66,6 +68,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
+    expect(trustStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -84,6 +87,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      trustStore,
     } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -93,6 +97,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
+    expect(trustStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -142,6 +147,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      trustStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -159,6 +165,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
+    expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(executes.length).toBeGreaterThan(0);
@@ -167,12 +174,16 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('conversation'))).toBe(true);
     expect(executes.some((q) => q.includes('push_subscription'))).toBe(true);
     expect(executes.some((q) => q.includes('notification'))).toBe(true);
+    expect(executes.some((q) => q.includes('trust_edge'))).toBe(true);
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
+    const trustIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS trust_edge/i.test(q));
+    const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
+    expect(trustIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeIdx).toBeGreaterThan(trustIdx);
     expect(executes.some((q) => /CREATE TABLE/i.test(q))).toBe(true);
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
     const btcUsdIdx = executes.findIndex((q) => q.includes('btc_usd_daily'));
     const fiatIdx = executes.findIndex((q) => q.includes('usd_fiat_daily'));
-    const dbChangeIdx = executes.findIndex((q) => q.includes('db_change'));
     expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
     expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
     expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
@@ -220,6 +231,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      trustStore,
     } = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -232,6 +244,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
+    expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
