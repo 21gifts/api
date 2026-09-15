@@ -103,6 +103,7 @@ export async function ensureProfileMessage(args: {
     await notifyForumPost({
       account: args.account,
       created,
+      auth: args.auth,
       ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
       ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     });

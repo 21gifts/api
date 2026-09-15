@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import {
@@ -128,7 +129,7 @@ describe('fanoutToBellSubscribers', () => {
     readAt: null,
   };
 
-  it('is a no-op when pushStore is omitted (no in-app rows)', async () => {
+  it('is a no-op when auth and pushStore are omitted (no in-app rows)', async () => {
     const notifications = new InMemoryNotificationStore();
     await fanoutToBellSubscribers({
       notifications,
@@ -210,6 +211,55 @@ describe('fanoutToBellSubscribers', () => {
     ).rejects.toThrow('push.fanout.failed');
     expect(await notifications.listByRecipient('one', 10)).toEqual([]);
     expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
+  });
+
+  it('writes in-app rows to every account except skip when auth is set; push only to subscribers', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'sub');
+    await subscribe(pushStore, 'actor');
+    const auth = {
+      listAccounts: async () =>
+        [{ id: 'member' }, { id: 'sub' }, { id: 'actor' }] as Awaited<
+          ReturnType<AuthStore['listAccounts']>
+        >,
+    };
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      auth,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('member', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('sub', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId).sort()).toEqual(['sub']);
+  });
+
+  it('writes in-app rows when auth is set even if pushStore is omitted', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [{ id: 'member' }, { id: 'actor' }] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await fanoutToBellSubscribers({
+      notifications,
+      auth,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('member', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 });
 
@@ -443,7 +493,7 @@ describe('notifyForumReply', () => {
     });
   });
 
-  it('creates no in-app row when pushStore is omitted', async () => {
+  it('creates no in-app row when auth and pushStore are omitted', async () => {
     const messages = new InMemoryMessageStore();
     await seedParent(messages);
     const created = await messages.create(
@@ -550,7 +600,7 @@ describe('notifyForumPost', () => {
     expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
-  it('is a no-op when pushStore is omitted', async () => {
+  it('is a no-op when auth and pushStore are omitted', async () => {
     const created = message({ id: 'post-1', accountId: 'actor' });
     const notifications = new InMemoryNotificationStore();
     await notifyForumPost({
@@ -670,7 +720,7 @@ describe('notifyZap', () => {
     expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
-  it('is a no-op when pushStore is omitted', async () => {
+  it('is a no-op when auth and pushStore are omitted', async () => {
     const note = message({ id: 'note-1', accountId: 'author' });
     const notifications = new InMemoryNotificationStore();
     await notifyZap({

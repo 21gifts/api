@@ -1802,11 +1802,12 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
-`tag` `forum_reply:<replyId>`) fan out to every bell subscriber except the
-actor. Damus-only parents still fan out. A self-reply skips only the actor.
+`tag` `forum_reply:<replyId>`) fan out in-app to every account except the
+actor. Web Push still goes only to bell subscribers. Damus-only parents still
+fan out. A self-reply skips only the actor.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
-notifies. Missing `pushStore` is a no-op (no in-app rows). Notification or
+notifies. Missing `pushStore` still writes in-app rows. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
@@ -1917,11 +1918,13 @@ the **parent** `sats`. After that increment (never in the same SQL CTE), the wor
 inserts a reply from the payer (`text` from the zap-request comment or `""`,
 `sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
-After a newly indexed receipt, `notifyZap` runs best-effort (bell-subscriber
-fan-out except the resolved payer when `pushStore` is set; enqueue failure
-logs `push.enqueue.failed`). After the gift-reply insert, `notifyForumReply`
-runs best-effort (bell-subscriber fan-out except the actor when `pushStore`
-is set; it does not copy into the member↔member inbox). Notify failure logs
+After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
+every account except the resolved payer; Web Push only to bell subscribers;
+missing `pushStore` still writes in-app rows when `auth` is set; enqueue
+failure logs `push.enqueue.failed`). After the gift-reply insert,
+`notifyForumReply` runs best-effort (in-app rows for every account except the
+actor; Web Push only to bell subscribers; it does not copy into the
+member↔member inbox). Notify failure logs
 `messages.reply.notify.failed` and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**

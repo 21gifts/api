@@ -272,8 +272,9 @@ export async function indexZapReceipt(args: {
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, index
  * validated ones, then insert a payer gift-reply and fan out zap/reply
- * notifications to bell subscribers. Retries receipts that have a payer
- * and no gift-reply id yet.
+ * in-app notifications to every account except skip (Web Push only to
+ * bell subscribers). Retries receipts that have a payer and no gift-reply
+ * id yet.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
@@ -291,7 +292,7 @@ export async function indexOpenZapReceipts(args: {
   verifyReceipt?: (event: NostrEventFrame) => boolean;
   /** Optional push store; newly indexed receipts call `notifyZap`. */
   pushStore?: PushStore;
-  /** Optional notification store; gift-replies and zaps fan out when `pushStore` is set. */
+  /** Optional notification store; in-app rows via `auth` even without `pushStore`. */
   notificationStore?: NotificationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
@@ -607,6 +608,7 @@ async function ingestOneReceipt(
         receiptId: event.id,
         amountSats,
         nowMs: args.now(),
+        auth: args.auth,
         ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
         ...(payer === undefined
@@ -878,6 +880,7 @@ async function insertGiftReply(
       account: args.payer,
       created,
       parentId: args.parent.id,
+      auth: args.auth,
       ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
       ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     });

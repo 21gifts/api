@@ -158,10 +158,9 @@ function reservedContent(
  * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
  * note event ids) and persists inbound replies whose pubkey maps to a
  * 21.gifts account (even when publish is off). Unknown npubs are skipped.
- * After a member reply is stored, `notifyForumReply` always runs; missing
- * `pushStore` is a no-op even if `notificationStore` is set (recipients come
- * from the subscription table). Failures log
- * `nostr.reply.notify.failed` and do not undo persist. Zap ingest uses the
+ * After a member reply is stored, `notifyForumReply` always runs with `auth`
+ * (in-app every account except the actor; Web Push only to bell subscribers).
+ * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest uses the
  * same helper after a gift-reply insert (`messages.reply.notify.failed` on
  * throw; parent `sats` and the reply row stay) and `notifyZap` after a newly
  * indexed receipt. When a conversation store is present, also
@@ -295,8 +294,9 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
  * npubs (same silent skip as an empty event id). Member replies posted
  * from Damus with the custodial key still persist (named, or nameless via
  * {@link truncatePubkeyDisplay}). After a successful persist, fans out via
- * {@link notifyForumReply} to every bell subscriber except the actor; notify
- * failure logs `nostr.reply.notify.failed` and does not fail persist.
+ * {@link notifyForumReply} (in-app every account except the actor; Web Push
+ * only to bell subscribers); notify failure logs `nostr.reply.notify.failed`
+ * and does not fail persist.
  *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
@@ -399,6 +399,7 @@ async function indexInboundForumReplies(
             account: { id: accountId },
             created,
             parentId: parentNote.id,
+            auth: deps.auth,
             ...(deps.notificationStore === undefined
               ? {}
               : { notifications: deps.notificationStore }),

@@ -51,6 +51,7 @@ describe('WebPushSender', () => {
       payload,
       expect.objectContaining({
         TTL: 86400,
+        urgency: 'high',
         topic: expect.stringMatching(/^forum-/),
       }),
     );
@@ -67,15 +68,15 @@ describe('WebPushSender', () => {
       subject: 'https://21.gifts',
     });
     await sender.send(SUB, 'not-json');
-    expect(sendNotification.mock.calls[0]?.[2]).toEqual({ TTL: 86400 });
+    expect(sendNotification.mock.calls[0]?.[2]).toEqual({ TTL: 86400, urgency: 'high' });
     await sender.send(SUB, JSON.stringify({ title: 'x' }));
-    expect(sendNotification.mock.calls[1]?.[2]).toEqual({ TTL: 86400 });
+    expect(sendNotification.mock.calls[1]?.[2]).toEqual({ TTL: 86400, urgency: 'high' });
     await sender.send(SUB, JSON.stringify({ tag: '😀😀' }));
-    expect(sendNotification.mock.calls[2]?.[2]).toEqual({ TTL: 86400 });
+    expect(sendNotification.mock.calls[2]?.[2]).toEqual({ TTL: 86400, urgency: 'high' });
     await sender.send(SUB, 'null');
-    expect(sendNotification.mock.calls[3]?.[2]).toEqual({ TTL: 86400 });
+    expect(sendNotification.mock.calls[3]?.[2]).toEqual({ TTL: 86400, urgency: 'high' });
     await sender.send(SUB, '"x"');
-    expect(sendNotification.mock.calls[4]?.[2]).toEqual({ TTL: 86400 });
+    expect(sendNotification.mock.calls[4]?.[2]).toEqual({ TTL: 86400, urgency: 'high' });
   });
 
   it('maps 404/410 to gone and other errors to fail', async () => {
