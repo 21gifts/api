@@ -49,12 +49,12 @@ poll_run() {
 
 redispatch() {
   echo "Re-dispatching image-published ${image}:${tag} ${sha}"
+  dispatched_at="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
   gh api "repos/${repo}/dispatches" \
     -f event_type=image-published \
     -f "client_payload[image]=${image}" \
     -f "client_payload[tag]=${tag}" \
     -f "client_payload[sha]=${sha}"
-  dispatched_at="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
   redispatched=1
   run_id=""
 }
