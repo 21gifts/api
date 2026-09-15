@@ -187,7 +187,6 @@ describe('GET /members/:accountId', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
-      location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
       rulesAgreedAt: now(),
