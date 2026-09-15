@@ -283,6 +283,36 @@ describe('PUT /me/about', () => {
     expect(listed[0]?.text).toBe(BIO);
   });
 
+  it('writes in-app rows to accounts without a push subscription on a no-LN create', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await store.createAccount({
+      id: 'other',
+      linkingKey: `03${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bob',
+      location: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    const messages = new InMemoryMessageStore();
+    const notificationStore = new InMemoryNotificationStore();
+    const res = await mount(store, { messages, notificationStore }).request('/me/about', {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: BIO }),
+    });
+    expect(res.status).toBe(200);
+    const listed = await notificationStore.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    expect(listed[0]?.text).toBe(BIO);
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
+  });
+
   it('returns 200 when forum push enqueue throws on a no-LN create', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();

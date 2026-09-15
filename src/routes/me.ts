@@ -414,6 +414,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             await notifyForumPost({
               account: owner,
               created: liveRow,
+              auth: deps.store,
               ...(deps.notificationStore === undefined
                 ? {}
                 : { notifications: deps.notificationStore }),
