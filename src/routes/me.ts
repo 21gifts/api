@@ -282,10 +282,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         let owner = current;
         let noteId: string | undefined;
         let createdThisRequest = false;
-        const pointerBefore =
-          typeof owner.profileMessageId === 'string' && owner.profileMessageId.trim() !== ''
-            ? owner.profileMessageId
-            : null;
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
@@ -301,24 +297,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           }
           logEvent('account.about.set', { accountId: latest.id });
           return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
-        }
-        if (noteId === undefined) {
-          owner = await ensureProfileMessage({
-            auth: deps.store,
-            messages: deps.messages,
-            account: owner,
-            now: deps.now,
-          });
-          const ensuredId = owner.profileMessageId;
-          if (typeof ensuredId === 'string' && ensuredId.trim() !== '') {
-            const ensured = await deps.messages.getById(ensuredId);
-            if (ensured !== undefined && ensured.deletedAt === null) {
-              noteId = ensuredId;
-              if (ensuredId !== pointerBefore) {
-                createdThisRequest = true;
-              }
-            }
-          }
         }
         if (noteId === undefined) {
           const messageId = crypto.randomUUID();
