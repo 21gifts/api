@@ -136,10 +136,7 @@ export async function fanoutToBellSubscribers(args: {
   const fromPush =
     args.pushStore === undefined ? [] : await args.pushStore.listAccountIdsWithSubscriptions();
   const inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
-  const pushIds =
-    args.pushStore === undefined
-      ? []
-      : exceptSkip(await args.pushStore.listAccountIdsWithSubscriptions(), args.skipAccountId);
+  const pushIds = exceptSkip(fromPush, args.skipAccountId);
   logEvent('push.fanout', { inApp: inAppIds.length, push: pushIds.length });
   const createdAt = new Date(args.nowMs);
   let failed = false;
