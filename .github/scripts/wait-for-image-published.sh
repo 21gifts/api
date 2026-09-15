@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Wait until the infrastructure repository_dispatch run for this image+tag+sha
-# completes. Fail if that run failed, was cancelled, or does not appear in time.
+# completes successfully. A cancelled run is not a product failure: two image
+# publishes can overlap and GitHub then cancels one host job. Re-dispatch once
+# and keep polling for a successful run of the same image:tag:sha.
 #
 # The product Deploy job stays in progress so a develop→main PR shows the
 # live deploy result on the same commit, not only the image push.
@@ -27,17 +29,34 @@ echo "Waiting for infrastructure run titled: ${needle}"
 
 deadline=$((SECONDS + timeout_sec))
 run_id=""
+redispatched=0
+# Space-separated databaseIds of cancelled runs we already handled.
+skipped_ids=""
 
 find_run() {
   json="$(gh run list --repo "$repo" --event repository_dispatch --limit 30 \
     --json databaseId,displayTitle,status,conclusion,createdAt)"
-  printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" \
-    '[.[] | select(.displayTitle == $n and .createdAt >= $t)]
+  printf '%s\n' "$json" | jq -r --arg n "$needle" --arg t "$dispatched_at" --arg s "$skipped_ids" \
+    '[.[] | (.databaseId | tostring) as $id
+      | select(.displayTitle == $n and .createdAt >= $t
+          and ($s == "" or (($s | split(" ") | index($id)) == null)))]
      | sort_by(.createdAt) | reverse | .[0].databaseId // empty'
 }
 
 poll_run() {
   gh run view "$run_id" --repo "$repo" --json status,conclusion
+}
+
+redispatch() {
+  echo "Re-dispatching image-published ${image}:${tag} ${sha}"
+  dispatched_at="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+  gh api "repos/${repo}/dispatches" \
+    -f event_type=image-published \
+    -f "client_payload[image]=${image}" \
+    -f "client_payload[tag]=${tag}" \
+    -f "client_payload[sha]=${sha}"
+  redispatched=1
+  run_id=""
 }
 
 while [ "$SECONDS" -lt "$deadline" ]; do
@@ -57,6 +76,13 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ "$conclusion" = "success" ]; then
       echo "Infrastructure deploy succeeded"
       exit 0
+    fi
+    echo "Infrastructure run ${run_id} ended (${conclusion})"
+    if [ "$conclusion" = "cancelled" ] && [ "$redispatched" -eq 0 ]; then
+      skipped_ids="${skipped_ids} ${run_id}"
+      redispatch
+      sleep "$poll_sec"
+      continue
     fi
     echo "::error::Infrastructure deploy did not succeed (conclusion=${conclusion})"
     exit 1
