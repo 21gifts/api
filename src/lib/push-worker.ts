@@ -240,7 +240,11 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
         continue;
       }
       anyFail = true;
-      logEvent('push.send.failed');
+      if (result.reason === 'fail' && 'status' in result && typeof result.status === 'number') {
+        logEvent('push.send.failed', { status: result.status });
+      } else {
+        logEvent('push.send.failed');
+      }
     }
     if (newlyDelivered.length > 0) {
       await deps.store.recordDelivered(row.id, newlyDelivered);
