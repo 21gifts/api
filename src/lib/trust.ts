@@ -3,17 +3,18 @@
  *
  * `verified` is a founder or moderator confirming this person in real life
  * (forum badge), not Lightning-Address proof-of-control. Public
- * {@link buildTrustChain} never invents edges and never projects
- * `moderator_propose`.
+ * {@link buildTrustChain} never invents edges. A pending
+ * `moderator_propose` stays private until the subject is a moderator;
+ * then the proposer is the public edge, not the confirmer.
  */
 
 import type { Account, AccountRole } from '@/lib/auth/store';
 
-/** Stored grant kind. `moderator_propose` is private to staff flows. */
+/** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is a moderator. */
 export type TrustKind = 'verify' | 'moderator_propose' | 'moderator_confirm' | 'moderator_appoint';
 
 /** Edge kinds that appear on the public trust chain. */
-export type TrustChainKind = 'verify' | 'moderator_confirm' | 'moderator_appoint';
+export type TrustChainKind = 'verify' | 'moderator_propose' | 'moderator_appoint';
 
 /** One persisted who-granted-whom row. */
 export interface TrustEdge {
@@ -112,10 +113,11 @@ export function isStaffRole(role: AccountRole): boolean {
  *
  * Nodes are accounts whose role is `founder`, `moderator`, or `verified`
  * (never `basis`), sorted founder → moderator → verified, then oldest
- * `createdAt`, then `id`. Edges are stored rows whose kind is `verify`,
- * `moderator_confirm`, or `moderator_appoint` and whose actor and subject
- * are both in the node set. `moderator_propose` is omitted. No synthetic
- * edges are added — a node with no stored incoming edge stays disconnected.
+ * `createdAt`, then `id`. Public edges are stored `verify` /
+ * `moderator_appoint` rows plus `moderator_propose` once the subject is a
+ * `moderator` (the proposer is the public actor). `moderator_confirm` is
+ * omitted. A pending propose (subject still `verified`) stays private.
+ * Actor and subject must both be in the node set. No synthetic edges.
  * Lightning addresses, view keys, and linking keys are omitted.
  *
  * @param accounts - Live accounts (roles as stored).
@@ -133,9 +135,10 @@ export function buildTrustChain(
     name: account.name,
     role: account.role,
   }));
+  const byId = new Map(chainAccounts.map((account) => [account.id, account]));
   const publicEdges: TrustChainEdge[] = [];
   for (const edge of edges) {
-    if (!isPublicEdgeKind(edge.kind)) {
+    if (!isProjectedTrustEdge(edge, byId.get(edge.subjectId))) {
       continue;
     }
     if (!nodeIds.has(edge.actorId) || !nodeIds.has(edge.subjectId)) {
@@ -201,9 +204,29 @@ export function isChainAccount(
   return account.role === 'founder' || account.role === 'moderator' || account.role === 'verified';
 }
 
-/** True when `kind` is projected on the public chain. */
-function isPublicEdgeKind(kind: TrustKind): kind is TrustChainKind {
-  return kind === 'verify' || kind === 'moderator_confirm' || kind === 'moderator_appoint';
+/**
+ * Whether a stored edge appears on the public trust chain.
+ *
+ * `verify` and `moderator_appoint` always project when both ends are chain
+ * accounts. `moderator_propose` projects only once the subject is a
+ * `moderator` (the proposer is the public actor). `moderator_confirm` never
+ * projects.
+ *
+ * @param edge - Stored grant.
+ * @param subject - Live subject account, if loaded.
+ * @returns `true` when the edge is public.
+ */
+export function isProjectedTrustEdge(
+  edge: TrustEdge,
+  subject: Account | undefined,
+): edge is TrustEdge & { kind: TrustChainKind } {
+  if (edge.kind === 'verify' || edge.kind === 'moderator_appoint') {
+    return true;
+  }
+  if (edge.kind === 'moderator_propose') {
+    return subject?.role === 'moderator';
+  }
+  return false;
 }
 
 /** Founder, then moderator, then verified; oldest `createdAt`, then `id`. */

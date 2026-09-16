@@ -1415,6 +1415,13 @@ test('Function: isStaffRole — GET /trust-chain without bearer is 401', async (
   expect(res.status()).toBe(401);
 });
 
+test('Function: isProjectedTrustEdge — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: buildTrustChain — GET /trust-chain is empty on default boot', async ({
   request,
 }) => {

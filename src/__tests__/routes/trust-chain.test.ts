@@ -109,16 +109,18 @@ describe('GET /trust-chain', () => {
     });
   });
 
-  it('returns one hop around a chain member and omits propose', async () => {
+  it('returns one hop around a chain member, credits the proposer, omits confirm and pending propose', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
-    await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 2 }));
-    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
+    await authStore.createAccount(account({ id: 'p', role: 'moderator', name: 'P', createdAt: 2 }));
+    await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 3 }));
+    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 4 }));
     await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
     await signIn(authStore, 'b');
     const edges: TrustEdge[] = [
       { id: 'e1', subjectId: 'v', actorId: 'm', kind: 'verify', createdAt: 10 },
       { id: 'e2', subjectId: 'v', actorId: 'm', kind: 'moderator_propose', createdAt: 11 },
+      { id: 'e-propose', subjectId: 'm', actorId: 'p', kind: 'moderator_propose', createdAt: 11 },
       { id: 'e3', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm', createdAt: 12 },
     ];
     const res = await mount(authStore, new InMemoryTrustStore(edges)).request(
@@ -128,13 +130,13 @@ describe('GET /trust-chain', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       nodes: [
-        { id: 'f', name: 'F', role: 'founder' },
+        { id: 'p', name: 'P', role: 'moderator' },
         { id: 'm', name: 'M', role: 'moderator' },
         { id: 'v', name: 'V', role: 'verified' },
       ],
       edges: [
         { from: 'm', to: 'v', kind: 'verify' },
-        { from: 'f', to: 'm', kind: 'moderator_confirm' },
+        { from: 'p', to: 'm', kind: 'moderator_propose' },
       ],
     });
   });
@@ -155,11 +157,8 @@ describe('GET /trust-chain', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      nodes: [
-        { id: 'f', name: 'F', role: 'founder' },
-        { id: 'm', name: 'M', role: 'moderator' },
-      ],
-      edges: [{ from: 'f', to: 'm', kind: 'moderator_confirm' }],
+      nodes: [{ id: 'm', name: 'M', role: 'moderator' }],
+      edges: [],
     });
   });
 

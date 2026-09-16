@@ -1693,9 +1693,16 @@
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain?around=`).
 
+## Function: isProjectedTrustEdge
+
+- **Purpose:** Whether a stored edge appears on the public Trust Chain. `verify` and `moderator_appoint` project; `moderator_propose` projects only when the subject is a `moderator`; `moderator_confirm` never.
+- **Inputs:** `edge` (`TrustEdge`), `subject` (`Account | undefined`).
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `buildTrustChain`, `trustChainRoutes` (`GET /trust-chain?around=`).
+
 ## Function: buildTrustChain
 
-- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_confirm` / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; never includes `moderator_propose`; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
+- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_propose` (only if subject.role is `moderator`) / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; `moderator_confirm` is omitted; a pending propose (subject still `verified`) stays private; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `{ nodes, edges }` (`TrustChain`). No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain`).
@@ -1737,7 +1744,7 @@
 
 ## Function: trustChainRoutes
 
-- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` returns that chain member plus one hop of stored public edges via `listEdgesTouching` (public kinds only). Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` uses `isProjectedTrustEdge` after loading candidate accounts: one hop of stored public edges (`verify` / `moderator_propose` when the subject is a `moderator` / `moderator_appoint`; never `moderator_confirm`). Pending-propose verified neighbors are not nodes. Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
 - **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
 - **Used by:** `createApp`.

@@ -463,9 +463,11 @@ Missing or invalid Bearer → **Response** `401`:
 Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
-one hop of **stored** public edges (`verify` / `moderator_confirm` /
-`moderator_appoint`; `moderator_propose` omitted) whose actor or subject
-is `<id>`. Nodes are `founder` / `moderator` / `verified` (never `basis`).
+one hop of **stored** public edges (`verify` / `moderator_propose` only if
+subject.role is `moderator` / `moderator_appoint`; `moderator_confirm`
+never) whose actor or subject is `<id>`. A pending propose (subject still
+`verified`) stays private and is not a hop neighbor. Nodes are `founder` /
+`moderator` / `verified` (never `basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
