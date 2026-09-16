@@ -1,4 +1,32 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
+
+const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+
+async function memberSession(request: APIRequestContext): Promise<{ authorization: string }> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eTrust${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name,
+          lightningAddress: `e2e-trust-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  return { authorization: `Bearer ${token}` };
+}
 
 test('GET /healthz is ok', async ({ request }) => {
   const res = await request.get('/healthz');
@@ -542,8 +570,15 @@ test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ re
   expect(res.status()).toBe(503);
 });
 
-test('GET /trust-chain is empty on default boot', async ({ request }) => {
+test('GET /trust-chain without bearer is 401', async ({ request }) => {
   const res = await request.get('/trust-chain');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('GET /trust-chain is empty on default boot', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.get('/trust-chain', { headers: auth });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
   expect(body.nodes).toEqual([]);
@@ -551,15 +586,23 @@ test('GET /trust-chain is empty on default boot', async ({ request }) => {
 });
 
 test('GET /trust-chain?around= empty query is founder seeds not 404', async ({ request }) => {
-  const res = await request.get('/trust-chain?around=');
+  const auth = await memberSession(request);
+  const res = await request.get('/trust-chain?around=', { headers: auth });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
   expect(body.nodes).toEqual([]);
   expect(body.edges).toEqual([]);
 });
 
+test('GET /trust-chain?around= without bearer is 401', async ({ request }) => {
+  const res = await request.get('/trust-chain?around=ghost');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
 test('GET /trust-chain?around= missing id is 404', async ({ request }) => {
-  expect((await request.get('/trust-chain?around=ghost')).status()).toBe(404);
+  const auth = await memberSession(request);
+  expect((await request.get('/trust-chain?around=ghost', { headers: auth })).status()).toBe(404);
 });
 
 test('POST /trust/verify without bearer is 401', async ({ request }) => {
