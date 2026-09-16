@@ -1,3 +1,4 @@
+import { aboutMeFromNote } from '@/lib/about-me';
 import {
   accountMissing,
   accountSetup,
@@ -38,7 +39,7 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the ten public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * and `hasPosted`.
+ * `hasPosted`, and `aboutMe`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -57,6 +58,12 @@ export interface OwnerAccountResponse extends AccountResponse {
   missing: AccountMissingField[];
   /** True when this account has a live forum row that is not the profile note. */
   hasPosted: boolean;
+  /**
+   * Profile-note text when it is a real bio, or `null` when empty, when
+   * the trimmed text equals the display name or stored note name, or when
+   * the profile note is missing or soft-hidden (`deletedAt` set).
+   */
+  aboutMe: string | null;
 }
 
 /**
@@ -76,6 +83,12 @@ export interface ViewProfileResponse {
   createdAt: number;
   /** True when the account has at least one passkey credential. */
   hasPasskey: boolean;
+  /**
+   * Profile-note text when it is a real bio, or `null` when empty, when
+   * the trimmed text equals the display name or stored note name, or when
+   * the profile note is missing or soft-hidden (`deletedAt` set).
+   */
+  aboutMe: string | null;
 }
 
 /**
@@ -129,42 +142,61 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *
  * Includes `viewKey` so the owner can copy the capability URL. The second
- * argument is the live-post flag (`hasPosted`); this function performs no I/O.
- * Never used by the operator debug listing. Does not expose `profileMessageId`.
+ * argument is the live-post flag (`hasPosted`); the third is About me.
+ * This function performs no I/O. Never used by the operator debug listing.
+ * Does not expose `profileMessageId`.
  *
  * @param account - Stored account.
  * @param hasPosted - True when the account has a live non-profile forum row.
- * @returns Fourteen fields including `viewKey`, `setup`, `missing`, and `hasPosted`.
+ * @param aboutMe - Profile bio, or `null` when unfilled.
+ * @returns Fifteen fields including `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `location`, and `aboutMe`.
  */
-export function serializeOwnerAccount(account: Account, hasPosted: boolean): OwnerAccountResponse {
+export function serializeOwnerAccount(
+  account: Account,
+  hasPosted: boolean,
+  aboutMe: string | null,
+): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
     viewKey: account.viewKey,
     setup: accountSetup(account),
     missing: accountMissing(account),
     hasPosted,
+    aboutMe,
   };
 }
 
 /**
  * Project owner JSON after looking up whether the account has a live
- * non-profile forum row.
+ * non-profile forum row and loading the profile-note About me text.
  *
  * Calls {@link MessageStore.accountHasLivePost} with the account id and
- * `profileMessageId` (or `null`), then {@link serializeOwnerAccount}. HTTP
- * callers (`meRoutes`, `authRoutes`) use this helper so they cannot drift.
- * Does not wrap store errors.
+ * `profileMessageId` (or `null`), loads the profile note via
+ * {@link MessageStore.getById} when `profileMessageId` is non-blank, then
+ * {@link serializeOwnerAccount}. HTTP callers (`meRoutes`, `authRoutes`) use
+ * this helper so they cannot drift. Does not wrap store errors.
  *
  * @param account - Stored account.
- * @param messages - Message store (live-post lookup only).
- * @returns Owner JSON including `hasPosted`.
+ * @param messages - Message store (live-post lookup and profile-note read).
+ * @returns Owner JSON including `hasPosted` and `aboutMe`. `aboutMe` is
+ *   `null` when the profile note is missing or `deletedAt` is set, else
+ *   `aboutMeFromNote(account.name, row.text, row.name)`.
  */
 export async function serializeOwnerAccountWithPosts(
   account: Account,
-  messages: Pick<MessageStore, 'accountHasLivePost'>,
+  messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>,
 ): Promise<OwnerAccountResponse> {
   const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
-  return serializeOwnerAccount(account, hasPosted);
+  const profileId = account.profileMessageId;
+  let aboutMe: string | null = null;
+  if (typeof profileId === 'string' && profileId.trim() !== '') {
+    const row = await messages.getById(profileId);
+    if (row !== undefined && row.deletedAt === null) {
+      aboutMe = aboutMeFromNote(account.name, row.text, row.name);
+    }
+  }
+  return serializeOwnerAccount(account, hasPosted, aboutMe);
 }
 
 /**
@@ -174,9 +206,14 @@ export async function serializeOwnerAccountWithPosts(
  *
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
- * @returns Six public profile fields.
+ * @param aboutMe - Profile bio, or `null` when unfilled.
+ * @returns Seven public profile fields (including location and aboutMe).
  */
-export function serializeViewProfile(account: Account, hasPasskey: boolean): ViewProfileResponse {
+export function serializeViewProfile(
+  account: Account,
+  hasPasskey: boolean,
+  aboutMe: string | null,
+): ViewProfileResponse {
   return {
     name: account.name,
     location: account.location,
@@ -184,5 +221,6 @@ export function serializeViewProfile(account: Account, hasPasskey: boolean): Vie
     lightningAddressVerified: account.lightningAddressVerified,
     createdAt: account.createdAt,
     hasPasskey,
+    aboutMe,
   };
 }

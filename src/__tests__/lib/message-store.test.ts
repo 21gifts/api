@@ -899,6 +899,69 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listDebug(10)).map((row) => row.id)).toEqual(['zb', 'za']);
   });
 
+  it('listHidden returns [] when empty', async () => {
+    expect(await new InMemoryMessageStore().listHidden(10)).toEqual([]);
+  });
+
+  it('listHidden returns only rows with deletedAt set', async () => {
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      EARLY,
+      {
+        ...LATE,
+        id: 'hidden-top',
+        text: 'hidden',
+        deletedAt: hiddenAt,
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'r-hidden',
+        parentId: 'a',
+        text: 'hidden reply',
+        deletedAt: hiddenAt,
+        deletedBy: 'staff',
+      },
+    ]);
+    const listed = await store.listHidden(10);
+    expect(listed.map((row) => row.id)).toEqual(['r-hidden', 'hidden-top']);
+    expect(listed.every((row) => row.deletedAt !== null)).toBe(true);
+    expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['a']);
+  });
+
+  it('listHidden sorts deletedAt descending then id descending and caps at limit', async () => {
+    const earlier = new Date('2026-09-01T00:00:00.000Z');
+    const later = new Date('2026-09-02T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'old', deletedAt: earlier, deletedBy: 'staff' },
+      { ...EARLY, id: 'za', deletedAt: later, deletedBy: 'staff' },
+      { ...EARLY, id: 'zb', deletedAt: later, deletedBy: 'staff' },
+    ]);
+    expect((await store.listHidden(10)).map((row) => row.id)).toEqual(['zb', 'za', 'old']);
+    expect((await store.listHidden(1)).map((row) => row.id)).toEqual(['zb']);
+  });
+
+  it('listHidden copies photo and video flags without exposing bytes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: '' }, JPEG);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create({ ...LATE, id: 'vid', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+    });
+    await store.markDeleted('a', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    await store.markDeleted('vid', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    const listed = await store.listHidden(10);
+    const photoRow = listed.find((row) => row.id === 'a');
+    const videoRow = listed.find((row) => row.id === 'vid');
+    expect(photoRow?.hasPhoto).toBe(true);
+    expect(videoRow?.hasVideo).toBe(true);
+    expect(videoRow?.videoContentType).toBe('video/mp4');
+    expect(photoRow).not.toHaveProperty('bytes');
+    expect(photoRow).not.toHaveProperty('photo');
+  });
+
   it('breaks reply ties by id when createdAt matches', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     const same = new Date('2026-08-01T12:00:00.000Z');
@@ -1030,6 +1093,21 @@ describe('InMemoryMessageStore', () => {
     expect(row?.sats).toBe(21);
     const unpublished = await store.claimUnpublished(10, 1_000, 60_000);
     expect(unpublished).toEqual([]);
+  });
+
+  it('updateText rewrites text and leaves sats and eventId unchanged', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
+    const updated = await store.updateText('a', 'bio');
+    expect(updated?.text).toBe('bio');
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    const stored = await store.getById('a');
+    expect(stored?.text).toBe('bio');
+    expect(stored?.sats).toBe(21);
+    expect(stored?.eventId).toBe('ee'.repeat(32));
+    expect(updated).not.toBe(stored);
+    expect(await store.updateText('missing', 'x')).toBeUndefined();
   });
 
   it('getById and claimUnsigned lease a row', async () => {
@@ -2268,6 +2346,123 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.deletedBy).toBe('staff');
   });
 
+  it('listHidden returns [] when empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const listed = await new PostgresMessageStore(sql).listHidden(200);
+    expect(sql.queries[0]?.text).toMatch(
+      /FROM message WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT \$1/,
+    );
+    expect(sql.queries[0]?.params).toEqual([200]);
+    expect(listed).toEqual([]);
+  });
+
+  it('listHidden selects only hidden rows newest-hidden-first including replies', async () => {
+    const sql = new MockSql();
+    const later = new Date('2026-09-02T00:00:00.000Z');
+    const earlier = new Date('2026-09-01T00:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'zb',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'newer',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        parent_id: null,
+        deleted_at: later,
+        deleted_by: 'staff',
+      },
+      {
+        id: 'za',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'tie',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        parent_id: null,
+        deleted_at: later,
+        deleted_by: 'staff',
+      },
+      {
+        id: 'reply',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'child',
+        created_at: new Date('2026-08-03T00:00:00.000Z'),
+        has_photo: false,
+        parent_id: 'zb',
+        deleted_at: earlier,
+        deleted_by: 'staff',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listHidden(200);
+    expect(sql.queries[0]?.text).toMatch(
+      /FROM message WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT \$1/,
+    );
+    expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
+    expect(sql.queries[0]?.params).toEqual([200]);
+    expect(listed.map((row) => row.id)).toEqual(['zb', 'za', 'reply']);
+    expect(listed[2]?.parentId).toBe('zb');
+    expect(listed[0]?.deletedAt?.toISOString()).toBe(later.toISOString());
+    expect(listed[0]?.deletedBy).toBe('staff');
+  });
+
+  it('listHidden caps at limit', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'only',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hidden',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listHidden(1);
+    expect(sql.queries[0]?.params).toEqual([1]);
+    expect(listed.map((row) => row.id)).toEqual(['only']);
+  });
+
+  it('listHidden copies photo and video flags without selecting photo bytes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'photo',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '',
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        has_photo: true,
+        video_content_type: null,
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+      {
+        id: 'vid',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        video_content_type: 'video/mp4',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listHidden(10);
+    expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
+    expect(listed[0]?.hasPhoto).toBe(true);
+    expect(listed[0]).not.toHaveProperty('bytes');
+    expect(listed[0]).not.toHaveProperty('photo');
+    expect(listed[1]?.hasVideo).toBe(true);
+    expect(listed[1]?.videoContentType).toBe('video/mp4');
+  });
+
   it('create binds fifteen params including content_fp, video_content_type, parent_id and author_pubkey', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
@@ -2924,6 +3119,33 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(false);
     expect(sql.executes).toEqual([]);
+  });
+
+  it('updateText issues UPDATE … RETURNING and maps the row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'bio',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ee'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 21,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const updated = await store.updateText('m1', 'bio');
+    expect(updated?.text).toBe('bio');
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    expect(sql.queries[0]?.text).toMatch(/UPDATE message SET text = \$2 WHERE id = \$1 RETURNING/);
+    expect(sql.queries[0]?.text).toMatch(/\(photo IS NOT NULL\) AS has_photo/);
+    expect(sql.queries[0]?.params).toEqual(['m1', 'bio']);
+    sql.nextRows = [];
+    expect(await store.updateText('missing', 'x')).toBeUndefined();
   });
 
   it('getById maps nostr_event JSON string', async () => {

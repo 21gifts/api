@@ -67,6 +67,11 @@ test('GET /me without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('PUT /me/about without bearer is 401', async ({ request }) => {
+  const res = await request.put('/me/about');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /me/activity without bearer is 401', async ({ request }) => {
   const res = await request.get('/me/activity');
   expect(res.status()).toBe(401);
@@ -119,6 +124,11 @@ test('GET /view/<64-hex> is 404 on default boot', async ({ request }) => {
 
 test('GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /messages/hidden without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/hidden');
   expect(res.status()).toBe(401);
 });
 

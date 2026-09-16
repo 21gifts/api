@@ -108,6 +108,11 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: aboutMeFromNote — PUT /me/about without bearer is 401', async ({ request }) => {
+  const res = await request.put('/me/about', { data: { text: 'Hi' } });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: buildAccountActivity — GET /me/activity without bearer is 401', async ({
   request,
 }) => {
@@ -498,6 +503,13 @@ test('Function: serializeDebugMessage — GET /debug/messages without bearer is 
   request,
 }) => {
   const res = await request.get('/debug/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeHiddenMessage — GET /messages/hidden without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/hidden');
   expect(res.status()).toBe(401);
 });
 

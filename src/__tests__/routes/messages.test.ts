@@ -140,6 +140,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listLatest: boom,
     listReplies: boom,
     listDebug: boom,
+    listHidden: boom,
     listPublishedEventIds: boom,
     create: boom,
     findLiveByAccountContent: boom,
@@ -162,6 +163,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listSignedMissingHashtags: boom,
     clearSignedEvent: boom,
     resetSignedEvent: boom,
+    updateText: boom,
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
@@ -1710,6 +1712,7 @@ describe('POST /messages', () => {
       ...base,
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
+      listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       create: (row, photo, video) => base.create(row, photo, video),
       findLiveByAccountContent: async () => {
@@ -1736,6 +1739,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateText: (id, text) => base.updateText(id, text),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
@@ -1792,6 +1796,7 @@ describe('POST /messages', () => {
       ...base,
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
+      listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       findLiveByAccountContent: async () => undefined,
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
@@ -1816,6 +1821,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateText: (id, text) => base.updateText(id, text),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
@@ -3023,6 +3029,7 @@ describe('POST /messages/:id/invoice', () => {
     const store: MessageStore = {
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
+      listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
@@ -3047,6 +3054,7 @@ describe('POST /messages/:id/invoice', () => {
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       clearSignedEvent: (...args) => base.clearSignedEvent(...args),
       resetSignedEvent: (...args) => base.resetSignedEvent(...args),
+      updateText: (...args) => base.updateText(...args),
       updateSignedEvent: (...args) => base.updateSignedEvent(...args),
       updatePublishState: (...args) => base.updatePublishState(...args),
       addSats: (...args) => base.addSats(...args),
@@ -4993,5 +5001,328 @@ describe('DELETE /messages/:id', () => {
     ).toBe(204);
     expect((await app.request(`/messages/${videoId}/video.mp4`)).status).toBe(404);
     expect(await messages.getById(videoId)).toBeDefined();
+  });
+});
+
+describe('GET /messages/hidden', () => {
+  const NOTE_ID = '11111111-1111-4111-8111-111111111111';
+  const OTHER_ID = '22222222-2222-4222-8222-222222222222';
+  const HIDDEN_AT = new Date(now());
+
+  async function staffAuth(role: 'founder' | 'moderator'): Promise<InMemoryAuthStore> {
+    const auth = await namedStore('Ada');
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...account, role });
+    return auth;
+  }
+
+  it('returns 401 without a bearer', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/messages/hidden');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 for basis including the author', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'mine',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 403 for verified', async () => {
+    const auth = await namedStore('Ada');
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...account, role: 'verified' });
+    const res = await mount(auth, new InMemoryMessageStore()).request('/messages/hidden', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 200 for founder with serialized hidden rows', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      messages: [
+        {
+          id: NOTE_ID,
+          name: 'Ada',
+          text: 'hide me',
+          createdAt: new Date(now()).toISOString(),
+          sats: 0,
+          hasPhoto: false,
+          hasVideo: false,
+          videoContentType: null,
+          parentId: null,
+          deletedAt: HIDDEN_AT.toISOString(),
+          deletedBy: { id: 'acc', name: 'Ada', role: 'founder' },
+        },
+      ],
+    });
+  });
+
+  it('returns 200 for moderator', async () => {
+    const auth = await staffAuth('moderator');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; deletedBy: { role: string } }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(NOTE_ID);
+    expect(body.messages[0]?.deletedBy.role).toBe('moderator');
+  });
+
+  it('returns an empty list', async () => {
+    const res = await mount(await staffAuth('founder')).request('/messages/hidden', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('lists newest-hidden first and omits live rows', async () => {
+    const earlier = new Date(now() - 1_000);
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'live',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: OTHER_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'older hidden',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: earlier,
+        deletedBy: 'acc',
+      },
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'newer hidden',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id)).toEqual([
+      '33333333-3333-4333-8333-333333333333',
+      OTHER_ID,
+    ]);
+  });
+
+  it('resolves a found deleter', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    const body = (await res.json()) as {
+      messages: Array<{ deletedBy: { id: string; name: string; role: string } }>;
+    };
+    expect(body.messages[0]?.deletedBy).toEqual({ id: 'acc', name: 'Ada', role: 'founder' });
+  });
+
+  it('keeps a missing deleter id with null name and role', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'gone-staff',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        deletedBy: { id: string | null; name: string | null; role: string | null };
+      }>;
+    };
+    expect(body.messages[0]?.deletedBy).toEqual({ id: 'gone-staff', name: null, role: null });
+  });
+
+  it('emits null deletedBy when the row has no deleter', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: null,
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        deletedBy: { id: string | null; name: string | null; role: string | null };
+      }>;
+    };
+    expect(body.messages[0]?.deletedBy).toEqual({ id: null, name: null, role: null });
+  });
+
+  it('returns 503 and logs messages.hidden.list_failed when listHidden throws', async () => {
+    const auth = await staffAuth('founder');
+    warn.mockClear();
+    const res = await mount(auth, throwingStore()).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.hidden.list_failed')).toBe(true);
+  });
+
+  it('returns 503 and logs messages.hidden.list_failed when getAccount throws', async () => {
+    const auth = await staffAuth('founder');
+    const original = auth.getAccount.bind(auth);
+    vi.spyOn(auth, 'getAccount').mockImplementation(async (id: string) => {
+      if (id === 'gone-staff') {
+        throw new Error('store down');
+      }
+      return original(id);
+    });
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'gone-staff',
+      },
+    ]);
+    warn.mockClear();
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.hidden.list_failed')).toBe(true);
+  });
+
+  it('logs messages.hidden.listed with count only', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    warn.mockClear();
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const listed = parsedEvents(warn).find((e) => e['event'] === 'messages.hidden.listed');
+    expect(listed).toMatchObject({ event: 'messages.hidden.listed', count: 1 });
+    expect(listed).not.toHaveProperty('messageId');
+    expect(listed).not.toHaveProperty('text');
+    expect(JSON.stringify(listed)).not.toContain('hide me');
+    expect(JSON.stringify(listed)).not.toContain(NOTE_ID);
+  });
+
+  it('does not require forum.read', async () => {
+    const auth = await seededStore();
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...account, role: 'founder' });
+    const gated = await mount(auth).request('/messages', { headers: AUTH });
+    expect(gated.status).toBe(409);
+    const res = await mount(auth).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
   });
 });

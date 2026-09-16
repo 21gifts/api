@@ -153,6 +153,17 @@ export interface MessageStore {
   listDebug(limit: number): Promise<MessageRow[]>;
 
   /**
+   * Newest-hidden-first forum rows for the staff hidden log (`deletedAt`
+   * desc, then `id` desc), capped at `limit`. Only rows with `deletedAt`
+   * set. Includes top-level notes **and** replies. Rows include `hasPhoto` /
+   * `hasVideo` / `videoContentType` but never photo or video bytes.
+   *
+   * @param limit - Maximum rows to return.
+   * @returns Message row copies.
+   */
+  listHidden(limit: number): Promise<MessageRow[]>;
+
+  /**
    * Persist a new message row and optional photo and video.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -409,6 +420,15 @@ export interface MessageStore {
    * @param expectedEventId - Event id observed when the row was listed.
    */
   resetSignedEvent(id: string, expectedEventId: string | null): Promise<void>;
+
+  /**
+   * Replace the stored note body. Does not change sats, photos, or event ids.
+   *
+   * @param id - Message id.
+   * @param text - New body (already normalised; may be empty).
+   * @returns The updated row copy, or `undefined` when no row has that id.
+   */
+  updateText(id: string, text: string): Promise<MessageRow | undefined>;
 
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
@@ -963,6 +983,34 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Newest-hidden-first forum rows for the staff hidden log, including
+   * replies, capped at `limit`. Live rows (`deletedAt` null) are omitted.
+   *
+   * @param limit - Maximum rows.
+   * @returns A new array of row copies; mutating it does not change the store.
+   *   Listed objects never expose photo or video bytes.
+   */
+  listHidden(limit: number): Promise<MessageRow[]> {
+    const hidden = this.#rows.filter((row) => row.deletedAt !== null);
+    const sorted = [...hidden].sort((a, b) => {
+      const byTime = (b.deletedAt as Date).getTime() - (a.deletedAt as Date).getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        return copy;
+      }),
+    );
+  }
+
+  /**
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
    * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
    *
@@ -1394,6 +1442,15 @@ export class InMemoryMessageStore implements MessageStore {
       row.nostrPublishEpoch = null;
     }
     return Promise.resolve();
+  }
+
+  updateText(id: string, text: string): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    row.text = text;
+    return Promise.resolve(copyRow(row));
   }
 
   updateSignedEvent(
@@ -1862,6 +1919,21 @@ export class PostgresMessageStore implements MessageStore {
   async listDebug(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Newest-hidden-first forum rows (`deleted_at` desc, `id` desc). Only
+   * rows with `deleted_at IS NOT NULL`. Never selects `photo` bytea.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
+  async listHidden(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT $1`,
       [limit],
     );
     return rows.map((row) => mapMessageRow(row));
@@ -2424,6 +2496,15 @@ export class PostgresMessageStore implements MessageStore {
          AND NOT EXISTS (SELECT 1 FROM message child WHERE child.parent_id = message.id)`,
       [id, expectedEventId],
     );
+  }
+
+  async updateText(id: string, text: string): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+      [id, text],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
   }
 
   async updateSignedEvent(

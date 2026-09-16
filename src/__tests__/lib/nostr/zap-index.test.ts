@@ -990,6 +990,7 @@ describe('indexOpenZapReceipts', () => {
     const store = {
       listLatest: (limit: number) => base.listLatest(limit),
       listDebug: (limit: number) => base.listDebug(limit),
+      listHidden: (limit: number) => base.listHidden(limit),
       listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
       listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
       create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
@@ -1028,6 +1029,8 @@ describe('indexOpenZapReceipts', () => {
         base.clearSignedEvent(...args),
       resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
         base.resetSignedEvent(...args),
+      updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+        base.updateText(...args),
       updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
         base.updateSignedEvent(...args),
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1171,6 +1174,7 @@ describe('indexOpenZapReceipts', () => {
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
         listDebug: (limit: number) => base.listDebug(limit),
+        listHidden: (limit: number) => base.listHidden(limit),
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
@@ -1206,6 +1210,8 @@ describe('indexOpenZapReceipts', () => {
           base.clearSignedEvent(...args),
         resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
           base.resetSignedEvent(...args),
+        updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+          base.updateText(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1449,6 +1455,7 @@ describe('indexOpenZapReceipts', () => {
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
         listDebug: (limit: number) => base.listDebug(limit),
+        listHidden: (limit: number) => base.listHidden(limit),
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
@@ -1484,6 +1491,8 @@ describe('indexOpenZapReceipts', () => {
           base.clearSignedEvent(...args),
         resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
           base.resetSignedEvent(...args),
+        updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+          base.updateText(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
