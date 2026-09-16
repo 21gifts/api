@@ -27,6 +27,21 @@ afterEach(() => {
 const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const NOTE_ID = '00000000-0000-4000-8000-000000000001';
+const LIVING_ROOM_POST_ID = '00000000-0000-4000-8000-0000000000aa';
+
+function livingRoomStore(createdAt: Date = new Date(now())): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: LIVING_ROOM_POST_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello living room',
+      createdAt,
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+  ]);
+}
 
 function mount(
   authStore: InMemoryAuthStore,
@@ -1438,7 +1453,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1450,6 +1465,61 @@ describe('moderator_group', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+  });
+
+  it('does not ping when the moderator has no living-room post today', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('does not ping when the living-room post is on a previous UTC day', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const yesterday = new Date(now() - 86_400_000);
+    const res = await mount(auth, conversations, livingRoomStore(yesterday), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
   it('still returns 200 when spendPing.ping throws', async () => {
@@ -1471,7 +1541,7 @@ describe('moderator_group', () => {
         throw new Error('ping boom');
       }),
     };
-    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',

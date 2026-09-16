@@ -14,7 +14,7 @@ import {
 } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
-import { normalizeForumText, truncatePubkeyDisplay } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, normalizeForumText, truncatePubkeyDisplay } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
@@ -58,6 +58,33 @@ async function authedAccount(
 
 function isStaffRole(role: AccountRole): boolean {
   return role === 'founder' || role === 'moderator';
+}
+
+function utcDayFromMs(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Whether this account has a live living-room top-level post (not the
+ * profile note) whose `createdAt` falls on the UTC day of `nowMs`.
+ *
+ * @param messageStore - Forum store.
+ * @param account - Caller.
+ * @param nowMs - Clock.
+ * @returns True when the newest non-profile top-level post is today UTC.
+ */
+async function hasLivingRoomPostOnUtcDay(
+  messageStore: MessageStore,
+  account: Account,
+  nowMs: number,
+): Promise<boolean> {
+  const posts = await messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
+  const profileId = account.profileMessageId ?? null;
+  const newest = posts.find((row) => row.id !== profileId);
+  if (newest === undefined) {
+    return false;
+  }
+  return utcDayFromMs(newest.createdAt.getTime()) === utcDayFromMs(nowMs);
 }
 
 async function platformAccount(store: AuthStore): Promise<Account | undefined> {
@@ -375,10 +402,19 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (thread.kind === 'moderator_group') {
           const address = account.lightningAddress?.trim() ?? '';
           if (address !== '' && deps.spendPing !== undefined) {
-            try {
-              await deps.spendPing.ping(address, created.id, 'moderator');
-            } catch {
-              /* ping must not fail the persist */
+            const publicToday = await hasLivingRoomPostOnUtcDay(
+              deps.messageStore,
+              account,
+              deps.now(),
+            );
+            if (publicToday) {
+              try {
+                await deps.spendPing.ping(address, created.id, 'moderator');
+              } catch {
+                /* ping must not fail the persist */
+              }
+            } else {
+              logEvent('spend.ping.skipped', { reason: 'no_public_post' });
             }
           }
         }

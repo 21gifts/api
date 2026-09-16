@@ -49,7 +49,7 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gifts.record_failed` and still returns **200**. When the issued invoice stored
 `messageId`, proof inserts a platform-account gift-reply first, then
 `addSats` (idempotent). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId }`.
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -1833,15 +1833,16 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true, "messageId": "<uuid>" }
+{ "hasPosted": true, "messageId": "<uuid>", "postedAt": "<iso-8601>" }
 ```
 
-or `{ "hasPosted": false, "messageId": null }` when there is no account for the
+or `{ "hasPosted": false, "messageId": null, "postedAt": null }` when there is no account for the
 address or the account has no live **top-level** forum message other than the
 auto-created profile note. Replies do not count. Photo-only / empty-text
 top-level notes still count. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
-`listPostsByAccount` yields no non-profile row. Replies and the auto profile
+`listPostsByAccount` yields no non-profile row. `postedAt` is that row's
+`createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile
 note never become `messageId`.
 
 ### `POST /invoices`
