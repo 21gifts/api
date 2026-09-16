@@ -410,9 +410,7 @@ describe('pendingModeratorProposals', () => {
       edge({ id: 'p-m', subjectId: 's3', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
     ];
     expect(
-      pendingModeratorProposals([second, first, third, actor], edges).map(
-        (row) => row.subject.id,
-      ),
+      pendingModeratorProposals([second, first, third, actor], edges).map((row) => row.subject.id),
     ).toEqual(['s1', 's3', 's2']);
   });
 
