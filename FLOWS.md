@@ -93,20 +93,24 @@ Until an invoice payer is injected, start returns **503**
 boots. Live verification payments do **not** work today. Edit or unlink clears
 any pending verification (`SPEC.md`).
 
-### Identity copy — **Shipped** (name / location) + **Sketch** (photo / story)
+### Identity copy — **Shipped** (name / location / About me) + **Sketch** (photo)
 
 Receiver name is stored on the account (`POST /me/name`). Optional free-text
 location is stored on the account (`POST /me/location`); empty or whitespace
 after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
-not Nostr `kind:0`. The profile forum note is created when a non-blank name
-and a non-blank Lightning Address are present (`POST /me/name` no-ops without
-LN; `POST /me/lightning-address` creates it). Rename does not create a second
-note or change its text. Other members read live identity plus that note via
-`GET /members/:accountId` (Bearer; rules required). Photo and story beyond
-that note stay custodial `kind:0` metadata signed server-side (`about` is the
-profile-note text when present, else `21.gifts`). **Do not invent**
-`POST /me/profile`.
+not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text }`): a
+non-blank name is required (409 otherwise); Lightning Address is not; empty
+text clears the bio (`aboutMe` null; a live note row is kept). When no live
+note exists, empty text does not create or notify; a non-empty write against
+a missing or hidden note creates a live note without LN and notifies after
+the bio write. Auto name-copy is not a bio (`aboutMe` is `null`).
+`POST /me/name` still no-ops the note without LN; `POST /me/lightning-address`
+still creates the name-copy note. Rename does not create a second note.
+Other members read live identity plus `aboutMe` via `GET /members/:accountId`
+(Bearer; rules required). Photo beyond that note stays custodial `kind:0`
+metadata signed server-side (`about` is the profile-note text when present,
+else `21.gifts`). **Do not invent** `POST /me/profile`.
 
 ### View-key link — **Shipped**
 

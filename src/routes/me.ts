@@ -1,20 +1,23 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
+import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
+import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
-import { normalizeDisplayName } from '@/lib/name';
-import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
-import { ensureProfileMessage } from '@/lib/auth/profile-message';
-import type { Account, AuthStore } from '@/lib/auth/store';
-import type { InvoicePayer } from '@/lib/invoice-payer';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import { normalizeForumText, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { normalizeDisplayName } from '@/lib/name';
+import { notifyForumPost } from '@/lib/notification';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -24,8 +27,8 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
- * optional location, welcome-forum laws dismiss, living-room rules agreement,
- * and the receiver's Lightning Address), including proof-of-control
+ * optional location, About me, welcome-forum laws dismiss, living-room rules
+ * agreement, and the receiver's Lightning Address), including proof-of-control
  * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
@@ -33,7 +36,7 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (profile notes when name + Lightning Address are set). */
+  /** Forum persistence (About me without LN, activity zaps/invoices, profile notes). */
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
@@ -123,11 +126,14 @@ const confirmBody = z.object({ nonce: z.string() });
 /** Body schema for skipping a wizard step. */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 
+/** Body schema for writing About me. */
+const aboutBody = z.object({ text: z.string() });
+
 /**
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, location, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, location, About me, setup skip, forum-laws dismiss,
  * living-room rules agreement, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -249,6 +255,167 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       logEvent('account.location.set', { accountId: current.id });
       return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+    })
+    .put('/about', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = aboutBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+      }
+      const normalized = normalizeForumText(parsed.data.text);
+      if (normalized === null) {
+        return c.json({ error: 'About me must be at most 500 characters' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const displayName = current.name === null ? '' : current.name.trim();
+      if (displayName === '') {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['name'] }, 409);
+      }
+      try {
+        let owner = current;
+        let noteId: string | undefined;
+        let createdThisRequest = false;
+        const existingId = owner.profileMessageId;
+        if (typeof existingId === 'string' && existingId.trim() !== '') {
+          const existing = await deps.messages.getById(existingId);
+          if (existing !== undefined && existing.deletedAt === null) {
+            noteId = existingId;
+          }
+        }
+        if (noteId === undefined && normalized === '') {
+          const latest = await storedAccount(deps, owner.id);
+          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+          if (latest === null) {
+            return c.json({ error: 'Unauthorized' }, 401);
+          }
+          logEvent('account.about.set', { accountId: latest.id });
+          return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+        }
+        if (noteId === undefined) {
+          const messageId = crypto.randomUUID();
+          const row: MessageRow = {
+            id: messageId,
+            accountId: owner.id,
+            name: displayName,
+            text: normalized,
+            createdAt: new Date(deps.now()),
+            hasPhoto: false,
+            hasVideo: false,
+            videoContentType: null,
+            ...unsignedNostrDefaults(),
+          };
+          const created = await deps.messages.create(row);
+          const live = await deps.store.getAccount(owner.id);
+          if (live === undefined) {
+            await deps.messages.deleteById(created.id);
+            return c.json({ error: 'Unauthorized' }, 401);
+          }
+          const liveId = live.profileMessageId;
+          if (typeof liveId === 'string' && liveId.trim() !== '') {
+            const winner = await deps.messages.getById(liveId);
+            if (winner !== undefined && winner.deletedAt === null) {
+              await deps.messages.deleteById(created.id);
+              owner = live;
+              noteId = liveId;
+            }
+          }
+          if (noteId === undefined) {
+            const expectedId =
+              typeof live.profileMessageId === 'string' && live.profileMessageId.trim() !== ''
+                ? live.profileMessageId
+                : null;
+            try {
+              const claimed = await deps.store.claimProfileMessageId(
+                live.id,
+                expectedId,
+                created.id,
+              );
+              if (!claimed) {
+                await deps.messages.deleteById(created.id);
+                const after = await deps.store.getAccount(owner.id);
+                if (after === undefined) {
+                  return c.json({ error: 'Unauthorized' }, 401);
+                }
+                const afterId = after.profileMessageId;
+                if (typeof afterId === 'string' && afterId.trim() !== '') {
+                  const afterRow = await deps.messages.getById(afterId);
+                  if (afterRow !== undefined && afterRow.deletedAt === null) {
+                    owner = after;
+                    noteId = afterId;
+                  }
+                }
+                if (noteId === undefined) {
+                  return c.json({ error: 'Messages are unavailable' }, 503);
+                }
+              }
+            } catch (err) {
+              await deps.messages.deleteById(created.id);
+              throw err;
+            }
+            if (noteId === undefined) {
+              const confirmed = await deps.store.getAccount(owner.id);
+              if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
+                await deps.messages.deleteById(created.id);
+                if (confirmed === undefined) {
+                  return c.json({ error: 'Unauthorized' }, 401);
+                }
+                const confirmedId = confirmed.profileMessageId;
+                if (typeof confirmedId === 'string' && confirmedId.trim() !== '') {
+                  const confirmedRow = await deps.messages.getById(confirmedId);
+                  if (confirmedRow !== undefined && confirmedRow.deletedAt === null) {
+                    owner = confirmed;
+                    noteId = confirmedId;
+                  }
+                }
+                if (noteId === undefined) {
+                  return c.json({ error: 'Messages are unavailable' }, 503);
+                }
+              } else {
+                owner = { ...live, profileMessageId: created.id };
+                noteId = created.id;
+                createdThisRequest = true;
+              }
+            }
+          }
+        }
+        await deps.messages.updateText(noteId, normalized);
+        const liveRow = await deps.messages.getById(noteId);
+        if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
+          await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
+        }
+        if (createdThisRequest && liveRow !== undefined) {
+          try {
+            await notifyForumPost({
+              account: owner,
+              created: liveRow,
+              auth: deps.store,
+              ...(deps.notificationStore === undefined
+                ? {}
+                : { notifications: deps.notificationStore }),
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            });
+          } catch {
+            logEvent('push.enqueue.failed');
+          }
+        }
+        const latest = await storedAccount(deps, owner.id);
+        /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+        if (latest === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        logEvent('account.about.set', { accountId: latest.id });
+        return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+      } catch {
+        logEvent('account.about.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     })
     .post('/forum-laws-dismissed', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

@@ -370,6 +370,20 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
+  it('claimProfileMessageId uses query with IS NOT DISTINCT FROM', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ id: 'acc' }];
+    expect(await store.claimProfileMessageId('acc', null, 'note-1')).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/IS NOT DISTINCT FROM/);
+    expect(sql.queries[0]?.text).toMatch(/SET profile_message_id = \$3/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING id/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null, 'note-1']);
+    expect(sql.executes).toHaveLength(0);
+    sql.nextRows = [];
+    expect(await store.claimProfileMessageId('acc', null, 'note-1')).toBe(false);
+  });
+
   it('accountHasPasskey queries passkey_credential by account_id', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);

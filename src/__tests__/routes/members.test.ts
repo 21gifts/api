@@ -158,6 +158,7 @@ describe('GET /members/:accountId', () => {
       role: 'verified',
       lightningAddress: 'ada@walletofsatoshi.com',
       createdAt: new Date(1_700_000_000_000).toISOString(),
+      aboutMe: null,
       postCount: 1,
       replyCount: 0,
     });
@@ -170,6 +171,83 @@ describe('GET /members/:accountId', () => {
     expect(profile['payable']).toBe(true);
     expect(profile).not.toHaveProperty('eventId');
     expect(body['trust']).toEqual(NULL_TRUST);
+    expect(body['aboutMe']).toBeNull();
+  });
+
+  it('returns aboutMe from a real profile-note bio and keeps profileMessage', async () => {
+    const authStore = await seededCaller();
+    const messageStore = new InMemoryMessageStore();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      location: null,
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      profileMessageId: noteId,
+    });
+    await messageStore.create({
+      id: noteId,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'I build on Bitcoin',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      aboutMe: string | null;
+      profileMessage: { text: string } | null;
+    };
+    expect(body.aboutMe).toBe('I build on Bitcoin');
+    expect(body.profileMessage?.text).toBe('I build on Bitcoin');
+  });
+
+  it('returns aboutMe null when the note is the stored name after a rename', async () => {
+    const authStore = await seededCaller();
+    const messageStore = new InMemoryMessageStore();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Grace',
+      location: null,
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      profileMessageId: noteId,
+    });
+    await messageStore.create({
+      id: noteId,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string | null; aboutMe: string | null };
+    expect(body.name).toBe('Grace');
+    expect(body.aboutMe).toBeNull();
   });
 
   it('returns profileMessage null when no note exists', async () => {
@@ -192,12 +270,14 @@ describe('GET /members/:accountId', () => {
     const body = (await res.json()) as {
       location: string | null;
       profileMessage: null;
+      aboutMe: string | null;
       postCount: number;
       replyCount: number;
       trust: typeof NULL_TRUST;
     };
     expect(body.location).toBeNull();
     expect(body.profileMessage).toBeNull();
+    expect(body.aboutMe).toBeNull();
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
     expect(body.trust).toEqual(NULL_TRUST);
@@ -298,10 +378,12 @@ describe('GET /members/:accountId', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       profileMessage: null;
+      aboutMe: string | null;
       postCount: number;
       replyCount: number;
     };
     expect(body.profileMessage).toBeNull();
+    expect(body.aboutMe).toBeNull();
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
     const account = await authStore.getAccount(ACCOUNT_ID);

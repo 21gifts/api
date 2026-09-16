@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeViewProfile } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
@@ -19,7 +20,7 @@ export interface ViewRouteDeps {
   store: AuthStore;
   /**
    * Forum persistence (default: empty {@link InMemoryMessageStore}).
-   * Used by `GET /:viewKey/activity`.
+   * Used by About me and `GET /:viewKey/activity`.
    */
   messageStore?: MessageStore;
   /**
@@ -51,7 +52,7 @@ const VIEW_KEY_RE = /^[0-9a-f]{64}$/;
  * `GET /view/:viewKey/activity`. No auth. Never calls `resolveSession`.
  * Never accepts the key as Bearer.
  *
- * @param deps - Shared auth store and optional activity collaborators including the fiat book.
+ * @param deps - Shared auth store, optional message store for About me, and optional activity collaborators including the fiat book.
  * @returns A Hono app exposing `GET /:viewKey/activity` and `GET /:viewKey`.
  */
 export function viewRoutes(deps: ViewRouteDeps): Hono {
@@ -97,6 +98,20 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const hasPasskey = await deps.store.accountHasPasskey(account.id);
-      return c.json(serializeViewProfile(account, hasPasskey), 200);
+      try {
+        let aboutMe: string | null = null;
+        const profileId = account.profileMessageId;
+        if (typeof profileId === 'string' && profileId.trim() !== '') {
+          const row = await messageStore.getById(profileId);
+          aboutMe =
+            row !== undefined && row.deletedAt === null
+              ? aboutMeFromNote(account.name, row.text, row.name)
+              : null;
+        }
+        return c.json(serializeViewProfile(account, hasPasskey, aboutMe), 200);
+      } catch {
+        logEvent('view.get.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     });
 }

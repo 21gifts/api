@@ -292,6 +292,20 @@ describe('CORS', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
+  it('allows PUT on the About me preflight', async () => {
+    const res = await createApp().request('/me/about', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://21.gifts',
+        'access-control-request-method': 'PUT',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toMatch(/PUT/i);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://21.gifts');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+  });
+
   it('honors an injected allowedOrigins override', async () => {
     const res = await createApp({ allowedOrigins: ['https://custom.test'] }).request('/healthz', {
       headers: { origin: 'https://custom.test' },

@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -65,6 +65,7 @@ api/
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
+│   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
 │   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
@@ -158,6 +159,7 @@ api/
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── nip57-probe.test.ts
+│       │   ├── about-me.test.ts
 │       │   ├── account-activity.test.ts
 │       │   ├── message-store.test.ts
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
@@ -194,8 +196,9 @@ api/
 │           ├── brand.test.ts
 │           ├── auth.test.ts
 │           ├── me.test.ts
-│           ├── members.test.ts
+│           ├── me-about.test.ts
 │           ├── activity.test.ts
+│           ├── members.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
 │           ├── stats.test.ts

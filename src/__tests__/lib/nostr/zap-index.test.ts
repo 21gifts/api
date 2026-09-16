@@ -1028,6 +1028,8 @@ describe('indexOpenZapReceipts', () => {
         base.clearSignedEvent(...args),
       resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
         base.resetSignedEvent(...args),
+      updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+        base.updateText(...args),
       updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
         base.updateSignedEvent(...args),
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1206,6 +1208,8 @@ describe('indexOpenZapReceipts', () => {
           base.clearSignedEvent(...args),
         resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
           base.resetSignedEvent(...args),
+        updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+          base.updateText(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1484,6 +1488,8 @@ describe('indexOpenZapReceipts', () => {
           base.clearSignedEvent(...args),
         resetSignedEvent: (...args: Parameters<InMemoryMessageStore['resetSignedEvent']>) =>
           base.resetSignedEvent(...args),
+        updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
+          base.updateText(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>

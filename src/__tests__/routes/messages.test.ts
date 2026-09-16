@@ -162,6 +162,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listSignedMissingHashtags: boom,
     clearSignedEvent: boom,
     resetSignedEvent: boom,
+    updateText: boom,
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
@@ -1736,6 +1737,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateText: (id, text) => base.updateText(id, text),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
@@ -1816,6 +1818,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
+      updateText: (id, text) => base.updateText(id, text),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
@@ -3047,6 +3050,7 @@ describe('POST /messages/:id/invoice', () => {
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       clearSignedEvent: (...args) => base.clearSignedEvent(...args),
       resetSignedEvent: (...args) => base.resetSignedEvent(...args),
+      updateText: (...args) => base.updateText(...args),
       updateSignedEvent: (...args) => base.updateSignedEvent(...args),
       updatePublishState: (...args) => base.updatePublishState(...args),
       addSats: (...args) => base.addSats(...args),
