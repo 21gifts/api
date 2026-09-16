@@ -1,9 +1,11 @@
 /**
  * Operator debug surface for forum notes. List and fetch every persisted
  * row (including soft-hidden notes and replies), serve hidden photo bytes,
- * and restore a missing forum-video file for an already-existing message
- * with `hasVideo`. Authenticated by `DEBUG_TOKEN` (Bearer), not by an
- * end-user session. Does not create rows. Video restore does not change DB.
+ * restore a missing forum-video file for an already-existing message with
+ * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
+ * by `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not create rows.
+ * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
+ * only.
  */
 
 import { Hono } from 'hono';
@@ -45,11 +47,12 @@ function gateDebugToken(
  * Build the `/debug/messages` route group.
  *
  * Mounted at `/debug/messages` so the public paths are `GET /debug/messages`,
- * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`, and
- * `PUT /debug/messages/:id/video`.
+ * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
+ * `PUT /debug/messages/:id/video`, and `POST /debug/messages/:id/restore`.
  *
  * @param deps - Message store and optional debug token.
- * @returns A Hono app exposing the debug message GETs and `PUT /:id/video`.
+ * @returns A Hono app exposing the debug message GETs, `PUT /:id/video`,
+ *   and `POST /:id/restore`.
  */
 export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
   return new Hono()
@@ -171,6 +174,27 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.body(null, 204);
       } catch {
         logEvent('debug.messages.video.put_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .post('/:id/restore', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const restored = await deps.store.markUndeleted(id);
+        if (!restored) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        logEvent('debug.messages.restored', { messageId: id });
+        return c.body(null, 204);
+      } catch {
+        logEvent('debug.messages.restore_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     });
