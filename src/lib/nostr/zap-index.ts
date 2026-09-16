@@ -43,8 +43,8 @@ const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 /**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
  * Empty after process restart; the first tick may then re-persist a forgotten
- * decision, but only for the receipts that tick still queries. A receipt whose
- * message has aged out of `listLatest` is never asked for again.
+ * decision, but only for the receipts that tick still queries. A receipt is
+ * queried only while its message is present in the current `listLatest` result.
  *
  * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
  * the receipt id when the message goes away and would record it again, but this
