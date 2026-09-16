@@ -15,7 +15,7 @@ import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
-import { notifyForumReply, notifyZap } from '@/lib/notification';
+import { notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
@@ -271,10 +271,10 @@ export async function indexZapReceipt(args: {
 
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, index
- * validated ones, then insert a payer gift-reply and fan out zap/reply
+ * validated ones, then insert a payer gift-reply and fan out zap
  * in-app notifications to every account except skip (Web Push only to
  * bell subscribers). Retries receipts that have a payer and no gift-reply
- * id yet.
+ * id yet. The gift-reply insert does not call `notifyForumReply`.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
@@ -663,8 +663,6 @@ interface GiftReplyDeps {
   store: MessageStore;
   auth: AuthStore;
   now: () => number;
-  pushStore?: PushStore;
-  notificationStore?: NotificationStore;
 }
 
 /**
@@ -673,7 +671,7 @@ interface GiftReplyDeps {
  * A soft-deleted parent is treated as missing (`payerAccountId` cleared).
  *
  * @param event - Indexed kind:9735 frame.
- * @param args - Store, auth, clock, optional notify collaborators.
+ * @param args - Store, auth, clock.
  */
 async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): Promise<void> {
   /* v8 ignore next 3 -- ingestOneReceipt already requires a receipt id */
@@ -704,10 +702,6 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
       bolt11: pr,
       paymentHash,
       tags: event.tags,
-      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-      ...(args.notificationStore === undefined
-        ? {}
-        : { notificationStore: args.notificationStore }),
     });
   } catch {
     logEvent('nostr.zap.gift_reply.failed', { receiptId: event.id });
@@ -783,15 +777,13 @@ async function ensureGiftReplyFromReceipt(
     amountSats: args.amountSats,
     payer: resolved.payer,
     text: resolved.text,
-    ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-    ...(args.notificationStore === undefined ? {} : { notificationStore: args.notificationStore }),
   });
 }
 
 /**
  * Retry receipts that have a payer but no gift-reply row yet.
  *
- * @param args - Store, auth, optional notify collaborators.
+ * @param args - Store, auth, clock.
  */
 async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
   const pending = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);
@@ -817,10 +809,6 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         amountSats: row.sats,
         payer,
         text,
-        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-        ...(args.notificationStore === undefined
-          ? {}
-          : { notificationStore: args.notificationStore }),
       });
     } catch {
       logEvent('nostr.zap.gift_reply.failed', { receiptId: row.receiptEventId });
@@ -829,10 +817,11 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
 }
 
 /**
- * Persist the gift-reply row and notify. `store.create` throws when the
- * parent is missing or soft-hidden. Create/link failures propagate so
+ * Persist the gift-reply row. `store.create` throws when the parent is
+ * missing or soft-hidden. Create/link failures propagate so
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
- * Only `notifyForumReply` is caught here (`messages.reply.notify.failed`).
+ * Does not call `notifyForumReply`; zap ingest already called `notifyZap`
+ * after indexing.
  *
  * @param args - Payer, parent, text, receipt id.
  */
@@ -874,19 +863,6 @@ async function insertGiftReply(
     contentFp: null,
   });
   await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
-  try {
-    await notifyForumReply({
-      messages: args.store,
-      account: args.payer,
-      created,
-      parentId: args.parent.id,
-      auth: args.auth,
-      ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
-      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-    });
-  } catch {
-    logEvent('messages.reply.notify.failed');
-  }
 }
 
 /**
