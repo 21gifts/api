@@ -101,6 +101,7 @@ Public base URLs used in examples:
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                             |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/Lightning Address missing                      |
+| GET    | `/messages/hidden`                           | Bearer (founder/moderator) | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                         |
 | GET    | `/messages/:id`                              | none                       | Public single-note JSON (404 for Damus-only replies)                              |
 | GET    | `/messages/:id/replies`                      | none                       | Oldest-first 21.gifts-author replies (optional Bearer for `accountId`)            |
 | GET    | `/messages/:id/photo`                        | none                       | Fetch forum message photo bytes                                                   |
