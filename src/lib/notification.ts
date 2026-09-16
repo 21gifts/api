@@ -108,9 +108,6 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
   return ids.filter((id) => id !== skip);
 }
 
-/** Owner fan-out filter values. Omitted / unknown stored strings → `all`. */
-export const NOTIFICATION_LEVELS: readonly NotificationLevel[] = ['all', 'active', 'mentions'];
-
 /**
  * Parse a stored or request value into a {@link NotificationLevel}.
  *
