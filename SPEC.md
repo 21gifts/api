@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-15 (trust edges, public `GET /trust-chain` neighborhood; spend ping/posted/proof now carry `messageId` and a platform gift-reply; Internationalization out-of-scope bullet: api responses and push payloads stay English; visitor-UI locales live in the app catalog. Conversation JSON includes lastFromMe/fromMe; GET /conversations omits empty and outbound-only Direct/Damus threads).
+**Status**: living document. Last revised 2026-09-16 (a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread).
 
 ---
 
@@ -2198,11 +2198,7 @@ inserts a reply from the payer (`text` from the zap-request comment or `""`,
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
 every account except the resolved payer; Web Push only to bell subscribers;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). After the gift-reply insert,
-`notifyForumReply` runs best-effort (in-app rows for every account except the
-actor; Web Push only to bell subscribers; it does not copy into the
-member↔member inbox). Notify failure logs
-`messages.reply.notify.failed` and does not undo the receipt or the reply. LNURL success with a non-NIP-57 invoice
+failure logs `push.enqueue.failed`). LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with
