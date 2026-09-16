@@ -1451,9 +1451,7 @@ test('Function: migrateTrustSchema — default boot has no DATABASE_URL', async 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: trustChainRoutes — GET /trust-chain without bearer is 401', async ({
-  request,
-}) => {
+test('Function: trustChainRoutes — GET /trust-chain without bearer is 401', async ({ request }) => {
   const res = await request.get('/trust-chain');
   expect(res.status()).toBe(401);
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
