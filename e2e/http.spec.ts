@@ -637,3 +637,16 @@ test('POST /debug/trust-edges with the e2e token and a bad body is 400', async (
   });
   expect(res.status()).toBe(400);
 });
+
+test('DELETE /debug/trust-edges without bearer is 401', async ({ request }) => {
+  const res = await request.delete('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});
+
+test('DELETE /debug/trust-edges with the e2e token and a bad body is 400', async ({ request }) => {
+  const res = await request.delete('/debug/trust-edges', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: {},
+  });
+  expect(res.status()).toBe(400);
+});

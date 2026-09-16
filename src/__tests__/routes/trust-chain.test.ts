@@ -227,6 +227,7 @@ describe('GET /trust-chain', () => {
         throw new Error('boom');
       },
       insertEdge: async (row) => row,
+      deleteEdge: async () => undefined,
     };
     const res = await mount(authStore, throwing).request('/trust-chain?around=f', {
       headers: AUTH,

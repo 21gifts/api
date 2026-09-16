@@ -1468,3 +1468,10 @@ test('Function: debugTrustRoutes — POST /debug/trust-edges without bearer is 4
   const res = await request.post('/debug/trust-edges');
   expect(res.status()).toBe(401);
 });
+
+test('Function: debugTrustRoutes — DELETE /debug/trust-edges without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.delete('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});

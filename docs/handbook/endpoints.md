@@ -553,6 +553,13 @@
 - **Used by:** Operator `gifts-debug trust-edge` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: DELETE /debug/trust-edges
+
+- **Purpose:** Operator delete of a stored trust edge. Body `{ "subjectId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Removes the unique `(subjectId, kind)` row, logs `debug.trust_edges.deleted` `{ subjectId, kind }`, and returns the deleted `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId" and "kind" strings' }`; 404 `{ error: 'Not found' }` when `subjectId` is not a UUID or no row matches; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.delete_failed`).
+- **Used by:** Operator `gifts-debug trust-edge-delete` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /me/setup/skip
 
 - **Purpose:** Bearer required. Body `{ step: "name" | "lightning-address" }`. Sets `nameSkippedAt` or `lightningAddressSkippedAt` to now so owner `setup` advances; does not clear or change `name` / `lightningAddress`. Skipping an already-set field is allowed (writes the skip timestamp). Rules cannot be skipped.

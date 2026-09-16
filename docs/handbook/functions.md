@@ -1724,13 +1724,13 @@
 ## Function: InMemoryTrustStore
 
 - **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
-- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists.
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists. `deleteEdge(subjectId, kind)` removes that unique row or returns `undefined`.
 - **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `trustStore`.
 
 ## Function: PostgresTrustStore
 
-- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`.
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`. `deleteEdge` is `DELETE … RETURNING` on `(subject_id, kind)` and returns `undefined` when no row matches.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -1751,7 +1751,7 @@
 
 ## Function: debugTrustRoutes
 
-- **Purpose:** Operator backfill `POST /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. Body `{ subjectId, actorId, kind }` (four `TrustKind` values). Inserts a stored edge and returns `serializeTrustEdge` (ISO `createdAt`). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
-- **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`).
-- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. 400 bad body; 404 missing subject/actor; 409 duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 on unexpected store throw (`debug.trust_edges.failed`).
-- **Used by:** `createApp`; operator `gifts-debug trust-edge`.
+- **Purpose:** Operator backfill `POST /debug/trust-edges` and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. Both return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`; unused by DELETE).
+- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`).
+- **Used by:** `createApp`; operator `gifts-debug trust-edge` / `gifts-debug trust-edge-delete`.
