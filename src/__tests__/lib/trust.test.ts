@@ -383,14 +383,18 @@ describe('pendingModeratorProposals', () => {
   it('sorts equal createdAt by propose-edge id', () => {
     const first = account({ id: 's1', role: 'verified', name: 'Ada' });
     const second = account({ id: 's2', role: 'verified', name: 'Bob' });
+    const third = account({ id: 's3', role: 'verified', name: 'Cam' });
     const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
     const edges: TrustEdge[] = [
       edge({ id: 'p-z', subjectId: 's2', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
       edge({ id: 'p-a', subjectId: 's1', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
+      edge({ id: 'p-m', subjectId: 's3', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
     ];
     expect(
-      pendingModeratorProposals([second, first, actor], edges).map((row) => row.subject.id),
-    ).toEqual(['s1', 's2']);
+      pendingModeratorProposals([second, first, third, actor], edges).map(
+        (row) => row.subject.id,
+      ),
+    ).toEqual(['s1', 's3', 's2']);
   });
 
   it('keeps equal createdAt and id as a sort tie', () => {
