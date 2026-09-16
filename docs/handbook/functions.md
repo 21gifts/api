@@ -1735,6 +1735,13 @@
 - **Returns / side effects:** `AccountTrust`. No I/O.
 - **Used by:** `membersRoutes` (`GET /members/:accountId` always includes `trust`).
 
+## Function: pendingModeratorProposals
+
+- **Purpose:** Pure helper for the staff moderator-proposal queue. A row is pending when a `moderator_propose` edge exists, the live subject is `verified`, and that subject has no `moderator_confirm` and no `moderator_appoint`. Missing subject accounts are omitted. Several proposes for one subject keep the latest by `createdAt` then `id` (same tie-break as `accountTrust`). `proposedBy` uses live actor names; a missing actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then propose-edge `id` (FIFO). Never includes `basis` / `moderator` / `founder` subjects.
+- **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
+- **Returns / side effects:** `ModeratorProposal[]` (epoch-ms `createdAt`; subject `role` is always `"verified"`). No I/O.
+- **Used by:** `trustRoutes` (`GET /trust/proposals`).
+
 ## Function: serializeTrustEdge
 
 - **Purpose:** JSON projection of a stored trust edge for operator POST and DELETE `/debug/trust-edges` responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
@@ -1772,7 +1779,7 @@
 
 ## Function: trustRoutes
 
-- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
+- **Purpose:** Hono sub-app for staff Bearer `GET /proposals` (pending `moderator_propose` via `pendingModeratorProposals`; ISO `createdAt`; empty list is 200; logs `trust.proposals.listed` `{ count }` only) and four POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
 - **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore` and `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; 200 `{ id, name, role }`.
 - **Used by:** `createApp`.

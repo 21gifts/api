@@ -518,6 +518,13 @@
 - **Used by:** signed-in app `/trust-chain` via app `GET /trust/graph`.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /trust/proposals
+
+- **Purpose:** Bearer session required (founder or moderator; not `DEBUG_TOKEN`). Lists pending `moderator_propose` rows via `pendingModeratorProposals`: live subject `role` is `verified` and the subject has no `moderator_confirm` / `moderator_appoint`. JSON `{ "proposals": [ { subject: { id, name, role: "verified" }, proposedBy: { id, name }, createdAt } ] }` with ISO-8601 `createdAt` (empty list is 200). Oldest `createdAt` first, then propose-edge id. Missing subjects are omitted; a missing actor is `{ id, name: null }`. No `forum.read` / rules gate — a founder/moderator without rules agreement is still 200. Logs `trust.proposals.listed` with `{ count }` only. Public `GET /trust-chain` still omits `moderator_propose`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not founder/moderator; 503 `{ error: 'Trust chain is unavailable' }` when listing accounts/edges or projecting throws (`trust.proposals.failed`).
+- **Used by:** Staff moderator-proposal queue in the app.
+- **Auth:** `Authorization: Bearer` session (founder or moderator). Not `DEBUG_TOKEN`.
+
 ## Endpoint: POST /trust/verify
 
 - **Purpose:** Bearer staff (founder or moderator). Body `{ "accountId": "<uuid>" }`. Confirms the subject in real life: insert `verify` edge then `updateAccount` role=`verified`, log `trust.verified` `{ subjectId, actorId }`, `200 { id, name, role }`. Idempotent 200 when the existing verify edge actor is the caller and the subject is already `verified`. If that caller-owned edge exists and the subject is still `basis`, completes the role write and returns 200.

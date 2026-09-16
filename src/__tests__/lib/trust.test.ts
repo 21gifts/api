@@ -6,6 +6,7 @@ import {
   isChainAccount,
   isProjectedTrustEdge,
   isStaffRole,
+  pendingModeratorProposals,
   serializeTrustEdge,
   type TrustEdge,
 } from '@/lib/trust';
@@ -219,6 +220,190 @@ describe('accountTrust', () => {
       confirmedBy: { id: 'u', name: null },
       appointedBy: { id: 'missing', name: null },
     });
+  });
+});
+
+describe('pendingModeratorProposals', () => {
+  it('returns an empty list when there are no edges', () => {
+    expect(pendingModeratorProposals([account({ id: 's', role: 'verified' })], [])).toEqual([]);
+  });
+
+  it('returns one row with live names for a propose on a verified subject', () => {
+    const subject = account({ id: 's', role: 'verified', name: 'Ada' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'v1', subjectId: 's', actorId: 'm', kind: 'verify', createdAt: 1 }),
+      edge({
+        id: 'p1',
+        subjectId: 's',
+        actorId: 'm',
+        kind: 'moderator_propose',
+        createdAt: 10,
+      }),
+    ];
+    expect(pendingModeratorProposals([subject, actor], edges)).toEqual([
+      {
+        subject: { id: 's', name: 'Ada', role: 'verified' },
+        proposedBy: { id: 'm', name: 'Mod' },
+        createdAt: 10,
+      },
+    ]);
+  });
+
+  it('omits a propose whose subject is still basis', () => {
+    const subject = account({ id: 's', role: 'basis', name: 'Ada' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const propose = edge({ id: 'p1', subjectId: 's', actorId: 'm', kind: 'moderator_propose' });
+    expect(pendingModeratorProposals([subject, actor], [propose])).toEqual([]);
+  });
+
+  it('omits a propose when the subject also has a confirm edge', () => {
+    const subject = account({ id: 's', role: 'verified', name: 'Ada' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'p1', subjectId: 's', actorId: 'm', kind: 'moderator_propose' }),
+      edge({ id: 'c1', subjectId: 's', actorId: 'f', kind: 'moderator_confirm' }),
+    ];
+    expect(pendingModeratorProposals([subject, actor], edges)).toEqual([]);
+  });
+
+  it('omits a propose when the subject also has an appoint edge', () => {
+    const subject = account({ id: 's', role: 'verified', name: 'Ada' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'p1', subjectId: 's', actorId: 'm', kind: 'moderator_propose' }),
+      edge({ id: 'a1', subjectId: 's', actorId: 'f', kind: 'moderator_appoint' }),
+    ];
+    expect(pendingModeratorProposals([subject, actor], edges)).toEqual([]);
+  });
+
+  it('omits a propose when the subject account is missing', () => {
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const propose = edge({ id: 'p1', subjectId: 's', actorId: 'm', kind: 'moderator_propose' });
+    expect(pendingModeratorProposals([actor], [propose])).toEqual([]);
+  });
+
+  it('sets proposedBy.name to null when the actor account is missing', () => {
+    const subject = account({ id: 's', role: 'verified', name: 'Ada' });
+    const propose = edge({
+      id: 'p1',
+      subjectId: 's',
+      actorId: 'missing',
+      kind: 'moderator_propose',
+      createdAt: 4,
+    });
+    expect(pendingModeratorProposals([subject], [propose])).toEqual([
+      {
+        subject: { id: 's', name: 'Ada', role: 'verified' },
+        proposedBy: { id: 'missing', name: null },
+        createdAt: 4,
+      },
+    ]);
+  });
+
+  it('sorts two pending proposes oldest createdAt first', () => {
+    const early = account({ id: 's1', role: 'verified', name: 'Ada' });
+    const late = account({ id: 's2', role: 'verified', name: 'Bob' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({
+        id: 'p-late',
+        subjectId: 's2',
+        actorId: 'm',
+        kind: 'moderator_propose',
+        createdAt: 20,
+      }),
+      edge({
+        id: 'p-early',
+        subjectId: 's1',
+        actorId: 'm',
+        kind: 'moderator_propose',
+        createdAt: 10,
+      }),
+    ];
+    expect(
+      pendingModeratorProposals([late, early, actor], edges).map((row) => row.subject.id),
+    ).toEqual(['s1', 's2']);
+  });
+
+  it('omits founder and moderator subjects that still have a stale propose', () => {
+    const founder = account({ id: 'f', role: 'founder', name: 'F' });
+    const moderator = account({ id: 'm', role: 'moderator', name: 'M' });
+    const actor = account({ id: 'a', role: 'founder', name: 'Actor' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'pf', subjectId: 'f', actorId: 'a', kind: 'moderator_propose' }),
+      edge({ id: 'pm', subjectId: 'm', actorId: 'a', kind: 'moderator_propose' }),
+    ];
+    expect(pendingModeratorProposals([founder, moderator, actor], edges)).toEqual([]);
+  });
+
+  it('keeps the latest propose per subject by createdAt then id', () => {
+    const subject = account({ id: 's', role: 'verified', name: 'Ada' });
+    const ada = account({ id: 'ada', role: 'moderator', name: 'Ada Mod' });
+    const bob = account({ id: 'bob', role: 'founder', name: 'Bob' });
+    const edges: TrustEdge[] = [
+      edge({
+        id: 'p-old',
+        subjectId: 's',
+        actorId: 'ada',
+        kind: 'moderator_propose',
+        createdAt: 1,
+      }),
+      edge({
+        id: 'p-a',
+        subjectId: 's',
+        actorId: 'ada',
+        kind: 'moderator_propose',
+        createdAt: 2,
+      }),
+      edge({
+        id: 'p-new',
+        subjectId: 's',
+        actorId: 'bob',
+        kind: 'moderator_propose',
+        createdAt: 2,
+      }),
+      edge({
+        id: 'p-aaa',
+        subjectId: 's',
+        actorId: 'ada',
+        kind: 'moderator_propose',
+        createdAt: 2,
+      }),
+    ];
+    expect(pendingModeratorProposals([subject, ada, bob], edges)).toEqual([
+      {
+        subject: { id: 's', name: 'Ada', role: 'verified' },
+        proposedBy: { id: 'bob', name: 'Bob' },
+        createdAt: 2,
+      },
+    ]);
+  });
+
+  it('sorts equal createdAt by propose-edge id', () => {
+    const first = account({ id: 's1', role: 'verified', name: 'Ada' });
+    const second = account({ id: 's2', role: 'verified', name: 'Bob' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'p-z', subjectId: 's2', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
+      edge({ id: 'p-a', subjectId: 's1', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
+    ];
+    expect(
+      pendingModeratorProposals([second, first, actor], edges).map((row) => row.subject.id),
+    ).toEqual(['s1', 's2']);
+  });
+
+  it('keeps equal createdAt and id as a sort tie', () => {
+    const one = account({ id: 's1', role: 'verified', name: 'A' });
+    const two = account({ id: 's2', role: 'verified', name: 'B' });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const edges: TrustEdge[] = [
+      edge({ id: 'same', subjectId: 's1', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
+      edge({ id: 'same', subjectId: 's2', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
+    ];
+    expect(pendingModeratorProposals([one, two, actor], edges).map((row) => row.subject.id)).toEqual(
+      ['s1', 's2'],
+    );
   });
 });
 

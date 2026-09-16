@@ -605,6 +605,11 @@ test('GET /trust-chain?around= missing id is 404', async ({ request }) => {
   expect((await request.get('/trust-chain?around=ghost', { headers: auth })).status()).toBe(404);
 });
 
+test('GET /trust/proposals without bearer is 401', async ({ request }) => {
+  const res = await request.get('/trust/proposals');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /trust/verify without bearer is 401', async ({ request }) => {
   const res = await request.post('/trust/verify', { data: { accountId: 'x' } });
   expect(res.status()).toBe(401);

@@ -97,6 +97,7 @@ Public base URLs used in examples:
 | GET    | `/trust-chain`                               | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges        |
 | POST   | `/trust/verify`                              | Bearer                     | Staff: confirm a person in real life (`verified`)                                 |
 | POST   | `/trust/propose-moderator`                   | Bearer                     | Staff: propose a verified member as moderator                                     |
+| GET    | `/trust/proposals`                           | Bearer (founder/moderator) | Staff: list pending moderator proposals                                           |
 | POST   | `/trust/confirm-moderator`                   | Bearer                     | Staff: second, independent confirmation → `moderator`                             |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                             |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing |
@@ -502,6 +503,56 @@ Logged as `trust.chain.failed`.
   "edges": [{ "from": "<actor-uuid>", "to": "<subject-uuid>", "kind": "verify" }]
 }
 ```
+
+### `GET /trust/proposals`
+
+Staff pending-moderator queue. Bearer **session** required (founder or
+moderator). This is **not** a `DEBUG_TOKEN` route. No `forum.read` /
+rules gate — a founder/moderator without rules agreement is still **200**.
+
+Lists pending `moderator_propose` edges whose live subject is still
+`verified` and has no `moderator_confirm` or `moderator_appoint`. Missing
+subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
+(FIFO). JSON `{ "proposals": [ … ] }` including an empty list. Each item
+is `{ subject: { id, name, role: "verified" }, proposedBy: { id, name },
+createdAt }` with ISO-8601 `createdAt`. A missing actor is
+`{ id, name: null }`. Public `GET /trust-chain` still omits
+`moderator_propose`.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Live role is not founder and not moderator → **Response** `403`:
+
+```json
+{ "error": "Forbidden" }
+```
+
+Store or project throw → **Response** `503`:
+
+```json
+{ "error": "Trust chain is unavailable" }
+```
+
+Success (including an empty list) → **Response** `200`:
+
+```json
+{
+  "proposals": [
+    {
+      "subject": { "id": "<uuid>", "name": "Ada", "role": "verified" },
+      "proposedBy": { "id": "<uuid>", "name": "Mod" },
+      "createdAt": "2026-09-16T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+On success the process logs `trust.proposals.listed` with `{ count }`
+only. On throw it logs `trust.proposals.failed`.
 
 ### `POST /trust/verify`
 

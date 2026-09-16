@@ -6,14 +6,15 @@ import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { isStaffRole, type TrustEdge, type TrustKind } from '@/lib/trust';
+import { isStaffRole, pendingModeratorProposals, type TrustEdge, type TrustKind } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Staff trust POSTs: verify a person, propose/confirm a moderator, or
- * appoint a moderator as a founder. Bearer session required.
+ * Staff trust routes: list pending moderator proposals, verify a person,
+ * propose/confirm a moderator, or appoint a moderator as a founder.
+ * Bearer session required.
  */
 
 /** Collaborators the staff trust routes need. */
@@ -82,15 +83,40 @@ async function loadTargetAccount(
 /**
  * Build the `/trust` route group.
  *
- * Mounted at `/trust` so the public paths are `POST /trust/verify`,
- * `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and
- * `POST /trust/appoint-moderator`.
+ * Mounted at `/trust` so the public paths are `GET /trust/proposals`,
+ * `POST /trust/verify`, `POST /trust/propose-moderator`,
+ * `POST /trust/confirm-moderator`, and `POST /trust/appoint-moderator`.
  *
  * @param deps - Auth store, trust-edge store, clock, and optional notification/push stores.
- * @returns A Hono app with the four staff POSTs.
+ * @returns A Hono app with the staff GET and four staff POSTs.
  */
 export function trustRoutes(deps: TrustRouteDeps): Hono {
   return new Hono()
+    .get('/proposals', async (c) => {
+      try {
+        const caller = await authedAccount(deps, c.req.header('authorization'));
+        if (caller === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (!isStaffRole(caller.role)) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
+        const [accounts, edges] = await Promise.all([
+          deps.authStore.listAccounts(),
+          deps.trustStore.listEdges(),
+        ]);
+        const proposals = pendingModeratorProposals(accounts, edges).map((row) => ({
+          subject: row.subject,
+          proposedBy: row.proposedBy,
+          createdAt: new Date(row.createdAt).toISOString(),
+        }));
+        logEvent('trust.proposals.listed', { count: proposals.length });
+        return c.json({ proposals }, 200);
+      } catch {
+        logEvent('trust.proposals.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+    })
     .post('/verify', async (c) => {
       const caller = await authedAccount(deps, c.req.header('authorization'));
       if (caller === null) {

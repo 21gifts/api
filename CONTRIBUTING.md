@@ -46,7 +46,7 @@ api/
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
 │   │   ├── debug-trust.ts    # POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
-│   │   ├── trust.ts          # POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
+│   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)

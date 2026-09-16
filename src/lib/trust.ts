@@ -78,6 +78,21 @@ export interface AccountTrust {
   appointedBy: TrustActorRef | null;
 }
 
+/**
+ * One pending moderator proposal (staff list only; not the public chain).
+ *
+ * Pending means a stored `moderator_propose` whose live subject is still
+ * `verified` and has no `moderator_confirm` or `moderator_appoint`.
+ */
+export interface ModeratorProposal {
+  /** Live subject; role is always `verified` for a pending row. */
+  subject: { id: string; name: string | null; role: 'verified' };
+  /** Propose-edge actor; missing account → `{ id, name: null }`. */
+  proposedBy: TrustActorRef;
+  /** Propose-edge creation time (epoch ms). */
+  createdAt: number;
+}
+
 /** JSON projection of a stored edge (`createdAt` as ISO-8601). */
 export interface TrustEdgeJson {
   /** Opaque unique edge id. */
@@ -177,6 +192,69 @@ export function accountTrust(
 }
 
 /**
+ * Pending moderator proposals for the staff queue.
+ *
+ * A row is pending when a `moderator_propose` edge exists, the live
+ * subject account is `verified`, and that subject has no
+ * `moderator_confirm` and no `moderator_appoint` (any actor). Missing
+ * subject accounts are omitted. Several proposes for one subject keep
+ * the latest by `createdAt` then `id` (same tie-break as
+ * {@link accountTrust}). `proposedBy` uses live actor names; a missing
+ * actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then
+ * propose-edge `id` (FIFO). Never includes `basis` / `moderator` /
+ * `founder` subjects. Pure; no I/O.
+ *
+ * @param accounts - Live accounts (subject role + actor names).
+ * @param edges - Stored trust edges (any order, any subjects).
+ * @returns Pending proposals, oldest first.
+ */
+export function pendingModeratorProposals(
+  accounts: readonly Account[],
+  edges: readonly TrustEdge[],
+): ModeratorProposal[] {
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  const closed = new Set<string>();
+  const latestPropose = new Map<string, TrustEdge>();
+  for (const edge of edges) {
+    if (edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint') {
+      closed.add(edge.subjectId);
+      continue;
+    }
+    if (edge.kind !== 'moderator_propose') {
+      continue;
+    }
+    const prev = latestPropose.get(edge.subjectId);
+    if (
+      prev === undefined ||
+      edge.createdAt > prev.createdAt ||
+      (edge.createdAt === prev.createdAt && edge.id > prev.id)
+    ) {
+      latestPropose.set(edge.subjectId, edge);
+    }
+  }
+  const pending: TrustEdge[] = [];
+  for (const edge of latestPropose.values()) {
+    if (closed.has(edge.subjectId)) {
+      continue;
+    }
+    const subject = byId.get(edge.subjectId);
+    if (subject === undefined || subject.role !== 'verified') {
+      continue;
+    }
+    pending.push(edge);
+  }
+  pending.sort(compareTrustEdgesOldestFirst);
+  return pending.map((edge) => {
+    const subject = byId.get(edge.subjectId);
+    return {
+      subject: { id: edge.subjectId, name: subject?.name ?? null, role: 'verified' },
+      proposedBy: { id: edge.actorId, name: byId.get(edge.actorId)?.name ?? null },
+      createdAt: edge.createdAt,
+    };
+  });
+}
+
+/**
  * Project a stored edge to JSON (`createdAt` as ISO-8601).
  *
  * @param edge - Persisted edge.
@@ -227,6 +305,20 @@ export function isProjectedTrustEdge(
     return subject?.role === 'moderator';
   }
   return false;
+}
+
+/** Oldest `createdAt` first, then `id`. */
+function compareTrustEdgesOldestFirst(a: TrustEdge, b: TrustEdge): number {
+  if (a.createdAt !== b.createdAt) {
+    return a.createdAt - b.createdAt;
+  }
+  if (a.id < b.id) {
+    return -1;
+  }
+  if (a.id > b.id) {
+    return 1;
+  }
+  return 0;
 }
 
 /** Founder, then moderator, then verified; oldest `createdAt`, then `id`. */
