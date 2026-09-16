@@ -2339,8 +2339,9 @@ and Damus-only children (`accountId` null) are omitted from the list.
 ### `GET /messages/:id`
 
 Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
-**after** photo, video, `GET /messages/:id/replies`, and
-`DELETE /messages/:id` so those paths are not captured as `:id`. Returns
+**after** photo, video, `GET /messages/:id/replies`,
+`DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
+captured as `:id`. Returns
 the public message JSON (`sats`, `payable`, `hasPhoto`, `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Never includes
 `accountId`, `deletedAt`, or `deletedBy`. Top-level Damus-only notes
@@ -2440,6 +2441,72 @@ Store failure → **Response** `503`:
 On success the process logs `messages.deleted` with `messageId`,
 `accountId`, and the staff `role` (never the post text). On store throw
 it logs `messages.delete.failed`.
+
+### `GET /messages/hidden`
+
+Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
+**session** required (founder or moderator). This is **not** a
+`DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
+`"hidden"` is not captured as `:id`. No `forum.read` gate — a
+founder/moderator without rules agreement is still **200**.
+
+Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
+desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
+via `serializeHiddenMessage`. Each item includes stored `name` (no
+empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
+`hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
+on top-level), and `deletedBy: { id, name, role }` resolved from
+`authStore.getAccount` (missing account keeps that id with `name` /
+`role` null; null `deletedBy` is `{ id: null, name: null, role: null }`).
+Never includes `accountId`, `eventId`, `nostrPublishState`, `payable`,
+author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or
+photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
+No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
+`DEBUG_TOKEN` only).
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Live role is not founder and not moderator → **Response** `403`:
+
+```json
+{ "error": "Forbidden" }
+```
+
+Store, deleter lookup, or serialize throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success (including an empty list) → **Response** `200`:
+
+```json
+{
+  "messages": [
+    {
+      "id": "<uuid>",
+      "name": "Ada",
+      "text": "hidden",
+      "createdAt": "2026-08-28T12:00:00.000Z",
+      "sats": 0,
+      "hasPhoto": false,
+      "hasVideo": false,
+      "videoContentType": null,
+      "parentId": null,
+      "deletedAt": "2026-09-01T12:00:00.000Z",
+      "deletedBy": { "id": "<uuid>", "name": "Ada", "role": "moderator" }
+    }
+  ]
+}
+```
+
+On success the process logs `messages.hidden.listed` with `{ count }`
+only (never post text, never message ids). On throw it logs
+`messages.hidden.list_failed`.
 
 ### `POST /contact`
 
@@ -2701,10 +2768,12 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 when `DATABASE_URL` is set.
 
 **Moderator-only endpoints.** Soft-hide is implemented as
-`DELETE /messages/:id` (founder/moderator session). Operator debug restore
-exists as `POST /debug/messages/:id/restore` (`DEBUG_TOKEN`). Staff /
-moderator session unhide is still not a route. Other Moderator actions
-are not HTTP routes yet. Role values
+`DELETE /messages/:id` (founder/moderator session). The staff hidden log
+is implemented as `GET /messages/hidden` (founder/moderator **session**,
+not `DEBUG_TOKEN`; registered before `GET /messages/:id`). Operator debug
+restore exists as `POST /debug/messages/:id/restore` (`DEBUG_TOKEN`).
+Staff / moderator session unhide is still not a route. Other Moderator
+actions are not HTTP routes yet. Role values
 exist on the account model; `GET /debug/accounts` and
 `PATCH /debug/accounts/:id` are operator token routes, not a moderator session.
 

@@ -3,8 +3,8 @@ import type { AccountRole } from '@/lib/auth/store';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
- * Forum message domain: validation, photo decode, public JSON, and operator
- * debug JSON projection.
+ * Forum message domain: validation, photo decode, public JSON, operator
+ * debug JSON, and staff hidden-log JSON projection.
  *
  * Text is free-form encouragement (not unique). Over-long or disallowed
  * control-character input is rejected so a bad value cannot be stored and
@@ -307,6 +307,41 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
     authorPubkey: row.authorPubkey ?? null,
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
+  };
+}
+
+/**
+ * Project a store row to staff hidden-log JSON (who hid it and when).
+ *
+ * JSON `name` is the stored `row.name` (no empty-name pubkey fallback).
+ * Always includes `parentId` (JSON `null` on top-level notes) and
+ * `deletedAt` (JSON `null` when live). Never includes `accountId`,
+ * `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`,
+ * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+ *
+ * @param row - Persisted message (including hidden rows and replies).
+ * @param deletedBy - Resolved deleter `{ id, name, role }` from the route.
+ * @returns Hidden-log fields; `createdAt` / `deletedAt` ISO-8601
+ *   (`deletedAt` null when live).
+ * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
+ */
+export function serializeHiddenMessage(
+  row: MessageRow,
+  deletedBy: { id: string | null; name: string | null; role: AccountRole | null },
+): Record<string, unknown> {
+  const deletedAt = row.deletedAt ?? null;
+  return {
+    id: row.id,
+    name: row.name,
+    text: row.text,
+    createdAt: row.createdAt.toISOString(),
+    sats: row.sats,
+    hasPhoto: row.hasPhoto === true,
+    hasVideo: row.hasVideo === true,
+    videoContentType: row.videoContentType ?? null,
+    parentId: row.parentId ?? null,
+    deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
+    deletedBy,
   };
 }
 

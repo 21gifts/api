@@ -153,6 +153,17 @@ export interface MessageStore {
   listDebug(limit: number): Promise<MessageRow[]>;
 
   /**
+   * Newest-hidden-first forum rows for the staff hidden log (`deletedAt`
+   * desc, then `id` desc), capped at `limit`. Only rows with `deletedAt`
+   * set. Includes top-level notes **and** replies. Rows include `hasPhoto` /
+   * `hasVideo` / `videoContentType` but never photo or video bytes.
+   *
+   * @param limit - Maximum rows to return.
+   * @returns Message row copies.
+   */
+  listHidden(limit: number): Promise<MessageRow[]>;
+
+  /**
    * Persist a new message row and optional photo and video.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -955,6 +966,34 @@ export class InMemoryMessageStore implements MessageStore {
   listDebug(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
       const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = copyRow(row);
+        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
+        copy.hasVideo = row.hasVideo === true;
+        copy.videoContentType = row.videoContentType ?? null;
+        return copy;
+      }),
+    );
+  }
+
+  /**
+   * Newest-hidden-first forum rows for the staff hidden log, including
+   * replies, capped at `limit`. Live rows (`deletedAt` null) are omitted.
+   *
+   * @param limit - Maximum rows.
+   * @returns A new array of row copies; mutating it does not change the store.
+   *   Listed objects never expose photo or video bytes.
+   */
+  listHidden(limit: number): Promise<MessageRow[]> {
+    const hidden = this.#rows.filter((row) => row.deletedAt !== null);
+    const sorted = [...hidden].sort((a, b) => {
+      const byTime = (b.deletedAt as Date).getTime() - (a.deletedAt as Date).getTime();
       if (byTime !== 0) {
         return byTime;
       }
@@ -1880,6 +1919,21 @@ export class PostgresMessageStore implements MessageStore {
   async listDebug(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Newest-hidden-first forum rows (`deleted_at` desc, `id` desc). Only
+   * rows with `deleted_at IS NOT NULL`. Never selects `photo` bytea.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
+  async listHidden(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT $1`,
       [limit],
     );
     return rows.map((row) => mapMessageRow(row));

@@ -9,6 +9,7 @@ import {
   forumContentFingerprint,
   normalizeForumText,
   serializeDebugMessage,
+  serializeHiddenMessage,
   serializeMessage,
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
@@ -353,6 +354,96 @@ describe('serializeDebugMessage', () => {
     expect(body['deletedBy']).toBeNull();
     expect(body['hasVideo']).toBe(false);
     expect(body['parentId']).toBeNull();
+  });
+});
+
+describe('serializeHiddenMessage', () => {
+  it('includes hide stamps, parentId, and stored name', () => {
+    const deletedAt = new Date('2026-09-01T12:00:00.000Z');
+    const row: MessageRow = {
+      id: 'msg-hidden',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      contentFp: 'ab'.repeat(32),
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      eventId: 'ee'.repeat(32),
+      nostrPublishState: 'published',
+      sats: 21,
+      nostrEvent: { id: 'ee'.repeat(32) },
+      deletedAt,
+      deletedBy: 'staff',
+      authorPubkey: 'aa'.repeat(32),
+      nostrAttempts: 2,
+    };
+    expect(serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })).toEqual({
+      id: 'msg-hidden',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: '2026-08-28T12:00:00.000Z',
+      sats: 21,
+      hasPhoto: true,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      parentId: 'parent-1',
+      deletedAt: '2026-09-01T12:00:00.000Z',
+      deletedBy: { id: 'staff', name: 'Mod', role: 'moderator' },
+    });
+  });
+
+  it('emits live null deletedAt and always includes parentId', () => {
+    const row: MessageRow = {
+      id: 'msg-live',
+      accountId: 'acc-1',
+      name: '',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'aa'.repeat(32),
+    };
+    const body = serializeHiddenMessage(row, { id: null, name: null, role: null });
+    expect(body['name']).toBe('');
+    expect(body['deletedAt']).toBeNull();
+    expect(body['parentId']).toBeNull();
+    expect(body['hasPhoto']).toBe(false);
+    expect(body['hasVideo']).toBe(false);
+    expect(body['videoContentType']).toBeNull();
+    expect(body['deletedBy']).toEqual({ id: null, name: null, role: null });
+  });
+
+  it('omits accountId, eventId, payable, author role, and store internals', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      contentFp: 'ab'.repeat(32),
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      nostrEvent: { id: 'ee'.repeat(32) },
+      claimedUntil: 1,
+      deletedAt: new Date('2026-09-01T12:00:00.000Z'),
+      deletedBy: 'staff',
+    };
+    const body = serializeHiddenMessage(row, { id: 'staff', name: null, role: 'founder' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('eventId');
+    expect(body).not.toHaveProperty('nostrPublishState');
+    expect(body).not.toHaveProperty('payable');
+    expect(body).not.toHaveProperty('role');
+    expect(body).not.toHaveProperty('nostrEvent');
+    expect(body).not.toHaveProperty('claimedUntil');
+    expect(body).not.toHaveProperty('contentFp');
+    expect(body).not.toHaveProperty('authorPubkey');
+    expect(body).not.toHaveProperty('nsec');
   });
 });
 

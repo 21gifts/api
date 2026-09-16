@@ -127,6 +127,11 @@ test('GET /messages without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /messages/hidden without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/hidden');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /debug/accounts/:id/session without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/accounts/:id/session');
   expect(res.status()).toBeGreaterThanOrEqual(400);

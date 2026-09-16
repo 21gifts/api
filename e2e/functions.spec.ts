@@ -506,6 +506,13 @@ test('Function: serializeDebugMessage — GET /debug/messages without bearer is 
   expect(res.status()).toBe(401);
 });
 
+test('Function: serializeHiddenMessage — GET /messages/hidden without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/hidden');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 401', async ({
   request,
 }) => {

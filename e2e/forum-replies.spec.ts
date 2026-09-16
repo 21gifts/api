@@ -178,6 +178,74 @@ test('Function: markDeleted — DELETE /messages/:id hides the note', async ({ r
   expect(again.status()).toBe(204);
 });
 
+test('Function: listHidden — GET /messages/hidden lists soft-hidden notes', async ({ request }) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const hideName = `E2eHidden${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name: hideName,
+          lightningAddress: `e2e-hidden-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const account = accounts.find((row) => row.name === hideName);
+  expect(account).toBeDefined();
+
+  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
+
+  const posted = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'e2e hidden log' },
+  });
+  expect(posted.status()).toBe(200);
+  const note = (await posted.json()) as { id: string };
+
+  const promoted = await request.patch(`/debug/accounts/${account?.id}`, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+
+  const hidden = await request.delete(`/messages/${note.id}`, { headers: auth });
+  expect(hidden.status()).toBe(204);
+
+  const afterHide = await request.get(`/messages/${note.id}`);
+  expect(afterHide.status()).toBe(404);
+
+  const staffList = await request.get('/messages/hidden', { headers: auth });
+  expect(staffList.status()).toBe(200);
+  const hiddenBody = (await staffList.json()) as {
+    messages: Array<{
+      id: string;
+      deletedAt: string;
+      deletedBy: { id: string | null; name: string | null; role: string | null };
+    }>;
+  };
+  const hiddenRow = hiddenBody.messages.find((row) => row.id === note.id);
+  expect(hiddenRow).toBeDefined();
+  expect(hiddenRow?.deletedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  expect(hiddenRow?.deletedBy).toEqual({
+    id: account?.id,
+    name: hideName,
+    role: 'moderator',
+  });
+});
+
 test('Function: markUndeleted — POST /debug/messages/:id/restore unhides the note', async ({
   request,
 }) => {

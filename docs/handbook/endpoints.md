@@ -35,6 +35,13 @@
 - **Used by:** Staff hide controls in the app forum.
 - **Auth:** `Authorization: Bearer` session (founder or moderator).
 
+## Endpoint: GET /messages/hidden
+
+- **Purpose:** Bearer session required (founder or moderator; not `DEBUG_TOKEN`). Inverse **read** of `DELETE /messages/:id`. Lists soft-hidden forum rows (`deletedAt` set) newest-hidden first (`deletedAt` desc, then `id` desc), capped at 200, via `listHidden` / `serializeHiddenMessage`. Each item includes stored `name` (no empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` / `hasVideo` / `videoContentType`, always-present `parentId` (JSON `null` on top-level), and `deletedBy: { id, name, role }` resolved from `authStore.getAccount` (missing account keeps the id with `name` / `role` null; null `deletedBy` is `{ id: null, name: null, role: null }`). Never includes `accountId`, `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or photo/video bytes. Public list/GET/photo stay 404 for hidden rows. No `forum.read` gate — a founder/moderator without rules agreement is still 200. Logs `messages.hidden.listed` with `{ count }` only (never post text, never message ids). Registered before public `GET /messages/:id` so `"hidden"` is not captured as `:id`. No staff UNHIDE session route.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not founder/moderator (including the author / verified); 503 `{ error: 'Messages are unavailable' }` when the store, deleter lookup, or serialize throws (`messages.hidden.list_failed`).
+- **Used by:** Staff hidden-note log in the app forum.
+- **Auth:** `Authorization: Bearer` session (founder or moderator). Not `DEBUG_TOKEN`.
+
 ## Endpoint: GET /.well-known/nostr.json
 
 - **Purpose:** NIP-05 directory `{ names, relays }`. CORS `*`. Optional `?name=`.
