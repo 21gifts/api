@@ -239,6 +239,7 @@ export async function finishPasskeyRegistration(
     nameSkippedAt: null,
     lightningAddressSkippedAt: null,
     profileMessageId: null,
+    notificationLevel: 'all',
   };
   await store.createAccount(account);
   if (nostr !== undefined) {

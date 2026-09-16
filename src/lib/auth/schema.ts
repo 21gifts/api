@@ -2,8 +2,8 @@
  * Idempotent DDL for the auth tables. Applied once at process boot when
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
- * `forum_laws_dismissed`, and `rules_agreed_at` on databases created before
- * those columns existed.
+ * `forum_laws_dismissed`, `rules_agreed_at`, and `notification_level` on
+ * databases created before those columns existed.
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
 
@@ -74,4 +74,8 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS lightning_address_skipped_at timestamptz`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS profile_message_id uuid`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS location text`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS notification_level text NOT NULL DEFAULT 'all'`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_notification_level_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_notification_level_chk
+    CHECK (notification_level IN ('all', 'active', 'mentions'))`,
 ];

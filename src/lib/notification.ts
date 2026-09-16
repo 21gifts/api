@@ -3,13 +3,14 @@
  * and targeted `moderator_appointed` (subject only, not a fan-out).
  *
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
- * `auth` is set) and `push_subscription` account ids, except skip. Web Push
- * is still only for `push_subscription` rows. Member HTTP never exposes
- * recipient or actor account ids. Callers catch failures so persist still
- * succeeds.
+ * `auth` is set) and `push_subscription` account ids, except skip, then
+ * filtered by each recipient's `notificationLevel` when `auth` is set.
+ * Targeted `moderator_appointed` does not fan out. Web Push is still only
+ * for `push_subscription` rows. Member HTTP never exposes recipient or actor
+ * account ids. Callers catch failures so persist still succeeds.
  */
 
-import type { AuthStore } from '@/lib/auth/store';
+import type { AuthStore, NotificationLevel } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -21,6 +22,8 @@ import {
   buildZapPushPayload,
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
+
+export type { NotificationLevel } from '@/lib/auth/store';
 
 /** Cap for `GET /notifications`. */
 export const NOTIFICATION_LIST_LIMIT = 200;
@@ -105,17 +108,131 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
   return ids.filter((id) => id !== skip);
 }
 
+/** Owner fan-out filter values. Omitted / unknown stored strings → `all`. */
+export const NOTIFICATION_LEVELS: readonly NotificationLevel[] = ['all', 'active', 'mentions'];
+
+/**
+ * Parse a stored or request value into a {@link NotificationLevel}.
+ *
+ * @param raw - Unknown input (DB text, JSON, omitted).
+ * @returns `all`, `active`, or `mentions`; anything else → `all`.
+ */
+export function parseNotificationLevel(raw: unknown): NotificationLevel {
+  if (raw === 'all' || raw === 'active' || raw === 'mentions') {
+    return raw;
+  }
+  return 'all';
+}
+
+/**
+ * Whether this account is a staff/admin actor for `mentions` fan-out.
+ * `verified` is not staff. `isPlatform === true` is staff even when `role` is `basis`.
+ *
+ * @param account - Role plus optional platform flag.
+ * @returns True when `role` is `founder` or `moderator`, or `isPlatform` is true.
+ */
+export function isStaffAccount(account: { role: string; isPlatform?: boolean }): boolean {
+  return account.role === 'founder' || account.role === 'moderator' || account.isPlatform === true;
+}
+
+/**
+ * Whether a recipient at `level` should receive this living-room event.
+ *
+ * `all` is always true. `active` is `isActive`. `mentions` is a staff actor
+ * or `mentionedAccountId === recipientAccountId` (both non-null).
+ *
+ * @param args - Recipient level, actor staff flag, active flag, mention target, recipient id.
+ * @returns True when this recipient should get an in-app row and/or Web Push.
+ */
+export function wantsNotification(args: {
+  level: NotificationLevel;
+  actorIsStaff: boolean;
+  isActive: boolean;
+  mentionedAccountId: string | null;
+  recipientAccountId: string;
+}): boolean {
+  if (args.level === 'all') {
+    return true;
+  }
+  if (args.level === 'active') {
+    return args.isActive;
+  }
+  if (args.actorIsStaff) {
+    return true;
+  }
+  return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
+}
+
+/** Fan-out match context shared by in-app rows and Web Push. */
+interface NotificationMatch {
+  /** True when the actor/payer is founder, moderator, or platform. */
+  actorIsStaff: boolean;
+  /** True when the related top-level post is in the Active feed, or a zap has amount. */
+  isActive: boolean;
+  /** Parent/note author id for personal involvement, or `null`. */
+  mentionedAccountId: string | null;
+}
+
+/**
+ * Look up whether `actorId` is staff in `auth.listAccounts()`.
+ *
+ * @param auth - Optional auth list.
+ * @param actorId - Actor/payer id, or `undefined` when there is no payer.
+ * @returns False when `auth` or `actorId` is missing or the account is not listed.
+ */
+async function actorIsStaffFromAuth(
+  auth: Pick<AuthStore, 'listAccounts'> | undefined,
+  actorId: string | undefined,
+): Promise<boolean> {
+  if (auth === undefined || actorId === undefined) {
+    return false;
+  }
+  const actor = (await auth.listAccounts()).find((account) => account.id === actorId);
+  return actor === undefined ? false : isStaffAccount(actor);
+}
+
+/**
+ * Drop ids whose stored level rejects this event. Push-only ids not in
+ * `accountsById` are treated as `all`.
+ *
+ * @param ids - Recipients after skip.
+ * @param accountsById - Auth accounts keyed by id.
+ * @param match - Event match context.
+ * @returns Ids that pass {@link wantsNotification}.
+ */
+function filterIdsByMatch(
+  ids: readonly string[],
+  accountsById: ReadonlyMap<string, { notificationLevel?: NotificationLevel }>,
+  match: NotificationMatch,
+): string[] {
+  return ids.filter((recipientAccountId) => {
+    const recipient = accountsById.get(recipientAccountId);
+    const level =
+      recipient === undefined ? 'all' : parseNotificationLevel(recipient.notificationLevel);
+    return wantsNotification({
+      level,
+      actorIsStaff: match.actorIsStaff,
+      isActive: match.isActive,
+      mentionedAccountId: match.mentionedAccountId,
+      recipientAccountId,
+    });
+  });
+}
+
 /**
  * Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`.
  * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
- * `push_subscription` accounts. Missing both `auth` and `pushStore` is a
- * no-op. Unique duplicate `create` is fine. When `notifications` is set,
- * each outbox JSON includes that recipient's current unread count after
- * in-app create (`unreadCount`, for the home-screen badge). When
- * `notifications` is omitted, `payload` is enqueued unchanged.
+ * `push_subscription` accounts. When `auth` is set and `match` is set, drop
+ * recipients whose {@link wantsNotification} is false (level from
+ * `listAccounts()`, `?? 'all'`; push-only ids not in that list are `all`).
+ * When `auth` is unset, do not filter by level. Missing both `auth` and
+ * `pushStore` is a no-op. Unique duplicate `create` is fine. When
+ * `notifications` is set, each outbox JSON includes that recipient's current
+ * unread count after in-app create (`unreadCount`, for the home-screen
+ * badge). When `notifications` is omitted, `payload` is enqueued unchanged.
  *
- * @param args - Optional stores, skip id, row template, outbox fields, clock.
+ * @param args - Optional stores, skip id, optional match, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
  * @throws If recipient listing rejects. Per-recipient `create` /
  *   `unreadCount` / `enqueue` failures log `push.fanout.failed`, continue,
@@ -126,10 +243,15 @@ export async function fanoutToBellSubscribers(args: {
   notifications?: NotificationStore;
   /** Optional push outbox; also contributes `push_subscription` ids to the in-app union. */
   pushStore?: PushStore;
-  /** Optional auth; when set, in-app rows go to every account except skip. */
+  /** Optional auth; when set, in-app rows go to every account except skip (then level-filtered). */
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Account id to skip (actor); `null` skips nobody. */
   skipAccountId: string | null;
+  /**
+   * Event match context. Omitted → today's every-id-except-skip behaviour.
+   * Applied only when `auth` is also set.
+   */
+  match?: NotificationMatch;
   /** Row fields copied to each recipient (`id` / `recipientAccountId` filled here). */
   template: Omit<NotificationRow, 'id' | 'recipientAccountId'>;
   /** Outbox `type`. */
@@ -141,12 +263,18 @@ export async function fanoutToBellSubscribers(args: {
   /** Enqueue clock. */
   nowMs: number;
 }): Promise<void> {
-  const fromAuth =
-    args.auth === undefined ? [] : (await args.auth.listAccounts()).map((account) => account.id);
+  const accounts = args.auth === undefined ? [] : await args.auth.listAccounts();
+  const fromAuth = accounts.map((account) => account.id);
   const fromPush =
     args.pushStore === undefined ? [] : await args.pushStore.listAccountIdsWithSubscriptions();
-  const inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
-  const pushIds = exceptSkip(fromPush, args.skipAccountId);
+  let inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
+  let pushIds = exceptSkip(fromPush, args.skipAccountId);
+  const match = args.match;
+  if (match !== undefined && args.auth !== undefined) {
+    const accountsById = new Map(accounts.map((account) => [account.id, account]));
+    inAppIds = filterIdsByMatch(inAppIds, accountsById, match);
+    pushIds = filterIdsByMatch(pushIds, accountsById, match);
+  }
   logEvent('push.fanout', { inApp: inAppIds.length, push: pushIds.length });
   const createdAt = new Date(args.nowMs);
   let failed = false;
@@ -207,11 +335,15 @@ export async function fanoutToBellSubscribers(args: {
 
 /**
  * Notify living-room members of a new top-level forum post except the actor.
- * Persist a `forum_post` row for every account (when `auth` is set) or every
- * bell subscriber (otherwise) when `notifications` is set, and enqueue a
- * `/notifications` Web Push when `pushStore` is set. Missing `pushStore`
- * still writes in-app rows when `auth` is set. This helper may throw;
- * callers wrap it.
+ * Persist a `forum_post` row for every matching account (when `auth` is set)
+ * or every bell subscriber (otherwise) when `notifications` is set, and
+ * enqueue a `/notifications` Web Push when `pushStore` is set. Matching
+ * uses {@link wantsNotification}: `isActive` is `created.sats > 0`,
+ * `mentionedAccountId` is null (top-level posts are never personal),
+ * `actorIsStaff` from the actor in `auth.listAccounts()` (false if missing).
+ * When `auth` is unset, do not filter by level. Missing `pushStore` still
+ * writes in-app rows when `auth` is set. This helper may throw; callers wrap
+ * it.
  *
  * @param args - Optional stores, actor, persisted post.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -234,6 +366,11 @@ export async function notifyForumPost(args: {
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId: args.account.id,
+    match: {
+      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
+      isActive: args.created.sats > 0,
+      mentionedAccountId: null,
+    },
     template: {
       actorAccountId: args.account.id,
       type: 'forum_post',
@@ -256,9 +393,12 @@ export async function notifyForumPost(args: {
  * `forum_reply` row when `notifications` is set and enqueue a `/notifications`
  * Web Push when `pushStore` is set. No-op when the parent is missing. Damus-only
  * parents and self-replies still fan out (the actor is skipped). Photo-only
- * empty text still notifies. Missing `pushStore` still writes in-app rows when
- * `auth` is set. Unique duplicate create is fine. This helper may
- * throw; callers wrap it.
+ * empty text still notifies. Matching uses {@link wantsNotification}:
+ * `isActive` is `parent.sats > 0`, `mentionedAccountId` is `parent.accountId`
+ * (null when the parent has no account), `actorIsStaff` from the reply actor.
+ * When `auth` is unset, do not filter by level. Missing `pushStore` still
+ * writes in-app rows when `auth` is set. Unique duplicate create is fine.
+ * This helper may throw; callers wrap it.
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -289,6 +429,11 @@ export async function notifyForumReply(args: {
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId: args.account.id,
+    match: {
+      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
+      isActive: parent.sats > 0,
+      mentionedAccountId: parent.accountId ?? null,
+    },
     template: {
       actorAccountId: args.account.id,
       type: 'forum_reply',
@@ -310,8 +455,13 @@ export async function notifyForumReply(args: {
  * Notify living-room members of a newly indexed zap/payment. Persist a `zap`
  * row when `notifications` is set and enqueue a `/notifications` Web Push when
  * `pushStore` is set. No-op when the note has no `accountId`. Does not skip the
- * note author unless they are also `payerAccountId`. Missing `pushStore` still
- * writes in-app rows when `auth` is set. This helper may throw; callers wrap it.
+ * note author unless they are also `payerAccountId`. Matching uses
+ * {@link wantsNotification}: `isActive` is `note.sats > 0` or `amountSats > 0`
+ * (first gift still counts), `mentionedAccountId` is `note.accountId`,
+ * `actorIsStaff` from the payer account when `payerAccountId` is found
+ * (otherwise false — a zap is not an admin post). When `auth` is unset, do
+ * not filter by level. Missing `pushStore` still writes in-app rows when
+ * `auth` is set. This helper may throw; callers wrap it.
  *
  * @param args - Optional stores, zapped note, receipt id, amount, clock, optional payer.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -349,6 +499,11 @@ export async function notifyZap(args: {
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     skipAccountId,
+    match: {
+      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.payerAccountId),
+      isActive: args.note.sats > 0 || args.amountSats > 0,
+      mentionedAccountId: noteAccountId,
+    },
     template: {
       actorAccountId,
       type: 'zap',

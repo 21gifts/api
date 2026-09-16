@@ -12,6 +12,7 @@ import type {
   PasskeyCredential,
   Session,
 } from '@/lib/auth/store';
+import { parseNotificationLevel } from '@/lib/notification';
 
 /** Row shape of `account`. */
 interface AccountRow {
@@ -30,9 +31,10 @@ interface AccountRow {
   name_skipped_at?: Date | string | null;
   lightning_address_skipped_at?: Date | string | null;
   profile_message_id?: string | null;
+  notification_level?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -102,8 +104,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -121,6 +123,7 @@ export class PostgresAuthStore implements AuthStore {
           account.lightningAddressSkippedAt ?? null,
           account.profileMessageId ?? null,
           account.location,
+          account.notificationLevel ?? 'all',
         ],
       );
     } catch (error: unknown) {
@@ -149,7 +152,8 @@ export class PostgresAuthStore implements AuthStore {
              name_skipped_at = to_timestamp($12::double precision / 1000.0),
              lightning_address_skipped_at = to_timestamp($13::double precision / 1000.0),
              profile_message_id = $14,
-             location = $15
+             location = $15,
+             notification_level = $16
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -174,6 +178,7 @@ export class PostgresAuthStore implements AuthStore {
           account.lightningAddressSkippedAt ?? null,
           account.profileMessageId ?? null,
           account.location,
+          account.notificationLevel ?? 'all',
         ],
       );
     } catch (error: unknown) {
@@ -558,6 +563,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         ? null
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
+    notificationLevel: parseNotificationLevel(row.notification_level),
   };
 }
 

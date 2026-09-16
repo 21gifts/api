@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-15.
+**Status**: living document. Last revised 2026-09-16.
 
 ---
 
@@ -230,8 +230,9 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-The api writes one in-app row to every account except the actor, and
-enqueues (does not send inline) one Web Push to every bell subscriber
+The api writes one in-app row to every account except the actor, then
+filters recipients by each account's `notificationLevel`, and
+enqueues (does not send inline) one Web Push to every remaining bell subscriber
 (an account with at least one `push_subscription`) except the actor:
 
 - a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
@@ -248,9 +249,9 @@ separate from `/conversations` chat. Post, reply, and zap pushes open
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip
-a second banner (service worker). Do not invent preference HTTP in v1.
+a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = staff/platform actor or reply/zap on the recipient's own note). Filter applies to in-app and Web Push. GET /notifications lists stored rows unfiltered.
 
-HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/debug/push-ping`,
+HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
 `/notifications`, `/notifications/read-all`, `/notifications/:id/read`.
 
 ---

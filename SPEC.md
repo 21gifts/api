@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` lists stored rows unfiltered, including `moderator_appointed`; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
 
 ---
 
@@ -76,7 +76,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                            |
 | POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                               |
 | POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                              |
-| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe`)                              |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
 | GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)            |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                              |
 | GET    | `/view/:viewKey/about/photo`                 | none                       | Profile-note photo bytes for the view-key card                                               |
@@ -87,6 +87,7 @@ Public base URLs used in examples:
 | PUT    | `/me/about`                                  | Bearer                     | Set/clear About me text and optional photo on the profile note                               |
 | GET    | `/me/about/photo`                            | Bearer                     | Owner profile-note photo bytes                                                               |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                                       |
+| POST   | `/me/notification-level`                     | Bearer                     | Set owner fan-out filter (`all` / `active` / `mentions`)                                     |
 | POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                           |
 | POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                                    |
 | DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                              |
@@ -284,12 +285,13 @@ ID).
     "setup": "name",
     "missing": ["name", "lightning-address", "rules"],
     "hasPosted": false,
-    "aboutMe": null
+    "aboutMe": null,
+    "notificationLevel": "all"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, and `aboutMe`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, and `notificationLevel`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -338,7 +340,8 @@ Missing or invalid bearer → **Response** `401`:
   "missing": ["name", "lightning-address", "rules"],
   "hasPosted": false,
   "aboutMe": null,
-  "aboutMeHasPhoto": false
+  "aboutMeHasPhoto": false,
+  "notificationLevel": "all"
 }
 ```
 
@@ -365,6 +368,7 @@ stays `null`)).
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only).                                                                                        |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                          |
+| `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                 |
 
 ### `GET /me/activity`
 
@@ -841,6 +845,31 @@ Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 Success → **Response** `200` with the updated account (same shape as
 `GET /me`), with `forumLawsDismissed: true`. Already-dismissed accounts return
 the same shape without a second write (idempotent). There is no un-dismiss.
+
+### `POST /me/notification-level`
+
+Set the owner fan-out filter. Bearer session required (same as
+`POST /me/forum-laws-dismissed`). Body:
+
+```json
+{ "level": "active" }
+```
+
+`level` must be `all`, `active`, or `mentions`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is missing, not JSON, or `level` is not one of those three strings
+→ **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a level of all, active, or mentions" }
+```
+
+Success → **Response** `200` with the updated account (same owner JSON as
+`GET /me`), including `notificationLevel`. The same level again is still
+**200** (idempotent). Logs `account.notification_level.set` with
+`accountId` and `level`.
 
 ### `POST /me/rules-agreement`
 
@@ -2230,8 +2259,11 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor. Web Push still goes only to bell subscribers. Damus-only parents still
-fan out. A self-reply skips only the actor.
+actor, then filter recipients by each account's `notificationLevel`
+(`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
+and uses the same level filter. Damus-only parents still
+fan out. A self-reply skips only the actor. `GET /notifications` lists stored
+rows unfiltered.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
 notifies. Missing `pushStore` still writes in-app rows. Notification or
@@ -2346,9 +2378,11 @@ inserts a reply from the payer (`text` from the zap-request comment or `""`,
 `sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer; Web Push only to bell subscribers;
+every account except the resolved payer, then filtered by each account's
+`notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). LNURL success with a non-NIP-57 invoice
+failure logs `push.enqueue.failed`). `GET /notifications` lists stored rows
+unfiltered. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with

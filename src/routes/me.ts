@@ -35,8 +35,8 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * optional location, About me, welcome-forum laws dismiss, living-room rules
- * agreement, and the receiver's Lightning Address), including proof-of-control
- * verification. Shares the {@link AuthStore} instance with `/auth`.
+ * agreement, notification level, and the receiver's Lightning Address), including
+ * proof-of-control verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -150,12 +150,17 @@ const aboutBody = z.object({
 /** Same decode-failure string as `POST /messages`. */
 const ABOUT_PHOTO_ERROR = 'Photo must be a JPEG, PNG, or WebP under 1 MiB';
 
+/** Body schema for setting the owner notification level. */
+const notificationLevelBody = z.object({
+  level: z.enum(['all', 'active', 'mentions']),
+});
+
 /**
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, location, About me, setup skip, forum-laws dismiss,
- * living-room rules agreement, link/unlink, and verification routes.
+ * living-room rules agreement, notification level, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -518,6 +523,31 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
+      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+    })
+    .post('/notification-level', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = notificationLevelBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Expected a JSON body with a level of all, active, or mentions' },
+          400,
+        );
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, notificationLevel: parsed.data.level };
+      await deps.store.updateAccount(updated);
+      logEvent('account.notification_level.set', {
+        accountId: current.id,
+        level: parsed.data.level,
+      });
       return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
     })
     .post('/rules-agreement', async (c) => {
