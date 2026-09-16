@@ -540,41 +540,34 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 204, unhides matching children, and logs restored without text or deletedBy', async () => {
     const later = new Date('2026-09-02T00:00:00.000Z');
+    const independentId = '00000000-0000-4000-8000-000000000007';
+    const grandchildId = '00000000-0000-4000-8000-000000000008';
     const store = new InMemoryMessageStore();
-    await store.create(
-      forumRow({
-        deletedAt: HIDDEN_AT,
-        deletedBy: 'staff',
-      }),
-      JPEG,
-    );
+    await store.create(forumRow(), JPEG);
     await store.create(
       forumRow({
         id: REPLY_ID,
         parentId: HIDDEN_ID,
         text: 'matched child',
-        deletedAt: HIDDEN_AT,
-        deletedBy: 'staff',
       }),
     );
     await store.create(
       forumRow({
-        id: '00000000-0000-4000-8000-000000000007',
+        id: independentId,
         parentId: HIDDEN_ID,
         text: 'independent child',
-        deletedAt: later,
-        deletedBy: 'other-staff',
       }),
     );
     await store.create(
       forumRow({
-        id: '00000000-0000-4000-8000-000000000008',
+        id: grandchildId,
         parentId: REPLY_ID,
         text: 'grandchild',
-        deletedAt: HIDDEN_AT,
-        deletedBy: 'staff',
       }),
     );
+    await store.markDeleted(independentId, later, 'other-staff');
+    await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
+    await store.markDeleted(REPLY_ID, HIDDEN_AT, 'staff');
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
