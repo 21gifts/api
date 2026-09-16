@@ -6,11 +6,13 @@ import {
   fanoutToBellSubscribers,
   notifyForumPost,
   notifyForumReply,
+  notifyModeratorAppointed,
   notifyZap,
   serializeNotification,
   type NotificationRow,
 } from '@/lib/notification';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
+import { buildModeratorAppointedPushPayload } from '@/lib/push';
 import { InMemoryPushStore } from '@/lib/push-store';
 
 const NOW = new Date('2026-08-29T12:00:00.000Z');
@@ -122,6 +124,18 @@ describe('serializeNotification', () => {
     expect(serializeNotification(notification({ type: 'zap', replyId: ZAP_REPLY_ID })).type).toBe(
       'zap',
     );
+  });
+
+  it('accepts type moderator_appointed', () => {
+    expect(
+      serializeNotification(
+        notification({
+          type: 'moderator_appointed',
+          parentId: 'subject',
+          replyId: 'subject',
+        }),
+      ).type,
+    ).toBe('moderator_appointed');
   });
 });
 
@@ -849,5 +863,180 @@ describe('notifyZap', () => {
       nowMs: NOW.getTime(),
     });
     expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+  });
+});
+
+describe('notifyModeratorAppointed', () => {
+  it('is a no-op when both stores are omitted', async () => {
+    await expect(
+      notifyModeratorAppointed({
+        subject: { id: 'subject' },
+        actor: { id: 'actor', name: 'Ada' },
+        nowMs: NOW.getTime(),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('creates the in-app row when only notifications is set', async () => {
+    const notifications = new InMemoryNotificationStore();
+    await notifyModeratorAppointed({
+      notifications,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    const listed = await notifications.listByRecipient('subject', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('moderator_appointed');
+  });
+
+  it('enqueues without unreadCount when only pushStore is set', async () => {
+    const pushStore = new InMemoryPushStore();
+    await notifyModeratorAppointed({
+      pushStore,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('subject');
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual(
+      buildModeratorAppointedPushPayload('subject'),
+    );
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
+  });
+
+  it('notifies only the subject and enqueues one forum outbox row', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'subject');
+    await subscribe(pushStore, 'actor');
+    await subscribe(pushStore, 'other');
+    await notifyModeratorAppointed({
+      notifications,
+      pushStore,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    const listed = await notifications.listByRecipient('subject', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('moderator_appointed');
+    expect(listed[0]?.parentId).toBe('subject');
+    expect(listed[0]?.replyId).toBe('subject');
+    expect(listed[0]?.actorAccountId).toBe('actor');
+    expect(listed[0]?.name).toBe('Ada');
+    expect(listed[0]?.text).toBe('');
+    expect(listed[0]?.readAt).toBeNull();
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('other', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('subject');
+    expect(claimed[0]?.type).toBe('forum');
+    expect(claimed[0]?.messageId).toBe('subject');
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
+      ...buildModeratorAppointedPushPayload('subject'),
+      unreadCount: 1,
+    });
+  });
+
+  it('stores name Someone when actor.name is null', async () => {
+    const notifications = new InMemoryNotificationStore();
+    await notifyModeratorAppointed({
+      notifications,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: null },
+      nowMs: NOW.getTime(),
+    });
+    expect((await notifications.listByRecipient('subject', 10))[0]?.name).toBe('Someone');
+  });
+
+  it('does not skip the subject even when the subject is the actor', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'subject');
+    await notifyModeratorAppointed({
+      notifications,
+      pushStore,
+      subject: { id: 'subject' },
+      actor: { id: 'subject', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('subject', 10)).toHaveLength(1);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['subject']);
+  });
+
+  it('returns the existing unique row on a second create for the same subject', async () => {
+    const notifications = new InMemoryNotificationStore();
+    await notifyModeratorAppointed({
+      notifications,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    await notifyModeratorAppointed({
+      notifications,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('subject', 10)).toHaveLength(1);
+  });
+
+  it('throws push.fanout.failed when create rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    notifications.create = async () => {
+      throw new Error('boom');
+    };
+    await expect(
+      notifyModeratorAppointed({
+        notifications,
+        pushStore,
+        subject: { id: 'subject' },
+        actor: { id: 'actor', name: 'Ada' },
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+
+  it('throws push.fanout.failed when unreadCount rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    let attempted = false;
+    notifications.unreadCount = async () => {
+      attempted = true;
+      throw new Error('boom');
+    };
+    await expect(
+      notifyModeratorAppointed({
+        notifications,
+        pushStore,
+        subject: { id: 'subject' },
+        actor: { id: 'actor', name: 'Ada' },
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+    expect(attempted).toBe(true);
+  });
+
+  it('throws push.fanout.failed when enqueue rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('boom');
+    };
+    await expect(
+      notifyModeratorAppointed({
+        notifications,
+        pushStore,
+        subject: { id: 'subject' },
+        actor: { id: 'actor', name: 'Ada' },
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
   });
 });

@@ -491,6 +491,13 @@
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueZapPush`, `notifyZap`.
 
+## Function: buildModeratorAppointedPushPayload
+
+- **Purpose:** English payload for the appointed subject only (not a living-room fan-out). `type: 'forum'` (outbox CHECK stays forum|zap), title `You are a moderator`, body `You were appointed a moderator in the living room.`, url `/welcome`, tag `moderator_appointed:<subjectId>`. Shared template omits optional `unreadCount` (`notifyModeratorAppointed` merges it per recipient when `notifications` is set).
+- **Inputs:** `subjectId` string used in `tag`.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
+- **Used by:** `notifyModeratorAppointed`.
+
 ## Function: pushRoutes
 
 - **Purpose:** Member Web Push HTTP: public VAPID key plus subscription upsert/delete for the signed-in account.
@@ -864,7 +871,7 @@
 
 ## Function: serializeNotification
 
-- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap'`.
+- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`.
 - **Inputs:** `NotificationRow` (includes recipient/actor account ids).
 - **Returns / side effects:** `{ id, type, parentId, replyId, name, text, createdAt, readAt }` with ISO-8601 dates; `readAt` null stays null. Omits recipient and actor account ids. No I/O.
 - **Used by:** `notificationRoutes`.
@@ -896,6 +903,13 @@
 - **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName? }`.
 - **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null` and payload from `buildZapPushPayload(replyId)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
 - **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a receipt.
+
+## Function: notifyModeratorAppointed
+
+- **Purpose:** Targeted to the **subject only**, not a living-room fan-out. Does not call `fanoutToBellSubscribers`. Persist a `moderator_appointed` row when `notifications` is set (`parentId` and `replyId` = `subject.id`, `text` `''`, `name` is `actor.name ?? 'Someone'`, `actorAccountId` is `actor.id`, `readAt` null) and enqueue a `/welcome` Web Push (`type: 'forum'`, `messageId: subject.id`, tag `moderator_appointed:<subjectId>`) when `pushStore` is set. Missing both stores is a no-op. Unique duplicate create is fine (store returns existing). May throw (`push.fanout.failed`); callers wrap so persist still succeeds.
+- **Inputs:** `{ notifications?, pushStore?, subject, actor, nowMs }`.
+- **Returns / side effects:** Void. Writes one in-app row for the subject when `notifications` is set. When `pushStore` is set, enqueues one outbox row with payload from `buildModeratorAppointedPushPayload(subject.id)` (url `/welcome`, tag `moderator_appointed:<subjectId>`). When `notifications` is also set, merge `unreadCount` for that recipient into the payload JSON.
+- **Used by:** `trustRoutes` `POST /trust/confirm-moderator` and `POST /trust/appoint-moderator` after every 200 that leaves/keeps the subject as `moderator` (new grant **and** idempotent already-moderator same-actor 200). Failure logs `push.enqueue.failed`; HTTP still 200.
 
 ## Function: serializeConversationMessage
 
@@ -1758,8 +1772,8 @@
 
 ## Function: trustRoutes
 
-- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`.
-- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`.
+- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
+- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore` and `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; 200 `{ id, name, role }`.
 - **Used by:** `createApp`.
 

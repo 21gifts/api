@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { InMemoryNotificationStore, type NotificationStore } from '@/lib/notification-store';
+import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import type { TrustEdge } from '@/lib/trust';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { trustRoutes } from '@/routes/trust';
@@ -49,8 +51,40 @@ async function staffed(
   return { authStore, trustStore: new InMemoryTrustStore() };
 }
 
-function mount(authStore: InMemoryAuthStore, trustStore: TrustStore): Hono {
-  return new Hono().route('/trust', trustRoutes({ authStore, trustStore, now }));
+function mount(
+  authStore: InMemoryAuthStore,
+  trustStore: TrustStore,
+  extras: { notificationStore?: NotificationStore; pushStore?: PushStore } = {},
+): Hono {
+  return new Hono().route(
+    '/trust',
+    trustRoutes({
+      authStore,
+      trustStore,
+      now,
+      ...(extras.notificationStore === undefined
+        ? {}
+        : { notificationStore: extras.notificationStore }),
+      ...(extras.pushStore === undefined ? {} : { pushStore: extras.pushStore }),
+    }),
+  );
+}
+
+async function subscribePush(pushStore: InMemoryPushStore, accountId: string): Promise<void> {
+  await pushStore.upsertSubscription({
+    endpoint: `https://push.example/${accountId}`,
+    accountId,
+    p256dh: 'p',
+    auth: 'a',
+    createdAt: new Date(now()),
+  });
+}
+
+async function subscribeSubjectActorAndOther(pushStore: InMemoryPushStore): Promise<void> {
+  await subscribePush(pushStore, SUBJECT);
+  await subscribePush(pushStore, FOUNDER);
+  await subscribePush(pushStore, MOD);
+  await subscribePush(pushStore, OTHER);
 }
 
 function post(
@@ -375,6 +409,28 @@ describe('POST /trust/*', () => {
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
       spy.mockRestore();
     });
+
+    it('does not create a moderator_appointed notification on verify 200', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/verify',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect(await notifications.listByRecipient(SUBJECT, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
+    });
   });
 
   describe('POST /trust/propose-moderator', () => {
@@ -472,6 +528,28 @@ describe('POST /trust/*', () => {
       expect(
         parsedEvents(warn).some((event) => event['event'] === 'trust.moderator_proposed'),
       ).toBe(true);
+    });
+
+    it('does not create a notification on propose 200', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/propose-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect(await notifications.listByRecipient(SUBJECT, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
     });
 
     it('returns 503 when listing throws and 409/503 on insert failure', async () => {
@@ -809,6 +887,84 @@ describe('POST /trust/*', () => {
       ).toHaveLength(1);
       spy.mockRestore();
     });
+
+    it('notifies only the subject on a successful confirm', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/confirm-moderator',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      const listed = await notifications.listByRecipient(SUBJECT, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.type).toBe('moderator_appointed');
+      expect(listed[0]?.actorAccountId).toBe(MOD);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      const claimed = await pushStore.claimPending(10, now(), 60_000);
+      expect(claimed.map((row) => row.accountId)).toEqual([SUBJECT]);
+    });
+
+    it('notifies the subject on an idempotent already-moderator confirm 200', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 1,
+      });
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/confirm-moderator',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(await notifications.listByRecipient(SUBJECT, 10)).toHaveLength(1);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      expect((await pushStore.claimPending(10, now(), 60_000)).map((row) => row.accountId)).toEqual(
+        [SUBJECT],
+      );
+    });
+
+    it('still returns 200 when notification create throws', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      notifications.create = async () => {
+        throw new Error('create boom');
+      };
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/confirm-moderator',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(parsedEvents(warn).some((event) => event['event'] === 'push.enqueue.failed')).toBe(
+        true,
+      );
+    });
   });
 
   describe('POST /trust/appoint-moderator', () => {
@@ -1067,6 +1223,88 @@ describe('POST /trust/*', () => {
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
       expect(await trustStore.listEdges()).toHaveLength(1);
       spy.mockRestore();
+    });
+
+    it('notifies only the subject on a successful appoint', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/appoint-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      const listed = await notifications.listByRecipient(SUBJECT, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.type).toBe('moderator_appointed');
+      expect(listed[0]?.actorAccountId).toBe(FOUNDER);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      const claimed = await pushStore.claimPending(10, now(), 60_000);
+      expect(claimed.map((row) => row.accountId)).toEqual([SUBJECT]);
+    });
+
+    it('notifies the subject on an idempotent already-moderator appoint 200', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/appoint-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(await notifications.listByRecipient(SUBJECT, 10)).toHaveLength(1);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
+      expect((await pushStore.claimPending(10, now(), 60_000)).map((row) => row.accountId)).toEqual(
+        [SUBJECT],
+      );
+    });
+
+    it('still returns 200 when push enqueue throws', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribeSubjectActorAndOther(pushStore);
+      pushStore.enqueue = async () => {
+        throw new Error('enqueue failed');
+      };
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
+        '/trust/appoint-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'moderator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+      expect(parsedEvents(warn).some((event) => event['event'] === 'push.enqueue.failed')).toBe(
+        true,
+      );
     });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildForumPushPayload,
+  buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
   buildZapPushPayload,
   parsePushSubscription,
@@ -107,6 +108,18 @@ describe('buildZapPushPayload', () => {
       body: 'Someone sent sats.',
       url: '/notifications',
       tag: 'zap:msg-1',
+    });
+  });
+});
+
+describe('buildModeratorAppointedPushPayload', () => {
+  it('returns the fixed English moderator-appointed payload', () => {
+    expect(buildModeratorAppointedPushPayload('subject-1')).toEqual({
+      type: 'forum',
+      title: 'You are a moderator',
+      body: 'You were appointed a moderator in the living room.',
+      url: '/welcome',
+      tag: 'moderator_appointed:subject-1',
     });
   });
 });
