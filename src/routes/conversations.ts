@@ -5,6 +5,7 @@ import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationFromMe,
+  moderatorGroupDisplayName,
   serializeConversation,
   serializeConversationMessage,
   unsignedConversationDefaults,
@@ -15,11 +16,13 @@ import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { normalizeForumText, truncatePubkeyDisplay } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 
 /**
  * `/conversations` — signed-in private messaging (member↔member, member↔platform,
- * member↔Damus). Nothing public. DEBUG_TOKEN cannot read member PNs.
+ * member↔Damus, closed moderator_group). Nothing public. DEBUG_TOKEN cannot
+ * read member PNs.
  */
 
 /** Collaborators the `/conversations` routes need. */
@@ -32,6 +35,8 @@ export interface ConversationRouteDeps {
   messageStore: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Optional spend ping after a new moderator-group message. */
+  spendPing?: SpendPing;
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -65,6 +70,9 @@ function canAccess(
   account: Account,
   platformId: string | null,
 ): boolean {
+  if (thread.kind === 'moderator_group') {
+    return account.role === 'moderator';
+  }
   if (thread.accountA === account.id || thread.accountB === account.id) {
     return true;
   }
@@ -129,6 +137,10 @@ async function counterpartName(
   authStore: AuthStore,
   platformId: string | null,
 ): Promise<string> {
+  const groupName = moderatorGroupDisplayName(thread.kind);
+  if (groupName !== null) {
+    return groupName;
+  }
   if (thread.kind === 'member_damus' && thread.counterpartPubkey !== null) {
     return truncatePubkeyDisplay(thread.counterpartPubkey);
   }
@@ -171,7 +183,8 @@ async function publicThread(
 /**
  * Build the `/conversations` route group.
  *
- * @param deps - Conversation store, auth store, forum store, and clock.
+ * @param deps - Conversation store, auth store, forum store, clock, and
+ *   optional spend ping.
  * @returns A Hono app with list/open/read/reply.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
@@ -183,11 +196,15 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       }
       try {
         const platform = await platformAccount(deps.authStore);
+        if (account.role === 'moderator' && platform !== undefined) {
+          await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
+        }
         const threads = await deps.store.listVisible(
           account.id,
           isStaffRole(account.role),
           platform?.id ?? null,
           CONVERSATION_LIST_LIMIT,
+          account.role === 'moderator',
         );
         const conversations: PublicConversation[] = [];
         const staff = isStaffRole(account.role);
@@ -203,7 +220,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             thread.lastText !== '';
-          if (!inbound && !ownContactTicket) {
+          if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
             continue;
           }
           conversations.push(await publicThread(thread, account, deps.authStore, platformId));
@@ -326,6 +343,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const staffOnPlatform =
+          thread.kind !== 'moderator_group' &&
           isStaffRole(account.role) &&
           platform !== undefined &&
           account.id !== platform.id &&
@@ -345,8 +363,25 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           senderAccountId: sender.id,
           senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,
           name: senderName !== '' ? senderName : '21.gifts',
-          ...unsignedConversationDefaults(),
+          ...(thread.kind === 'moderator_group'
+            ? {
+                eventId: null,
+                nostrPublishState: 'skipped' as const,
+                nostrEvent: null,
+                claimedUntil: null,
+              }
+            : unsignedConversationDefaults()),
         });
+        if (thread.kind === 'moderator_group') {
+          const address = account.lightningAddress?.trim() ?? '';
+          if (address !== '' && deps.spendPing !== undefined) {
+            try {
+              await deps.spendPing.ping(address, created.id, 'moderator');
+            } catch {
+              /* ping must not fail the persist */
+            }
+          }
+        }
         return c.json(
           serializeConversationMessage(
             created,

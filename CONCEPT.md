@@ -510,7 +510,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   source (fail-closed on a missing or implausible rate; paying stays in
   the spend worker)
 - Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
-  official platform account; `Account.isPlatform`)
+  official platform account; `Account.isPlatform`; `moderator_group` is a
+  closed moderator-only HTTP group with no Nostr, not founder)
 - Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
   `GET /messages/:id`
 - NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
@@ -525,7 +526,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Linking multiple LNURL-auth wallets to one account
 - Non-custodial donor spending (replaces the v1 spend worker)
 - Non-custodial client-side DMs (v1 ships a custodial PN channel on
-  `/conversations`: NIP-17 + kind:4, official platform account)
+  `/conversations`: NIP-17 + kind:4, official platform account;
+  `moderator_group` is a closed moderator-only HTTP group with no Nostr,
+  not founder)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
 - Native mobile app

@@ -177,7 +177,7 @@
 
 ## Function: migrateConversationSchema
 
-- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` tables and unique indexes). The partial index `conversation_message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The repair is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
+- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` tables and unique indexes). CREATE CHECK includes `moderator_group`; ALTER DROP/ADD `conversation_kind_check`; unique partial index `conversation_moderator_group_uidx`. Unwrap `DO` block still last. The partial index `conversation_message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The repair is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment (the `DO $unwrap$` block lives only in `CONVERSATION_SCHEMA_SQL`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
@@ -255,9 +255,9 @@
 
 ## Function: PostgresConversationStore
 
-- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, `hasInboundMessage` (EXISTS matching inbound = `conversationIsInbound`), append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id. `retargetMemberPlatform` bulk-updates `account_b` on every `member_platform` row whose `account_a` is not the new platform id.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). `hasInboundMessage(conversationId, viewerId, staff, platformId)` is parameter-bound EXISTS over `conversation_message`.
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503).
+- **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message`). Open-or-create per counterpart kind, list visible threads, `hasInboundMessage` (EXISTS matching inbound = `conversationIsInbound`), append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id. `retargetMemberPlatform` bulk-updates `account_b` on every `member_platform` row whose `account_a` is not the new platform id. `ensureModeratorGroup` opens or inserts the closed `moderator_group` singleton. Unique partial index `conversation_moderator_group_uidx`. `listVisible` binds `$5` moderator flag. `mapMessage` keeps `skipped`.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). `hasInboundMessage(conversationId, viewerId, staff, platformId)` is parameter-bound EXISTS over `conversation_message`. `listVisible(accountId, staff, platformId, limit, moderator = false)` passes `$5` as the moderator flag.
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503). `mapMessage` keeps `nostr_publish_state` `skipped` (does not remap to `pending`).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: fillRatesForGiftRange
@@ -535,8 +535,8 @@
 
 ## Function: InMemoryConversationStore
 
-- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, and member↔Damus threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`.
-- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`).
+- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, member↔Damus, and closed `moderator_group` singleton threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`. `ensureModeratorGroup` opens or inserts the singleton (`accountA` = platform; `accountB` and `counterpartPubkey` null). `listVisible` 5th arg `moderator` defaults false. `visibleTo` returns `moderator === true` for that kind first (staff founder never sees it via platform-id).
+- **Inputs:** Optional seed threads and messages (copied). Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible(accountId, staff, platformId, limit, moderator = false)` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`).
 - **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `eventId` append returns the existing row. No I/O.
 - **Used by:** `createApp` default `conversationStore`.
 
@@ -591,15 +591,15 @@
 
 ## Function: HttpSpendPing
 
-- **Purpose:** POST `{ address, messageId }` to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. 2xx logs `spend.ping.ok`. Network, abort, and non-2xx log `spend.ping.failed` and resolve. Never throws. Never logs the token.
-- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms). `ping(address, messageId)`.
+- **Purpose:** POST `{ address, messageId }` (omitted/`daily`) or `{ address, kind: "moderator" }` without `messageId` to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. 2xx logs `spend.ping.ok`. Network, abort, and non-2xx log `spend.ping.failed` and resolve. Never throws. Never logs the token.
+- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms). `ping(address, messageId, kind?: 'daily' | 'moderator')`. omitted/`daily` → `{ address, messageId }`; `'moderator'` → `{ address, kind: "moderator" }` without `messageId`.
 - **Returns / side effects:** `Promise<void>`. HTTP POST; logs `spend.ping.ok` or `spend.ping.failed`.
 - **Used by:** `resolveSpendPing`.
 
 ## Function: NoopSpendPing
 
-- **Purpose:** `SpendPing` that ignores address and `messageId` — used when tests inject a collaborator that must not call HTTP.
-- **Inputs:** `ping(_address, _messageId)`.
+- **Purpose:** `SpendPing` that ignores address, `messageId`, and optional kind — used when tests inject a collaborator that must not call HTTP.
+- **Inputs:** `ping(_address, _messageId, _kind?)`. Accepts optional 3rd arg, ignores it.
 - **Returns / side effects:** Resolves immediately. No HTTP.
 - **Used by:** Tests.
 
@@ -704,7 +704,7 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / appoint-moderator), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, `/notifications`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; ping body `{ address, messageId }`), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. `messagesRoutes` receives `notificationStore`, not `conversationStore`. `invoiceRoutes` receives `notificationStore` and `pushStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator" }` without `messageId`; forum `POST /messages` still two-arg daily ping), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. `messagesRoutes` receives `notificationStore`, not `conversationStore`. `invoiceRoutes` receives `notificationStore` and `pushStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -766,8 +766,8 @@
 
 ## Function: conversationRoutes
 
-- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec.
-- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`.
+- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec. `moderator_group` ACL is `role === 'moderator'` only (founder 404). `GET /` calls `ensureModeratorGroup` when role is moderator and a platform account exists, lists the empty group, and passes `moderator` into `listVisible`. `POST /:id` on this kind persists as the moderator (not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` when Lightning Address is non-empty after trim; ping throw still 200.
+- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`, optional `spendPing`.
 - **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public list/open JSON may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`).
 - **Used by:** `createApp`.
 
@@ -924,6 +924,13 @@
 - **Inputs:** none.
 - **Returns / side effects:** `{ eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
 - **Used by:** `contactRoutes`, `conversationRoutes`.
+
+## Function: moderatorGroupDisplayName
+
+- **Purpose:** Fixed display name for the closed moderator-group thread.
+- **Inputs:** `kind` (`ConversationKind`).
+- **Returns / side effects:** `'Moderators'` when `kind === 'moderator_group'`; otherwise `null`. No I/O.
+- **Used by:** `counterpartName` in `conversationRoutes`.
 
 ## Function: wrapNip17
 

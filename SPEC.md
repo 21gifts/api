@@ -2596,12 +2596,14 @@ and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
-inbound and listed. `GET /conversations/:id` and `POST` still return/open
-outbound-only and empty threads. Newest `lastMessageAt` first.
-Cap 200. List/open rows may include optional `accountId` of the
-counterpart 21.gifts account (omitted for Damus-only counterparts).
-Member JSON never includes event ids or npubs; Damus-only counterpart
-`name` may be a truncated npub.
+inbound and listed. Kind includes `moderator_group`. The empty group is
+listed for moderators only (`role === 'moderator'`), named `Moderators`;
+founder / verified / basis never see it. `GET /conversations/:id` and
+`POST` still return/open outbound-only and empty threads. Newest
+`lastMessageAt` first. Cap 200. List/open rows may include optional
+`accountId` of the counterpart 21.gifts account (omitted for Damus-only
+counterparts). Member JSON never includes event ids or npubs; Damus-only
+counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2657,7 +2659,9 @@ Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
-missing, or the session may not see it.
+missing, or the session may not see it. Kind includes `moderator_group`;
+founder / verified / basis get **404** `{ "error": "Not found" }` on that
+id (no existence leak). Moderators only.
 
 Success → **Response** `200`:
 
@@ -2684,7 +2688,13 @@ Success → **Response** `200`:
 Bearer session required. Body `{ "text": "…" }` 1–500 via
 `normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
 platform thread persist as the platform account; the worker signs with the
-platform nsec. Relay failure does not block local persist.
+platform nsec. Relay failure does not block local persist. Kind includes
+`moderator_group`: persist as the moderator account with
+`nostrPublishState` skipped (never Nostr). When Lightning Address is a
+non-empty trimmed string and `spendPing` is set, ping kind `moderator`
+without `messageId` in the HTTP body. Ping failure still **200**. Empty
+or invalid text is **400** and does not ping. Founder / verified / basis
+**404** on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member

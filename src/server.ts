@@ -373,6 +373,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       messageStore,
       now,
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route(

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   conversationFromMe,
   conversationIsInbound,
+  moderatorGroupDisplayName,
   serializeConversation,
   serializeConversationMessage,
   unsignedConversationDefaults,
@@ -238,5 +239,14 @@ describe('unsignedConversationDefaults', () => {
       nostrEvent: null,
       claimedUntil: null,
     });
+  });
+});
+
+describe('moderatorGroupDisplayName', () => {
+  it('returns Moderators for moderator_group and null otherwise', () => {
+    expect(moderatorGroupDisplayName('moderator_group')).toBe('Moderators');
+    expect(moderatorGroupDisplayName('member_member')).toBeNull();
+    expect(moderatorGroupDisplayName('member_platform')).toBeNull();
+    expect(moderatorGroupDisplayName('member_damus')).toBeNull();
   });
 });

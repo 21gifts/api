@@ -1,6 +1,7 @@
 -- Private messaging threads and messages (member↔member, member↔platform,
--- member↔Damus). Covered by db_change attach-all-public-tables. Plaintext is
--- not a listed secret. Dedupe outbound/inbound by conversation_message.event_id.
+-- member↔Damus, closed moderator_group singleton). Covered by db_change
+-- attach-all-public-tables. Plaintext is not a listed secret. Dedupe
+-- outbound/inbound by conversation_message.event_id.
 -- On every boot, migrateConversationSchema runs an idempotent repair unwrapping
 -- conversation_message.nostr_event values stored as jsonb string scalars; it
 -- matches no rows once complete. The repair is skipped until the db_change audit
@@ -10,7 +11,7 @@
 
 CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
-  kind text NOT NULL CHECK (kind IN ('member_member', 'member_platform', 'member_damus')),
+  kind text NOT NULL CHECK (kind IN ('member_member', 'member_platform', 'member_damus', 'moderator_group')),
   account_a uuid NOT NULL REFERENCES account (id),
   account_b uuid REFERENCES account (id),
   counterpart_pubkey text,
@@ -28,6 +29,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversation_member_damus_uidx
   WHERE kind = 'member_damus';
 CREATE INDEX IF NOT EXISTS conversation_last_message_at_idx
   ON conversation (last_message_at DESC, id DESC);
+ALTER TABLE conversation DROP CONSTRAINT IF EXISTS conversation_kind_check;
+ALTER TABLE conversation ADD CONSTRAINT conversation_kind_check
+  CHECK (kind IN ('member_member', 'member_platform', 'member_damus', 'moderator_group'));
+CREATE UNIQUE INDEX IF NOT EXISTS conversation_moderator_group_uidx
+  ON conversation (kind) WHERE kind = 'moderator_group';
 
 CREATE TABLE IF NOT EXISTS conversation_message (
   id uuid PRIMARY KEY,
