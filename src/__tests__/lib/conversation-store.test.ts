@@ -535,6 +535,22 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries).toHaveLength(2);
   });
 
+  it('ensureModeratorGroup rethrows non-unique insert errors', async () => {
+    const sql = new MockSql();
+    sql.executeError = new Error('insert boom');
+    sql.queryImpl = () => [];
+    await expect(
+      new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW),
+    ).rejects.toThrow('insert boom');
+  });
+
+  it('ensureModeratorGroup throws when re-select is empty', async () => {
+    const sql = new MockSql();
+    await expect(
+      new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW),
+    ).rejects.toThrow(/conversation open failed/);
+  });
+
   it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ exists: true }];
