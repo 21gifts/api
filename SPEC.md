@@ -2590,8 +2590,10 @@ omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. `GET /conversations/:id` and `POST` still return/open
 outbound-only and empty threads. Newest `lastMessageAt` first.
-Cap 200. Member JSON never includes `accountId`, event ids, or npubs;
-Damus-only counterpart `name` may be a truncated npub.
+Cap 200. List/open rows may include optional `accountId` of the
+counterpart 21.gifts account (omitted for Damus-only counterparts).
+Member JSON never includes event ids or npubs; Damus-only counterpart
+`name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2616,11 +2618,15 @@ Success → **Response** `200`:
       "name": "Ada",
       "lastText": "Hello",
       "lastAt": "2026-08-29T12:00:00.000Z",
-      "lastFromMe": false
+      "lastFromMe": false,
+      "accountId": "<uuid>"
     }
   ]
 }
 ```
+
+`accountId` is the counterpart 21.gifts account. It is omitted for
+Damus-only counterparts (never JSON `null`).
 
 ### `POST /conversations`
 
@@ -2634,11 +2640,14 @@ author (`21gifts` account or Damus pubkey). Body:
 Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
 the session account → **400** `{ "error": "Cannot message yourself" }`.
 
-Success → **Response** `200` (same public conversation object as list rows).
+Success → **Response** `200` (same public conversation object as list
+rows, including optional counterpart `accountId`).
 
 ### `GET /conversations/:id`
 
 Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
+The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
+on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it.
 
@@ -2652,11 +2661,15 @@ Success → **Response** `200`:
       "name": "Ada",
       "text": "Hello",
       "createdAt": "2026-08-29T12:00:00.000Z",
-      "fromMe": true
+      "fromMe": true,
+      "accountId": "<uuid>"
     }
   ]
 }
 ```
+
+`accountId` is the sender 21.gifts account. It is omitted when
+`senderAccountId` is null (Damus inbound; never JSON `null`).
 
 ### `POST /conversations/:id`
 
@@ -2669,7 +2682,8 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member
 has no display name.
 
-Success → **Response** `200` (one public conversation message).
+Success → **Response** `200` (one public conversation message, including
+optional sender `accountId`).
 
 ### `GET /notifications`
 

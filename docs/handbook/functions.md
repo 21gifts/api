@@ -768,7 +768,7 @@
 
 - **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists visible threads; `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first; `POST /:id` appends `{ text }`. Staff (founder/moderator) see all platform threads and reply as the platform nsec.
 - **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public JSON omits `accountId`, event ids, and npubs (Damus-only `name` may be a truncated npub).
+- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text; 404 when not allowed; 503 Conversations are unavailable. Public list/open JSON may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`).
 - **Used by:** `createApp`.
 
 ## Function: notificationRoutes
@@ -858,8 +858,8 @@
 ## Function: serializeConversation
 
 - **Purpose:** Project a stored thread to its public list JSON shape.
-- **Inputs:** `ConversationThread` with resolved `name` / `lastText`, and `lastFromMe` boolean.
-- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe }`. Omits account ids, event ids, npubs. No I/O.
+- **Inputs:** `ConversationThread` with resolved `name` / `lastText`, `lastFromMe` boolean, and optional counterpart `accountId` (`string | null`).
+- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe, accountId? }`. Includes `accountId` only when the third argument is a non-empty string. Omits event ids, npubs, `accountA` / `accountB`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeNotification
@@ -901,7 +901,7 @@
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
 - **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, fromMe }`. Omits account ids and event ids. No I/O.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, accountId? }`. Includes `accountId` from `senderAccountId` when that value is a non-empty string; omits the key when it is null or empty. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: conversationFromMe

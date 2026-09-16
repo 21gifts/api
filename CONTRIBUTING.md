@@ -72,7 +72,7 @@ api/
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
-│   │   ├── conversation.ts   # PN public JSON (no accountId / eventId / npub)
+│   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres

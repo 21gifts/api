@@ -145,12 +145,18 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ kind: string; lastFromMe: boolean; lastText: string }>;
+      conversations: Array<{
+        kind: string;
+        lastFromMe: boolean;
+        lastText: string;
+        accountId?: string;
+      }>;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.kind).toBe('member_platform');
     expect(body.conversations[0]?.lastFromMe).toBe(true);
     expect(body.conversations[0]?.lastText).toBe('help');
+    expect(body.conversations[0]?.accountId).toBe('plat');
   });
 
   it('lists a two-way thread with lastFromMe from the latest sender', async () => {
@@ -187,15 +193,21 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ kind: string; name: string; lastText: string; lastFromMe: boolean }>;
+      conversations: Array<{
+        kind: string;
+        name: string;
+        lastText: string;
+        lastFromMe: boolean;
+        accountId?: string;
+      }>;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.kind).toBe('member_member');
     expect(body.conversations[0]?.name).toBe('Bob');
     expect(body.conversations[0]?.lastText).toBe('hi');
     expect(body.conversations[0]?.lastFromMe).toBe(true);
+    expect(body.conversations[0]?.accountId).toBe('other');
     expect(body.conversations[0]).not.toHaveProperty('accountA');
-    expect(body.conversations[0]).not.toHaveProperty('accountId');
     expect(body.conversations[0]).not.toHaveProperty('eventId');
     expect(body.conversations[0]).not.toHaveProperty('npub');
     expect(body.conversations[0]).not.toHaveProperty('lastSenderAccountId');
@@ -334,8 +346,11 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ lastFromMe: boolean; accountId?: string }>;
+    };
     expect(body.conversations[0]?.lastFromMe).toBe(false);
+    expect(body.conversations[0]).not.toHaveProperty('accountId');
   });
 
   it('lets staff see platform threads they are not in', async () => {
@@ -359,9 +374,12 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('someone');
   });
 
   it('names the counterpart when the viewer is accountB', async () => {
@@ -384,9 +402,12 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('aaa');
   });
 
   it('lets staff list a member_member thread where the platform is a party', async () => {
@@ -410,9 +431,12 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('21.gifts');
+    expect(body.conversations[0]?.accountId).toBe('plat');
   });
 
   it('names a counterpart without a display name as member', async () => {
@@ -489,11 +513,12 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ name: string; lastFromMe: boolean }>;
+      conversations: Array<{ name: string; lastFromMe: boolean; accountId?: string }>;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('21.gifts');
     expect(body.conversations[0]?.lastFromMe).toBe(false);
+    expect(body.conversations[0]).not.toHaveProperty('accountId');
   });
 
   it('names a member_member thread with a null counterpart member', async () => {
@@ -531,9 +556,12 @@ describe('GET /conversations', () => {
     );
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.name).toBe('member');
+    expect(body.conversations[0]).not.toHaveProperty('accountId');
   });
 
   it('omits empty threads', async () => {
@@ -694,13 +722,14 @@ describe('POST /conversations', () => {
       kind: string;
       name: string;
       lastFromMe: boolean;
+      accountId?: string;
     };
     expect(body.name).toBe('Bob');
     expect(body.kind).toBe('member_member');
     expect(body.id.length).toBeGreaterThan(8);
     expect(body.lastFromMe).toBe(false);
+    expect(body.accountId).toBe('other');
     expect(body).not.toHaveProperty('accountA');
-    expect(body).not.toHaveProperty('accountId');
     expect(body).not.toHaveProperty('eventId');
     expect(body).not.toHaveProperty('npub');
     expect(body).not.toHaveProperty('lastSenderAccountId');
@@ -728,9 +757,10 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { kind: string; name: string };
+    const body = (await res.json()) as { kind: string; name: string; accountId?: string };
     expect(body.name).toBe('21.gifts');
     expect(body.kind).toBe('member_platform');
+    expect(body.accountId).toBe('plat');
   });
 
   it('opens a Damus thread from a note without a 21gifts account', async () => {
@@ -755,9 +785,10 @@ describe('POST /conversations', () => {
       },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { kind: string; name: string };
+    const body = (await res.json()) as { kind: string; name: string; accountId?: string };
     expect(body.name).toMatch(/aa/);
     expect(body.kind).toBe('member_damus');
+    expect(body).not.toHaveProperty('accountId');
   });
 
   it('returns 404 when a Damus note has no author pubkey', async () => {
@@ -853,9 +884,12 @@ describe('GET /conversations/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ text: string; fromMe: boolean }> };
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; fromMe: boolean; accountId?: string }>;
+    };
     expect(body.messages.map((m) => m.text)).toEqual(['official']);
     expect(body.messages[0]?.fromMe).toBe(true);
+    expect(body.messages[0]?.accountId).toBe('plat');
   });
 
   it('returns messages oldest-first', async () => {
@@ -894,11 +928,14 @@ describe('GET /conversations/:id', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      messages: Array<{ text: string; name: string; fromMe: boolean }>;
+      messages: Array<{ text: string; name: string; fromMe: boolean; accountId?: string }>;
     };
+    expect(body).not.toHaveProperty('accountId');
     expect(body.messages.map((m) => m.text)).toEqual(['first', 'second']);
     expect(body.messages[0]?.fromMe).toBe(true);
+    expect(body.messages[0]?.accountId).toBe('acc');
     expect(body.messages[1]?.fromMe).toBe(false);
+    expect(body.messages[1]?.accountId).toBe('other');
     expect(body.messages[0]).not.toHaveProperty('eventId');
     expect(body.messages[0]).not.toHaveProperty('senderAccountId');
   });
@@ -924,8 +961,11 @@ describe('GET /conversations/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ fromMe: boolean }> };
+    const body = (await res.json()) as {
+      messages: Array<{ fromMe: boolean; accountId?: string }>;
+    };
     expect(body.messages[0]?.fromMe).toBe(false);
+    expect(body.messages[0]).not.toHaveProperty('accountId');
   });
 
   it('returns 503 when get throws', async () => {
@@ -1037,10 +1077,16 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: '  ping  ' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { text: string; name: string; fromMe: boolean };
+    const body = (await res.json()) as {
+      text: string;
+      name: string;
+      fromMe: boolean;
+      accountId?: string;
+    };
     expect(body.text).toBe('ping');
     expect(body.name).toBe('Ada');
     expect(body.fromMe).toBe(true);
+    expect(body.accountId).toBe('acc');
   });
 
   it('lets staff reply on a platform thread as the platform account', async () => {
@@ -1054,10 +1100,16 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: 'official' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string; text: string; fromMe: boolean };
+    const body = (await res.json()) as {
+      name: string;
+      text: string;
+      fromMe: boolean;
+      accountId?: string;
+    };
     expect(body.name).toBe('21.gifts');
     expect(body.text).toBe('official');
     expect(body.fromMe).toBe(true);
+    expect(body.accountId).toBe('plat');
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
   });
