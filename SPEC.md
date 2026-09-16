@@ -2059,9 +2059,9 @@ is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. A valid parent where the
-caller is neither the parent author nor `moderator`/`founder` → **403**
-`{ "error": "A reply needs a Bitcoin payment" }` (`verified` is not
-exempt; pay via `POST /messages/:id/invoice` instead). Multipart video posts do not
+caller is neither the parent author nor `moderator`/`founder`/`verified` → **403**
+`{ "error": "A reply needs a Bitcoin payment" }` (pay via
+`POST /messages/:id/invoice` instead). Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
@@ -2151,7 +2151,7 @@ is itself a reply →
 ```
 
 Valid parent, but the caller is not the parent author and not
-`moderator`/`founder` →
+`moderator`/`founder`/`verified` →
 **Response** `403`:
 
 ```json
