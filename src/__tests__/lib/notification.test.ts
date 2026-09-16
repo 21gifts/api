@@ -1322,4 +1322,27 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
+
+  it('treats a push-only id missing from listAccounts as all', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'push-only');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'active-user', role: 'basis', notificationLevel: 'active' },
+          { id: 'actor', role: 'basis' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('push-only', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
+  });
 });

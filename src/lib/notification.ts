@@ -225,7 +225,8 @@ function filterIdsByMatch(
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. When `auth` is set and `match` is set, drop
  * recipients whose {@link wantsNotification} is false (level from
- * `listAccounts()`, `?? 'all'`; push-only ids not in that list are `all`).
+ * `listAccounts()` via {@link parseNotificationLevel}, omitted or unknown
+ * → `all`; push-only ids not in that list are `all`).
  * When `auth` is unset, do not filter by level. Missing both `auth` and
  * `pushStore` is a no-op. Unique duplicate `create` is fine. When
  * `notifications` is set, each outbox JSON includes that recipient's current

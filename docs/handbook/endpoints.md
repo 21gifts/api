@@ -177,7 +177,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted` and `aboutMe`.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, and `notificationLevel`.
 - **Errors:** 400 invalid body/origin/challenge/credential; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -191,7 +191,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted` and `aboutMe`.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, and `notificationLevel`.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
