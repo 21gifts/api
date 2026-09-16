@@ -126,6 +126,7 @@ Public base URLs used in examples:
 | GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                  |
 | GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                       |
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
+| POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                       |
 | POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`              |
 | GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
 | POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
@@ -1413,6 +1414,49 @@ Environment:
 | `DEBUG_TOKEN` | Operator bearer for this route. Unset → 503; process still boots. |
 | `MEDIA_DIR`   | Directory the bytes are written to. Required at boot.             |
 
+### `POST /debug/messages/:id/restore`
+
+Operator unhide of a soft-hidden forum note. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session and not a founder/moderator UNHIDE. Calls `markUndeleted`: the
+inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on
+the hidden target and stamp-matched **direct** children; already-live
+target is a no-op for children). Does not recreate the row via
+`POST /messages`, does not `DELETE FROM message`, and does not unlink
+media, invoices, zap receipts, Nostr, text, or photo.
+
+Same debug token gate as `GET /debug/messages`.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Non-UUID or unknown id → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success (hidden or already-live existing id) → **Response** `204` with an
+empty body. Public `GET /messages/:id` can then serve the note. Logs
+`debug.messages.restored` with `{ messageId }` only (never text, never
+`deletedBy`). Store throw logs `debug.messages.restore_failed`. Used by
+`gifts-debug restore`.
+
 ### `GET /push/vapid-public`
 
 Bearer session. Returns the VAPID **public** key the browser needs for
@@ -2586,8 +2630,10 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 when `DATABASE_URL` is set.
 
 **Moderator-only endpoints.** Soft-hide is implemented as
-`DELETE /messages/:id` (founder/moderator session). Content **unhide** /
-UNDELETE and other Moderator actions are not HTTP routes yet. Role values
+`DELETE /messages/:id` (founder/moderator session). Operator debug restore
+exists as `POST /debug/messages/:id/restore` (`DEBUG_TOKEN`). Staff /
+moderator session unhide is still not a route. Other Moderator actions
+are not HTTP routes yet. Role values
 exist on the account model; `GET /debug/accounts` and
 `PATCH /debug/accounts/:id` are operator token routes, not a moderator session.
 

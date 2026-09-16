@@ -339,6 +339,11 @@ test('PUT /debug/messages/:id/video without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('POST /debug/messages/:id/restore without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/messages/:id/restore');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/messages');
   expect(res.status()).toBe(401);

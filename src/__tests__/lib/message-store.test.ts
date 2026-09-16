@@ -466,6 +466,81 @@ describe('InMemoryMessageStore', () => {
     expect(child?.deletedBy).toBe('second-staff');
   });
 
+  it('markUndeleted returns false when missing and clears matching direct children', async () => {
+    const at = new Date('2026-09-01T12:00:00.000Z');
+    const later = new Date('2026-09-02T00:00:00.000Z');
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'p-unhide', text: 'parent' }, JPEG);
+    await store.create({ ...LATE, id: 'c-match', parentId: 'p-unhide', text: 'child' });
+    await store.create({ ...LATE, id: 'c-mismatch', parentId: 'p-unhide', text: 'later' });
+    await store.create({
+      ...LATE,
+      id: 'g-unhide',
+      parentId: 'c-match',
+      text: 'grandchild',
+    });
+    await store.create({ ...EARLY, id: 'other-unhide', text: 'other-parent' });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-unhide',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      messageId: 'p-unhide',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 21)).toBe(true);
+    expect(await store.markDeleted('c-mismatch', later, 'other-staff')).toBe(true);
+    expect(await store.markDeleted('g-unhide', later, 'other-staff')).toBe(true);
+    expect(await store.markDeleted('p-unhide', at, 'staff')).toBe(true);
+    expect(await store.markUndeleted('missing')).toBe(false);
+    expect(await store.markUndeleted('p-unhide')).toBe(true);
+    const parent = await store.getById('p-unhide');
+    const matched = await store.getById('c-match');
+    const mismatched = await store.getById('c-mismatch');
+    const grandchild = await store.getById('g-unhide');
+    const other = await store.getById('other-unhide');
+    expect(parent?.deletedAt).toBeNull();
+    expect(parent?.deletedBy).toBeNull();
+    expect(matched?.deletedAt).toBeNull();
+    expect(matched?.deletedBy).toBeNull();
+    expect(mismatched?.deletedAt?.toISOString()).toBe(later.toISOString());
+    expect(mismatched?.deletedBy).toBe('other-staff');
+    expect(grandchild?.deletedAt?.toISOString()).toBe(later.toISOString());
+    expect(grandchild?.deletedBy).toBe('other-staff');
+    expect(other?.deletedAt).toBeNull();
+    expect(await store.getPhoto('p-unhide')).toEqual(JPEG);
+    expect((await store.listInvoiceAttempts(10)).map((row) => row.id)).toContain('inv-unhide');
+    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 1)).toBe(false);
+    expect((await store.listLatest(10)).map((row) => row.id)).toContain('p-unhide');
+    expect((await store.listReplies('p-unhide')).map((row) => row.id)).toEqual(['c-match']);
+  });
+
+  it('markUndeleted is a no-op for children when the target is already live', async () => {
+    const at = new Date('2026-09-01T12:00:00.000Z');
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'p-live', text: 'parent' });
+    await store.create({ ...LATE, id: 'c-hidden', parentId: 'p-live', text: 'child' });
+    expect(await store.markDeleted('c-hidden', at, 'staff')).toBe(true);
+    expect(await store.markUndeleted('p-live')).toBe(true);
+    const parent = await store.getById('p-live');
+    const child = await store.getById('c-hidden');
+    expect(parent?.deletedAt).toBeNull();
+    expect(parent?.deletedBy).toBeNull();
+    expect(child?.deletedAt?.toISOString()).toBe(at.toISOString());
+    expect(child?.deletedBy).toBe('staff');
+  });
+
   it('replyCount and worker scans omit soft-deleted rows', async () => {
     const store = new InMemoryMessageStore();
     const eventId = '11'.repeat(32);
@@ -2718,6 +2793,30 @@ describe('PostgresMessageStore', () => {
     const missing = new MockSql();
     missing.nextRows = [];
     expect(await new PostgresMessageStore(missing).markDeleted('gone', at, 'staff')).toBe(false);
+  });
+
+  it('markUndeleted issues an UPDATE CTE and returns false when missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'm1' }];
+    expect(await new PostgresMessageStore(sql).markUndeleted('m1')).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(/WITH target AS \(/);
+    expect(text).toMatch(/SELECT id, deleted_at, deleted_by FROM message WHERE id = \$1/);
+    expect(text).toMatch(/UPDATE message m/);
+    expect(text).toMatch(/SET deleted_at = NULL, deleted_by = NULL/);
+    expect(text).toMatch(/t\.deleted_at IS NOT NULL/);
+    expect(text).toMatch(/m\.parent_id = t\.id/);
+    expect(text).toMatch(/m\.deleted_at IS NOT DISTINCT FROM t\.deleted_at/);
+    expect(text).toMatch(/m\.deleted_by IS NOT DISTINCT FROM t\.deleted_by/);
+    expect(text).toMatch(/SELECT id FROM target/);
+    expect(text).not.toMatch(/DELETE FROM message/);
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+
+    const missing = new MockSql();
+    missing.nextRows = [];
+    expect(await new PostgresMessageStore(missing).markUndeleted('gone')).toBe(false);
   });
 
   it('list and claim SQL require deleted_at IS NULL', async () => {

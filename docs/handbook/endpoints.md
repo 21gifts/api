@@ -126,6 +126,13 @@
 - **Used by:** Operators restoring a missing on-disk forum video without SSH (`gifts-debug video-put`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/messages/:id/restore
+
+- **Purpose:** Operator unhide of a soft-hidden forum note (Bearer `DEBUG_TOKEN`). Calls `MessageStore.markUndeleted`: inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on the hidden target and stamp-matched **direct** children; already-live target is a no-op for children). Does not recreate the row via `POST /messages`, does not hard-delete, and does not unlink media, invoices, zap receipts, Nostr, text, or photo. Existing live id still 204. Success is 204 empty body. Logs `debug.messages.restored` with `{ messageId }` only (never text, never `deletedBy`).
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` for a non-UUID or unknown id; 503 `{ error: 'Messages are unavailable' }` when `markUndeleted` throws (`debug.messages.restore_failed`).
+- **Used by:** Operators unhiding a soft-hidden forum note (`gifts-debug restore`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /push/vapid-public
 
 - **Purpose:** Bearer session. Returns `{ publicKey }` (URL-safe base64 VAPID public) so the app can subscribe.
