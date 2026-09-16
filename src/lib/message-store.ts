@@ -281,6 +281,20 @@ export interface MessageStore {
    */
   markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean>;
 
+  /**
+   * Unhide a note by clearing `deletedAt` / `deletedBy`. Inverse of
+   * {@link MessageStore.markDeleted}'s cascade: when the target is hidden,
+   * also clears every **direct** child whose stamps match the target's
+   * (same instant and same staff) before the target is cleared. Already-live
+   * targets are a no-op for children. Does not remove rows, media, invoices,
+   * or zap receipts.
+   *
+   * @param id - Message id.
+   * @returns `false` when no row has that id; `true` when the id exists
+   *   (hidden or already live).
+   */
+  markUndeleted(id: string): Promise<boolean>;
+
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
@@ -1614,6 +1628,31 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  markUndeleted(id: string): Promise<boolean> {
+    const target = this.#rows.find((item) => item.id === id);
+    if (target === undefined) {
+      return Promise.resolve(false);
+    }
+    if (target.deletedAt === null) {
+      return Promise.resolve(true);
+    }
+    const stampAt = target.deletedAt.getTime();
+    const stampBy = target.deletedBy;
+    target.deletedAt = null;
+    target.deletedBy = null;
+    for (const child of this.#rows) {
+      if (child.parentId !== id || child.deletedAt === null) {
+        continue;
+      }
+      if (child.deletedAt.getTime() !== stampAt || child.deletedBy !== stampBy) {
+        continue;
+      }
+      child.deletedAt = null;
+      child.deletedBy = null;
+    }
+    return Promise.resolve(true);
+  }
+
   #claim(
     predicate: (row: MessageRow) => boolean,
     limit: number,
@@ -2148,6 +2187,31 @@ export class PostgresMessageStore implements MessageStore {
        )
        SELECT id FROM target`,
       [id, at, byAccountId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async markUndeleted(id: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH target AS (
+         SELECT id, deleted_at, deleted_by FROM message WHERE id = $1
+       ), cleared AS (
+         UPDATE message m
+         SET deleted_at = NULL, deleted_by = NULL
+         FROM target t
+         WHERE t.deleted_at IS NOT NULL
+           AND (
+             m.id = t.id
+             OR (
+               m.parent_id = t.id
+               AND m.deleted_at IS NOT DISTINCT FROM t.deleted_at
+               AND m.deleted_by IS NOT DISTINCT FROM t.deleted_by
+             )
+           )
+         RETURNING m.id
+       )
+       SELECT id FROM target`,
+      [id],
     );
     return rows[0] !== undefined;
   }

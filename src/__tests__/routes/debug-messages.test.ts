@@ -503,4 +503,151 @@ describe('debugMessagesRoutes', () => {
       true,
     );
   });
+
+  it('returns 503 on restore when debug is not configured', async () => {
+    const app = mount(new InMemoryMessageStore(), undefined);
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
+  it('returns 401 on restore without a matching bearer', async () => {
+    const app = mount(new InMemoryMessageStore(), 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, { method: 'POST' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 404 for a non-UUID id on restore', async () => {
+    const app = mount(new InMemoryMessageStore(), 'secret');
+    const res = await app.request('/debug/messages/not-a-uuid/restore', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for an unknown UUID on restore', async () => {
+    const app = mount(new InMemoryMessageStore(), 'secret');
+    const res = await app.request(`/debug/messages/${UNKNOWN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 204, unhides matching children, and logs restored without text or deletedBy', async () => {
+    const later = new Date('2026-09-02T00:00:00.000Z');
+    const store = new InMemoryMessageStore();
+    await store.create(
+      forumRow({
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+      JPEG,
+    );
+    await store.create(
+      forumRow({
+        id: REPLY_ID,
+        parentId: HIDDEN_ID,
+        text: 'matched child',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+    );
+    await store.create(
+      forumRow({
+        id: '00000000-0000-4000-8000-000000000007',
+        parentId: HIDDEN_ID,
+        text: 'independent child',
+        deletedAt: later,
+        deletedBy: 'other-staff',
+      }),
+    );
+    await store.create(
+      forumRow({
+        id: '00000000-0000-4000-8000-000000000008',
+        parentId: REPLY_ID,
+        text: 'grandchild',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+    );
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    const parent = await store.getById(HIDDEN_ID);
+    const matched = await store.getById(REPLY_ID);
+    const independent = await store.getById('00000000-0000-4000-8000-000000000007');
+    const grandchild = await store.getById('00000000-0000-4000-8000-000000000008');
+    expect(parent?.deletedAt).toBeNull();
+    expect(parent?.deletedBy).toBeNull();
+    expect(parent?.text).toBe('hidden note');
+    expect(matched?.deletedAt).toBeNull();
+    expect(independent?.deletedAt?.toISOString()).toBe(later.toISOString());
+    expect(independent?.deletedBy).toBe('other-staff');
+    expect(grandchild?.deletedAt?.toISOString()).toBe(HIDDEN_AT.toISOString());
+    expect(grandchild?.deletedBy).toBe('staff');
+    expect(await store.getPhoto(HIDDEN_ID)).toEqual(JPEG);
+    const restored = parsedEvents(warn).filter((e) => e['event'] === 'debug.messages.restored');
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.['messageId']).toBe(HIDDEN_ID);
+    expect(restored[0]).not.toHaveProperty('text');
+    expect(restored[0]).not.toHaveProperty('deletedBy');
+  });
+
+  it('returns 204 without mutating children when the row is already live', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ deletedAt: null, deletedBy: null }));
+    await store.create(
+      forumRow({
+        id: REPLY_ID,
+        parentId: HIDDEN_ID,
+        text: 'independent child',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+    );
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    const parent = await store.getById(HIDDEN_ID);
+    const child = await store.getById(REPLY_ID);
+    expect(parent?.deletedAt).toBeNull();
+    expect(child?.deletedAt?.toISOString()).toBe(HIDDEN_AT.toISOString());
+    expect(child?.deletedBy).toBe('staff');
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'debug.messages.restored' && e['messageId'] === HIDDEN_ID,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 503 and logs when markUndeleted throws', async () => {
+    const store = {
+      markUndeleted: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as MessageStore;
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.messages.restore_failed')).toBe(
+      true,
+    );
+  });
 });

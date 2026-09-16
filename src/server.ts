@@ -93,7 +93,8 @@ export interface AppDeps {
    * `GET /debug/contacts`, `GET /debug/invoices`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
-   * `PUT /debug/messages/:id/video`, and `POST /debug/trust-edges`
+   * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
+   * and `POST /debug/trust-edges`
    * return 503.
    */
   debugToken?: string;
