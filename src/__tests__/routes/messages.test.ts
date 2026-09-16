@@ -882,7 +882,7 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
-  it('returns 403 when a verified account replies without paying', async () => {
+  it('lets a verified account reply without paying', async () => {
     const authStore = await namedStore('Ada');
     const acc = await authStore.getAccount('acc');
     expect(acc).toBeDefined();
@@ -922,8 +922,8 @@ describe('POST /messages', () => {
         photo: { contentType: 'image/jpeg', data: JPEG_B64 },
       }),
     });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+    expect(res.status).toBe(200);
+    expect(await messageStore.listReplies(parentId)).toHaveLength(1);
   });
 
   it('lets a founder reply without paying', async () => {

@@ -676,7 +676,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (parent === undefined || parent.parentId !== null || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const exempt = account.id === parent.accountId || isStaffRole(account.role);
+        const exempt =
+          account.id === parent.accountId ||
+          isStaffRole(account.role) ||
+          account.role === 'verified';
         if (!exempt) {
           return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
         }
