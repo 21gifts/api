@@ -1880,6 +1880,158 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor.filter((row) => row.type === 'zap')).toHaveLength(1);
   });
 
+  it('creates one zap notification and no forum_reply for a gift-only zap', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-one-notify-empty',
+      lightningAddress: 'zap-one-notify-empty@example.com',
+      messageId: 'm-one-notify-empty',
+    });
+    await auth.createAccount({
+      id: 'payer-one-notify-empty',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-one-notify-empty@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-one-notify-empty'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-one-notify-empty',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-one-notify-empty',
+      authorAccountId: 'acc-one-notify-empty',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-one-notify-empty',
+      paymentHash: 'a2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-one-notify-empty',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-one-notify-empty'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'a2'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    const forAuthor = await notifications.listByRecipient('acc-one-notify-empty', 10);
+    const forPayer = await notifications.listByRecipient('payer-one-notify-empty', 10);
+    expect(forAuthor.filter((row) => row.type === 'zap')).toHaveLength(1);
+    expect(forAuthor.filter((row) => row.type === 'forum_reply')).toEqual([]);
+    expect(forPayer.filter((row) => row.type === 'zap')).toEqual([]);
+    expect(forPayer.filter((row) => row.type === 'forum_reply')).toEqual([]);
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.text).toBe('');
+  });
+
+  it('creates one zap notification and no forum_reply for a zap with a NIP-57 comment', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-one-notify-comment',
+      lightningAddress: 'zap-one-notify-comment@example.com',
+      messageId: 'm-one-notify-comment',
+    });
+    await auth.createAccount({
+      id: 'payer-one-notify-comment',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-one-notify-comment@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-one-notify-comment'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-one-notify-comment',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-one-notify-comment',
+      authorAccountId: 'acc-one-notify-comment',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-one-notify-comment',
+      paymentHash: 'a3'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-one-notify-comment',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-one-notify-comment'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'a3'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    const forAuthor = await notifications.listByRecipient('acc-one-notify-comment', 10);
+    const forPayer = await notifications.listByRecipient('payer-one-notify-comment', 10);
+    expect(forAuthor.filter((row) => row.type === 'zap')).toHaveLength(1);
+    expect(forAuthor.filter((row) => row.type === 'forum_reply')).toEqual([]);
+    expect(forPayer.filter((row) => row.type === 'zap')).toEqual([]);
+    expect(forPayer.filter((row) => row.type === 'forum_reply')).toEqual([]);
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.text).toBe('thanks');
+  });
+
   it('indexes sats even when zap push enqueue throws', async () => {
     const secret = generateSecretKey();
     const pubkey = getPublicKey(secret);
