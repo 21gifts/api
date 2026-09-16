@@ -6,7 +6,12 @@ import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { isStaffRole, pendingModeratorProposals, type TrustEdge, type TrustKind } from '@/lib/trust';
+import {
+  isStaffRole,
+  pendingModeratorProposals,
+  type TrustEdge,
+  type TrustKind,
+} from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';

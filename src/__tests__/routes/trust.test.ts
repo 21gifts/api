@@ -1360,7 +1360,9 @@ describe('GET /trust/proposals', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ proposals: [] });
     }
-    const listed = parsedEvents(warn).filter((event) => event['event'] === 'trust.proposals.listed');
+    const listed = parsedEvents(warn).filter(
+      (event) => event['event'] === 'trust.proposals.listed',
+    );
     expect(listed).toHaveLength(2);
     expect(listed.every((event) => event['count'] === 0)).toBe(true);
   });

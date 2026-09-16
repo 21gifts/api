@@ -401,9 +401,9 @@ describe('pendingModeratorProposals', () => {
       edge({ id: 'same', subjectId: 's1', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
       edge({ id: 'same', subjectId: 's2', actorId: 'm', kind: 'moderator_propose', createdAt: 5 }),
     ];
-    expect(pendingModeratorProposals([one, two, actor], edges).map((row) => row.subject.id)).toEqual(
-      ['s1', 's2'],
-    );
+    expect(
+      pendingModeratorProposals([one, two, actor], edges).map((row) => row.subject.id),
+    ).toEqual(['s1', 's2']);
   });
 });
 
