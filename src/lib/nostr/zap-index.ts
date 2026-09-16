@@ -42,7 +42,15 @@ const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 
 /**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
- * Empty after process restart; first tick may rewrite one row per known receipt.
+ * Empty after process restart; the first tick may then re-persist a forgotten
+ * decision, but only for the receipts that tick still queries. A receipt whose
+ * message has aged out of `listLatest` is never asked for again.
+ *
+ * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
+ * the receipt id when the message goes away and would record it again, but this
+ * map does not, so a terminal decision here keeps suppressing ingest persist
+ * until the process restarts. Terminal receipts still run `verifyReceipt` then
+ * `tryEnsureGiftReply`.
  */
 const zapDecisions = new WeakMap<MessageStore, Map<string, string>>();
 
@@ -116,8 +124,9 @@ function receiptFrame(event: NostrEventFrame): Record<string, unknown> {
 
 /**
  * Persist an ingest decision without failing the tick.
- * Skips the write when this process already persisted the same outcome:reason
- * for the receipt id on this store instance.
+ * Skips the write when the memory already holds the same outcome:reason for the
+ * receipt id on this store instance. The memory is set only after the write
+ * resolves, so two overlapping ticks can both pass this check.
  *
  * @param store - Forum store.
  * @param row - Ingest row.
@@ -170,6 +179,13 @@ function zapIngestRow(args: {
  *
  * The provider pubkey check is case-insensitive hex. Callers must already
  * have verified the Nostr signature (`verifyEvent`).
+ *
+ * A repeated identical `outcome:reason` is normally not written again, because
+ * the memory is consulted before the write. That is not a guarantee: the memory
+ * is set only after the write resolves, worker ticks are not serialised, and a
+ * failed write leaves the memory untouched, so two overlapping ticks or a retry
+ * can still produce a second identical row. A later, different decision for that
+ * receipt always writes another ingest row.
  *
  * @param store - Forum store.
  * @param messageId - Forum row id.
@@ -276,6 +292,16 @@ export async function indexZapReceipt(args: {
  * bell subscribers). Retries receipts that have a payer and no gift-reply
  * id yet. The gift-reply insert does not call `notifyForumReply`.
  *
+ * Receipts whose terminal decision this process already persisted (`indexed`,
+ * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
+ * validation, and ingest persist. They still run `verifyReceipt` then
+ * `tryEnsureGiftReply`. Every other rejection reason is re-validated on each
+ * tick and writes again whenever the decision changes. The memory is
+ * process-local, so the first tick after a restart may re-persist decisions it
+ * has forgotten, bounded by the receipts that tick queries. Ticks are not
+ * serialised (`setInterval` does not await the previous tick), so the ingest
+ * skip is per tick, not a guarantee across concurrent ticks.
+ *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore` and `notificationStore`.
  * @returns Resolves when the tick's ingest pass finishes.
@@ -354,6 +380,12 @@ export async function indexOpenZapReceipts(args: {
 
 /**
  * Validate and index one candidate receipt event.
+ *
+ * Returns after id validation when this process already persisted a terminal
+ * decision for the receipt id on this store instance (`indexed`, or `rejected`
+ * with reason `duplicate`): still runs `verifyReceipt` then `tryEnsureGiftReply`,
+ * and does not persist ingest again. Every other rejection reason is
+ * re-validated on each call.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.
