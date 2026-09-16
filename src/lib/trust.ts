@@ -232,26 +232,23 @@ export function pendingModeratorProposals(
       latestPropose.set(edge.subjectId, edge);
     }
   }
-  const pending: TrustEdge[] = [];
+  const pending: { edge: TrustEdge; account: Account }[] = [];
   for (const edge of latestPropose.values()) {
     if (closed.has(edge.subjectId)) {
       continue;
     }
-    const subject = byId.get(edge.subjectId);
-    if (subject === undefined || subject.role !== 'verified') {
+    const account = byId.get(edge.subjectId);
+    if (account === undefined || account.role !== 'verified') {
       continue;
     }
-    pending.push(edge);
+    pending.push({ edge, account });
   }
-  pending.sort(compareTrustEdgesOldestFirst);
-  return pending.map((edge) => {
-    const subject = byId.get(edge.subjectId);
-    return {
-      subject: { id: edge.subjectId, name: subject?.name ?? null, role: 'verified' },
-      proposedBy: { id: edge.actorId, name: byId.get(edge.actorId)?.name ?? null },
-      createdAt: edge.createdAt,
-    };
-  });
+  pending.sort((a, b) => compareTrustEdgesOldestFirst(a.edge, b.edge));
+  return pending.map(({ edge, account }) => ({
+    subject: { id: account.id, name: account.name, role: 'verified' },
+    proposedBy: { id: edge.actorId, name: byId.get(edge.actorId)?.name ?? null },
+    createdAt: edge.createdAt,
+  }));
 }
 
 /**

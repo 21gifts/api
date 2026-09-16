@@ -250,6 +250,25 @@ describe('pendingModeratorProposals', () => {
     ]);
   });
 
+  it('sets subject.name to null when the verified subject name is null', () => {
+    const subject = account({ id: 's', role: 'verified', name: null });
+    const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
+    const propose = edge({
+      id: 'p1',
+      subjectId: 's',
+      actorId: 'm',
+      kind: 'moderator_propose',
+      createdAt: 10,
+    });
+    expect(pendingModeratorProposals([subject, actor], [propose])).toEqual([
+      {
+        subject: { id: 's', name: null, role: 'verified' },
+        proposedBy: { id: 'm', name: 'Mod' },
+        createdAt: 10,
+      },
+    ]);
+  });
+
   it('omits a propose whose subject is still basis', () => {
     const subject = account({ id: 's', role: 'basis', name: 'Ada' });
     const actor = account({ id: 'm', role: 'moderator', name: 'Mod' });
