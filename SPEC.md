@@ -527,8 +527,9 @@ subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
 is `{ subject: { id, name, role: "verified" }, proposedBy: { id, name },
 createdAt }` with ISO-8601 `createdAt`. A missing actor is
 `{ id, name: null }`. `GET /trust-chain` still omits a pending
-`moderator_propose`. Once the subject is a `moderator`, that propose is a
-public chain edge.
+`moderator_propose`. Once the subject is a `moderator`, that propose is
+eligible as the public incoming edge only when it is the oldest eligible
+sibling (`createdAt` then `id`).
 
 Missing/invalid/expired bearer → **Response** `401`:
 
