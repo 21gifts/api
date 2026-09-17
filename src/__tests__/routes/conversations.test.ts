@@ -1775,6 +1775,7 @@ describe('moderator_group', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
