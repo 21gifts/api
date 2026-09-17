@@ -2972,9 +2972,9 @@ describe('PostgresMessageStore', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    await expect(new PostgresMessageStore(sql).create(row, undefined, undefined, [JPEG2])).rejects.toThrow(
-      'extra photos require photo 0',
-    );
+    await expect(
+      new PostgresMessageStore(sql).create(row, undefined, undefined, [JPEG2]),
+    ).rejects.toThrow('extra photos require photo 0');
     expect(sql.executes).toEqual([]);
   });
 
