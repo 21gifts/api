@@ -114,8 +114,8 @@ export interface ConversationStore {
   listMessages(conversationId: string, limit: number): Promise<ConversationMessageRow[]>;
 
   /**
-   * Persist a message and bump `lastMessageAt`. Duplicate `eventId` returns
-   * the existing row.
+   * Persist a message and bump `lastMessageAt`. Duplicate message `id` or
+   * `eventId` returns the existing row.
    *
    * @param row - Fully formed message.
    */
