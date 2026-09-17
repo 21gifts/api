@@ -25,8 +25,9 @@ export interface PushPayload {
   /** Collapse / topic tag. */
   tag: string;
   /**
-   * Recipient's current unread in-app notification count, for the home-screen
-   * badge. Omit from shared templates; fan-out adds it per recipient.
+   * Recipient's current home-screen badge: in-app notification unread plus
+   * listed inbox unread (a missing source contributes 0). Omit from shared
+   * templates; fan-out adds it per recipient.
    */
   unreadCount?: number;
 }

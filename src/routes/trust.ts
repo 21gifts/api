@@ -96,7 +96,7 @@ async function loadTargetAccount(
  * `POST /trust/verify`, `POST /trust/propose-moderator`,
  * `POST /trust/confirm-moderator`, and `POST /trust/appoint-moderator`.
  *
- * @param deps - Auth store, trust-edge store, clock, and optional notification/push stores.
+ * @param deps - Auth store, trust-edge store, clock, optional notification/push stores, and optional conversation store.
  * @returns A Hono app with the staff GET and four staff POSTs.
  */
 export function trustRoutes(deps: TrustRouteDeps): Hono {

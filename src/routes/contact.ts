@@ -56,7 +56,7 @@ const textBody = z.object({ text: z.string() });
  *
  * Mounted at `/contact` so the public path is `POST /contact`.
  *
- * @param deps - Contact store, conversation store, auth store, and clock.
+ * @param deps - Contact store, conversation store, auth store, clock, and optional push/notification stores.
  * @returns A Hono app with `POST /` only.
  */
 export function contactRoutes(deps: ContactRouteDeps): Hono {
