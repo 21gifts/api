@@ -1739,7 +1739,7 @@ describe('POST /conversations/:id', () => {
 });
 
 describe('moderator_group', () => {
-  it('lists the empty singleton named Moderators for a moderator', async () => {
+  it('returns the empty singleton named Moderators for a moderator', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     const conversations = new InMemoryConversationStore();
