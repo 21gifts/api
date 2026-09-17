@@ -187,7 +187,8 @@ the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
 validated kind:9735 is indexed, the same payment appears as a forum reply from
 the payer. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies from `basis`/`verified` (not the parent author) are **403**. Do not invent `/events` or `/comments` paths.
+replies from `basis` (not the parent author) are **403**; `verified` /
+`moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
