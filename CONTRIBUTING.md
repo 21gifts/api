@@ -74,7 +74,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); targeted `notifyModeratorAppointed` (not fan-out)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap payloads
