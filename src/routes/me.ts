@@ -323,7 +323,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'photo' in raw;
       let decodedPhoto: ForumPhoto | null | undefined = undefined;
       if (photoKeyPresent) {
-        if (parsed.data.photo == null) {
+        if (parsed.data.photo === null) {
           decodedPhoto = null;
         } else {
           const decoded = decodeForumPhoto(
@@ -360,7 +360,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             noteId = existingId;
           }
         }
-        if (noteId === undefined && normalized === '' && decodedPhoto == null) {
+        if (
+          noteId === undefined &&
+          normalized === '' &&
+          (decodedPhoto === undefined || decodedPhoto === null)
+        ) {
           const latest = await storedAccount(deps, owner.id);
           /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
           if (latest === null) {
