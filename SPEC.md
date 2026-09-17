@@ -447,7 +447,7 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when `eventId` and a Lightning Address are set).
+`replyCount`, `payable` when `eventId` and a non-blank Lightning Address are set).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -2237,7 +2237,7 @@ the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
-`payable` (true when the note is signed and the author has a Lightning
+`payable` (true when the note is signed and the author has a non-blank Lightning
 Address), `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
@@ -2515,7 +2515,8 @@ Success → **Response** `200`:
 Missing Bearer → **401** `{ "error": "Unauthorized" }`.
 Payer missing living-room rules → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Malformed body or `sats` above 10 million → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
-Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a Lightning Address, or missing recipient pubkey →
+Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a
+non-blank Lightning Address (including whitespace-only), or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
