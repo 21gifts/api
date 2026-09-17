@@ -266,7 +266,9 @@ async function serveForumPhoto(
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
     const photo =
-      index === undefined ? await deps.store.getPhoto(id) : await deps.store.getExtraPhoto(id, index);
+      index === undefined
+        ? await deps.store.getPhoto(id)
+        : await deps.store.getExtraPhoto(id, index);
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }

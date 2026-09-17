@@ -557,9 +557,7 @@ describe('serializeHiddenMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(
-      serializeHiddenMessage(row, { id: null, name: null, role: null })['photoCount'],
-    ).toBe(0);
+    expect(serializeHiddenMessage(row, { id: null, name: null, role: null })['photoCount']).toBe(0);
   });
 
   it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {

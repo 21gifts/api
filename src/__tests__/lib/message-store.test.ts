@@ -2999,9 +2999,9 @@ describe('PostgresMessageStore', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    await expect(
-      new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]),
-    ).rejects.toBe(extraError);
+    await expect(new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2])).rejects.toBe(
+      extraError,
+    );
     expect(sql.executes.some((item) => /INSERT INTO message_extra_photo/.test(item.text))).toBe(
       true,
     );
