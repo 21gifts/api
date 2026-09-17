@@ -32,17 +32,17 @@ export interface NotificationRow {
   id: string;
   /** Account that should see this notification. */
   recipientAccountId: string;
-  /** Account that caused the notification (poster, replier, or zap payer). */
+  /** Account that caused the notification (poster, replier, zap payer, or appointing staff). */
   actorAccountId: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, or zap receipt UUID). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
   text: string;
   /** Creation instant. */
   createdAt: Date;
@@ -56,13 +56,13 @@ export interface PublicNotification {
   id: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, or zap receipt UUID). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
