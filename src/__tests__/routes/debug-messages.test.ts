@@ -36,6 +36,8 @@ const HIDDEN_PHOTO_ID = '00000000-0000-4000-8000-000000000004';
 const HIDDEN_PNG_ID = '00000000-0000-4000-8000-000000000005';
 const HIDDEN_WEBP_ID = '00000000-0000-4000-8000-000000000006';
 const HIDDEN_EXTRA_ID = '00000000-0000-4000-8000-000000000007';
+const HIDDEN_EXTRA_PNG_ID = '00000000-0000-4000-8000-000000000008';
+const HIDDEN_EXTRA_WEBP_ID = '00000000-0000-4000-8000-000000000009';
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000099';
 const HIDDEN_AT = new Date('2026-09-01T12:00:00.000Z');
 const JPEG: ForumPhoto = {
@@ -454,6 +456,48 @@ describe('debugMessagesRoutes', () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG2.bytes);
   });
 
+  it('names extra still png and webp files from the stored type', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(
+      forumRow({
+        id: HIDDEN_EXTRA_PNG_ID,
+        text: 'png extra',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+      JPEG,
+      undefined,
+      [PNG],
+    );
+    await store.create(
+      forumRow({
+        id: HIDDEN_EXTRA_WEBP_ID,
+        text: 'webp extra',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+      JPEG,
+      undefined,
+      [WEBP],
+    );
+    const app = mount(store, 'secret');
+    const pngRes = await app.request(`/debug/messages/${HIDDEN_EXTRA_PNG_ID}/photo/1.png`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(pngRes.status).toBe(200);
+    expect(pngRes.headers.get('Content-Type')).toBe('image/png');
+    expect(pngRes.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
+    expect(new Uint8Array(await pngRes.arrayBuffer())).toEqual(PNG.bytes);
+
+    const webpRes = await app.request(`/debug/messages/${HIDDEN_EXTRA_WEBP_ID}/photo/1.webp`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(webpRes.status).toBe(200);
+    expect(webpRes.headers.get('Content-Type')).toBe('image/webp');
+    expect(webpRes.headers.get('Content-Disposition')).toBe('inline; filename="photo.webp"');
+    expect(new Uint8Array(await webpRes.arrayBuffer())).toEqual(WEBP.bytes);
+  });
+
   it('returns 404 photo when a hidden note has no photo', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
@@ -523,6 +567,23 @@ describe('debugMessagesRoutes', () => {
     } as unknown as MessageStore;
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.messages.photo.get_failed')).toBe(
+      true,
+    );
+  });
+
+  it('returns 503 and logs when GET extra still throws', async () => {
+    const store = {
+      getById: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as MessageStore;
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`, {
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(503);

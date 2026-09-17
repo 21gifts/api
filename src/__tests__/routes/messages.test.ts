@@ -4360,6 +4360,17 @@ describe('GET /messages/:id/photo', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(false);
   });
 
+  it('returns 404 when the extra still file param fails the index regex', async () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    const app = mount(await seededStore());
+    const zero = await app.request(`/messages/${id}/photo/0.jpg`);
+    expect(zero.status).toBe(404);
+    expect(await zero.json()).toEqual({ error: 'Photo not found' });
+    const foo = await app.request(`/messages/${id}/photo/foo.jpg`);
+    expect(foo.status).toBe(404);
+    expect(await foo.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 503 and logs when getPhoto throws', async () => {
     const res = await mount(
       await seededStore(),

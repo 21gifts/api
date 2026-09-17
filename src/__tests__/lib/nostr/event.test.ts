@@ -252,6 +252,20 @@ describe('kind1', () => {
       ],
     ]);
   });
+
+  it('uses extra still URL as content when text is empty and first photo is omitted', () => {
+    const extra = {
+      url: 'http://127.0.0.1:3000/messages/m1/photo/1.jpg',
+      mime: 'image/jpeg' as const,
+    };
+    const event = buildKind1Event('', 1, undefined, undefined, undefined, [extra]);
+    expect(event.content).toBe(
+      'http://127.0.0.1:3000/messages/m1/photo/1.jpg\n\n#bitcoin #21gifts',
+    );
+    expect(event.tags.filter((tag) => tag[0] === 'imeta')).toEqual([
+      ['imeta', 'url http://127.0.0.1:3000/messages/m1/photo/1.jpg', 'm image/jpeg'],
+    ]);
+  });
 });
 
 describe('kind0', () => {
