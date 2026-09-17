@@ -1,6 +1,8 @@
 -- Public forum messages (GET/POST /messages, GET /messages/:id/photo,
 -- GET /messages/:id/video.*, POST /messages/:id/invoice). Author display name
--- is snapshotted at post time. Indexed newest-first for listLatest. Nostr
+-- is snapshotted at post time. Indexed newest-first for listLatest; listFeed
+-- keyset pages use message_feed_created_idx (created_at, id) and
+-- message_feed_popular_idx (sats, created_at, id). Nostr
 -- columns are filled by the worker (event_id, signed JSON, publish state,
 -- sats). Optional photo (bytea) + photo_content_type; list queries must not
 -- SELECT the photo column — use (photo IS NOT NULL) AS has_photo only.

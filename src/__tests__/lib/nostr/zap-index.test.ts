@@ -2333,7 +2333,7 @@ describe('indexOpenZapReceipts', () => {
       let ingestCalls = 0;
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
-      listFeed: (query: MessageFeedQuery) => base.listFeed(query),
+        listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
@@ -2662,7 +2662,7 @@ describe('indexOpenZapReceipts', () => {
       });
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
-      listFeed: (query: MessageFeedQuery) => base.listFeed(query),
+        listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
