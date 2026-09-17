@@ -105,20 +105,100 @@ describe('isProjectedTrustEdge', () => {
     ).toBe(false);
   });
 
-  it('omits appoint when a verify sibling exists for a moderator', () => {
+  it('omits appoint when an older verify sibling exists for a moderator', () => {
     const subject = account({ id: 'm', role: 'moderator' });
-    const verify = edge({ id: 'e-v', subjectId: 'm', actorId: 's', kind: 'verify' });
-    const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
+    const verify = edge({
+      id: 'e-v',
+      subjectId: 'm',
+      actorId: 's',
+      kind: 'verify',
+      createdAt: 10,
+    });
+    const appoint = edge({
+      id: 'e-a',
+      subjectId: 'm',
+      actorId: 'f',
+      kind: 'moderator_appoint',
+      createdAt: 20,
+    });
     const siblings = [verify, appoint];
     expect(isProjectedTrustEdge(appoint, subject, siblings)).toBe(false);
     expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(true);
   });
 
-  it('projects only propose when propose, verify, and appoint exist for a moderator', () => {
+  it('omits verify when an older appoint sibling exists for a moderator', () => {
     const subject = account({ id: 'm', role: 'moderator' });
-    const propose = edge({ id: 'e-p', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' });
-    const verify = edge({ id: 'e-v', subjectId: 'm', actorId: 's', kind: 'verify' });
-    const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
+    const appoint = edge({
+      id: 'e-a',
+      subjectId: 'm',
+      actorId: 'f',
+      kind: 'moderator_appoint',
+      createdAt: 10,
+    });
+    const verify = edge({
+      id: 'e-v',
+      subjectId: 'm',
+      actorId: 's',
+      kind: 'verify',
+      createdAt: 20,
+    });
+    const siblings = [appoint, verify];
+    expect(isProjectedTrustEdge(appoint, subject, siblings)).toBe(true);
+    expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(false);
+  });
+
+  it('projects only verify when it is older than propose and appoint for a moderator', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const verify = edge({
+      id: 'e-v',
+      subjectId: 'm',
+      actorId: 's',
+      kind: 'verify',
+      createdAt: 10,
+    });
+    const propose = edge({
+      id: 'e-p',
+      subjectId: 'm',
+      actorId: 'p',
+      kind: 'moderator_propose',
+      createdAt: 20,
+    });
+    const appoint = edge({
+      id: 'e-a',
+      subjectId: 'm',
+      actorId: 'f',
+      kind: 'moderator_appoint',
+      createdAt: 30,
+    });
+    const siblings = [verify, propose, appoint];
+    expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(true);
+    expect(isProjectedTrustEdge(propose, subject, siblings)).toBe(false);
+    expect(isProjectedTrustEdge(appoint, subject, siblings)).toBe(false);
+  });
+
+  it('projects only propose when it is older than verify and appoint for a moderator', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const propose = edge({
+      id: 'e-p',
+      subjectId: 'm',
+      actorId: 'p',
+      kind: 'moderator_propose',
+      createdAt: 10,
+    });
+    const verify = edge({
+      id: 'e-v',
+      subjectId: 'm',
+      actorId: 's',
+      kind: 'verify',
+      createdAt: 20,
+    });
+    const appoint = edge({
+      id: 'e-a',
+      subjectId: 'm',
+      actorId: 'f',
+      kind: 'moderator_appoint',
+      createdAt: 30,
+    });
     const siblings = [propose, verify, appoint];
     expect(isProjectedTrustEdge(propose, subject, siblings)).toBe(true);
     expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(false);
@@ -189,9 +269,27 @@ describe('buildTrustChain', () => {
     const edges: TrustEdge[] = [
       edge({ id: 'e-verify', subjectId: 'v', actorId: 'm', kind: 'verify' }),
       edge({ id: 'e-pending', subjectId: 'v', actorId: 'm', kind: 'moderator_propose' }),
-      edge({ id: 'e-propose', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' }),
-      edge({ id: 'e-confirm', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm' }),
-      edge({ id: 'e-appoint', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' }),
+      edge({
+        id: 'e-propose',
+        subjectId: 'm',
+        actorId: 'p',
+        kind: 'moderator_propose',
+        createdAt: 10,
+      }),
+      edge({
+        id: 'e-confirm',
+        subjectId: 'm',
+        actorId: 'f',
+        kind: 'moderator_confirm',
+        createdAt: 15,
+      }),
+      edge({
+        id: 'e-appoint',
+        subjectId: 'm',
+        actorId: 'f',
+        kind: 'moderator_appoint',
+        createdAt: 20,
+      }),
       edge({ id: 'e-basis-actor', subjectId: 'v', actorId: 'b', kind: 'verify' }),
       edge({ id: 'e-basis-subject', subjectId: 'b', actorId: 'f', kind: 'verify' }),
     ];
@@ -215,8 +313,14 @@ describe('buildTrustChain', () => {
     const chain = buildTrustChain(
       [founder, verifier, subject],
       [
-        edge({ id: 'e-v', subjectId: 'r', actorId: 's', kind: 'verify' }),
-        edge({ id: 'e-a', subjectId: 'r', actorId: 'f', kind: 'moderator_appoint' }),
+        edge({ id: 'e-v', subjectId: 'r', actorId: 's', kind: 'verify', createdAt: 10 }),
+        edge({
+          id: 'e-a',
+          subjectId: 'r',
+          actorId: 'f',
+          kind: 'moderator_appoint',
+          createdAt: 11,
+        }),
       ],
     );
     expect(chain.nodes.map((node) => node.id)).toEqual(['f', 's', 'r']);

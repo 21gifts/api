@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: `moderator_propose` if moderator, else `verify`, else `moderator_appoint`; `moderator_confirm` never; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
 
 ---
 
@@ -471,14 +471,14 @@ Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
 one hop of **stored** public edges with at most one incoming kind per
-subject: `moderator_propose` only if subject.role is `moderator`, else
-`verify` if present, else `moderator_appoint`; `moderator_confirm` never.
-A founder appoint is omitted when someone already verified the person
-(or, for a moderator, when a propose exists). A pending propose (subject
-still `verified`) stays private and is not a hop neighbor. Neighborhood
-must consider all stored edges for each subject, not only edges that
-touch `around`. Nodes are `founder` / `moderator` / `verified` (never
-`basis`).
+subject: the oldest eligible sibling (`createdAt` then `id`). Eligible:
+`verify`, `moderator_appoint`, and `moderator_propose` only when the live
+subject is a `moderator`; `moderator_confirm` never. Later appoint,
+confirm, or propose do not replace an earlier eligible contact. A pending
+propose (subject still `verified`) stays private and is not a hop neighbor.
+Neighborhood must consider all stored edges for each subject, not only
+edges that touch `around`. Nodes are `founder` / `moderator` / `verified`
+(never `basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),

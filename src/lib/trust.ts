@@ -3,12 +3,12 @@
  *
  * `verified` is a founder or moderator confirming this person in real life
  * (forum badge), not Lightning-Address proof-of-control. Public
- * {@link buildTrustChain} never invents edges. A pending
- * `moderator_propose` stays private until the subject is a moderator;
- * then the proposer is the public edge, not the confirmer. At most one
- * public incoming kind per subject (`moderator_propose` if the subject is
- * a moderator, else `verify`, else `moderator_appoint`; `moderator_confirm`
- * never).
+ * {@link buildTrustChain} never invents edges. At most one public incoming
+ * kind per subject: the oldest eligible sibling (`createdAt` then `id`).
+ * Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when
+ * the live subject is a `moderator`. `moderator_confirm` never. A pending
+ * propose (subject still `verified`) stays private. Later appoint, confirm,
+ * or propose do not replace an earlier eligible contact.
  */
 
 import type { Account, AccountRole } from '@/lib/auth/store';
@@ -132,12 +132,14 @@ export function isStaffRole(role: AccountRole): boolean {
  * Nodes are accounts whose role is `founder`, `moderator`, or `verified`
  * (never `basis`), sorted founder → moderator → verified, then oldest
  * `createdAt`, then `id`. Groups stored edges by `subjectId` and projects
- * at most one incoming kind per subject: `moderator_propose` when the
- * subject is a `moderator`, else `verify`, else `moderator_appoint`.
+ * at most one incoming kind per subject: the oldest eligible sibling
+ * (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and
+ * `moderator_propose` only when the live subject is a `moderator`.
  * `moderator_confirm` never. A pending propose (subject still `verified`)
- * stays private. Actor and subject must both be in the node set. No
- * synthetic edges. Lightning addresses, view keys, and linking keys are
- * omitted.
+ * stays private. Later appoint, confirm, or propose do not replace an
+ * earlier eligible contact. Actor and subject must both be in the node
+ * set. No synthetic edges. Lightning addresses, view keys, and linking
+ * keys are omitted.
  *
  * @param accounts - Live accounts (roles as stored).
  * @param edges - Stored trust edges (any order).
@@ -300,9 +302,11 @@ export function isChainAccount(
 /**
  * Whether a stored edge appears on the public trust chain.
  *
- * True iff `edge.kind` is the winning kind among `subjectEdges` (default
- * `[edge]`): `moderator_propose` when the subject is a `moderator`, else
- * `verify`, else `moderator_appoint`. `moderator_confirm` never wins.
+ * True iff `edge.kind` is the oldest eligible kind among `subjectEdges`
+ * (default `[edge]`), by `createdAt` then `id`. Eligible: `verify`,
+ * `moderator_appoint`, and `moderator_propose` only when the live subject
+ * is a `moderator`. `moderator_confirm` never. Later siblings do not
+ * replace an earlier eligible contact.
  *
  * @param edge - Stored grant.
  * @param subject - Live subject account, if loaded.
@@ -318,33 +322,37 @@ export function isProjectedTrustEdge(
   return winning !== undefined && edge.kind === winning;
 }
 
-/** Winning public incoming kind among `subjectEdges`, or none. */
+/** Oldest eligible public incoming kind among `subjectEdges`, or none. */
 function winningPublicKind(
   subject: Account | undefined,
   subjectEdges: readonly TrustEdge[],
 ): TrustChainKind | undefined {
-  let hasPropose = false;
-  let hasVerify = false;
-  let hasAppoint = false;
+  const eligible: TrustEdge[] = [];
   for (const sibling of subjectEdges) {
-    if (sibling.kind === 'moderator_propose') {
-      hasPropose = true;
-    } else if (sibling.kind === 'verify') {
-      hasVerify = true;
-    } else if (sibling.kind === 'moderator_appoint') {
-      hasAppoint = true;
+    if (sibling.kind === 'moderator_confirm') {
+      continue;
+    }
+    if (sibling.kind === 'moderator_propose' && subject?.role !== 'moderator') {
+      continue;
+    }
+    if (
+      sibling.kind === 'verify' ||
+      sibling.kind === 'moderator_appoint' ||
+      sibling.kind === 'moderator_propose'
+    ) {
+      eligible.push(sibling);
     }
   }
-  if (subject?.role === 'moderator' && hasPropose) {
-    return 'moderator_propose';
+  if (eligible.length === 0) {
+    return undefined;
   }
-  if (hasVerify) {
-    return 'verify';
+  const oldest = eligible.slice().sort(compareTrustEdgesOldestFirst)[0];
+  /* v8 ignore next 3 -- eligible.length === 0 already returned */
+  if (oldest === undefined) {
+    return undefined;
   }
-  if (hasAppoint) {
-    return 'moderator_appoint';
-  }
-  return undefined;
+  /* v8 ignore next -- confirm was filtered from eligible */
+  return oldest.kind === 'moderator_confirm' ? undefined : oldest.kind;
 }
 
 /** Oldest `createdAt` first, then `id`. */

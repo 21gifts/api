@@ -12,12 +12,14 @@ import { bearerToken } from '@/routes/me';
  *
  * Bare `GET /trust-chain` returns founder seeds (no edges) so a thousand-person
  * chain is not dumped on first paint. `?around=<id>` returns that account plus
- * one hop of the winning public kind per subject (`moderator_propose` when the
- * subject is a `moderator`, else `verify`, else `moderator_appoint`).
- * `moderator_confirm` is never projected. Neighborhood loads all edges for
- * each subject in the touching set so a verify that does not touch `aroundId`
- * still beats an appoint that does. A pending propose (subject still
- * `verified`) stays private and is not a hop neighbor.
+ * one hop of the oldest eligible public kind per subject (`createdAt` then
+ * `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only
+ * when the live subject is a `moderator`. `moderator_confirm` is never
+ * projected. Neighborhood loads all edges for each subject in the touching
+ * set (`listEdgesForSubject`) so a non-touching older eligible edge still
+ * wins over a touching newer one. A pending propose (subject still
+ * `verified`) stays private and is not a hop neighbor. Later appoint,
+ * confirm, or propose do not replace an earlier eligible contact.
  */
 
 /** Collaborators the trust-chain route needs. */
@@ -91,12 +93,14 @@ function isInvalidUuid(error: unknown): boolean {
 
 /**
  * One hop around `aroundId`: the focus account, stored public edges of the
- * winning kind per subject after `isProjectedTrustEdge` (`moderator_propose`
- * when the subject is a `moderator`, else `verify`, else
- * `moderator_appoint`; never `moderator_confirm`), and the accounts on those
- * filtered edges. Loads all edges for each touching subject
- * (`listEdgesForSubject`) so a non-touching verify still beats a touching
- * appoint. Pending-propose verified neighbors are not nodes. Confirm never.
+ * oldest eligible kind per subject after `isProjectedTrustEdge` (`createdAt`
+ * then `id`; `verify`, `moderator_appoint`, and `moderator_propose` only when
+ * the live subject is a `moderator`; never `moderator_confirm`), and the
+ * accounts on those filtered edges. Loads all edges for each touching subject
+ * (`listEdgesForSubject`) so a non-touching older eligible edge still wins
+ * over a touching newer one. Pending-propose verified neighbors are not
+ * nodes. Confirm never. Later appoint, confirm, or propose do not replace
+ * an earlier eligible contact.
  *
  * @param deps - Auth and trust stores.
  * @param aroundId - Focus account id.

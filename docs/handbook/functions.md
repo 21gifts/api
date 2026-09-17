@@ -1730,14 +1730,14 @@
 
 ## Function: isProjectedTrustEdge
 
-- **Purpose:** Whether a stored edge appears on the public Trust Chain. True iff `edge.kind` equals the winning kind among `subjectEdges` (propose if the subject is a `moderator`, else `verify`, else `moderator_appoint`; `moderator_confirm` never).
+- **Purpose:** Whether a stored edge appears on the public Trust Chain. True iff `edge.kind` equals the oldest eligible sibling among `subjectEdges` (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is a `moderator`. `moderator_confirm` never. Later appoint, confirm, or propose do not replace an earlier eligible contact.
 - **Inputs:** `edge` (`TrustEdge`), `subject` (`Account | undefined`), `subjectEdges` (`readonly TrustEdge[]`, default `[edge]`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `buildTrustChain`, `trustChainRoutes` (`GET /trust-chain?around=`).
 
 ## Function: buildTrustChain
 
-- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Groups stored edges by `subjectId` and projects at most one incoming kind per subject: `moderator_propose` if subject.role is `moderator`, else `verify`, else `moderator_appoint`. Never invents edges; `moderator_confirm` is omitted; a pending propose (subject still `verified`) stays private; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
+- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Groups stored edges by `subjectId` and projects at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is a `moderator`. Never invents edges; `moderator_confirm` is omitted; a pending propose (subject still `verified`) stays private; later appoint, confirm, or propose do not replace an earlier eligible contact; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `{ nodes, edges }` (`TrustChain`). No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain`).
@@ -1786,7 +1786,7 @@
 
 ## Function: trustChainRoutes
 
-- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` loads all edges for each subject in the touching set (`listEdgesForSubject`) then `isProjectedTrustEdge` with that sibling list so a verify that does not touch `aroundId` still beats an appoint that does. One hop of the winning public kind; pending-propose verified neighbors are not nodes; confirm never. Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` loads all edges for each subject in the touching set (`listEdgesForSubject`) then `isProjectedTrustEdge` with that sibling list so a non-touching older eligible edge still wins over a touching newer one. One hop of the oldest eligible public kind (`createdAt` then `id`); pending-propose verified neighbors are not nodes; confirm never. Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
 - **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
 - **Used by:** `createApp`.
