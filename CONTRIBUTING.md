@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -74,7 +74,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); targeted `notifyModeratorAppointed` (not fan-out)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap payloads

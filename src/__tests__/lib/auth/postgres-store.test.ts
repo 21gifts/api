@@ -103,6 +103,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.lightningAddressSkippedAt).toBeNull();
     expect(mapped?.profileMessageId).toBeNull();
     expect(mapped?.location).toBeNull();
+    expect(mapped?.notificationLevel).toBe('all');
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -111,6 +112,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/name_skipped_at/);
     expect(sql.queries[0]?.text).toMatch(/profile_message_id/);
     expect(sql.queries[0]?.text).toMatch(/location/);
+    expect(sql.queries[0]?.text).toMatch(/notification_level/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -208,6 +210,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/name_skipped_at/);
     expect(sql.executes[0]?.text).toMatch(/profile_message_id/);
     expect(sql.executes[0]?.text).toMatch(/location/);
+    expect(sql.executes[0]?.text).toMatch(/notification_level/);
+    expect(sql.executes[0]?.params[15]).toBe('all');
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
@@ -216,6 +220,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/name_skipped_at/);
     expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
+    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -233,7 +238,33 @@ describe('PostgresAuthStore', () => {
       null,
       null,
       null,
+      'all',
     ]);
+  });
+
+  it('writes a stored notificationLevel as $16', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const account = {
+      id: 'acc',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis' as const,
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      notificationLevel: 'mentions' as const,
+    };
+    await store.createAccount(account);
+    expect(sql.executes[0]?.text).toMatch(/notification_level/);
+    expect(sql.executes[0]?.params[15]).toBe('mentions');
+    await store.updateAccount({ ...account, notificationLevel: 'active' });
+    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
+    expect(sql.executes[1]?.params[15]).toBe('active');
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {

@@ -20,6 +20,15 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
 
 /**
+ * Owner fan-out filter. Omitted / unknown → `all`.
+ *
+ * - `all` — every living-room post, reply, and zap (default).
+ * - `active` — related top-level post has `sats > 0` (zaps also when `amountSats > 0`).
+ * - `mentions` — staff/platform actor, or a reply/zap on the recipient's own note.
+ */
+export type NotificationLevel = 'all' | 'active' | 'mentions';
+
+/**
  * A registered account.
  *
  * Identity is {@link Account.id}. `linkingKey` is `null` for passkey accounts
@@ -70,6 +79,11 @@ export interface Account {
   lightningAddressSkippedAt?: number | null;
   /** Id of the single top-level profile forum message, or null/omitted. */
   profileMessageId?: string | null;
+  /**
+   * Owner fan-out filter. Omitted / unknown → `all`. Not public on member
+   * cards, view profiles, or operator debug JSON.
+   */
+  notificationLevel?: NotificationLevel;
 }
 
 /**

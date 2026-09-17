@@ -5,8 +5,9 @@ import {
   type AccountMissingField,
   type AccountSetup,
 } from '@/lib/auth/account-setup';
-import type { Account } from '@/lib/auth/store';
+import type { Account, NotificationLevel } from '@/lib/auth/store';
 import type { MessageStore } from '@/lib/message-store';
+import { parseNotificationLevel } from '@/lib/notification';
 
 /**
  * Public JSON shape of an account (ten fields). Never includes Nostr
@@ -39,7 +40,7 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the ten public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`.
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -70,6 +71,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * (a photo-only / name-copy note can still have a photo).
    */
   aboutMeHasPhoto: boolean;
+  /**
+   * Owner fan-out filter (`all` \| `active` \| `mentions`). Default `all`.
+   * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
+   */
+  notificationLevel: NotificationLevel;
 }
 
 /**
@@ -162,8 +168,9 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * @param hasPosted - True when the account has a live non-profile forum row.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Sixteen fields including `viewKey`, `setup`, `missing`,
- * `hasPosted`, `location`, `aboutMe`, and `aboutMeHasPhoto`.
+ * @returns Seventeen fields including `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`, and
+ * `notificationLevel`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -179,6 +186,7 @@ export function serializeOwnerAccount(
     hasPosted,
     aboutMe,
     aboutMeHasPhoto,
+    notificationLevel: parseNotificationLevel(account.notificationLevel),
   };
 }
 
@@ -194,9 +202,10 @@ export function serializeOwnerAccount(
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @returns Owner JSON including `hasPosted`, `aboutMe`, and
- *   `aboutMeHasPhoto`. `aboutMe` is `null` when the profile note is missing
- *   or `deletedAt` is set, else `aboutMeFromNote(account.name, row.text, row.name)`.
+ * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
+ *   and `notificationLevel` (via {@link serializeOwnerAccount}). `aboutMe` is
+ *   `null` when the profile note is missing or `deletedAt` is set, else
+ *   `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
  */
 export async function serializeOwnerAccountWithPosts(

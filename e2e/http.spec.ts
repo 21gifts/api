@@ -306,6 +306,11 @@ test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/notification-level without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/notification-level');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/rules-agreement without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/rules-agreement');
   expect(res.status()).toBe(401);
