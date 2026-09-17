@@ -131,6 +131,7 @@ const throwingListEdges: TrustStore = {
   listEdgesTouching: async () => [],
   listEdgesForSubject: async () => [],
   insertEdge: async (row) => row,
+  deleteEdge: async () => undefined,
 };
 
 const duplicateInsert: TrustStore = {
