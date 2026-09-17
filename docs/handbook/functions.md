@@ -1702,7 +1702,7 @@
 
 ## Function: isStaffRole
 
-- **Purpose:** True when `account.role` may run staff trust POSTs. Founder and moderator return true; `basis` and `verified` return false. Used before `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately).
+- **Purpose:** True when `account.role` may run staff trust routes. Founder and moderator return true; `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately).
 - **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `founder`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustRoutes`.

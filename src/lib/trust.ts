@@ -114,7 +114,7 @@ const ROLE_RANK: Record<TrustChainNode['role'], number> = {
 };
 
 /**
- * Whether `role` may run staff trust POSTs (founder or moderator).
+ * Whether `role` may run staff trust routes (founder or moderator).
  *
  * @param role - Exclusive account role.
  * @returns `true` for `founder` and `moderator`.
