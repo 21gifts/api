@@ -3084,6 +3084,23 @@ describe('PostgresMessageStore', () => {
     expect(listed).toEqual([JPEG2]);
   });
 
+  it('listExtraPhotos skips null bytes, missing type, and unrecognized type', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { idx: 1, photo: null, photo_content_type: 'image/jpeg' },
+      { idx: 2, photo: JPEG2.bytes, photo_content_type: null },
+      { idx: 3, photo: JPEG2.bytes, photo_content_type: 'image/gif' },
+      { idx: 4, photo: JPEG2.bytes, photo_content_type: 'image/jpeg' },
+    ];
+    expect(await new PostgresMessageStore(sql).listExtraPhotos('m1')).toEqual([JPEG2]);
+  });
+
+  it('getExtraPhoto returns null for an unrecognized content type', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/gif' }];
+    expect(await new PostgresMessageStore(sql).getExtraPhoto('m1', 1)).toBeNull();
+  });
+
   it('propagates list query errors', async () => {
     const sql = new MockSql();
     sql.queryError = new Error('list boom');

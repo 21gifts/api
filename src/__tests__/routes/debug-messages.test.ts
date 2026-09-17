@@ -593,6 +593,20 @@ describe('debugMessagesRoutes', () => {
     );
   });
 
+  it('returns 503 extra still when debug is not configured', async () => {
+    const app = mount(new InMemoryMessageStore(), undefined);
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
+  it('returns 401 extra still without a matching bearer', async () => {
+    const app = mount(new InMemoryMessageStore(), 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
   it('returns 404 extra still for a bad file, missing row, or photo 0 only', async () => {
     const store = new InMemoryMessageStore();
     await store.create(forumRow({ id: HIDDEN_ID, text: 'one' }), JPEG);
