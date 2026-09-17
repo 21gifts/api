@@ -28,7 +28,7 @@ export interface PushOutboxRow {
   /** Recipient account id. */
   accountId: string;
   /** Notification kind. */
-  type: 'forum' | 'zap';
+  type: 'forum' | 'zap' | 'conversation';
   /** Forum message id when applicable; null for debug pings. */
   messageId: string | null;
   /** JSON string payload. */
@@ -135,7 +135,7 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS push_outbox (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
-  type text NOT NULL CHECK (type IN ('forum', 'zap')),
+  type text NOT NULL CHECK (type IN ('forum', 'zap', 'conversation')),
   message_id uuid,
   payload text NOT NULL,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
@@ -146,6 +146,13 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
 )`,
   `CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending'`,
   `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]'`,
+  `DO $push_outbox_type$
+BEGIN
+  ALTER TABLE push_outbox DROP CONSTRAINT IF EXISTS push_outbox_type_check;
+  ALTER TABLE push_outbox ADD CONSTRAINT push_outbox_type_check
+    CHECK (type IN ('forum', 'zap', 'conversation'));
+END
+$push_outbox_type$;`,
 ];
 
 /**
@@ -429,7 +436,8 @@ function mapSub(row: PushSubSqlRow): PushSubscriptionRecord {
 }
 
 function mapOutbox(row: PushOutboxSqlRow): PushOutboxRow {
-  const type = row.type === 'forum' || row.type === 'zap' ? row.type : 'forum';
+  const type =
+    row.type === 'forum' || row.type === 'zap' || row.type === 'conversation' ? row.type : 'forum';
   const status =
     row.status === 'pending' || row.status === 'sent' || row.status === 'failed'
       ? row.status

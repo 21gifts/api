@@ -184,7 +184,7 @@
 
 ## Function: migratePushSchema
 
-- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints`, supporting indexes, then `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`).
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints` and `type` CHECK `('forum', 'zap', 'conversation')`, supporting indexes, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, then an idempotent `DO` that drops/adds `push_outbox_type_check` so live two-value CHECKs accept `'conversation'`).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
@@ -256,7 +256,7 @@
 ## Function: PostgresConversationStore
 
 - **Purpose:** Durable `ConversationStore` over Postgres (`conversation` + `conversation_message` + `conversation_read`). Open-or-create per counterpart kind, list visible threads, `hasInboundMessage` (EXISTS matching inbound = `conversationIsInbound`), `hasUnread` (parameter-bound EXISTS over `conversation_message` joined to `conversation_read`: `created_at` strictly greater than `last_read_at`, or no last-read row), `markRead` (`INSERT … ON CONFLICT … DO UPDATE` on `(account_id, conversation_id)`), append messages, claim unsigned/unpublished wraps, unique `event_id`. `openMemberPlatform` updates `account_b` when an existing member→platform thread points at a different platform id. `retargetMemberPlatform` bulk-updates `account_b` on every `member_platform` row whose `account_a` is not the new platform id. `ensureModeratorGroup` opens or inserts the closed `moderator_group` singleton. Unique partial index `conversation_moderator_group_uidx`. `listVisible` binds `$5` moderator flag. `mapMessage` keeps `skipped`.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). `hasInboundMessage(conversationId, viewerId, staff, platformId)` is parameter-bound EXISTS over `conversation_message`. `listVisible(accountId, staff, platformId, limit, moderator = false)` passes `$5` as the moderator flag.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). `hasInboundMessage(conversationId, viewerId, staff, platformId)` is parameter-bound EXISTS over `conversation_message`. `listVisible(accountId, staff, platformId, limit, moderator = false)` passes `$5` as the moderator flag. `unreadCount` forwards the optional 4th `moderator` flag to `listVisible`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `ConversationThread` / `ConversationMessageRow`. Unique violations on open/append are swallowed as idempotent. Errors otherwise propagate to the route (503). `mapMessage` keeps `nostr_publish_state` `skipped` (does not remap to `pending`).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -472,7 +472,7 @@
 
 ## Function: buildForumPushPayload
 
-- **Purpose:** English forum-post payload for every bell subscriber except the actor (`type: 'forum'`, title `New post on 21.gifts`, url `/notifications`, tag `forum_post:<postId>`). Shared template: omits optional `unreadCount` (fan-out adds the recipient's current unread in-app count per push recipient when `notifications` is set).
+- **Purpose:** English forum-post payload for every bell subscriber except the actor (`type: 'forum'`, title `New post on 21.gifts`, url `/notifications`, tag `forum_post:<postId>`). Shared template: omits optional `unreadCount` (fan-out adds notification unread + listed inbox unread per recipient).
 - **Inputs:** `postId` string used in `tag`.
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueForumPushes`, `notifyForumPost`.
@@ -493,10 +493,17 @@
 
 ## Function: buildModeratorAppointedPushPayload
 
-- **Purpose:** English payload for the appointed subject only (not a living-room fan-out). `type: 'forum'` (outbox CHECK stays forum|zap), title `You are a moderator`, body `You were appointed a moderator in the living room.`, url `/welcome`, tag `moderator_appointed:<subjectId>`. Shared template omits optional `unreadCount` (`notifyModeratorAppointed` merges it per recipient when `notifications` is set).
+- **Purpose:** English payload for the appointed subject only (not a living-room fan-out). `type: 'forum'` (outbox CHECK is forum|zap|conversation), title `You are a moderator`, body `You were appointed a moderator in the living room.`, url `/welcome`, tag `moderator_appointed:<subjectId>`. Shared template omits optional `unreadCount` (`notifyModeratorAppointed` merges notification unread + listed inbox unread when either source is passed).
 - **Inputs:** `subjectId` string used in `tag`.
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
 - **Used by:** `notifyModeratorAppointed`.
+
+## Function: buildConversationPushPayload
+
+- **Purpose:** English private-message payload for one 21.gifts bell subscriber (`type: 'conversation'`, title sender `name` or `21.gifts` when empty, body message text, url `/messages?c=<conversationId>`, tag `conversation:<conversationId>`). Shared template: omits optional `unreadCount` (`notifyConversationMessage` adds notification unread + listed inbox unread).
+- **Inputs:** `{ conversationId, name, text }`.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` and merge `unreadCount`.
+- **Used by:** `notifyConversationMessage`.
 
 ## Function: pushRoutes
 
@@ -543,9 +550,8 @@
 ## Function: InMemoryConversationStore
 
 - **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, member↔Damus, and closed `moderator_group` singleton threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`. `hasUnread` is inbound `conversationIsInbound` with `createdAt` strictly greater than last-read (missing stamp = never read). `markRead` upserts a private last-read map keyed by accountId + conversationId (Dates copied on construct and store). `ensureModeratorGroup` opens or inserts the singleton (`accountA` = platform; `accountB` and `counterpartPubkey` null). `listVisible` 5th arg `moderator` defaults false. `visibleTo` returns `moderator === true` for that kind first (staff founder never sees it via platform-id).
-- **Inputs:** Optional seed threads and messages (copied). Optional third constructor seed of last-read rows is copied. Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible(accountId, staff, platformId, limit, moderator = false)` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`).
+- **Inputs:** Optional seed threads and messages (copied). Optional third constructor seed of last-read rows is copied. Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible(accountId, staff, platformId, limit, moderator = false)` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`). `unreadCount(accountId, staff, platformId, moderator = false)` uses the same list filter as GET `/conversations` (including `moderator_group` when the 4th arg is true).
 - **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `id` or `eventId` append returns the existing row. No I/O.
->>>>>>> b2c9fea (Add per-viewer unread state for private conversations)
 - **Used by:** `createApp` default `conversationStore`.
 
 ## Function: InMemoryLnAddressCache
@@ -768,16 +774,15 @@
 ## Function: contactRoutes
 
 - **Purpose:** Hono sub-app for the private in-app contact mailbox: `POST /` only (no member GET). After auth, `requireAction(account, 'contact.post')` (rules + name). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread. Conversation append failure logs `conversations.contact_sync.failed` and still 200.
-- **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`.
-- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 409 `{ error: 'missing_requirements', missing }` when rules/name are missing; 400 on bad body / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). Public JSON omits `accountId`.
+- **Inputs:** `ContactRouteDeps`: contact `store`, `conversationStore`, shared `authStore`, `now`, optional `pushStore` and `notificationStore`.
+- **Returns / side effects:** Hono app mounted at `/contact`. 401 without session; 409 `{ error: 'missing_requirements', missing }` when rules/name are missing; 400 on bad body / invalid text; 503 `{ error: 'Platform account is not configured' }` when no `isPlatform` account (no writes); 503 Contact is unavailable on contact-store failure (`contact.create.failed`). After a successful conversation append, `notifyConversationMessage` is void-caught (`conversations.push.failed`); contact 200 is unchanged. Public JSON omits `accountId`.
 - **Used by:** `createApp`.
 
 ## Function: conversationRoutes
 
 - **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists `{ conversations, unreadCount }` (`unreadCount` = listed rows with `unread` true); `POST /` opens a thread from `{ forumMessageId }`; `GET /:id` lists messages oldest-first (`?sinceMessageId=` long-poll); `POST /:id/read` stamps last-read (mount before `POST /:id`); `POST /:id` appends `{ text }`; `POST /:id/invoice` issues a NIP-57 gift invoice. Staff (founder/moderator) see all platform threads and reply as the platform nsec. `moderator_group` ACL is `role === 'moderator'` only (founder 404). `GET /` calls `ensureModeratorGroup` when role is moderator and a platform account exists, lists the empty group (pinned first for moderators; still listed when 200 newer threads exist; still cap 200), and passes `moderator` into `listVisible`. `POST /:id` on this kind persists as the moderator (not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` only when Lightning Address is non-empty after trim **and** a live living-room top-level post exists on this UTC day; no living-room post today → 200, no ping, `spend.ping.skipped` / `no_public_post`; living-room lookup failure after persist → 200, no ping, `spend.ping.skipped` / `posted_unreachable`; ping throw still 200.
-- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`, optional `spendPing`, optional `fetchImpl` / `nostrKek` / `invoiceLimiter` / wait injects.
-- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet; 404 when not allowed; 429 Too many payments; 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw. Public list/open JSON may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`.
->>>>>>> b2c9fea (Add per-viewer unread state for private conversations)
+- **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`, optional `spendPing`, optional `fetchImpl` / `nostrKek` / `invoiceLimiter` / wait injects, optional `pushStore` and `notificationStore`.
+- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet; 404 when not allowed; 429 Too many payments; 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw. After a successful `POST /:id` append, `notifyConversationMessage` is void-caught (`conversations.push.failed`) so 200 is unchanged. Public list/open JSON includes `unread` and may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`.
 - **Used by:** `createApp`.
 
 ## Function: notificationRoutes
@@ -883,7 +888,6 @@
 - **Purpose:** Project a stored thread to its public list JSON shape.
 - **Inputs:** `ConversationThread` with resolved `name` / `lastText`, `lastFromMe` boolean, `unread` boolean, and optional counterpart `accountId` (`string | null`).
 - **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe, lastSats, unread, accountId? }`. `lastSats` is the last message's sats (`0` when unpaid or the thread is empty). Includes `accountId` only when the counterpart id is a non-empty string. Omits event ids, npubs, `accountA` / `accountB`. No I/O.
->>>>>>> b2c9fea (Add per-viewer unread state for private conversations)
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeNotification
@@ -895,37 +899,37 @@
 
 ## Function: fanoutToBellSubscribers
 
-- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Optional `match` `{ actorIsStaff, isActive, mentionedAccountId }` filters after skip when `auth` is also set: drop recipients whose `wantsNotification` is false (level from `listAccounts()`, omitted → `all`; push-only ids not in that list are `all`). When `auth` is unset, do not filter by level even if `match` is passed. Omitted `match` keeps every-id-except-skip behaviour. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine. Outbox JSON may include optional `unreadCount` for the home-screen badge (recipient's current unread in-app count): builders omit it on the shared template; fan-out merges it per push recipient after in-app create when `notifications` is set, and omits it when `notifications` is omitted.
-- **Inputs:** `{ notifications?, pushStore?, auth?, skipAccountId, match?, template, outboxType, outboxMessageId, payload, nowMs }`. `skipAccountId` `null` skips nobody. `match` is applied only when `auth` is also set. `template` is copied to each in-app recipient (`id` / `recipientAccountId` filled here). `payload` is the shared JSON template (no `unreadCount`).
-- **Returns / side effects:** Void. Logs `push.fanout` with `inApp` and `push` counts. Writes a notification row per in-app id when `notifications` is set, then enqueues one pending outbox row per push id when `pushStore` is set. When `notifications` is set, each outbox JSON is the parsed template plus `unreadCount` for that recipient (invalid JSON or a non-object template becomes `{ unreadCount }`). When `notifications` is omitted, the payload is unchanged. Per-recipient `create`/`unreadCount`/`enqueue` failures log `push.fanout.failed`, continue, then throw after the loops. Does not copy into the member↔member inbox.
+- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Optional `match` `{ actorIsStaff, isActive, mentionedAccountId }` filters after skip when `auth` is also set: drop recipients whose `wantsNotification` is false (level from `listAccounts()`, omitted → `all`; push-only ids not in that list are `all`). When `auth` is unset, do not filter by level even if `match` is passed. Omitted `match` keeps every-id-except-skip behaviour. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine. Outbox JSON may include optional `unreadCount` for the home-screen badge: notification unread + listed inbox unread when `inboxUnreadCount` is passed. Either source alone still writes `unreadCount` (missing source is 0).
+- **Inputs:** `{ notifications?, pushStore?, auth?, skipAccountId, match?, template, outboxType, outboxMessageId, payload, nowMs, inboxUnreadCount? }`. `skipAccountId` `null` skips nobody. `match` is applied only when `auth` is also set. `template` is copied to each in-app recipient (`id` / `recipientAccountId` filled here). `payload` is the shared JSON template (no `unreadCount`).
+- **Returns / side effects:** Void. Logs `push.fanout` with `inApp` and `push` counts. Writes a notification row per in-app id when `notifications` is set, then enqueues one pending outbox row per push id when `pushStore` is set. When `notifications` or `inboxUnreadCount` is set, each outbox JSON is the parsed template plus `unreadCount` (invalid JSON or a non-object template becomes `{ unreadCount }`). When both are omitted, the payload is unchanged. Per-recipient `create`/`unreadCount`/inbox/`enqueue` failures log `push.fanout.failed`, continue, then throw after the loops. Does not copy DMs into notification rows.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap`.
 
 ## Function: notifyForumPost
 
 - **Purpose:** Notify living-room members of a new top-level forum post except the actor. Persist a `forum_post` row when `notifications` is set (`parentId` and `replyId` are the post id) for every matching account when `auth` is set (otherwise bell subscribers) and enqueue a `/notifications` Web Push (`tag` `forum_post:<postId>`) when `pushStore` is set. Matching uses `wantsNotification`: `isActive` is `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never personal), `actorIsStaff` from the actor in `auth.listAccounts()` (false if missing). When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
-- **Inputs:** `{ notifications?, pushStore?, auth?, account, created }`.
-- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id`, match from the post, and payload from `buildForumPushPayload(created.id)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
+- **Inputs:** `{ notifications?, pushStore?, auth?, account, created, inboxUnreadCount? }`.
+- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id`, match from the post, and payload from `buildForumPushPayload(created.id)`. Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create; `ensureProfileMessage` after a profile-note insert; `meRoutes` after a won `PUT /me/about` create (`notifyForumPost` after `updateText` with the bio).
 
 ## Function: notifyForumReply
 
 - **Purpose:** Notify living-room members of a forum reply except the actor. Persist a `forum_reply` row when `notifications` is set and enqueue a `/notifications` Web Push (`tag` `forum_reply:<replyId>`, not the parent id) when `pushStore` is set. No-op when the parent is missing. Damus-only parents and self-replies still fan out (the actor is skipped). Photo-only empty text still notifies. Matching uses `wantsNotification`: `isActive` is `parent.sats > 0`, `mentionedAccountId` is `parent.accountId` (null when the parent has no account), `actorIsStaff` from the reply actor. When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. Unique duplicate create is fine. May throw; callers wrap so persist still succeeds.
-- **Inputs:** `{ messages, notifications?, pushStore?, auth?, account, created, parentId }`.
-- **Returns / side effects:** Void. After parent lookup, calls `fanoutToBellSubscribers` with skip id `account.id`, match from the parent/actor, and payload from `buildReplyPushPayload(created.id)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted). Does not copy into the member↔member inbox.
+- **Inputs:** `{ messages, notifications?, pushStore?, auth?, account, created, parentId, inboxUnreadCount? }`.
+- **Returns / side effects:** Void. After parent lookup, calls `fanoutToBellSubscribers` with skip id `account.id`, match from the parent/actor, and payload from `buildReplyPushPayload(created.id)`. Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed. Does not copy DMs into notification rows.
 - **Used by:** `messagesRoutes` after a 21.gifts-author reply `POST /messages`; `runNostrWorkerTick` after inbound member reply persist; `invoiceRoutes` / `POST /invoices/proof` platform gift-reply.
 
 ## Function: notifyZap
 
 - **Purpose:** Notify living-room members of a newly indexed zap/payment except the payer. Persist a `zap` row when `notifications` is set (`text` is `String(amountSats)`, name default `'Someone'`, `replyId` is the first 32 hex of the 64-hex receipt id hyphenated 8-4-4-4-12) and enqueue a `/notifications` Web Push (`tag` `zap:<replyId>`) when `pushStore` is set. No-op when the note has no `accountId`. Does not skip the note author unless they are also `payerAccountId`. Matching uses `wantsNotification`: `isActive` is `note.sats > 0` or `amountSats > 0` (first gift still counts), `mentionedAccountId` is `note.accountId`, `actorIsStaff` from the payer when `payerAccountId` is found (otherwise false). When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
-- **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName? }`.
-- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null`, match from the note/payer, and payload from `buildZapPushPayload(replyId)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
+- **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName?, inboxUnreadCount? }`.
+- **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null`, match from the note/payer, and payload from `buildZapPushPayload(replyId)`. Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a receipt.
 
 ## Function: notifyModeratorAppointed
 
 - **Purpose:** Targeted to the **subject only**, not a living-room fan-out. Does not call `fanoutToBellSubscribers`. Persist a `moderator_appointed` row when `notifications` is set (`parentId` and `replyId` = `subject.id`, `text` `''`, `name` is `actor.name ?? 'Someone'`, `actorAccountId` is `actor.id`, `readAt` null) and enqueue a `/welcome` Web Push (`type: 'forum'`, `messageId: subject.id`, tag `moderator_appointed:<subjectId>`) when `pushStore` is set. Missing both stores is a no-op. Unique duplicate create is fine (store returns existing). May throw (`push.fanout.failed`); callers wrap so persist still succeeds.
-- **Inputs:** `{ notifications?, pushStore?, subject, actor, nowMs }`.
-- **Returns / side effects:** Void. Writes one in-app row for the subject when `notifications` is set. When `pushStore` is set, enqueues one outbox row with payload from `buildModeratorAppointedPushPayload(subject.id)` (url `/welcome`, tag `moderator_appointed:<subjectId>`). When `notifications` is also set, merge `unreadCount` for that recipient into the payload JSON.
+- **Inputs:** `{ notifications?, pushStore?, subject, actor, nowMs, inboxUnreadCount? }`.
+- **Returns / side effects:** Void. Writes one in-app row for the subject when `notifications` is set. When `pushStore` is set, enqueues one outbox row with payload from `buildModeratorAppointedPushPayload(subject.id)` (url `/welcome`, tag `moderator_appointed:<subjectId>`). Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** `trustRoutes` `POST /trust/confirm-moderator` and `POST /trust/appoint-moderator` after every 200 that leaves/keeps the subject as `moderator` (new grant **and** idempotent already-moderator same-actor 200). Failure logs `push.enqueue.failed`; HTTP still 200.
 
 ## Function: parseNotificationLevel
@@ -948,6 +952,27 @@
 - **Inputs:** `{ level: NotificationLevel; actorIsStaff: boolean; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.
+
+## Function: conversationPushRecipientIds
+
+- **Purpose:** 21.gifts account ids to Web-Push for a private-message (unique, no null, never the sender). Damus inbound (`senderAccountId === null`) notifies `accountA`; a member send on `member_damus` notifies nobody. `member_member` / `member_platform` notify the other of `accountA` / `accountB` when that id is a string and not the sender. `moderator_group` notifies `moderatorIds` except the sender (not `accountA` / platform).
+- **Inputs:** `ConversationThread`, `senderAccountId` (`string | null`), optional `moderatorIds` (`readonly string[]`, default `[]`; used only for `moderator_group`).
+- **Returns / side effects:** `string[]`. No I/O.
+- **Used by:** `notifyConversationMessage`.
+
+## Function: inboxUnreadCountFor
+
+- **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff from `getAccount` + `isStaffRole`; `moderator` when `role === 'moderator'` (so `moderator_group` counts); platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
+- **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
+- **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `invoiceRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
+
+## Function: notifyConversationMessage
+
+- **Purpose:** Enqueue one `type: 'conversation'` Web Push per 21.gifts recipient with at least one `push_subscription`. No-op when `pushStore` is omitted. Does not write in-app Notification rows. Payload from `buildConversationPushPayload` plus `unreadCount` = notification unread + listed inbox unread (missing source 0). `messageId` is the conversation message UUID. For `moderator_group`, recipients are other `role === 'moderator'` accounts from `listAccounts`. Per-recipient failures log `conversations.push.failed` and continue; throws after the loop when any failed. Callers still catch so HTTP/Nostr ingest stays 200.
+- **Inputs:** `{ pushStore?, notifications?, conversations, authStore, thread, message, nowMs }`.
+- **Returns / side effects:** Void. Skip recipients with zero subscriptions. Title is `message.name` or `21.gifts` when empty. URL `/messages?c=<conversationId>`. Tag `conversation:<conversationId>`.
+- **Used by:** `conversationRoutes` `POST /:id`; `contactRoutes` after conversation append; `indexInboundDirectMessages` after inbound persist.
 
 ## Function: serializeConversationMessage
 
@@ -1833,7 +1858,7 @@
 ## Function: trustRoutes
 
 - **Purpose:** Hono sub-app for staff Bearer `GET /proposals` (pending `moderator_propose` via `pendingModeratorProposals`; ISO `createdAt`; empty list is 200; logs `trust.proposals.listed` `{ count }` only) and four POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
-- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore` and `pushStore`.
+- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore`, `pushStore`, and `conversationStore` (appointed push `unreadCount` includes listed inbox unread).
 - **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; GET `/proposals` 200 `{ proposals }` (empty list included); POST 200 `{ id, name, role }`.
 - **Used by:** `createApp`.
 

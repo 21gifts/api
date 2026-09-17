@@ -290,6 +290,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       pushStore,
       notificationStore,
+      conversationStore,
       giftStore,
       rates: btcUsdRates,
       fiatRates,
@@ -356,7 +357,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
   app.route(
     '/trust',
-    trustRoutes({ authStore: store, trustStore, now, notificationStore, pushStore }),
+    trustRoutes({
+      authStore: store,
+      trustStore,
+      now,
+      notificationStore,
+      pushStore,
+      conversationStore,
+    }),
   );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
   app.route(
@@ -372,13 +380,21 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       pushStore,
       notificationStore,
+      conversationStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route(
     '/contact',
-    contactRoutes({ store: contactStore, authStore: store, conversationStore, now }),
+    contactRoutes({
+      store: contactStore,
+      authStore: store,
+      conversationStore,
+      now,
+      pushStore,
+      notificationStore,
+    }),
   );
   app.route(
     '/conversations',
@@ -390,6 +406,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
+      pushStore,
+      notificationStore,
     }),
   );
   app.route(
@@ -407,6 +425,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       notificationStore,
       pushStore,
+      conversationStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

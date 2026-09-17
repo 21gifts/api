@@ -14,6 +14,7 @@ import {
   type ConversationThread,
   type PublicConversation,
 } from '@/lib/conversation';
+import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -29,6 +30,8 @@ import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import type { NotificationStore } from '@/lib/notification-store';
+import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
@@ -63,6 +66,10 @@ export interface ConversationRouteDeps {
   waitTimeoutMs?: number;
   /** Poll interval for `sinceMessageId` (tests inject). */
   waitPollMs?: number;
+  /** Optional push outbox; omitted skips conversation Web Push. */
+  pushStore?: PushStore;
+  /** Optional in-app unread source for push badge counts. */
+  notificationStore?: NotificationStore;
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -605,6 +612,21 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             logEvent('spend.ping.skipped', { reason: 'posted_unreachable' });
           }
         }
+        void notifyConversationMessage({
+          conversations: deps.store,
+          authStore: deps.authStore,
+          thread,
+          message: created,
+          nowMs: deps.now(),
+          /* v8 ignore next 6 -- createApp always injects pushStore and notificationStore */
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notifications: deps.notificationStore }),
+        }).catch(() => {
+          /* v8 ignore next -- fire-and-forget enqueue */
+          logEvent('conversations.push.failed');
+        });
         return c.json(
           serializeConversationMessage(
             created,

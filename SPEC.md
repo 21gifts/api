@@ -2957,7 +2957,12 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message, including
-optional sender `accountId`).
+optional sender `accountId`). After persist, the api enqueues one Web Push
+(`type: conversation`, url `/messages?c=<conversationId>`) to each
+bell-subscribed counterpart. `unreadCount` on that payload (and on forum
+and zap payloads) is in-app notification unread plus listed inbox unread.
+Push failure is logged and does not change the 200. DMs are not copied
+into Notification rows.
 
 ### `POST /conversations/:id/invoice`
 

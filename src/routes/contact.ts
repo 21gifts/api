@@ -6,9 +6,12 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { serializeContact, type ContactRow } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';
 import { unsignedConversationDefaults } from '@/lib/conversation';
+import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { normalizeForumText } from '@/lib/message';
+import type { NotificationStore } from '@/lib/notification-store';
+import type { PushStore } from '@/lib/push-store';
 import { bearerToken } from '@/routes/me';
 
 /**
@@ -27,6 +30,10 @@ export interface ContactRouteDeps {
   conversationStore: ConversationStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Optional push outbox; omitted skips conversation Web Push. */
+  pushStore?: PushStore;
+  /** Optional in-app unread source for push badge counts. */
+  notificationStore?: NotificationStore;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -106,7 +113,7 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
         platform.id,
         createdAt,
       );
-      await deps.conversationStore.appendMessage({
+      const createdMessage = await deps.conversationStore.appendMessage({
         id: crypto.randomUUID(),
         conversationId: thread.id,
         text,
@@ -115,6 +122,19 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
         senderPubkey: (await deps.authStore.getNostrPublicKey(account.id)) ?? null,
         name: row.name,
         ...unsignedConversationDefaults(),
+      });
+      void notifyConversationMessage({
+        conversations: deps.conversationStore,
+        authStore: deps.authStore,
+        thread,
+        message: createdMessage,
+        nowMs: deps.now(),
+        /* v8 ignore next 6 -- createApp always injects pushStore and notificationStore */
+        ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+        ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+      }).catch(() => {
+        /* v8 ignore next -- fire-and-forget enqueue */
+        logEvent('conversations.push.failed');
       });
     } catch {
       logEvent('conversations.contact_sync.failed');

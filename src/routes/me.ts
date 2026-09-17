@@ -24,6 +24,8 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost } from '@/lib/notification';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
@@ -57,6 +59,8 @@ export interface MeRouteDeps {
   pushStore?: PushStore;
   /** Optional in-app notification store for profile-note create. */
   notificationStore?: NotificationStore;
+  /** Optional inbox store; profile-note push payloads include listed unread when set. */
+  conversationStore?: ConversationStore;
   /**
    * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
    * Used by `GET /activity`.
@@ -248,6 +252,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
         ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+        /* v8 ignore next -- createApp always injects conversationStore */
+        ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
@@ -490,6 +496,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
                 ? {}
                 : { notifications: deps.notificationStore }),
               ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+              /* v8 ignore next 5 -- createApp always injects conversationStore */
+              ...(deps.conversationStore === undefined
+                ? {}
+                : {
+                    inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.store),
+                  }),
             });
           } catch {
             logEvent('push.enqueue.failed');
@@ -660,6 +672,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         now: deps.now,
         ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
         ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+        /* v8 ignore next -- createApp always injects conversationStore */
+        ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
       });
       const live = await deps.store.getAccount(current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

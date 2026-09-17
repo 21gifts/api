@@ -248,7 +248,9 @@ worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. Post, reply, and zap pushes open
-`/notifications`.
+`/notifications`. A new inbound private message enqueues Web Push
+`/messages?c=` (bell subscribers only); badge `unreadCount` is
+notification unread plus listed inbox unread.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip

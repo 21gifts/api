@@ -58,13 +58,16 @@ function pending(
 
 describe('PUSH_SCHEMA_SQL', () => {
   it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(5);
+    expect(PUSH_SCHEMA_SQL).toHaveLength(6);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/CREATE TABLE IF NOT EXISTS push_outbox/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/delivered_endpoints/);
     expect(PUSH_SCHEMA_SQL[3]).toMatch(/push_outbox_pending_idx/i);
     expect(PUSH_SCHEMA_SQL[4]).toMatch(/ADD COLUMN IF NOT EXISTS delivered_endpoints/i);
+    expect(PUSH_SCHEMA_SQL[2]).toMatch(/'conversation'/);
+    expect(PUSH_SCHEMA_SQL[5]).toMatch(/push_outbox_type_check/);
+    expect(PUSH_SCHEMA_SQL[5]).toMatch(/'conversation'/);
   });
 });
 
@@ -333,6 +336,27 @@ describe('PostgresPushStore', () => {
     const store = new PostgresPushStore(sql);
     sql.nextRows = [];
     await expect(store.upsertSubscription(SUB)).rejects.toThrow(/upsert_empty/);
+  });
+
+  it('maps type conversation from Postgres', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'o-conv',
+        account_id: 'acc-a',
+        type: 'conversation',
+        message_id: '11111111-1111-4111-8111-111111111111',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+      },
+    ];
+    const claimed = await store.claimPending(1, 1, 1000);
+    expect(claimed[0]?.type).toBe('conversation');
   });
 
   it('maps unknown type/status and null claimed_until safely', async () => {

@@ -239,3 +239,48 @@ export function unsignedConversationDefaults(): Pick<
 export function moderatorGroupDisplayName(kind: ConversationKind): string | null {
   return kind === 'moderator_group' ? 'Moderators' : null;
 }
+
+/**
+ * 21.gifts account ids that should receive a Web Push for this message.
+ * Unique, no null, never `senderAccountId`. Damus counterparts have no push.
+ * `moderator_group` uses `moderatorIds` (other moderators), not accountA/B.
+ *
+ * @param thread - Stored thread.
+ * @param senderAccountId - Message sender, or `null` for Damus inbound.
+ * @param moderatorIds - Moderator account ids; used only for `moderator_group`.
+ * @returns Recipient account ids.
+ */
+export function conversationPushRecipientIds(
+  thread: ConversationThread,
+  senderAccountId: string | null,
+  moderatorIds: readonly string[] = [],
+): string[] {
+  if (thread.kind === 'moderator_group') {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of moderatorIds) {
+      if (id === '' || id === senderAccountId || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+  if (thread.kind === 'member_damus') {
+    if (senderAccountId === null) {
+      return [thread.accountA];
+    }
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of [thread.accountA, thread.accountB]) {
+    if (typeof id !== 'string' || id === '' || id === senderAccountId || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}

@@ -10,6 +10,8 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { preimageMatchesHash } from '@/lib/proof';
@@ -76,6 +78,8 @@ export interface InvoiceRouteDeps {
    * Optional push outbox; also the bell-subscriber list.
    */
   pushStore?: PushStore;
+  /** Optional inbox store; gift-reply push payloads include listed unread when set. */
+  conversationStore?: ConversationStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -240,6 +244,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
             ? {}
             : { notifications: deps.notificationStore }),
           ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          /* v8 ignore next 4 -- createApp always injects conversationStore */
+          ...(deps.conversationStore === undefined
+            ? {}
+            : {
+                inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
+              }),
         });
       } catch {
         logEvent('messages.reply.notify.failed');

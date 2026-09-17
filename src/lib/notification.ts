@@ -226,13 +226,15 @@ function filterIdsByMatch(
  * `pushStore` is a no-op. Unique duplicate `create` is fine. When
  * `notifications` is set, each outbox JSON includes that recipient's current
  * unread count after in-app create (`unreadCount`, for the home-screen
- * badge). When `notifications` is omitted, `payload` is enqueued unchanged.
+ * badge) plus listed inbox unread when `inboxUnreadCount` is set. When either
+ * source exists, `unreadCount` is written (missing source contributes 0).
+ * When both are omitted, `payload` is enqueued unchanged.
  *
  * @param args - Optional stores, skip id, optional match, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
  * @throws If recipient listing rejects. Per-recipient `create` /
- *   `unreadCount` / `enqueue` failures log `push.fanout.failed`, continue,
- *   then throw after the loops so callers still wrap persist.
+ *   `unreadCount` / inbox unread / `enqueue` failures log `push.fanout.failed`,
+ *   continue, then throw after the loops so callers still wrap persist.
  */
 export async function fanoutToBellSubscribers(args: {
   /** Optional notification persistence. */
@@ -258,6 +260,8 @@ export async function fanoutToBellSubscribers(args: {
   payload: string;
   /** Enqueue clock. */
   nowMs: number;
+  /** Optional listed inbox unread; missing contributes 0. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
   const accounts = args.auth === undefined ? [] : await args.auth.listAccounts();
   const fromAuth = accounts.map((account) => account.id);
@@ -292,8 +296,13 @@ export async function fanoutToBellSubscribers(args: {
     for (const accountId of pushIds) {
       try {
         let payload = args.payload;
-        if (args.notifications !== undefined) {
-          const unread = await args.notifications.unreadCount(accountId);
+        const notifications = args.notifications;
+        const inboxUnreadCount = args.inboxUnreadCount;
+        if (notifications !== undefined || inboxUnreadCount !== undefined) {
+          const notifUnread =
+            notifications === undefined ? 0 : await notifications.unreadCount(accountId);
+          const inboxUnread =
+            inboxUnreadCount === undefined ? 0 : await inboxUnreadCount(accountId);
           let base: Record<string, unknown> = {};
           try {
             const raw: unknown = JSON.parse(args.payload);
@@ -303,7 +312,7 @@ export async function fanoutToBellSubscribers(args: {
           } catch {
             base = {};
           }
-          payload = JSON.stringify({ ...base, unreadCount: unread });
+          payload = JSON.stringify({ ...base, unreadCount: notifUnread + inboxUnread });
         }
         const row: PushOutboxRow = {
           id: crypto.randomUUID(),
@@ -356,11 +365,14 @@ export async function notifyForumPost(args: {
   account: { id: string };
   /** Persisted top-level post row. */
   created: MessageRow;
+  /** Optional listed inbox unread; forwarded to fan-out. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
   await fanoutToBellSubscribers({
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
+    ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
     match: {
       actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
@@ -415,6 +427,8 @@ export async function notifyForumReply(args: {
   created: MessageRow;
   /** Parent forum note id. */
   parentId: string;
+  /** Optional listed inbox unread; forwarded to fan-out. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
   const parent = await args.messages.getById(args.parentId);
   if (parent === undefined) {
@@ -424,6 +438,7 @@ export async function notifyForumReply(args: {
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
+    ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
     match: {
       actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
@@ -482,6 +497,8 @@ export async function notifyZap(args: {
   payerAccountId?: string;
   /** Actor display-name snapshot; default `'Someone'`. */
   payerName?: string;
+  /** Optional listed inbox unread; forwarded to fan-out. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
   const noteAccountId = args.note.accountId;
   if (noteAccountId === null) {
@@ -494,6 +511,7 @@ export async function notifyZap(args: {
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
     ...(args.auth === undefined ? {} : { auth: args.auth }),
+    ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId,
     match: {
       actorIsStaff: await actorIsStaffFromAuth(args.auth, args.payerAccountId),
@@ -536,6 +554,8 @@ export async function notifyModeratorAppointed(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
+  /** Optional listed inbox unread; missing contributes 0. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
   /** Account that was appointed (the only recipient). */
   subject: { id: string };
   /** Staff member who confirmed or appointed. */
@@ -571,9 +591,14 @@ export async function notifyModeratorAppointed(args: {
     try {
       const base = buildModeratorAppointedPushPayload(args.subject.id);
       let payload = JSON.stringify(base);
-      if (args.notifications !== undefined) {
-        const unread = await args.notifications.unreadCount(args.subject.id);
-        payload = JSON.stringify({ ...base, unreadCount: unread });
+      if (args.notifications !== undefined || args.inboxUnreadCount !== undefined) {
+        const notifUnread =
+          args.notifications === undefined
+            ? 0
+            : await args.notifications.unreadCount(args.subject.id);
+        const inboxUnread =
+          args.inboxUnreadCount === undefined ? 0 : await args.inboxUnreadCount(args.subject.id);
+        payload = JSON.stringify({ ...base, unreadCount: notifUnread + inboxUnread });
       }
       const row: PushOutboxRow = {
         id: crypto.randomUUID(),

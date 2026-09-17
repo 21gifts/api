@@ -8,6 +8,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  CONVERSATION_LIST_LIMIT,
   conversationIsInbound,
   type ConversationKind,
   type ConversationMessageRow,
@@ -80,6 +81,26 @@ export interface ConversationStore {
     staff: boolean,
     platformId: string | null,
   ): Promise<boolean>;
+
+  /**
+   * Count of listed inbox threads with unread inbound for this viewer.
+   * Same visibility as GET `/conversations` `unreadCount`: listed threads
+   * with `hasUnread`. Outbound-only own platform tickets are listed but
+   * unread false. Empty/outbound-only member threads omitted. Scan capped
+   * at `CONVERSATION_LIST_LIMIT`.
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator (sees all platform threads).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @returns Number of listed unread threads.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator?: boolean,
+  ): Promise<number>;
 
   /**
    * Upsert last-read for `(accountId, conversationId)` to `readAt`. Always
@@ -175,6 +196,38 @@ export interface ConversationStore {
 
   /** Mark space ACK or published after public quorum. */
   updatePublishState(id: string, state: NostrPublishState): Promise<void>;
+}
+
+/**
+ * Listed GET `/conversations` unread count (same filter/cap as the list).
+ */
+async function listedUnreadCount(
+  store: Pick<ConversationStore, 'listVisible' | 'hasInboundMessage' | 'hasUnread'>,
+  accountId: string,
+  staff: boolean,
+  platformId: string | null,
+  moderator = false,
+): Promise<number> {
+  const threads = await store.listVisible(
+    accountId,
+    staff,
+    platformId,
+    CONVERSATION_LIST_LIMIT,
+    moderator,
+  );
+  let count = 0;
+  for (const thread of threads) {
+    const inbound = await store.hasInboundMessage(thread.id, accountId, staff, platformId);
+    const ownContactTicket =
+      thread.kind === 'member_platform' && thread.accountA === accountId && thread.lastText !== '';
+    if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
+      continue;
+    }
+    if (await store.hasUnread(thread.id, accountId, staff, platformId)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment, the `DO $unwrap$` block lives only in this array). */
@@ -408,6 +461,23 @@ export class InMemoryConversationStore implements ConversationStore {
         return row.createdAt.getTime() > stamp.getTime();
       }),
     );
+  }
+
+  /**
+   * Count listed unread threads for this viewer (GET list rules).
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator.
+   * @param platformId - Official platform account id, or `null`.
+   * @returns Listed unread count.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator = false,
+  ): Promise<number> {
+    return listedUnreadCount(this, accountId, staff, platformId, moderator);
   }
 
   markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
@@ -804,6 +874,23 @@ export class PostgresConversationStore implements ConversationStore {
       [conversationId, viewerId, staff, platformId],
     );
     return rows[0]?.exists === true;
+  }
+
+  /**
+   * Count listed unread threads for this viewer (GET list rules).
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator.
+   * @param platformId - Official platform account id, or `null`.
+   * @returns Listed unread count.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator = false,
+  ): Promise<number> {
+    return listedUnreadCount(this, accountId, staff, platformId, moderator);
   }
 
   async markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {

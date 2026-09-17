@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore, type ContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { MESSAGE_MAX_LENGTH } from '@/lib/message';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { contactRoutes } from '@/routes/contact';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -31,8 +32,24 @@ function mount(
   authStore: InMemoryAuthStore,
   store: ContactStore = new InMemoryContactStore(),
   conversationStore = new InMemoryConversationStore(),
+  pushStore?: InMemoryPushStore,
 ): Hono {
-  return new Hono().route('/contact', contactRoutes({ store, authStore, conversationStore, now }));
+  return new Hono().route(
+    '/contact',
+    contactRoutes({
+      store,
+      authStore,
+      conversationStore,
+      now,
+      ...(pushStore === undefined ? {} : { pushStore }),
+    }),
+  );
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 30; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
@@ -152,6 +169,34 @@ describe('POST /contact', () => {
     expect(threads).toHaveLength(1);
     expect(threads[0]?.kind).toBe('member_platform');
     expect((await conversations.listMessages(threads[0]!.id, 10))[0]?.text).toBe('hello world');
+  });
+
+  it('enqueues a conversation push to the platform after contact sync', async () => {
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/plat',
+      accountId: 'plat',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(
+      await namedStoreWithPlatform('Ada'),
+      new InMemoryContactStore(),
+      conversations,
+      pushStore,
+    ).request('/contact', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    await flushMicrotasks();
+    const claimed = await pushStore.claimPending(10, now(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('plat');
+    expect(claimed[0]?.type).toBe('conversation');
   });
 
   it('returns 409 when posting without a name', async () => {

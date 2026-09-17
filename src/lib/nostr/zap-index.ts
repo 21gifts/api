@@ -18,6 +18,8 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
@@ -510,7 +512,7 @@ export async function indexOpenZapReceipts(args: {
   pushStore?: PushStore;
   /** Optional notification store; in-app rows via `auth` even without `pushStore`. */
   notificationStore?: NotificationStore;
-  /** Optional PN store; conversation invoices append here instead of forum sats. */
+  /** Optional PN store; conversation invoices append here instead of forum sats. Zap payloads include listed unread when set. */
   conversations?: ConversationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
@@ -966,6 +968,10 @@ async function ingestOneReceipt(
         auth: args.auth,
         ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        /* v8 ignore next 3 -- production worker always has conversationStore */
+        ...(args.conversations === undefined
+          ? {}
+          : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
         ...(payer === undefined
           ? {}
           : { payerAccountId: payer.id, payerName: payer.name ?? 'Someone' }),

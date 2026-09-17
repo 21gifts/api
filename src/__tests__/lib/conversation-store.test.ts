@@ -524,6 +524,43 @@ describe('InMemoryConversationStore', () => {
     await store.markRead(opened.id, 'a', new Date(NOW.getTime() + 1000));
     expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
   });
+
+  it('unreadCount matches listed GET unread (inbound yes, outbound-only member omitted)', async () => {
+    const store = new InMemoryConversationStore();
+    const inbound = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: inbound.id, senderAccountId: 'b' }));
+    const outbound = await store.openMemberMember('a', 'c', NOW);
+    await store.appendMessage(message({ conversationId: outbound.id, senderAccountId: 'a' }));
+    expect(await store.unreadCount('a', false, null)).toBe(1);
+    await store.markRead(inbound.id, 'a', NOW);
+    expect(await store.unreadCount('a', false, null)).toBe(0);
+  });
+
+  it('unreadCount lists outbound-only own platform tickets as unread false', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'mem' }));
+    expect(await store.unreadCount('mem', false, 'plat')).toBe(0);
+    await store.appendMessage(
+      message({ id: 'from-plat', conversationId: opened.id, senderAccountId: 'plat' }),
+    );
+    expect(await store.unreadCount('mem', false, 'plat')).toBe(1);
+  });
+
+  it('unreadCount includes moderator_group only when moderator is true', async () => {
+    const store = new InMemoryConversationStore();
+    const group = await store.ensureModeratorGroup('plat', NOW);
+    await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-b' }));
+    expect(await store.unreadCount('mod-a', true, 'plat')).toBe(0);
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(1);
+  });
+
+  it('unreadCount inspects outbound-only moderator_group without counting it unread', async () => {
+    const store = new InMemoryConversationStore();
+    const group = await store.ensureModeratorGroup('plat', NOW);
+    await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-a' }));
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(0);
+  });
 });
 
 describe('PostgresConversationStore', () => {
@@ -751,6 +788,55 @@ describe('PostgresConversationStore', () => {
     expect(await new PostgresConversationStore(sql).hasUnread('c1', 'mem', false, 'plat')).toBe(
       false,
     );
+  });
+
+  it('unreadCount uses listVisible then inbound/unread EXISTS', async () => {
+    const sql = new MockSql();
+    let calls = 0;
+    sql.queryImpl = (sqlText: string) => {
+      calls += 1;
+      if (sqlText.includes('last_message_at')) {
+        return [
+          {
+            id: 'c1',
+            kind: 'member_member',
+            account_a: 'a',
+            account_b: 'b',
+            counterpart_pubkey: null,
+            created_at: NOW,
+            last_message_at: NOW,
+            last_text: 'hi',
+            last_sender_account_id: 'b',
+          },
+        ];
+      }
+      return [{ exists: true }];
+    };
+    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(1);
+    expect(calls).toBe(3);
+  });
+
+  it('unreadCount omits empty member threads (no inbound, not own ticket)', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (sqlText: string) => {
+      if (sqlText.includes('last_message_at')) {
+        return [
+          {
+            id: 'c1',
+            kind: 'member_member',
+            account_a: 'a',
+            account_b: 'b',
+            counterpart_pubkey: null,
+            created_at: NOW,
+            last_message_at: NOW,
+            last_text: '',
+            last_sender_account_id: null,
+          },
+        ];
+      }
+      return [{ exists: false }];
+    };
+    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(0);
   });
 
   it('markRead is INSERT ON CONFLICT DO UPDATE', async () => {

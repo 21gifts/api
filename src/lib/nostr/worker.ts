@@ -3,6 +3,7 @@ import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
+import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -406,6 +407,10 @@ async function indexInboundForumReplies(
               ? {}
               : { notifications: deps.notificationStore }),
             ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+            /* v8 ignore next 3 -- production worker always has conversationStore */
+            ...(deps.conversations === undefined
+              ? {}
+              : { inboxUnreadCount: inboxUnreadCountFor(deps.conversations, deps.auth) }),
           });
         } catch {
           logEvent('nostr.reply.notify.failed', { eventId: event.id });
@@ -607,6 +612,7 @@ async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
       now: deps.now,
       ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
       ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+      ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
     });
   }
 }
@@ -1082,7 +1088,7 @@ async function indexInboundDirectMessages(
           }
           const liveName = sender?.name?.trim() ?? '';
           const senderName = liveName !== '' ? liveName : truncatePubkeyDisplay(senderPubkey);
-          await store.appendMessage({
+          const created = await store.appendMessage({
             id: crypto.randomUUID(),
             conversationId: thread.id,
             text,
@@ -1104,6 +1110,23 @@ async function indexInboundDirectMessages(
             },
             claimedUntil: null,
           });
+          try {
+            await notifyConversationMessage({
+              conversations: store,
+              authStore: deps.auth,
+              thread,
+              message: created,
+              nowMs: deps.now(),
+              /* v8 ignore next 5 -- production worker always has pushStore when DMs run */
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+              ...(deps.notificationStore === undefined
+                ? {}
+                : { notifications: deps.notificationStore }),
+            });
+            /* v8 ignore next 3 -- fire-and-forget enqueue */
+          } catch {
+            logEvent('nostr.dm.push.failed');
+          }
           ingested = true;
         } catch {
           logEvent('nostr.dm.inbound.failed', { eventId: event.id });
