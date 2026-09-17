@@ -451,7 +451,7 @@
 ## Endpoint: POST /conversations/:id/invoice
 
 - **Purpose:** Bearer required. Body `{ sats, text? }`. Issues a NIP-57 BOLT11 to the counterpart's Lightning Address (profile-note `e` tag). 200 `{ pr, amountSats, messageId }` — `messageId` is the predetermined conversation row, inserted only after zap ingest. Gift-only omits text. Damus threads are not invoiced.
-- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a positive "sats" integer; 400 Text must be 1–500 characters; 400 Set a name before posting; 400 Cannot message yourself; 400 The author's wallet cannot receive this Bitcoin payment; 404 Not found; 429 Too many payments; 503 Messages are unavailable / Conversations are unavailable.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a positive "sats" integer; 400 Text must be 1–500 characters; 400 Set a name before posting; 400 Cannot message yourself; 400 The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`, Damus, missing counterpart LN / profile event); 400 Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found; 429 Too many payments; 503 Messages are unavailable / Conversations are unavailable.
 - **Used by:** App inbox amount composer.
 - **Auth:** `Authorization: Bearer` session.
 

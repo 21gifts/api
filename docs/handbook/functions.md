@@ -880,7 +880,7 @@
 
 - **Purpose:** Project a stored thread to its public list JSON shape.
 - **Inputs:** `ConversationThread` with resolved `name` / `lastText`, `lastFromMe` boolean, and optional counterpart `accountId` (`string | null`).
-- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe, accountId? }`. Includes `accountId` only when the third argument is a non-empty string. Omits event ids, npubs, `accountA` / `accountB`. No I/O.
+- **Returns / side effects:** `{ id, kind, name, lastText, lastAt, lastFromMe, lastSats, accountId? }`. `lastSats` is the last message's sats (`0` when unpaid or the thread is empty). Includes `accountId` only when the third argument is a non-empty string. Omits event ids, npubs, `accountA` / `accountB`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: serializeNotification
@@ -929,7 +929,7 @@
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
 - **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, accountId? }`. Includes `accountId` from `senderAccountId` when that value is a non-empty string; omits the key when it is null or empty. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, sats, accountId? }`. `sats` is the message amount (`0` when unpaid). Includes `accountId` from `senderAccountId` when that value is a non-empty string; omits the key when it is null or empty. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: conversationFromMe
@@ -950,7 +950,7 @@
 
 - **Purpose:** Unsigned/pending defaults for a locally persisted conversation message.
 - **Inputs:** none.
-- **Returns / side effects:** `{ eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
+- **Returns / side effects:** `{ sats: 0, eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
 - **Used by:** `contactRoutes`, `conversationRoutes`.
 
 ## Function: moderatorGroupDisplayName

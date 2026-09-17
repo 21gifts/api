@@ -2871,9 +2871,11 @@ Success → **Response** `200`:
 `GET /conversations/:id?sinceMessageId=` until it appears.
 
 **400** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`
-for Damus threads, missing counterpart LN / profile event, or a non-NIP-57
-invoice. **400** `{ "error": "Cannot message yourself" }`. **429** Too many
-payments. **503** `{ "error": "Messages are unavailable" }` without a KEK.
+for Damus threads, missing counterpart LN / profile event, LNURL `noZap`, or a
+non-NIP-57 invoice. **400** `{ "error": "Could not start the Bitcoin payment" }`
+when LNURL is unreachable or another transport failure. **400**
+`{ "error": "Cannot message yourself" }`. **429** Too many payments. **503**
+`{ "error": "Messages are unavailable" }` without a KEK.
 
 ### `GET /notifications`
 
