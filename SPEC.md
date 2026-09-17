@@ -114,6 +114,7 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                                                       |
 | POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                                                    |
 | GET    | `/conversations`                             | Bearer                     | List visible private threads                                                                              |
+| GET    | `/conversations/moderator-group`             | Bearer (moderator)         | Open/ensure closed moderator-group tool                                                      
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
