@@ -415,7 +415,7 @@
 
 ## Endpoint: GET /notifications
 
-- **Purpose:** Bearer required. List `{ notifications, unreadCount }` cap 200 newest-first. `unreadCount` is total unread, not page length. Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`. No account ids.
+- **Purpose:** Bearer required. List `{ notifications, unreadCount }` cap 200 newest-first. `unreadCount` is total unread, not page length. Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`. No account ids. Fan-out already applied the owner's `notificationLevel` at write; GET returns stored rows unfiltered.
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.list.failed`).
 - **Used by:** App in-app notification list.
 - **Auth:** Bearer session.

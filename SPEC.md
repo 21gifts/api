@@ -2925,9 +2925,11 @@ response).
 ### `GET /notifications`
 
 Bearer session required. Lists the recipient's notifications newest-first
-(cap **200**) plus the total unread count (not the page length). Each item
-`type` is `"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`. Member JSON never
-includes recipient or actor account ids.
+(cap **200**) plus the total unread count (not the page length). Fan-out
+already applied the owner's `notificationLevel` when the row was written;
+this list returns stored rows unfiltered. Each item `type` is
+`"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`. Member
+JSON never includes recipient or actor account ids.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

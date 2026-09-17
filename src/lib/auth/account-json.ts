@@ -202,9 +202,10 @@ export function serializeOwnerAccount(
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @returns Owner JSON including `hasPosted`, `aboutMe`, and
- *   `aboutMeHasPhoto`. `aboutMe` is `null` when the profile note is missing
- *   or `deletedAt` is set, else `aboutMeFromNote(account.name, row.text, row.name)`.
+ * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
+ *   and `notificationLevel` (via {@link serializeOwnerAccount}). `aboutMe` is
+ *   `null` when the profile note is missing or `deletedAt` is set, else
+ *   `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
  */
 export async function serializeOwnerAccountWithPosts(
