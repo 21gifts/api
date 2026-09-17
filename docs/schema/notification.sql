@@ -1,5 +1,5 @@
--- In-app notifications for forum posts, replies, and zaps
--- (GET /notifications; mark-read POST). Kinds: forum_post, forum_reply, zap.
+-- In-app notifications for forum posts, replies, zaps, and appointed moderators
+-- (GET /notifications; mark-read POST). Kinds: forum_post, forum_reply, zap, moderator_appointed.
 -- Actor display name and event text are snapshotted at event time. Unique
 -- still on (recipient, type, reply_id) so a duplicate persist is
 -- idempotent. Indexed newest-first for listByRecipient.

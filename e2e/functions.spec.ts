@@ -624,6 +624,11 @@ test('Function: buildForumPushPayload — POST /me/push-subscriptions without be
 }) => {
   expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
 });
+test('Function: buildModeratorAppointedPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
 test('Function: buildZapPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
   request,
 }) => {
@@ -1329,6 +1334,13 @@ test('Function: notifyForumReply — POST /messages without bearer is 401', asyn
 });
 test('Function: notifyForumPost — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: notifyModeratorAppointed — POST /trust/confirm-moderator without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (await request.post('/trust/confirm-moderator', { data: { accountId: 'x' } })).status(),
+  ).toBe(401);
 });
 test('Function: notifyZap — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);

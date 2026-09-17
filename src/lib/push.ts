@@ -124,3 +124,19 @@ export function buildReplyPushPayload(replyId: string): PushPayload {
     tag: `forum_reply:${replyId}`,
   };
 }
+
+/**
+ * Moderator-appointed payload for the subject only (not a living-room fan-out).
+ *
+ * @param subjectId - Appointed account id (used in `tag`).
+ * @returns Payload object; callers `JSON.stringify`.
+ */
+export function buildModeratorAppointedPushPayload(subjectId: string): PushPayload {
+  return {
+    type: 'forum',
+    title: 'You are a moderator',
+    body: 'You were appointed a moderator in the living room.',
+    url: '/welcome',
+    tag: `moderator_appointed:${subjectId}`,
+  };
+}

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-16 (`GET /trust-chain` requires a member Bearer session; neighborhood graph unchanged; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread).
+**Status**: living document. Last revised 2026-09-16 (`GET /trust-chain` requires a member Bearer session; neighborhood graph unchanged; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
 
 ---
 
@@ -556,6 +556,10 @@ and the subject is still `verified`, completes the role write and returns
 **200**; already-moderator with that caller-owned edge is idempotent **200**.
 Same 401/403/400/404/409/503 JSON shapes (409 when a confirm edge belongs
 to someone else). **200** `{ id, name, role }` with `role: "moderator"`.
+After a 200 that leaves the subject as `moderator` (new grant and
+idempotent already-moderator same-actor 200), the api notifies the
+subject only (`moderator_appointed`, Web Push url `/welcome`). Notify
+failure does not fail the POST.
 
 ### `POST /trust/appoint-moderator`
 
@@ -568,7 +572,10 @@ and the subject is not yet `moderator`, completes the role write and returns
 **200**; already-moderator with that caller-owned edge is idempotent **200**.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
 when the caller is not a founder). **200** `{ id, name, role }` with
-`role: "moderator"`.
+`role: "moderator"`. After a 200 that leaves the subject as
+`moderator` (new grant and idempotent already-moderator same-actor
+200), the api notifies the subject only (`moderator_appointed`, Web
+Push url `/welcome`). Notify failure does not fail the POST.
 
 ### `GET /view/:viewKey`
 
@@ -2745,7 +2752,7 @@ optional sender `accountId`).
 
 Bearer session required. Lists the recipient's notifications newest-first
 (cap **200**) plus the total unread count (not the page length). Each item
-`type` is `"forum_post"`, `"forum_reply"`, or `"zap"`. Member JSON never
+`type` is `"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`. Member JSON never
 includes recipient or actor account ids.
 
 Missing/invalid/expired bearer → **Response** `401`:

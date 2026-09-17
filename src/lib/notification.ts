@@ -1,10 +1,12 @@
 /**
- * In-app notification domain: public JSON projection and living-room fan-out.
+ * In-app notification domain: public JSON projection, living-room fan-out,
+ * and targeted `moderator_appointed` (subject only, not a fan-out).
  *
- * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
- * set) and `push_subscription` account ids, except skip. Web Push is still
- * only for `push_subscription` rows. Member HTTP never exposes recipient or
- * actor account ids. Callers catch failures so persist still succeeds.
+ * Living-room in-app recipients are the union of `auth.listAccounts()` (when
+ * `auth` is set) and `push_subscription` account ids, except skip. Web Push
+ * is still only for `push_subscription` rows. Member HTTP never exposes
+ * recipient or actor account ids. Callers catch failures so persist still
+ * succeeds.
  */
 
 import type { AuthStore } from '@/lib/auth/store';
@@ -12,14 +14,19 @@ import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
-import { buildForumPushPayload, buildReplyPushPayload, buildZapPushPayload } from '@/lib/push';
+import {
+  buildForumPushPayload,
+  buildModeratorAppointedPushPayload,
+  buildReplyPushPayload,
+  buildZapPushPayload,
+} from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
 /** Cap for `GET /notifications`. */
 export const NOTIFICATION_LIST_LIMIT = 200;
 
 /** Persisted notification kind. */
-export type NotificationType = 'forum_post' | 'forum_reply' | 'zap';
+export type NotificationType = 'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed';
 
 /** Persisted notification row (store-internal; includes account ids). */
 export interface NotificationRow {
@@ -27,17 +34,17 @@ export interface NotificationRow {
   id: string;
   /** Account that should see this notification. */
   recipientAccountId: string;
-  /** Account that caused the notification (poster, replier, or zap payer). */
+  /** Account that caused the notification (poster, replier, zap payer, or appointing staff). */
   actorAccountId: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, or zap receipt UUID). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
   text: string;
   /** Creation instant. */
   createdAt: Date;
@@ -51,13 +58,13 @@ export interface PublicNotification {
   id: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, or zap receipt UUID). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
@@ -357,4 +364,85 @@ export async function notifyZap(args: {
     payload: JSON.stringify(buildZapPushPayload(replyId)),
     nowMs: args.nowMs,
   });
+}
+
+/**
+ * Notify the appointed subject only (not a living-room fan-out). Persist a
+ * `moderator_appointed` row for `subject.id` when `notifications` is set, and
+ * enqueue one Web Push (`url` `/welcome`, tag `moderator_appointed:<subjectId>`,
+ * outbox `type: 'forum'`) when `pushStore` is set. Missing both stores is a
+ * no-op. If only `notifications` is set, still create the in-app row. If only
+ * `pushStore` is set, still enqueue (payload without `unreadCount`). Does not
+ * skip the subject and does not consult `listAccountIdsWithSubscriptions`.
+ * Unique duplicate create is fine. This helper may throw; callers wrap it.
+ *
+ * @param args - Optional stores, subject, actor, clock.
+ * @returns Resolves after the optional persist and push enqueue (including no-ops).
+ * @throws If recipient `create`, `unreadCount`, or `enqueue` rejects.
+ */
+export async function notifyModeratorAppointed(args: {
+  /** Optional notification persistence. */
+  notifications?: NotificationStore;
+  /** Optional push outbox. */
+  pushStore?: PushStore;
+  /** Account that was appointed (the only recipient). */
+  subject: { id: string };
+  /** Staff member who confirmed or appointed. */
+  actor: { id: string; name: string | null };
+  /** Enqueue / row clock. */
+  nowMs: number;
+}): Promise<void> {
+  if (args.notifications === undefined && args.pushStore === undefined) {
+    return;
+  }
+  const createdAt = new Date(args.nowMs);
+  let failed = false;
+  if (args.notifications !== undefined) {
+    try {
+      await args.notifications.create({
+        id: crypto.randomUUID(),
+        recipientAccountId: args.subject.id,
+        actorAccountId: args.actor.id,
+        type: 'moderator_appointed',
+        parentId: args.subject.id,
+        replyId: args.subject.id,
+        name: args.actor.name ?? 'Someone',
+        text: '',
+        createdAt,
+        readAt: null,
+      });
+    } catch {
+      failed = true;
+      logEvent('push.fanout.failed');
+    }
+  }
+  if (args.pushStore !== undefined) {
+    try {
+      const base = buildModeratorAppointedPushPayload(args.subject.id);
+      let payload = JSON.stringify(base);
+      if (args.notifications !== undefined) {
+        const unread = await args.notifications.unreadCount(args.subject.id);
+        payload = JSON.stringify({ ...base, unreadCount: unread });
+      }
+      const row: PushOutboxRow = {
+        id: crypto.randomUUID(),
+        accountId: args.subject.id,
+        type: 'forum',
+        messageId: args.subject.id,
+        payload,
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt,
+        deliveredEndpoints: [],
+      };
+      await args.pushStore.enqueue(row);
+    } catch {
+      failed = true;
+      logEvent('push.fanout.failed');
+    }
+  }
+  if (failed) {
+    throw new Error('push.fanout.failed');
+  }
 }
