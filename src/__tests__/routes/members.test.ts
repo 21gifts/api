@@ -176,6 +176,40 @@ describe('GET /members/:accountId', () => {
     expect(body['aboutMeHasPhoto']).toBe(false);
   });
 
+  it('marks the profile note not payable when eventId is empty', async () => {
+    const authStore = await seededCaller();
+    const noteId = '55555555-5555-4555-8555-555555555555';
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const existing = await authStore.getAccount(ACCOUNT_ID);
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...existing,
+      profileMessageId: noteId,
+    });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '',
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { profileMessage: { payable: boolean } };
+    expect(body.profileMessage.payable).toBe(false);
+  });
+
   it('sets aboutMeHasPhoto true when the live note has a jpeg photo', async () => {
     const authStore = await seededCaller();
     const messageStore = new InMemoryMessageStore();
@@ -541,6 +575,7 @@ describe('GET /members/:accountId/posts', () => {
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      eventId: '',
     });
     await messageStore.create({
       id: POST_NEW,
