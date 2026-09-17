@@ -54,6 +54,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: '',
     lastText: '',
     lastSenderAccountId: null,
+    lastSats: 0,
     ...partial,
   };
 }
@@ -75,7 +76,7 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(13);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(14);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/conversation_member_member_uidx/);
@@ -221,6 +222,17 @@ describe('InMemoryConversationStore', () => {
     const got = await store.getById(opened.id);
     expect(got?.lastText).toBe('hi');
     expect(got?.lastSenderAccountId).toBe('acc-a');
+  });
+
+  it('returns the existing row when appending a duplicate message id', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const first = await store.appendMessage(message({ id: 'm-dup', conversationId: opened.id }));
+    const second = await store.appendMessage(
+      message({ id: 'm-dup', conversationId: opened.id, text: 'other' }),
+    );
+    expect(second.text).toBe(first.text);
+    expect(await store.listMessages(opened.id, 10)).toHaveLength(1);
   });
 
   it('returns the existing row when appending a duplicate event id', async () => {
@@ -849,8 +861,9 @@ describe('PostgresConversationStore', () => {
     const row = message({ claimedUntil: 5_000, nostrEvent: { kind: 1059 } });
     const created = await store.appendMessage(row);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation_message/);
-    expect(typeof sql.executes[0]?.params[9]).not.toBe('string');
-    expect(sql.executes[0]?.params[9]).toStrictEqual(row.nostrEvent);
+    expect(sql.executes[0]?.params[9]).toBe(row.nostrPublishState);
+    expect(typeof sql.executes[0]?.params[10]).not.toBe('string');
+    expect(sql.executes[0]?.params[10]).toStrictEqual(row.nostrEvent);
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
   });
@@ -859,7 +872,7 @@ describe('PostgresConversationStore', () => {
     const sql = new MockSql();
     const store = new PostgresConversationStore(sql);
     await store.appendMessage(message());
-    expect(sql.executes[0]?.params[9]).toBeNull();
+    expect(sql.executes[0]?.params[10]).toBeNull();
   });
 
   it('appendMessage returns the existing row on event_id unique_violation', async () => {
@@ -884,6 +897,29 @@ describe('PostgresConversationStore', () => {
       message({ eventId: 'ab'.repeat(32) }),
     );
     expect(existing.id).toBe('m-existing');
+  });
+
+  it('appendMessage returns the event_id row when the id lookup is empty', async () => {
+    const sql = new MockSql();
+    sql.executeError = { code: '23505' };
+    const existing = {
+      id: 'm-existing',
+      conversation_id: 'c-1',
+      text: 'hello',
+      created_at: NOW,
+      sender_account_id: 'acc-a',
+      sender_pubkey: null,
+      name: 'Ada',
+      event_id: 'ab'.repeat(32),
+      nostr_publish_state: 'published',
+      nostr_event: null,
+      claimed_until: null,
+    };
+    sql.queryImpl = (text: string) => (text.includes('WHERE id =') ? [] : [existing]);
+    const found = await new PostgresConversationStore(sql).appendMessage(
+      message({ eventId: 'ab'.repeat(32) }),
+    );
+    expect(found.id).toBe('m-existing');
   });
 
   it('appendMessage rethrows unique_violation when no event id row exists', async () => {

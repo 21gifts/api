@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import type { ConversationThread } from '@/lib/conversation';
+import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -184,6 +184,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
+    ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
@@ -1087,6 +1088,7 @@ async function indexInboundDirectMessages(
             senderAccountId: sender?.id ?? null,
             senderPubkey,
             name: senderName,
+            ...unsignedConversationDefaults(),
             eventId: event.id,
             nostrPublishState: 'published',
             nostrEvent: {

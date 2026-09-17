@@ -522,6 +522,12 @@ export interface MessageStore {
   findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined>;
 
   /**
+   * Distinct NIP-57 `e`-tag event ids from successful private-conversation
+   * invoices. Missing, malformed, and empty tags are omitted.
+   */
+  listOpenConversationZapEventIds(): Promise<string[]>;
+
+  /**
    * Patch payer / gift-reply id / comment on a stored zap receipt in one
    * update. Missing receipts are a no-op. Omitted patch fields are left unchanged.
    *
@@ -615,6 +621,10 @@ export interface MessageInvoiceAttempt {
   isNip57Invoice: boolean;
   /** Raw LNURL callback JSON when the HTTP body was JSON; else null. Never nsec. */
   lnurlResponse: Record<string, unknown> | null;
+  /** Private conversation receiving the paid message; null/omitted for forum invoices. */
+  conversationId?: string | null;
+  /** Predetermined private-message row id; null/omitted for forum invoices. */
+  conversationMessageId?: string | null;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -686,6 +696,8 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   is_nip57_invoice boolean NOT NULL DEFAULT false
 )`,
   `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_id uuid`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_message_id uuid`,
   `CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC)`,
   `CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
@@ -860,7 +872,23 @@ function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
     createdAt: new Date(row.createdAt.getTime()),
     zapRequest: row.zapRequest === null ? null : { ...row.zapRequest },
     lnurlResponse: row.lnurlResponse === null ? null : { ...row.lnurlResponse },
+    conversationId: row.conversationId ?? null,
+    conversationMessageId: row.conversationMessageId ?? null,
   };
+}
+
+/** Return the first non-empty NIP-57 `e` tag from a stored zap request. */
+function zapRequestEventId(zapRequest: Record<string, unknown> | null): string | null {
+  const tags = zapRequest?.['tags'];
+  if (!Array.isArray(tags)) {
+    return null;
+  }
+  for (const tag of tags) {
+    if (Array.isArray(tag) && tag[0] === 'e' && typeof tag[1] === 'string' && tag[1] !== '') {
+      return tag[1];
+    }
+  }
+  return null;
 }
 
 /** Copy a zap ingest row so callers cannot mutate store internals. */
@@ -1611,6 +1639,20 @@ export class InMemoryMessageStore implements MessageStore {
 
   findOkInvoiceByPr(pr: string): Promise<MessageInvoiceAttempt | undefined> {
     return Promise.resolve(newestOkInvoice(this.#invoiceAttempts, (row) => row.pr === pr));
+  }
+
+  listOpenConversationZapEventIds(): Promise<string[]> {
+    const eventIds = new Set<string>();
+    for (const row of this.#invoiceAttempts) {
+      if (row.result !== 'ok' || row.conversationId === null) {
+        continue;
+      }
+      const eventId = zapRequestEventId(row.zapRequest);
+      if (eventId !== null) {
+        eventIds.add(eventId);
+      }
+    }
+    return Promise.resolve([...eventIds]);
   }
 
   updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
@@ -2601,9 +2643,9 @@ export class PostgresMessageStore implements MessageStore {
          id, created_at, message_id, payer_account_id, author_account_id,
          amount_sats, lightning_address, zap_request, result, http_status,
          pr, payment_hash, description, description_hash, is_nip57_invoice,
-         lnurl_response
+         lnurl_response, conversation_id, conversation_message_id
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb
+         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18
        )`,
       [
         row.id,
@@ -2622,6 +2664,8 @@ export class PostgresMessageStore implements MessageStore {
         row.descriptionHash,
         row.isNip57Invoice,
         row.lnurlResponse,
+        row.conversationId,
+        row.conversationMessageId,
       ],
     );
   }
@@ -2631,7 +2675,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response
+              lnurl_response, conversation_id, conversation_message_id
        FROM message_invoice
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -2680,7 +2724,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response
+              lnurl_response, conversation_id, conversation_message_id
        FROM message_invoice
        WHERE payer_account_id = $1
        ORDER BY created_at DESC, id DESC`,
@@ -2722,7 +2766,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response
+              lnurl_response, conversation_id, conversation_message_id
        FROM message_invoice
        WHERE payment_hash = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -2738,7 +2782,7 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response
+              lnurl_response, conversation_id, conversation_message_id
        FROM message_invoice
        WHERE pr = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -2747,6 +2791,22 @@ export class PostgresMessageStore implements MessageStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapInvoiceAttemptRow(row);
+  }
+
+  async listOpenConversationZapEventIds(): Promise<string[]> {
+    const rows = await this.#sql.query<Pick<MessageInvoiceSqlRow, 'zap_request'>>(
+      `SELECT zap_request
+       FROM message_invoice
+       WHERE result = 'ok' AND conversation_id IS NOT NULL`,
+    );
+    const eventIds = new Set<string>();
+    for (const row of rows) {
+      const eventId = zapRequestEventId(parseJsonObject(row.zap_request));
+      if (eventId !== null) {
+        eventIds.add(eventId);
+      }
+    }
+    return [...eventIds];
   }
 
   async updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
@@ -2868,6 +2928,8 @@ interface MessageInvoiceSqlRow {
   description_hash: string | null;
   is_nip57_invoice: boolean | number | string | null;
   lnurl_response?: Record<string, unknown> | string | null;
+  conversation_id?: string | null;
+  conversation_message_id?: string | null;
 }
 
 /** SQL row shape for `nostr_zap_ingest`. */
@@ -2925,6 +2987,8 @@ function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt 
     descriptionHash: row.description_hash,
     isNip57Invoice: Boolean(row.is_nip57_invoice),
     lnurlResponse: parseJsonObject(row.lnurl_response),
+    conversationId: row.conversation_id ?? null,
+    conversationMessageId: row.conversation_message_id ?? null,
   };
 }
 

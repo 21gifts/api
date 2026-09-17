@@ -188,6 +188,7 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   nostr_event jsonb,
   claimed_until timestamptz
 )`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
@@ -246,9 +247,15 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
   (SELECT m.sender_account_id FROM conversation_message m
    WHERE m.conversation_id = c.id
    ORDER BY m.created_at DESC, m.id DESC
-   LIMIT 1) AS last_sender_account_id`;
+   LIMIT 1) AS last_sender_account_id,
+  COALESCE((
+    SELECT m.sats FROM conversation_message m
+    WHERE m.conversation_id = c.id
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+  ), 0) AS last_sats`;
 
-const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name,
+const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
   event_id, nostr_publish_state, nostr_event, claimed_until`;
 
 /**
@@ -433,6 +440,10 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   appendMessage(row: ConversationMessageRow): Promise<ConversationMessageRow> {
+    const existingById = this.#messages.find((item) => item.id === row.id);
+    if (existingById !== undefined) {
+      return Promise.resolve(copyMessage(existingById));
+    }
     if (row.eventId !== null) {
       const existing = this.#messages.find((item) => item.eventId === row.eventId);
       if (existing !== undefined) {
@@ -535,6 +546,7 @@ export class InMemoryConversationStore implements ConversationStore {
       name: '',
       lastText: '',
       lastSenderAccountId: null,
+      lastSats: 0,
     };
     this.#threads.push(stored);
     return this.#hydrate(stored);
@@ -548,6 +560,7 @@ export class InMemoryConversationStore implements ConversationStore {
       ...copyThread(thread),
       lastText: last?.text ?? '',
       lastSenderAccountId: last?.senderAccountId ?? null,
+      lastSats: last?.sats ?? 0,
     };
   }
 
@@ -587,6 +600,7 @@ interface ConversationSqlRow {
   last_message_at: Date | string;
   last_text?: string | null;
   last_sender_account_id?: string | null;
+  last_sats?: string | number | null;
 }
 
 /** Row shape selected from `conversation_message`. */
@@ -598,6 +612,7 @@ interface ConversationMessageSqlRow {
   sender_account_id: string | null;
   sender_pubkey: string | null;
   name: string;
+  sats?: string | number | null;
   event_id: string | null;
   nostr_publish_state: string | null;
   nostr_event: Record<string, unknown> | string | null;
@@ -866,9 +881,9 @@ export class PostgresConversationStore implements ConversationStore {
     try {
       await this.#sql.execute(
         `INSERT INTO conversation_message (
-           id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name,
+           id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
            event_id, nostr_publish_state, nostr_event, claimed_until
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)`,
         [
           row.id,
           row.conversationId,
@@ -877,6 +892,7 @@ export class PostgresConversationStore implements ConversationStore {
           row.senderAccountId,
           row.senderPubkey,
           row.name,
+          row.sats,
           row.eventId,
           row.nostrPublishState,
           row.nostrEvent,
@@ -884,10 +900,16 @@ export class PostgresConversationStore implements ConversationStore {
         ],
       );
     } catch (error: unknown) {
-      if (isUniqueViolation(error) && row.eventId !== null) {
-        const existing = await this.getMessageByEventId(row.eventId);
-        if (existing !== undefined) {
-          return existing;
+      if (isUniqueViolation(error)) {
+        const existingById = await this.getMessageById(row.id);
+        if (existingById !== undefined) {
+          return existingById;
+        }
+        if (row.eventId !== null) {
+          const existingByEventId = await this.getMessageByEventId(row.eventId);
+          if (existingByEventId !== undefined) {
+            return existingByEventId;
+          }
         }
       }
       throw error;
@@ -1080,6 +1102,7 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     name: '',
     lastText: row.last_text ?? '',
     lastSenderAccountId: row.last_sender_account_id ?? null,
+    lastSats: Number(row.last_sats ?? 0),
   };
 }
 
@@ -1109,6 +1132,7 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     senderAccountId: row.sender_account_id,
     senderPubkey: row.sender_pubkey,
     name: row.name,
+    sats: Number(row.sats ?? 0),
     eventId: row.event_id,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed' || state === 'skipped'

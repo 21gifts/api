@@ -377,6 +377,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       messageStore,
       now,
+      fetchImpl,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );

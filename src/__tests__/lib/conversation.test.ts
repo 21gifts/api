@@ -21,6 +21,7 @@ const THREAD: ConversationThread = {
   name: 'Ada',
   lastText: 'hello',
   lastSenderAccountId: 'acc-a',
+  lastSats: 0,
 };
 
 const ROW: ConversationMessageRow = {
@@ -31,6 +32,7 @@ const ROW: ConversationMessageRow = {
   senderAccountId: 'acc-a',
   senderPubkey: 'aa'.repeat(32),
   name: 'Ada',
+  sats: 0,
   eventId: 'ef'.repeat(32),
   nostrPublishState: 'published',
   nostrEvent: { id: 'ef'.repeat(32), kind: 1059 },
@@ -161,6 +163,7 @@ describe('serializeConversation', () => {
       lastText: 'hello',
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: false,
+      lastSats: 0,
     });
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('accountId');
@@ -194,6 +197,7 @@ describe('serializeConversation', () => {
       lastText: 'hello',
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: true,
+      lastSats: 0,
     });
   });
 });
@@ -207,6 +211,7 @@ describe('serializeConversationMessage', () => {
       text: 'hello',
       createdAt: '2026-08-29T13:00:00.000Z',
       fromMe: false,
+      sats: 0,
       accountId: 'acc-a',
     });
     expect(json).not.toHaveProperty('eventId');
@@ -234,6 +239,7 @@ describe('serializeConversationMessage', () => {
 describe('unsignedConversationDefaults', () => {
   it('returns pending columns with a null event id', () => {
     expect(unsignedConversationDefaults()).toEqual({
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,

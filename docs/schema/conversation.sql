@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS conversation_message (
   nostr_event jsonb,
   claimed_until timestamptz
 );
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC);
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx

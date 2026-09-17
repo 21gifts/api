@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
 
@@ -98,6 +101,76 @@ async function withOther(store: InMemoryAuthStore, id = 'other'): Promise<void> 
   });
 }
 
+async function withNip57True<T>(run: () => Promise<T>): Promise<T> {
+  const bolt11 = await import('@/lib/bolt11');
+  const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+  try {
+    return await run();
+  } finally {
+    nip57Spy.mockRestore();
+  }
+}
+
+function lnurlFetchImpl(pr = 'lnbc21n1test'): FetchFn {
+  return async (input) => {
+    const url = String(input);
+    if (url.includes('/.well-known/lnurlp/')) {
+      return new Response(
+        JSON.stringify({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 10_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify({ pr }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+
+async function payableThread(): Promise<{
+  auth: InMemoryAuthStore;
+  conversations: InMemoryConversationStore;
+  messages: InMemoryMessageStore;
+  threadId: string;
+  kek: Uint8Array;
+}> {
+  const { parseNostrKek } = await import('@/lib/nostr/kek');
+  const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+  const kek = parseNostrKek('11'.repeat(32));
+  const auth = await seeded();
+  await withOther(auth);
+  const other = await auth.getAccount('other');
+  if (other === undefined) {
+    throw new Error('expected counterpart');
+  }
+  const messages = new InMemoryMessageStore();
+  const profileId = '11111111-1111-4111-8111-111111111111';
+  await messages.create({
+    id: profileId,
+    accountId: 'other',
+    name: 'Bob',
+    text: 'hi',
+    createdAt: new Date(now()),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    eventId: 'ee'.repeat(32),
+  });
+  await auth.updateAccount({
+    ...other,
+    lightningAddress: 'bob@walletofsatoshi.com',
+    profileMessageId: profileId,
+  });
+  await ensureAccountNostrKey(auth, 'other', kek);
+  const conversations = new InMemoryConversationStore();
+  const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+  return { auth, conversations, messages, threadId: thread.id, kek };
+}
+
 async function withPlatform(store: InMemoryAuthStore): Promise<void> {
   await store.createAccount({
     id: 'plat',
@@ -134,6 +207,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'acc',
       senderPubkey: null,
       name: 'Ada',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -160,6 +234,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'acc',
       senderPubkey: null,
       name: 'Ada',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -195,6 +270,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -208,6 +284,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'acc',
       senderPubkey: null,
       name: 'Ada',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -249,6 +326,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -274,6 +352,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'plat',
       senderPubkey: null,
       name: '21.gifts',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -301,6 +380,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'someone',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -330,6 +410,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'someone',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -343,6 +424,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'plat',
       senderPubkey: null,
       name: '21.gifts',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -370,6 +452,7 @@ describe('GET /conversations', () => {
       senderAccountId: null,
       senderPubkey: 'aa'.repeat(32),
       name: 'aabbccdd…8899',
+      sats: 0,
       eventId: 'ef'.repeat(32),
       nostrPublishState: 'published',
       nostrEvent: null,
@@ -398,6 +481,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'someone',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -427,6 +511,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'someone',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -456,6 +541,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'aaa',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -485,6 +571,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -515,6 +602,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'zzz',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -557,6 +645,7 @@ describe('GET /conversations', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'member',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -584,6 +673,7 @@ describe('GET /conversations', () => {
           name: '',
           lastText: '',
           lastSenderAccountId: null,
+          lastSats: 0,
         },
       ],
       [
@@ -595,6 +685,7 @@ describe('GET /conversations', () => {
           senderAccountId: null,
           senderPubkey: null,
           name: 'someone',
+          sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
           nostrEvent: null,
@@ -628,6 +719,7 @@ describe('GET /conversations', () => {
           name: '',
           lastText: '',
           lastSenderAccountId: null,
+          lastSats: 0,
         },
       ],
       [
@@ -639,6 +731,7 @@ describe('GET /conversations', () => {
           senderAccountId: null,
           senderPubkey: null,
           name: 'someone',
+          sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
           nostrEvent: null,
@@ -967,6 +1060,7 @@ describe('GET /conversations/:id', () => {
       senderAccountId: 'plat',
       senderPubkey: null,
       name: '21.gifts',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -997,6 +1091,7 @@ describe('GET /conversations/:id', () => {
       senderAccountId: 'acc',
       senderPubkey: null,
       name: 'Ada',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -1010,6 +1105,7 @@ describe('GET /conversations/:id', () => {
       senderAccountId: 'other',
       senderPubkey: null,
       name: 'Bob',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -1044,6 +1140,7 @@ describe('GET /conversations/:id', () => {
       senderAccountId: null,
       senderPubkey: 'aa'.repeat(32),
       name: 'aabbccdd…8899',
+      sats: 0,
       eventId: 'ef'.repeat(32),
       nostrPublishState: 'published',
       nostrEvent: null,
@@ -1335,6 +1432,7 @@ describe('POST /conversations/:id', () => {
       senderAccountId: 'acc',
       senderPubkey: null,
       name: 'Ada',
+      sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,
@@ -1700,5 +1798,781 @@ describe('moderator_group', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /conversations/:id/invoice', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(await seeded()).request(
+      '/conversations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seeded()).request('/conversations/not-a-uuid/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when the thread is Damus', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
+  it('returns 400 for a missing sats body', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a positive "sats" integer',
+    });
+  });
+
+  it('returns 400 when invoice text is too long', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21, text: 'a'.repeat(501) }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+  });
+
+  it('returns 400 when sats exceed the gift cap', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: GIFT_INVOICE_MAX_MSAT / 1000 + 1 }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a positive "sats" integer',
+    });
+  });
+
+  it('returns 404 when the thread is missing', async () => {
+    const { auth, conversations, messages } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      '/conversations/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/invoice',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when invoicing yourself', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'acc', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Cannot message yourself' });
+  });
+
+  it('invoices as accountB of a member_member thread', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    await auth.createSession({ token: 'tok-other', accountId: 'other', createdAt: now() });
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const acc = await auth.getAccount('acc');
+    if (acc === undefined) {
+      throw new Error('expected payer profile');
+    }
+    const profileId = '33333333-3333-4333-8333-333333333333';
+    await messages.create({
+      id: profileId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'dd'.repeat(32),
+    });
+    await auth.updateAccount({
+      ...acc,
+      lightningAddress: 'ada@walletofsatoshi.com',
+      profileMessageId: profileId,
+    });
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    await ensureAccountNostrKey(auth, 'acc', kek);
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${threadId}/invoice`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok-other',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ sats: 21 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('lets staff invoice a platform member thread they are not a party of', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'zzz');
+    const zzz = await auth.getAccount('zzz');
+    if (zzz === undefined) {
+      throw new Error('expected member');
+    }
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const messages = new InMemoryMessageStore();
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: profileId,
+      accountId: 'zzz',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await auth.updateAccount({
+      ...zzz,
+      lightningAddress: 'bob@walletofsatoshi.com',
+      profileMessageId: profileId,
+    });
+    await ensureAccountNostrKey(auth, 'zzz', kek);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('plat', 'zzz', new Date(now()));
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${thread.id}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('lets staff invoice when the platform account is accountB', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'aaa');
+    const aaa = await auth.getAccount('aaa');
+    if (aaa === undefined) {
+      throw new Error('expected member');
+    }
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const messages = new InMemoryMessageStore();
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: profileId,
+      accountId: 'aaa',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await auth.updateAccount({
+      ...aaa,
+      lightningAddress: 'bob@walletofsatoshi.com',
+      profileMessageId: profileId,
+    });
+    await ensureAccountNostrKey(auth, 'aaa', kek);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('aaa', 'plat', new Date(now()));
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${thread.id}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 400 when the counterpart has a Lightning Address but no profile note', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const other = await auth.getAccount('other');
+    if (other === undefined) {
+      throw new Error('expected counterpart');
+    }
+    await auth.updateAccount({
+      ...other,
+      lightningAddress: 'bob@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('lets staff invoice a member_platform thread when no platform account exists', async () => {
+    const auth = await seeded('moderator');
+    await withOther(auth, 'someone');
+    const someone = await auth.getAccount('someone');
+    if (someone === undefined) {
+      throw new Error('expected member');
+    }
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const messages = new InMemoryMessageStore();
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: profileId,
+      accountId: 'someone',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await auth.updateAccount({
+      ...someone,
+      lightningAddress: 'bob@walletofsatoshi.com',
+      profileMessageId: profileId,
+    });
+    await ensureAccountNostrKey(auth, 'someone', kek);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${thread.id}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 400 when the counterpart account is missing', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'ghost', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
+  it('returns 400 when the counterpart has no Lightning Address', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
+  it('returns 400 when the sender has no name', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const acc = await auth.getAccount('acc');
+    if (acc === undefined) {
+      throw new Error('expected payer');
+    }
+    await auth.updateAccount({ ...acc, name: null });
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Set a name before posting' });
+  });
+
+  it('returns 400 when the profile note is unsigned', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const other = await auth.getAccount('other');
+    if (other === undefined) {
+      throw new Error('expected counterpart');
+    }
+    const unsignedId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: unsignedId,
+      accountId: 'other',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await auth.updateAccount({ ...other, profileMessageId: unsignedId });
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when the counterpart has no nostr key', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const other = await auth.getAccount('other');
+    if (other === undefined) {
+      throw new Error('expected counterpart');
+    }
+    const messages = new InMemoryMessageStore();
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: profileId,
+      accountId: 'other',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await auth.updateAccount({
+      ...other,
+      lightningAddress: 'bob@walletofsatoshi.com',
+      profileMessageId: profileId,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${thread.id}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 503 when nostrKek is missing', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 429 when the invoice limiter trips', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const limiter = new InvoiceRateLimiter();
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: limiter,
+      }),
+    );
+    const hit = async (): Promise<number> =>
+      (
+        await app.request(`/conversations/${threadId}/invoice`, {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        })
+      ).status;
+    await withNip57True(async () => {
+      expect(await hit()).toBe(200);
+    });
+    expect(await hit()).toBe(429);
+  });
+
+  it('returns 503 when signing the zap request fails', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const sign = await import('@/lib/nostr/sign');
+    const spy = vi.spyOn(sign, 'signEventForAccount').mockRejectedValue(new Error('sign'));
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    spy.mockRestore();
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 400 when LNURL does not support zaps', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ status: 'ERROR' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
+  it('returns 400 when LNURL is unreachable after zap metadata', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('nope', { headers: { 'content-type': 'text/plain' } });
+    };
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Could not start the Bitcoin payment' });
+  });
+
+  it('returns 400 when the bolt11 is not NIP-57', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
+  it('returns pr, amountSats, and messageId on success', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${threadId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21, text: 'cheers' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pr: string; amountSats: number; messageId: string };
+    expect(body.pr).toBe('lnbc21n1test');
+    expect(body.amountSats).toBe(21);
+    expect(body.messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it('returns 503 when listing the thread throws', async () => {
+    const { auth, messages, threadId } = await payableThread();
+    const conversations = {
+      getById: () => Promise.reject(new Error('down')),
+    } as unknown as InMemoryConversationStore;
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('still 400s when recording a bad body fails', async () => {
+    const { auth, conversations, threadId } = await payableThread();
+    const messages = {
+      recordInvoiceAttempt: () => Promise.reject(new Error('disk')),
+    } as unknown as InMemoryMessageStore;
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /conversations/:id?sinceMessageId=', () => {
+  it('returns 400 when sinceMessageId is not a uuid', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}?sinceMessageId=nope`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected sinceMessageId to be a UUID' });
+  });
+
+  it('returns 200 without the id after a zero timeout', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: new InMemoryMessageStore(),
+        now,
+        waitTimeoutMs: 0,
+        waitSleep: async () => undefined,
+      }),
+    );
+    const missing = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const res = await app.request(`/conversations/${thread.id}?sinceMessageId=${missing}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.some((row) => row.id === missing)).toBe(false);
+  });
+
+  it('polls until the gift id appears', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const giftId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    let ticks = 0;
+    const clock = { t: 0 };
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: new InMemoryMessageStore(),
+        now: () => clock.t,
+        waitTimeoutMs: 5,
+        waitPollMs: 1,
+        waitSleep: async () => {
+          ticks += 1;
+          clock.t += 1;
+          if (ticks === 1) {
+            await conversations.appendMessage({
+              id: giftId,
+              conversationId: thread.id,
+              text: '',
+              createdAt: new Date(now()),
+              senderAccountId: 'acc',
+              senderPubkey: null,
+              name: 'Ada',
+              sats: 21,
+              eventId: null,
+              nostrPublishState: 'skipped',
+              nostrEvent: null,
+              claimedUntil: null,
+            });
+          }
+        },
+      }),
+    );
+    const res = await app.request(`/conversations/${thread.id}?sinceMessageId=${giftId}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.some((row) => row.id === giftId)).toBe(true);
   });
 });

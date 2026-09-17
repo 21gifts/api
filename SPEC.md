@@ -114,8 +114,9 @@ Public base URLs used in examples:
 | POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                            |
 | GET    | `/conversations`                             | Bearer                     | List visible private threads                                                      |
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                  |
-| GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages in one thread                                               |
+| GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)        |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                               |
+| POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`) |
 | GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                        |
 | POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                       |
 | POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                        |
@@ -143,7 +144,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                          |
 | GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post           |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)             |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |>>>>>>> 24dde54 (01a0ac4e - Send bitcoin in private conversations)
 
 ### `GET /healthz`
 
@@ -2764,6 +2765,7 @@ Success → **Response** `200`:
       "lastText": "Hello",
       "lastAt": "2026-08-29T12:00:00.000Z",
       "lastFromMe": false,
+      "lastSats": 0,
       "accountId": "<uuid>"
     }
   ]
@@ -2798,6 +2800,12 @@ missing, or the session may not see it. Kind includes `moderator_group`;
 founder / verified / basis get **404** `{ "error": "Not found" }` on that
 id (no existence leak). Moderators only.
 
+Optional query `sinceMessageId` (UUID): long-polls until that message id is in
+the thread (pay-sheet confirmation). Timeout still **200** with the current
+messages (the id may be absent). Invalid value → **400**
+`{ "error": "Expected sinceMessageId to be a UUID" }`. Missing/forbidden
+thread → **404** immediately.
+
 Success → **Response** `200`:
 
 ```json
@@ -2809,6 +2817,7 @@ Success → **Response** `200`:
       "text": "Hello",
       "createdAt": "2026-08-29T12:00:00.000Z",
       "fromMe": true,
+      "sats": 0,
       "accountId": "<uuid>"
     }
   ]
@@ -2817,6 +2826,7 @@ Success → **Response** `200`:
 
 `accountId` is the sender 21.gifts account. It is omitted when
 `senderAccountId` is null (Damus inbound; never JSON `null`).
+List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
 
@@ -2842,6 +2852,28 @@ has no display name.
 
 Success → **Response** `200` (one public conversation message, including
 optional sender `accountId`).
+
+### `POST /conversations/:id/invoice`
+
+Bearer session required. Body `{ "sats": <positive int>, "text"?: "…" }`.
+Optional `text` is the NIP-57 comment (empty = gift-only). Issues a BOLT11
+against the counterpart's Lightning Address using their profile-note event
+id as the zap `e` tag. The conversation row is **not** inserted until the
+zap receipt is ingested.
+
+Success → **Response** `200`:
+
+```json
+{ "pr": "lnbc…", "amountSats": 21, "messageId": "<uuid>" }
+```
+
+`messageId` is the predetermined conversation message id. Poll
+`GET /conversations/:id?sinceMessageId=` until it appears.
+
+**400** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`
+for Damus threads, missing counterpart LN / profile event, or a non-NIP-57
+invoice. **400** `{ "error": "Cannot message yourself" }`. **429** Too many
+payments. **503** `{ "error": "Messages are unavailable" }` without a KEK.
 
 ### `GET /notifications`
 

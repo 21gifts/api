@@ -148,6 +148,8 @@ function invoiceAttemptBase(args: {
     descriptionHash: args.descriptionHash,
     isNip57Invoice: args.isNip57Invoice,
     lnurlResponse: args.lnurlResponse ?? null,
+    conversationId: null,
+    conversationMessageId: null,
   };
 }
 

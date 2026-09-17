@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
+import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
+import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationFromMe,
@@ -14,10 +16,22 @@ import {
 } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import type { FetchFn } from '@/lib/lnurlp';
+import { requestZapInvoice } from '@/lib/lnurl-pay';
 import { MESSAGE_LIST_LIMIT, normalizeForumText, truncatePubkeyDisplay } from '@/lib/message';
-import type { MessageStore } from '@/lib/message-store';
+import type {
+  MessageInvoiceAttempt,
+  MessageInvoiceResult,
+  MessageStore,
+} from '@/lib/message-store';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { resolveZapRelays } from '@/lib/nostr/relays';
+import { signEventForAccount } from '@/lib/nostr/sign';
+import { buildZapRequest } from '@/lib/nostr/zap-request';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
+import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
 
 /**
  * `/conversations` — signed-in private messaging (member↔member, member↔platform,
@@ -37,12 +51,90 @@ export interface ConversationRouteDeps {
   now: () => number;
   /** Optional spend ping after a new moderator-group message. */
   spendPing?: SpendPing;
+  /** LNURL fetch (invoice path). */
+  fetchImpl?: FetchFn;
+  /** Optional AES KEK; without it invoice signing is 503. */
+  nostrKek?: Uint8Array;
+  /** Invoice limiter (tests inject). */
+  invoiceLimiter?: InvoiceRateLimiter;
+  /** Sleep between `sinceMessageId` polls (tests inject). */
+  waitSleep?: (ms: number) => Promise<void>;
+  /** Max wait for `sinceMessageId` (tests inject). */
+  waitTimeoutMs?: number;
+  /** Poll interval for `sinceMessageId` (tests inject). */
+  waitPollMs?: number;
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const textBody = z.object({ text: z.string() });
 const forumMessageBody = z.object({ forumMessageId: z.string() });
+const invoiceBody = z.object({ sats: z.number().int().positive(), text: z.string().optional() });
+const defaultInvoiceLimiter = new InvoiceRateLimiter();
+const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
+const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
+
+/** Default sleep between `sinceMessageId` polls. */
+/* v8 ignore next 6 -- tests inject waitSleep */
+async function defaultWaitSatsSleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Persist an invoice attempt without changing the HTTP response on failure. */
+async function persistInvoiceAttempt(
+  store: MessageStore,
+  row: MessageInvoiceAttempt,
+): Promise<void> {
+  try {
+    await store.recordInvoiceAttempt(row);
+  } catch {
+    logEvent('conversations.invoice.record_failed');
+  }
+}
+
+/** Build a private-conversation invoice-attempt row. */
+function invoiceAttemptBase(args: {
+  now: number;
+  messageId: string;
+  payerAccountId: string;
+  authorAccountId: string;
+  amountSats: number;
+  lightningAddress: string | null;
+  zapRequest: Record<string, unknown> | null;
+  result: MessageInvoiceResult;
+  httpStatus: number;
+  pr: string | null;
+  paymentHash: string | null;
+  description: string | null;
+  descriptionHash: string | null;
+  isNip57Invoice: boolean;
+  conversationId: string | null;
+  conversationMessageId: string | null;
+  lnurlResponse?: Record<string, unknown> | null;
+}): MessageInvoiceAttempt {
+  return {
+    id: crypto.randomUUID(),
+    createdAt: new Date(args.now),
+    messageId: args.messageId,
+    payerAccountId: args.payerAccountId,
+    authorAccountId: args.authorAccountId,
+    amountSats: args.amountSats,
+    lightningAddress: args.lightningAddress,
+    zapRequest: args.zapRequest,
+    result: args.result,
+    httpStatus: args.httpStatus,
+    pr: args.pr,
+    paymentHash: args.paymentHash,
+    description: args.description,
+    descriptionHash: args.descriptionHash,
+    isNip57Invoice: args.isNip57Invoice,
+    lnurlResponse: args.lnurlResponse ?? null,
+    conversationId: args.conversationId,
+    conversationMessageId: args.conversationMessageId,
+  };
+}
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -110,6 +202,37 @@ function canAccess(
     return true;
   }
   return platformId !== null && (thread.accountA === platformId || thread.accountB === platformId);
+}
+
+/** Resolve the account receiving a member/member or member/platform gift. */
+async function giftCounterpart(
+  thread: ConversationThread,
+  viewer: Account,
+  platform: Account | undefined,
+  authStore: AuthStore,
+): Promise<Account | undefined> {
+  let counterpartId: string | null;
+  if (thread.accountA === viewer.id) {
+    counterpartId = thread.accountB;
+  } else if (thread.accountB === viewer.id) {
+    counterpartId = thread.accountA;
+  } else if (
+    isStaffRole(viewer.role) &&
+    platform !== undefined &&
+    (thread.accountA === platform.id || thread.accountB === platform.id)
+  ) {
+    counterpartId = thread.accountA === platform.id ? thread.accountB : thread.accountA;
+  } else if (thread.kind === 'member_platform' && isStaffRole(viewer.role)) {
+    counterpartId = thread.accountA;
+    /* v8 ignore start -- canAccess already rejected non-parties */
+  } else {
+    counterpartId = null;
+  }
+  if (counterpartId === null) {
+    return undefined;
+  }
+  /* v8 ignore stop */
+  return authStore.getAccount(counterpartId);
 }
 
 /**
@@ -210,11 +333,13 @@ async function publicThread(
 /**
  * Build the `/conversations` route group.
  *
- * @param deps - Conversation store, auth store, forum store, clock, and
- *   optional spend ping.
- * @returns A Hono app with list/open/read/reply.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, and wait injects.
+ * @returns A Hono app with list/open/read/reply/invoice routes.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
+  const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+
   return new Hono()
     .get('/', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -321,13 +446,29 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       if (!CONVERSATION_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const sinceMessageId = c.req.query('sinceMessageId');
+      if (sinceMessageId !== undefined && !CONVERSATION_ID_RE.test(sinceMessageId)) {
+        return c.json({ error: 'Expected sinceMessageId to be a UUID' }, 400);
+      }
       try {
         const thread = await deps.store.getById(id);
         const platform = await platformAccount(deps.authStore);
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
+        const started = deps.now();
+        const timeoutMs = deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
+        const pollMs = deps.waitPollMs ?? WAIT_SATS_POLL_MS;
+        const sleep = deps.waitSleep ?? defaultWaitSatsSleep;
+        let rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
+        while (
+          sinceMessageId !== undefined &&
+          !rows.some((row) => row.id === sinceMessageId) &&
+          deps.now() - started < timeoutMs
+        ) {
+          await sleep(pollMs);
+          rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
+        }
         const platformId = platform?.id ?? null;
         return c.json(
           {
@@ -441,6 +582,368 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
       } catch {
         logEvent('conversations.reply.failed');
+        return c.json({ error: 'Conversations are unavailable' }, 503);
+      }
+    })
+    .post('/:id/invoice', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!CONVERSATION_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        await persistInvoiceAttempt(
+          deps.messageStore,
+          invoiceAttemptBase({
+            now: deps.now(),
+            messageId: UNKNOWN_ACCOUNT_ID,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationId: null,
+            conversationMessageId: null,
+          }),
+        );
+        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+      }
+      const amountMsat = parsed.data.sats * 1000;
+      const invoiceText = normalizeForumText(parsed.data.text ?? '');
+      if (invoiceText === null) {
+        await persistInvoiceAttempt(
+          deps.messageStore,
+          invoiceAttemptBase({
+            now: deps.now(),
+            messageId: UNKNOWN_ACCOUNT_ID,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationId: id,
+            conversationMessageId: null,
+          }),
+        );
+        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+      }
+      if (amountMsat > GIFT_INVOICE_MAX_MSAT) {
+        await persistInvoiceAttempt(
+          deps.messageStore,
+          invoiceAttemptBase({
+            now: deps.now(),
+            messageId: UNKNOWN_ACCOUNT_ID,
+            payerAccountId: account.id,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationId: id,
+            conversationMessageId: null,
+          }),
+        );
+        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+      }
+      try {
+        const thread = await deps.store.getById(id);
+        const platform = await platformAccount(deps.authStore);
+        if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const persist = (
+          extra: Omit<
+            Parameters<typeof invoiceAttemptBase>[0],
+            'now' | 'payerAccountId' | 'conversationId'
+          >,
+        ): Promise<void> =>
+          persistInvoiceAttempt(
+            deps.messageStore,
+            invoiceAttemptBase({
+              now: deps.now(),
+              payerAccountId: account.id,
+              conversationId: thread.id,
+              ...extra,
+            }),
+          );
+        if (thread.kind === 'member_damus') {
+          await persist({
+            messageId: UNKNOWN_ACCOUNT_ID,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        const counterpart = await giftCounterpart(thread, account, platform, deps.authStore);
+        if (counterpart === undefined) {
+          await persist({
+            messageId: UNKNOWN_ACCOUNT_ID,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: parsed.data.sats,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        if (counterpart.id === account.id) {
+          return c.json({ error: 'Cannot message yourself' }, 400);
+        }
+        const senderName = account.name?.trim() ?? '';
+        if (senderName === '') {
+          return c.json({ error: 'Set a name before posting' }, 400);
+        }
+        const address = counterpart.lightningAddress;
+        const profileId = counterpart.profileMessageId ?? null;
+        if (address === null || address.trim() === '' || profileId === null) {
+          await persist({
+            messageId: profileId ?? UNKNOWN_ACCOUNT_ID,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'no_author',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        const profile = await deps.messageStore.getById(profileId);
+        if (profile === undefined || profile.eventId === null || profile.eventId === '') {
+          await persist({
+            messageId: profileId,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'no_event',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        const recipientPubkey = await deps.authStore.getNostrPublicKey(counterpart.id);
+        if (recipientPubkey === undefined) {
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'no_key',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        const kek = deps.nostrKek;
+        if (kek === undefined) {
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'no_key',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        if (!invoiceLimiter.allow(account.id, deps.now())) {
+          c.header('Retry-After', '10');
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'rate_limited',
+            httpStatus: 429,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId: null,
+          });
+          return c.json({ error: 'Too many payments' }, 429);
+        }
+        const conversationMessageId = crypto.randomUUID();
+        const relays = resolveZapRelays(process.env);
+        const unsigned = buildZapRequest({
+          recipientPubkey,
+          eventId: profile.eventId,
+          amountMsat,
+          relays,
+          content: invoiceText,
+        });
+        let signed;
+        try {
+          await ensureAccountNostrKey(deps.authStore, account.id, kek);
+          signed = await signEventForAccount(deps.authStore, account.id, kek, unsigned);
+        } catch {
+          logEvent('nostr.sign.failed', { conversationId: thread.id });
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest: null,
+            result: 'sign_failed',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId,
+          });
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        const zapRequestJson = JSON.stringify(signed);
+        /* v8 ignore next 4 -- signEventForAccount returns an event object */
+        const zapRequest =
+          signed !== null && typeof signed === 'object'
+            ? (signed as unknown as Record<string, unknown>)
+            : null;
+        const zap = await requestZapInvoice({
+          address,
+          amountMsat,
+          zapRequestJson,
+          fetchImpl,
+        });
+        if (!zap.ok) {
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest,
+            result: zap.reason,
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            conversationMessageId,
+            lnurlResponse: zap.lnurlResponse,
+          });
+          if (zap.reason === 'noZap') {
+            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          }
+          return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
+        }
+        /* v8 ignore next 3 -- fake BOLT11s in tests decode to null */
+        const inspected = inspectBolt11(zap.pr);
+        const description = inspected?.description ?? null;
+        const descriptionHash = inspected?.descriptionHash ?? null;
+        const nip57 = isNip57Invoice(descriptionHash, zapRequestJson);
+        if (!nip57) {
+          await persist({
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest,
+            result: 'not_zap',
+            httpStatus: 400,
+            pr: zap.pr,
+            /* v8 ignore next -- inspectBolt11 is null on fake test invoices */
+            paymentHash: inspected?.paymentHash ?? null,
+            description,
+            descriptionHash,
+            isNip57Invoice: false,
+            conversationMessageId,
+            lnurlResponse: zap.lnurlResponse,
+          });
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        }
+        await persist({
+          messageId: profile.id,
+          authorAccountId: counterpart.id,
+          amountSats: parsed.data.sats,
+          lightningAddress: address,
+          zapRequest,
+          result: 'ok',
+          httpStatus: 200,
+          pr: zap.pr,
+          /* v8 ignore next -- inspectBolt11 is null on fake test invoices */
+          paymentHash: inspected?.paymentHash ?? null,
+          description,
+          descriptionHash,
+          isNip57Invoice: true,
+          conversationMessageId,
+          lnurlResponse: zap.lnurlResponse,
+        });
+        return c.json(
+          { pr: zap.pr, amountSats: zap.amountSats, messageId: conversationMessageId },
+          200,
+        );
+      } catch {
+        logEvent('conversations.invoice.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
       }
     });
