@@ -1,7 +1,7 @@
 /**
  * Web Push for inbound private messages (bell subscribers only).
  *
- * Does not write in-app Notification rows. Posteingang stays the DM surface.
+ * Does not write in-app Notification rows. Inbox stays the DM surface.
  */
 
 import type { AuthStore } from '@/lib/auth/store';

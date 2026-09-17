@@ -579,7 +579,7 @@ const invoiceBody = z.object({
  * when signed in).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
- * `notificationStore`, and
+ * `notificationStore` / `conversationStore`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).

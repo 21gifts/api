@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  CONVERSATION_LIST_LIMIT,
   unsignedConversationDefaults,
   type ConversationMessageRow,
   type ConversationThread,
@@ -561,6 +562,28 @@ describe('InMemoryConversationStore', () => {
     await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-a' }));
     expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(0);
   });
+
+  it('unreadCount pins an existing empty moderator_group ahead of the list cap', async () => {
+    const store = new InMemoryConversationStore();
+    const older = new Date(NOW.getTime() - 60_000);
+    await store.ensureModeratorGroup('plat', older);
+    for (let i = 0; i < CONVERSATION_LIST_LIMIT; i += 1) {
+      const opened = await store.openMemberMember('mod-a', `o${i}`, NOW);
+      await store.appendMessage(
+        message({
+          id: `m-${i}`,
+          conversationId: opened.id,
+          senderAccountId: `o${i}`,
+          createdAt: NOW,
+        }),
+      );
+    }
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(CONVERSATION_LIST_LIMIT - 1);
+  });
+
+  it('getModeratorGroup returns undefined when no singleton exists', async () => {
+    expect(await new InMemoryConversationStore().getModeratorGroup()).toBeUndefined();
+  });
 });
 
 describe('PostgresConversationStore', () => {
@@ -585,6 +608,33 @@ describe('PostgresConversationStore', () => {
     expect(got?.lastSenderAccountId).toBeNull();
     expect(got?.lastMessageAt.toISOString()).toBe('2026-08-29T13:00:00.000Z');
     expect(sql.queries[0]?.params).toEqual(['c1']);
+  });
+
+  it('getModeratorGroup selects the singleton kind', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).getModeratorGroup()).toBeUndefined();
+    expect(sql.queries[0]?.text).toMatch(/kind = 'moderator_group'/);
+    expect(sql.queries[0]?.params).toEqual([]);
+  });
+
+  it('getModeratorGroup maps a singleton row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'g1',
+        kind: 'moderator_group',
+        account_a: 'plat',
+        account_b: null,
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: '',
+      },
+    ];
+    const got = await new PostgresConversationStore(sql).getModeratorGroup();
+    expect(got?.id).toBe('g1');
+    expect(got?.kind).toBe('moderator_group');
   });
 
   it('getById returns undefined when no row matches', async () => {

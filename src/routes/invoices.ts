@@ -171,7 +171,7 @@ async function addressHasPosted(
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder, optional notification and push stores.
+ *   optional gift recorder, optional notification, push, and conversation stores.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {

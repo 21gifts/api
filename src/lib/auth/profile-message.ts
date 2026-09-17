@@ -27,7 +27,7 @@ import type { PushStore } from '@/lib/push-store';
  * backfill creates the missing note once LN is linked).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
- *   push and notification stores.
+ *   push, notification, and conversation stores.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).
  */
 export async function ensureProfileMessage(args: {

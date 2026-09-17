@@ -162,7 +162,7 @@ const notificationLevelBody = z.object({
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, location, About me, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, link/unlink, and verification routes.
  */

@@ -25,6 +25,13 @@ export interface ConversationStore {
   getById(id: string): Promise<ConversationThread | undefined>;
 
   /**
+   * Existing closed `moderator_group` singleton, if any. Does not insert.
+   *
+   * @returns The thread, or `undefined` when none exists.
+   */
+  getModeratorGroup(): Promise<ConversationThread | undefined>;
+
+  /**
    * Threads the viewer may see: own participation, plus every platform
    * thread when `staff` is true. The `moderator_group` singleton is
    * included only when `moderator` is true — never via participation or
@@ -202,19 +209,31 @@ export interface ConversationStore {
  * Listed GET `/conversations` unread count (same filter/cap as the list).
  */
 async function listedUnreadCount(
-  store: Pick<ConversationStore, 'listVisible' | 'hasInboundMessage' | 'hasUnread'>,
+  store: Pick<
+    ConversationStore,
+    'listVisible' | 'hasInboundMessage' | 'hasUnread' | 'getModeratorGroup'
+  >,
   accountId: string,
   staff: boolean,
   platformId: string | null,
   moderator = false,
 ): Promise<number> {
-  const threads = await store.listVisible(
+  let threads = await store.listVisible(
     accountId,
     staff,
     platformId,
     CONVERSATION_LIST_LIMIT,
     moderator,
   );
+  if (moderator) {
+    const group = await store.getModeratorGroup();
+    if (group !== undefined) {
+      threads = [group, ...threads.filter((thread) => thread.id !== group.id)].slice(
+        0,
+        CONVERSATION_LIST_LIMIT,
+      );
+    }
+  }
   let count = 0;
   for (const thread of threads) {
     const inbound = await store.hasInboundMessage(thread.id, accountId, staff, platformId);
@@ -395,6 +414,11 @@ export class InMemoryConversationStore implements ConversationStore {
 
   getById(id: string): Promise<ConversationThread | undefined> {
     const thread = this.#threads.find((item) => item.id === id);
+    return Promise.resolve(thread === undefined ? undefined : this.#hydrate(thread));
+  }
+
+  getModeratorGroup(): Promise<ConversationThread | undefined> {
+    const thread = this.#threads.find((item) => item.kind === 'moderator_group');
     return Promise.resolve(thread === undefined ? undefined : this.#hydrate(thread));
   }
 
@@ -791,6 +815,15 @@ export class PostgresConversationStore implements ConversationStore {
     const rows = await this.#sql.query<ConversationSqlRow>(
       `SELECT ${THREAD_SELECT} FROM conversation c WHERE c.id = $1`,
       [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapThread(row);
+  }
+
+  async getModeratorGroup(): Promise<ConversationThread | undefined> {
+    const rows = await this.#sql.query<ConversationSqlRow>(
+      `SELECT ${THREAD_SELECT} FROM conversation c WHERE c.kind = 'moderator_group' LIMIT 1`,
+      [],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapThread(row);

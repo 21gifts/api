@@ -342,7 +342,7 @@ async function publicThread(
 /**
  * Build the `/conversations` route group.
  *
- * @param deps - Stores, clock, optional spend ping, invoice collaborators, and wait injects.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
  * @returns A Hono app with list/open/read/reply/invoice routes.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
