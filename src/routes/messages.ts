@@ -96,8 +96,9 @@ const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
 
 /**
- * Whether a forum row can mint a zap: signed `eventId` plus a non-blank
- * author Lightning Address. Whitespace-only addresses are not payable.
+ * Whether a forum row can mint a zap: non-empty signed `eventId` plus a
+ * non-blank author Lightning Address. Null or empty `eventId` and
+ * whitespace-only addresses are not payable.
  *
  * @param row - Forum row (`eventId` is the mint gate).
  * @param author - Author account when known.
@@ -108,7 +109,10 @@ function payableOf(
   author: { lightningAddress: string | null } | undefined,
 ): boolean {
   const address = author?.lightningAddress;
-  return row.eventId !== null && typeof address === 'string' && address.trim() !== '';
+  const eventId = row.eventId;
+  return (
+    eventId !== null && eventId !== '' && typeof address === 'string' && address.trim() !== ''
+  );
 }
 
 /**
@@ -1060,7 +1064,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
       }
-      if (row.eventId === null) {
+      if (row.eventId === null || row.eventId === '') {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({

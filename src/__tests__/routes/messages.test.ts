@@ -431,6 +431,25 @@ describe('GET /messages', () => {
     }
   });
 
+  it('marks a note with an empty eventId as not payable', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'empty-eid',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '',
+    });
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ payable: boolean }> };
+    expect(body.messages[0]?.payable).toBe(false);
+  });
+
   it('marks a signed note without a Lightning Address as not payable', async () => {
     const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
@@ -3284,6 +3303,44 @@ describe('POST /messages/:id/invoice', () => {
     });
     expect(res.status).toBe(404);
     expect(await messageStore.listInvoiceAttempts(10)).toHaveLength(0);
+  });
+
+  it('persists no_event when the note eventId is empty', async () => {
+    const kek = new Uint8Array(32).fill(2);
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'abababab-abab-4bab-8bab-abababababab',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '',
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/abababab-abab-4bab-8bab-abababababab/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_event');
+    expect(attempts[0]?.httpStatus).toBe(400);
   });
 
   it('persists no_event when the note has no eventId', async () => {
