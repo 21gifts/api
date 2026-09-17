@@ -2726,6 +2726,71 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts[0]?.pr).toBeNull();
   });
 
+  it('returns 400 no_author when a signed reply author Lightning Address is whitespace', async () => {
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: '   ',
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    const replyId = '12121212-1212-4121-8121-121212121212';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = vi.fn(async (_input: string | URL | Request): Promise<Response> => {
+      throw new Error('lnurl must not run');
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/messages/${replyId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
   it('returns 404 for an unknown message', async () => {
     const authStore = await namedStore('Ada');
     const app = new Hono().route(

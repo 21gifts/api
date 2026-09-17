@@ -29,8 +29,10 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Spend-worker invoice routes: check passkey eligibility and a live
  * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
  * the payment preimage as proof. A proof with `messageId` attaches a platform
- * gift-reply only when that message is a top-level post; if `messageId` is
- * already a reply, the proof `addSats`s the reply only. The api does not pay.
+ * gift-reply when that message is a top-level post. If `messageId` is already
+ * a reply, the proof `addSats`s the reply, persists a deterministic
+ * `spendGiftReplyId` marker under that reply, then `markDeleted` so live
+ * `listReplies` omits it. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -206,7 +208,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
     try {
       const replyId = spendGiftReplyId(invoice.id);
       const existing = await deps.messageStore.getById(replyId);
-      if (existing !== undefined) {
+      if (existing !== undefined && existing.deletedAt !== null) {
         return;
       }
       const parent = await deps.messageStore.getById(invoice.messageId);
@@ -222,7 +224,10 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const text = invoice.comment ?? '';
       const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
       if (parent.parentId !== null) {
-        await deps.messageStore.addSats(invoice.messageId, sats);
+        if (existing !== undefined) {
+          await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+          return;
+        }
         await deps.messageStore.create({
           id: replyId,
           accountId: platform.id,
@@ -240,6 +245,10 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           authorPubkey,
         });
         await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+        await deps.messageStore.addSats(invoice.messageId, sats);
+        return;
+      }
+      if (existing !== undefined) {
         return;
       }
       const created = await deps.messageStore.create({

@@ -1082,7 +1082,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const author = await deps.authStore.getAccount(row.accountId);
-      if (author === undefined || author.lightningAddress === null) {
+      if (
+        author === undefined ||
+        author.lightningAddress === null ||
+        author.lightningAddress.trim() === ''
+      ) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({

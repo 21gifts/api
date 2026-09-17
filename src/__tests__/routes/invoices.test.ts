@@ -1778,6 +1778,99 @@ describe('POST /invoices/proof', () => {
     expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 
+  it('does not addSats when create throws on a reply invoice, then credits once on retry', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const inner = uuidReplyStore();
+    let createCalls = 0;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'create') {
+          return async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
+            createCalls += 1;
+            if (createCalls === 1) {
+              throw new Error('create');
+            }
+            return target.create(row);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
+    const marker = await inner.getById(spendGiftReplyId(unpaid().id));
+    expect(marker).toBeDefined();
+    expect(marker?.deletedAt).not.toBeNull();
+  });
+
+  it('hides a live reply marker on retry without addSats when markDeleted throws after create', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const inner = uuidReplyStore();
+    let markDeletedCalls = 0;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'markDeleted') {
+          return async (id: string, at: Date, byAccountId: string) => {
+            markDeletedCalls += 1;
+            if (markDeletedCalls === 1) {
+              throw new Error('markDeleted');
+            }
+            return target.markDeleted(id, at, byAccountId);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    const markerId = spendGiftReplyId(unpaid().id);
+    const liveMarker = await inner.getById(markerId);
+    expect(liveMarker).toBeDefined();
+    expect(liveMarker?.deletedAt).toBeNull();
+    expect(await inner.listReplies(REPLY_ID, 200)).toHaveLength(1);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
+    const hidden = await inner.getById(markerId);
+    expect(hidden?.deletedAt).not.toBeNull();
+  });
+
   it('returns 200 and logs messages.reply.notify.failed when notifyForumReply throws', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
