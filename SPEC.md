@@ -2767,7 +2767,11 @@ publicly — operators still read the mailbox via `GET /debug/contacts`
 (`DEBUG_TOKEN` must not read member PNs). After the platform account exists,
 the contact row is persisted first, then the same text is appended to the
 member→platform conversation thread so it is readable via
-`GET /conversations`. Conversation append failure logs
+`GET /conversations`. A successful conversation append enqueues
+`type: conversation` Web Push to bell-subscribed counterparts
+(`url` `/messages?c=<id>`). DMs are not copied into Notification rows.
+Push failure is logged (`conversations.push.failed`) and does not change
+**200**. Conversation append failure logs
 `conversations.contact_sync.failed` and still returns **200** (contact is
 the product surface). When no platform account (`isPlatform`) exists
 (neither contact nor thread is written) →

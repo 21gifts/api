@@ -29,7 +29,7 @@ export interface PushOutboxRow {
   accountId: string;
   /** Notification kind. */
   type: 'forum' | 'zap' | 'conversation';
-  /** Forum message id when applicable; null for debug pings. */
+  /** Forum or conversation message id when applicable; null for debug pings. */
   messageId: string | null;
   /** JSON string payload. */
   payload: string;
