@@ -78,6 +78,7 @@ const throwingList: TrustStore = {
     throw new Error('list boom');
   },
   insertEdge: async (row) => row,
+  deleteEdge: async () => undefined,
 };
 
 const duplicateInsert: TrustStore = {
@@ -87,6 +88,7 @@ const duplicateInsert: TrustStore = {
   insertEdge: async () => {
     throw new Error('duplicate trust edge');
   },
+  deleteEdge: async () => undefined,
 };
 
 const boomInsert: TrustStore = {
@@ -96,6 +98,7 @@ const boomInsert: TrustStore = {
   insertEdge: async () => {
     throw new Error('insert boom');
   },
+  deleteEdge: async () => undefined,
 };
 
 describe('POST /trust/*', () => {
@@ -648,6 +651,7 @@ describe('POST /trust/*', () => {
         insertEdge: async () => {
           throw new Error('duplicate trust edge');
         },
+        deleteEdge: async () => undefined,
       };
       const dup = await staffed(extras);
       expect(
@@ -665,6 +669,7 @@ describe('POST /trust/*', () => {
         insertEdge: async () => {
           throw new Error('insert boom');
         },
+        deleteEdge: async () => undefined,
       };
       const boom = await staffed(extras);
       expect(

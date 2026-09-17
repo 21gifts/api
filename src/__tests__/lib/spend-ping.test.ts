@@ -155,4 +155,25 @@ describe('HttpSpendPing', () => {
     ).resolves.toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
+
+  it('POSTs JSON { address, kind: "moderator" } without messageId', async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl: FetchFn = async (_input, init) => {
+      seenInit = init;
+      return new Response(null, { status: 200 });
+    };
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+      'moderator',
+    );
+    expect(seenInit?.method).toBe('POST');
+    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
+    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS, kind: 'moderator' }));
+    expect(String(seenInit?.body)).not.toContain('messageId');
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+  });
 });

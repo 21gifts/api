@@ -49,7 +49,7 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gifts.record_failed` and still returns **200**. When the issued invoice stored
 `messageId`, proof inserts a platform-account gift-reply first, then
 `addSats` (idempotent). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId }`.
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -130,6 +130,7 @@ Public base URLs used in examples:
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
 | POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                       |
 | POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`              |
+| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                |
 | GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
 | POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
 | DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                 |
@@ -462,9 +463,11 @@ Missing or invalid Bearer → **Response** `401`:
 Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
-one hop of **stored** public edges (`verify` / `moderator_confirm` /
-`moderator_appoint`; `moderator_propose` omitted) whose actor or subject
-is `<id>`. Nodes are `founder` / `moderator` / `verified` (never `basis`).
+one hop of **stored** public edges (`verify` / `moderator_propose` only if
+subject.role is `moderator` / `moderator_appoint`; `moderator_confirm`
+never) whose actor or subject is `<id>`. A pending propose (subject still
+`verified`) stays private and is not a hop neighbor. Nodes are `founder` /
+`moderator` / `verified` (never `basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
@@ -1191,6 +1194,33 @@ Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 
 `createdAt` is ISO-8601.
 
+### `DELETE /debug/trust-edges`
+
+Operator delete of a stored trust edge. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
+other debug routes). Does **not** change `account.role`. Unique
+`(subjectId, kind)` means one row is enough to identify.
+
+**Request**:
+
+```json
+{
+  "subjectId": "<uuid>",
+  "kind": "moderator_confirm"
+}
+```
+
+`kind` is one of `verify`, `moderator_propose`, `moderator_confirm`,
+`moderator_appoint`.
+
+Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\" and \"kind\" strings" }`.
+Non-UUID `subjectId` or no matching row → **404** `{ "error": "Not found" }`.
+Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
+logged as `debug.trust_edges.delete_failed`.
+Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
+
+**Response** `200` is the deleted edge, same JSON as `POST /debug/trust-edges`.
+
 ### `GET /debug/contacts`
 
 Operator listing of private in-app contact messages. Authenticated with
@@ -1833,15 +1863,16 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true, "messageId": "<uuid>" }
+{ "hasPosted": true, "messageId": "<uuid>", "postedAt": "<iso-8601>" }
 ```
 
-or `{ "hasPosted": false, "messageId": null }` when there is no account for the
+or `{ "hasPosted": false, "messageId": null, "postedAt": null }` when there is no account for the
 address or the account has no live **top-level** forum message other than the
 auto-created profile note. Replies do not count. Photo-only / empty-text
 top-level notes still count. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
-`listPostsByAccount` yields no non-profile row. Replies and the auto profile
+`listPostsByAccount` yields no non-profile row. `postedAt` is that row's
+`createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile
 note never become `messageId`.
 
 ### `POST /invoices`
@@ -2596,12 +2627,16 @@ and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
-inbound and listed. `GET /conversations/:id` and `POST` still return/open
-outbound-only and empty threads. Newest `lastMessageAt` first.
-Cap 200. List/open rows may include optional `accountId` of the
-counterpart 21.gifts account (omitted for Damus-only counterparts).
-Member JSON never includes event ids or npubs; Damus-only counterpart
-`name` may be a truncated npub.
+inbound and listed. Kind includes `moderator_group`. The empty group is
+listed for moderators only (`role === 'moderator'`), named `Moderators`;
+founder / verified / basis never see it. The empty `moderator_group` is
+pinned first for moderators and remains listed even when 200 newer
+threads exist (still cap 200). `GET /conversations/:id` and
+`POST` still return/open outbound-only and empty threads. Newest
+`lastMessageAt` first. Cap 200. List/open rows may include optional
+`accountId` of the counterpart 21.gifts account (omitted for Damus-only
+counterparts). Member JSON never includes event ids or npubs; Damus-only
+counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2657,7 +2692,9 @@ Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
-missing, or the session may not see it.
+missing, or the session may not see it. Kind includes `moderator_group`;
+founder / verified / basis get **404** `{ "error": "Not found" }` on that
+id (no existence leak). Moderators only.
 
 Success → **Response** `200`:
 
@@ -2684,7 +2721,18 @@ Success → **Response** `200`:
 Bearer session required. Body `{ "text": "…" }` 1–500 via
 `normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
 platform thread persist as the platform account; the worker signs with the
-platform nsec. Relay failure does not block local persist.
+platform nsec. Relay failure does not block local persist. Kind includes
+`moderator_group`: persist as the moderator account with
+`nostrPublishState` skipped (never Nostr). After a new persist on
+`moderator_group`, ping `{ address, kind: "moderator" }` (no `messageId`
+in the HTTP body) only when Lightning Address is a non-empty trimmed
+string, `spendPing` is set, **and** the caller has a live living-room
+top-level post (not the profile note) whose `createdAt` is on the same
+UTC day. No such post → **200**, no ping, log `spend.ping.skipped` /
+`no_public_post`. Ping throw still **200**. Living-room lookup failure
+after persist is still **200**, no ping, log `spend.ping.skipped` /
+`posted_unreachable`. Empty or invalid text is
+**400** and does not ping. Founder / verified / basis **404** on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member

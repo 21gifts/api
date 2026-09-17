@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import { buildTrustChain, isChainAccount } from '@/lib/trust';
+import { buildTrustChain, isChainAccount, isProjectedTrustEdge } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { bearerToken } from '@/routes/me';
 
@@ -12,7 +12,10 @@ import { bearerToken } from '@/routes/me';
  *
  * Bare `GET /trust-chain` returns founder seeds (no edges) so a thousand-person
  * chain is not dumped on first paint. `?around=<id>` returns that account plus
- * one hop of stored public edges.
+ * one hop of stored public edges (`verify` / `moderator_propose` when the
+ * subject is a `moderator` / `moderator_appoint`). `moderator_confirm` is
+ * never projected. A pending propose (subject still `verified`) stays private
+ * and is not a hop neighbor.
  */
 
 /** Collaborators the trust-chain route needs. */
@@ -86,7 +89,10 @@ function isInvalidUuid(error: unknown): boolean {
 
 /**
  * One hop around `aroundId`: the focus account, stored public edges that
- * touch it, and the accounts on those edges.
+ * touch it after `isProjectedTrustEdge` (`verify` / `moderator_propose` when
+ * the subject is a `moderator` / `moderator_appoint`; never
+ * `moderator_confirm`), and the accounts on those filtered edges.
+ * Pending-propose verified neighbors are not nodes.
  *
  * @param deps - Auth and trust stores.
  * @param aroundId - Focus account id.
@@ -109,12 +115,19 @@ async function neighborhood(
     throw new NeighborhoodNotFound();
   }
   const touching = await deps.trustStore.listEdgesTouching(aroundId);
-  const edges = touching.filter(
-    (edge) =>
-      edge.kind === 'verify' ||
-      edge.kind === 'moderator_confirm' ||
-      edge.kind === 'moderator_appoint',
-  );
+  const candidateIds = new Set<string>([aroundId]);
+  for (const edge of touching) {
+    candidateIds.add(edge.actorId);
+    candidateIds.add(edge.subjectId);
+  }
+  const byId = new Map<string, Account>();
+  for (const id of candidateIds) {
+    const account = await deps.authStore.getAccount(id);
+    if (account !== undefined) {
+      byId.set(id, account);
+    }
+  }
+  const edges = touching.filter((edge) => isProjectedTrustEdge(edge, byId.get(edge.subjectId)));
   const ids = new Set<string>([aroundId]);
   for (const edge of edges) {
     ids.add(edge.actorId);
@@ -122,7 +135,7 @@ async function neighborhood(
   }
   const accounts: Account[] = [];
   for (const id of ids) {
-    const account = await deps.authStore.getAccount(id);
+    const account = byId.get(id);
     if (account !== undefined) {
       accounts.push(account);
     }

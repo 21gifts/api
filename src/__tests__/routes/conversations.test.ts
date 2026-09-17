@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -26,15 +27,37 @@ afterEach(() => {
 const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const NOTE_ID = '00000000-0000-4000-8000-000000000001';
+const LIVING_ROOM_POST_ID = '00000000-0000-4000-8000-0000000000aa';
+
+function livingRoomStore(createdAt: Date = new Date(now())): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: LIVING_ROOM_POST_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello living room',
+      createdAt,
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+  ]);
+}
 
 function mount(
   authStore: InMemoryAuthStore,
   conversations = new InMemoryConversationStore(),
   messages = new InMemoryMessageStore(),
+  spendPing?: SpendPing,
 ): Hono {
   return new Hono().route(
     '/conversations',
-    conversationRoutes({ store: conversations, authStore, messageStore: messages, now }),
+    conversationRoutes({
+      store: conversations,
+      authStore,
+      messageStore: messages,
+      now,
+      ...(spendPing === undefined ? {} : { spendPing }),
+    }),
   );
 }
 
@@ -258,8 +281,10 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
-    expect(body.conversations).toHaveLength(0);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; lastFromMe: boolean }>;
+    };
+    expect(body.conversations.filter((c) => c.kind !== 'moderator_group')).toHaveLength(0);
   });
 
   it('sets lastFromMe false when staff views a member-sent last message', async () => {
@@ -283,9 +308,12 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.lastFromMe).toBe(false);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; lastFromMe: boolean }>;
+    };
+    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.lastFromMe).toBe(false);
   });
 
   it('sets lastFromMe true when staff views a platform-sent last message after a member send', async () => {
@@ -322,9 +350,12 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ lastFromMe: boolean }> };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.lastFromMe).toBe(true);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; lastFromMe: boolean }>;
+    };
+    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.lastFromMe).toBe(true);
   });
 
   it('sets lastFromMe false for Damus inbound without a sender account', async () => {
@@ -375,11 +406,12 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ name: string; accountId?: string }>;
+      conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.name).toBe('Bob');
-    expect(body.conversations[0]?.accountId).toBe('someone');
+    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.name).toBe('Bob');
+    expect(listed[0]?.accountId).toBe('someone');
   });
 
   it('lets staff see a member_platform thread when no platform account exists', async () => {
@@ -402,12 +434,13 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      conversations: Array<{ name: string; accountId?: string }>;
+    const noPlat = (await res.json()) as {
+      conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.name).toBe('Bob');
-    expect(body.conversations[0]?.accountId).toBe('someone');
+    const listedNoPlat = noPlat.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(listedNoPlat).toHaveLength(1);
+    expect(listedNoPlat[0]?.name).toBe('Bob');
+    expect(listedNoPlat[0]?.accountId).toBe('someone');
   });
 
   it('names the counterpart when the viewer is accountB', async () => {
@@ -460,11 +493,12 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ name: string; accountId?: string }>;
+      conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.name).toBe('Bob');
-    expect(body.conversations[0]?.accountId).toBe('other');
+    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.name).toBe('Bob');
+    expect(listed[0]?.accountId).toBe('other');
   });
 
   it('lets staff list a member_member platform thread when the platform sorts first', async () => {
@@ -488,12 +522,13 @@ describe('GET /conversations', () => {
     });
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      conversations: Array<{ name: string; accountId?: string }>;
+    const sortBody = (await res.json()) as {
+      conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.name).toBe('Bob');
-    expect(body.conversations[0]?.accountId).toBe('zzz');
+    const sortListed = sortBody.conversations.filter((c) => c.kind !== 'moderator_group');
+    expect(sortListed).toHaveLength(1);
+    expect(sortListed[0]?.name).toBe('Bob');
+    expect(sortListed[0]?.accountId).toBe('zzz');
   });
 
   it('names a counterpart without a display name as member', async () => {
@@ -1307,7 +1342,363 @@ describe('POST /conversations/:id', () => {
     });
     const res = await mount(store, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { conversations: Array<{ name: string }> };
-    expect(body.conversations[0]?.name).toBe('21.gifts');
+    const body = (await res.json()) as { conversations: Array<{ kind: string; name: string }> };
+    expect(body.conversations.find((c) => c.kind === 'member_platform')?.name).toBe('21.gifts');
+  });
+});
+
+describe('moderator_group', () => {
+  it('lists the empty singleton named Moderators for a moderator', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const res = await mount(auth).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; name: string; lastText: string }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('moderator_group');
+    expect(body.conversations[0]?.name).toBe('Moderators');
+    expect(body.conversations[0]?.lastText).toBe('');
+  });
+
+  it('still lists the empty moderator group when 200 newer threads exist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    await conversations.ensureModeratorGroup('plat', new Date(now() - 86_400_000));
+    for (let i = 0; i < 200; i++) {
+      await withOther(auth, `o${i}`);
+      const thread = await conversations.openMemberMember('acc', `o${i}`, new Date(now() + i));
+      await conversations.appendMessage({
+        id: `m${i}`,
+        conversationId: thread.id,
+        text: 'yo',
+        createdAt: new Date(now() + i),
+        senderAccountId: `o${i}`,
+        senderPubkey: null,
+        name: 'Bob',
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(true);
+    expect(body.conversations[0]?.kind).toBe('moderator_group');
+    expect(body.conversations.length).toBeLessThanOrEqual(200);
+  });
+
+  it('does not list the group for a founder and GET /:id is 404', async () => {
+    const auth = await seeded('founder');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const list = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const listed = (await list.json()) as { conversations: Array<{ kind: string }> };
+    expect(listed.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
+    const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(get.status).toBe(404);
+    expect(await get.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for verified and basis GET /:id', async () => {
+    const conversations = new InMemoryConversationStore();
+    await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    for (const role of ['verified', 'basis'] as const) {
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount({
+        id: 'acc',
+        linkingKey: null,
+        role,
+        name: 'Ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'a'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
+      await withPlatform(auth);
+      const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+    }
+  });
+
+  it('returns 401 for unauthenticated GET /:id before 404', async () => {
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(new InMemoryAuthStore(), conversations).request(
+      `/conversations/${thread.id}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('persists a moderator reply as the moderator with skipped Nostr', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string; name: string; fromMe: boolean };
+    expect(body.text).toBe('hello mods');
+    expect(body.name).toBe('Ada');
+    expect(body.fromMe).toBe(true);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.senderAccountId).toBe('acc');
+    expect(rows[0]?.nostrPublishState).toBe('skipped');
+    expect(rows[0]?.eventId).toBeNull();
+  });
+
+  it('pings spend once with kind moderator when a Lightning Address is set', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+  });
+
+  it('does not ping when the moderator has no living-room post today', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'no_public_post',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not ping when the only post today is the profile note', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+      profileMessageId: LIVING_ROOM_POST_ID,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'no_public_post',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not ping when the living-room post is on a previous UTC day', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const yesterday = new Date(now() - 86_400_000);
+    const res = await mount(auth, conversations, livingRoomStore(yesterday), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('still returns 200 when spendPing.ping throws', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = {
+      ping: vi.fn(async () => {
+        throw new Error('ping boom');
+      }),
+    };
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+  });
+
+  it('still returns 200 when living-room lookup throws after persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const messages = livingRoomStore();
+    vi.spyOn(messages, 'listPostsByAccount').mockRejectedValue(new Error('boom'));
+    const res = await mount(auth, conversations, messages, spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'posted_unreachable',
+      ),
+    ).toBe(true);
+    expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
+  });
+
+  it('does not ping when lightningAddress is missing', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for empty text and does not ping', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: '   ' }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 });

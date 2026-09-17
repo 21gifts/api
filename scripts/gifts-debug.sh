@@ -7,7 +7,7 @@
 #               GET /debug/messages, GET /debug/messages/:id,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
-#               POST /debug/trust-edges). No raw SQL.
+#               POST /debug/trust-edges, DELETE /debug/trust-edges). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -28,6 +28,9 @@
 #                                      # POST a stored trust edge; print edge JSON
 #                                      # kind: verify | moderator_propose |
 #                                      #       moderator_confirm | moderator_appoint
+#   gifts-debug trust-edge-delete <subject-id> <kind>
+#                                      # DELETE a stored trust edge; print edge JSON
+#                                      # Does not change account.role
 #
 # Example:
 #   gifts-debug accounts
@@ -41,6 +44,7 @@
 #   gifts-debug spend
 #   gifts-debug spend --raw
 #   gifts-debug trust-edge <subject-id> <actor-id> verify
+#   gifts-debug trust-edge-delete <subject-id> moderator_confirm
 #
 set -euo pipefail
 
@@ -247,6 +251,28 @@ cmd_trust_edge() {
   printf '%s\n' "$body"
 }
 
+cmd_trust_edge_delete() {
+  local subject="${1:-}" kind="${2:-}" tmp status body
+  [ -n "$subject" ] || die "usage: gifts-debug trust-edge-delete <subject-id> <kind>"
+  [ -n "$kind" ] || die "usage: gifts-debug trust-edge-delete <subject-id> <kind>"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -X DELETE \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"subjectId\":\"${subject}\",\"kind\":\"${kind}\"}" \
+    "${DEBUG_API_URL}/debug/trust-edges") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
 cmd_video_put() {
   local id="${1:-}" path="${2:-}" tmp status body
   [ -n "$id" ] || die "usage: gifts-debug video-put <message-id> <file>"
@@ -351,6 +377,7 @@ case "${1:-}" in
   restore) shift; cmd_restore "$@" ;;
   spend) cmd_spend ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
+  trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

@@ -75,12 +75,14 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(10);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(13);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/conversation_member_member_uidx/);
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
+    expect(joined).toMatch(/conversation_moderator_group_uidx/);
+    expect(joined).toMatch(/'moderator_group'/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
     expect(joined).toMatch(/conversation_message_nostr_event_unrepaired_idx/);
     expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
@@ -140,6 +142,23 @@ describe('InMemoryConversationStore', () => {
     const damus = await store.openMemberDamus('mem', 'AA'.repeat(32), NOW);
     expect(damus.counterpartPubkey).toBe('aa'.repeat(32));
     expect((await store.openMemberDamus('mem', 'aa'.repeat(32), NOW)).id).toBe(damus.id);
+  });
+
+  it('ensureModeratorGroup inserts once and is hidden from staff without the moderator flag', async () => {
+    const store = new InMemoryConversationStore();
+    const first = await store.ensureModeratorGroup('plat', NOW);
+    expect(first.kind).toBe('moderator_group');
+    expect(first.accountA).toBe('plat');
+    expect(first.accountB).toBeNull();
+    expect(first.counterpartPubkey).toBeNull();
+    const again = await store.ensureModeratorGroup('plat', NOW);
+    expect(again.id).toBe(first.id);
+    expect((await store.listVisible('acc', true, 'plat', 10, true)).map((t) => t.id)).toEqual([
+      first.id,
+    ]);
+    expect(await store.listVisible('acc', true, 'plat', 10)).toEqual([]);
+    expect(await store.listVisible('acc', true, 'plat', 10, false)).toEqual([]);
+    expect(await store.listVisible('plat', true, 'plat', 10, false)).toEqual([]);
   });
 
   it('openMemberPlatform updates accountB when the platform id changes', async () => {
@@ -431,9 +450,105 @@ describe('PostgresConversationStore', () => {
     const sql = new MockSql();
     const store = new PostgresConversationStore(sql);
     await store.listVisible('acc', true, 'plat', 50);
-    expect(sql.queries[0]?.params).toEqual(['acc', true, 'plat', 50]);
+    expect(sql.queries[0]?.params).toEqual(['acc', true, 'plat', 50, false]);
     expect(sql.queries[0]?.text).toMatch(/member_platform/);
+    expect(sql.queries[0]?.text).toMatch(/moderator_group/);
     expect(sql.queries[0]?.text).toMatch(/AS last_sender_account_id/);
+  });
+
+  it('ensureModeratorGroup returns an existing row without inserting', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'c-mod',
+        kind: 'moderator_group',
+        account_a: 'plat',
+        account_b: null,
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: '',
+      },
+    ];
+    const store = new PostgresConversationStore(sql);
+    const opened = await store.ensureModeratorGroup('plat', NOW);
+    expect(opened.id).toBe('c-mod');
+    expect(opened.kind).toBe('moderator_group');
+    expect(sql.executes).toHaveLength(0);
+    expect(sql.queries[0]?.text).toMatch(/moderator_group/);
+  });
+
+  it('ensureModeratorGroup SELECT then INSERT binds kind moderator_group', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    let calls = 0;
+    sql.queryImpl = () => {
+      calls += 1;
+      if (calls === 1) {
+        return [];
+      }
+      return [
+        {
+          id: 'c-mod',
+          kind: 'moderator_group',
+          account_a: 'plat',
+          account_b: null,
+          counterpart_pubkey: null,
+          created_at: NOW,
+          last_message_at: NOW,
+          last_text: '',
+        },
+      ];
+    };
+    const opened = await store.ensureModeratorGroup('plat', NOW);
+    expect(opened.id).toBe('c-mod');
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation/);
+    expect(sql.executes[0]?.text).toMatch(/moderator_group/);
+    expect(sql.executes[0]?.params).toEqual([expect.any(String), 'plat', NOW]);
+    expect(sql.queries).toHaveLength(2);
+  });
+
+  it('ensureModeratorGroup swallows unique_violation and re-selects', async () => {
+    const sql = new MockSql();
+    sql.executeError = { code: '23505' };
+    let n = 0;
+    sql.queryImpl = () => {
+      n += 1;
+      if (n === 1) {
+        return [];
+      }
+      return [
+        {
+          id: 'c-mod',
+          kind: 'moderator_group',
+          account_a: 'plat',
+          account_b: null,
+          counterpart_pubkey: null,
+          created_at: NOW,
+          last_message_at: NOW,
+          last_text: '',
+        },
+      ];
+    };
+    const opened = await new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW);
+    expect(opened.id).toBe('c-mod');
+    expect(sql.queries).toHaveLength(2);
+  });
+
+  it('ensureModeratorGroup rethrows non-unique insert errors', async () => {
+    const sql = new MockSql();
+    sql.executeError = new Error('insert boom');
+    sql.queryImpl = () => [];
+    await expect(
+      new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW),
+    ).rejects.toThrow('insert boom');
+  });
+
+  it('ensureModeratorGroup throws when re-select is empty', async () => {
+    const sql = new MockSql();
+    await expect(
+      new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW),
+    ).rejects.toThrow(/conversation open failed/);
   });
 
   it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {
@@ -853,6 +968,28 @@ describe('PostgresConversationStore', () => {
     expect(row?.nostrPublishState).toBe('pending');
     expect(row?.claimedUntil).toBe(NOW.getTime());
     expect(row?.nostrEvent).toEqual({ id: 'ab'.repeat(32), kind: 4 });
+  });
+
+  it('maps a skipped publish state without remapping to pending', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        conversation_id: 'c1',
+        text: 'hi',
+        created_at: NOW,
+        sender_account_id: 'acc',
+        sender_pubkey: null,
+        name: 'Ada',
+        event_id: null,
+        nostr_publish_state: 'skipped',
+        nostr_event: null,
+        claimed_until: null,
+      },
+    ];
+    const row = await new PostgresConversationStore(sql).getMessageById('m1');
+    expect(row?.nostrPublishState).toBe('skipped');
+    expect(row?.eventId).toBeNull();
   });
 
   it('propagates query errors', async () => {

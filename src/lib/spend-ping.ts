@@ -1,7 +1,7 @@
 /**
  * Outbound ping so the spend worker can pay a listed recipient after a
- * new top-level forum post. Missing env skips the ping; the process still
- * boots. Failures never throw.
+ * new top-level forum post or a moderator-group conversation message.
+ * Missing env skips the ping; the process still boots. Failures never throw.
  */
 
 import type { FetchFn } from '@/lib/lnurlp';
@@ -15,13 +15,16 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 export interface SpendPing {
   /**
-   * Notify spend that `address` just created the top-level forum post
-   * `messageId`.
+   * Notify spend that `address` just created a top-level forum post
+   * (`kind` omitted or `'daily'`) or a moderator-group message
+   * (`kind === 'moderator'`).
    *
    * @param address - Recipient Lightning Address.
-   * @param messageId - New top-level forum post id to attach a gift-reply under.
+   * @param messageId - Forum post id (daily) or conversation message id
+   *   (moderator; omitted from the HTTP body).
+   * @param kind - `'daily'` (default) or `'moderator'`.
    */
-  ping(address: string, messageId: string): Promise<void>;
+  ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void>;
 }
 
 /**
@@ -29,18 +32,20 @@ export interface SpendPing {
  */
 export class NoopSpendPing implements SpendPing {
   /**
-   * Ignore the address and message id.
+   * Ignore the address, message id, and optional kind.
    *
    * @param _address - Unused.
    * @param _messageId - Unused.
+   * @param _kind - Unused.
    */
-  ping(_address: string, _messageId: string): Promise<void> {
+  ping(_address: string, _messageId: string, _kind?: 'daily' | 'moderator'): Promise<void> {
     return Promise.resolve();
   }
 }
 
 /**
- * POST `{ address, messageId }` to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`.
+ * POST `{ address, messageId }` (daily) or `{ address, kind: "moderator" }`
+ * to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
  * Network, abort, and non-2xx log `spend.ping.failed` and resolve.
@@ -64,12 +69,16 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * POST `{ address, messageId }` to `{spendUrl}/ping`. Resolves on success and failure.
+   * POST `{ address, messageId }` (daily) or `{ address, kind: "moderator" }`
+   * to `{spendUrl}/ping`. Resolves on success and failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
-   * @param messageId - New top-level forum post id (JSON body).
+   * @param messageId - Forum post id for daily pings (JSON body); unused in
+   *   the moderator body.
+   * @param kind - `'daily'` (default) or `'moderator'`.
    */
-  async ping(address: string, messageId: string): Promise<void> {
+  async ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void> {
+    const body = kind === 'moderator' ? { address, kind: 'moderator' } : { address, messageId };
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',
@@ -77,7 +86,7 @@ export class HttpSpendPing implements SpendPing {
           Authorization: `Bearer ${this.#token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ address, messageId }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
       if (response.ok) {

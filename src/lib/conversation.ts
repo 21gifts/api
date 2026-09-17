@@ -1,10 +1,10 @@
 /**
  * Private messaging (PN) domain: public JSON projection.
  *
- * Threads are member↔member, member↔platform, or member↔Damus. Member HTTP
- * may include optional counterpart/sender `accountId` for 21.gifts accounts
- * and never exposes event ids or npubs (Damus-only display names may use
- * truncated npubs via the routes layer).
+ * Threads are member↔member, member↔platform, member↔Damus, or the closed
+ * moderator_group singleton. Member HTTP may include optional counterpart/sender
+ * `accountId` for 21.gifts accounts and never exposes event ids or npubs
+ * (Damus-only display names may use truncated npubs via the routes layer).
  */
 
 import type { NostrPublishState } from '@/lib/message';
@@ -13,7 +13,8 @@ import type { NostrPublishState } from '@/lib/message';
 export const CONVERSATION_LIST_LIMIT = 200;
 
 /** Conversation counterpart kind. */
-export type ConversationKind = 'member_member' | 'member_platform' | 'member_damus';
+export type ConversationKind =
+  'member_member' | 'member_platform' | 'member_damus' | 'moderator_group';
 
 /** Persisted conversation thread (store-internal). */
 export interface ConversationThread {
@@ -23,12 +24,13 @@ export interface ConversationThread {
   kind: ConversationKind;
   /**
    * Lower lexicographic participant for member_member; the member for
-   * member_platform and member_damus.
+   * member_platform and member_damus; the platform account for
+   * moderator_group.
    */
   accountA: string;
   /**
    * Higher lexicographic participant for member_member; platform account for
-   * member_platform; `null` for member_damus.
+   * member_platform; `null` for member_damus and moderator_group.
    */
   accountB: string | null;
   /** Damus counterpart hex pubkey when `kind === 'member_damus'`; else null. */
@@ -210,4 +212,14 @@ export function unsignedConversationDefaults(): Pick<
     nostrEvent: null,
     claimedUntil: null,
   };
+}
+
+/**
+ * Fixed display name for the closed moderator-group thread.
+ *
+ * @param kind - Conversation kind.
+ * @returns `'Moderators'` when `kind` is `moderator_group`; otherwise `null`.
+ */
+export function moderatorGroupDisplayName(kind: ConversationKind): string | null {
+  return kind === 'moderator_group' ? 'Moderators' : null;
 }
