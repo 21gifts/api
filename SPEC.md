@@ -46,9 +46,11 @@ routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
-`gifts.record_failed` and still returns **200**. When the issued invoice stored
-`messageId`, proof inserts a platform-account gift-reply first, then
-`addSats` (idempotent). Optional `messageId` on
+`gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
+platform-account gift-reply first, then `addSats` (idempotent). When that
+`messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
+under the reply, then `addSats` the reply (a live existing marker is hidden
+only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
@@ -3183,7 +3185,8 @@ deposit route.
 recipients. They are paid by the external spend worker **when the recipient
 posts a top-level note**, not on a daily timer. Invoice HTTP (`POST /invoices`
 / `POST /invoices/proof`) is unchanged except proof now attaches a gift-reply
-when `messageId` was stored; do not invent new paths. No `/me/recurring` or
+when a top-level `messageId` was stored, or a hidden spend marker when
+`messageId` is a reply; do not invent new paths. No `/me/recurring` or
 in-process scheduler.
 
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
