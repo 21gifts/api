@@ -369,6 +369,9 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const staff = isStaffRole(account.role);
         const platformId = platform?.id ?? null;
         for (const thread of threads) {
+          if (thread.kind === 'moderator_group') {
+            continue;
+          }
           const inbound = await deps.store.hasInboundMessage(
             thread.id,
             account.id,
@@ -379,9 +382,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             (thread.lastText !== '' || thread.lastSats > 0);
-          if (thread.kind === 'moderator_group') {
-            continue;
-          }
           if (!inbound && !ownContactTicket) {
             continue;
           }
