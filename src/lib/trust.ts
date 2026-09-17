@@ -3,9 +3,12 @@
  *
  * `verified` is a founder or moderator confirming this person in real life
  * (forum badge), not Lightning-Address proof-of-control. Public
- * {@link buildTrustChain} never invents edges. A pending
- * `moderator_propose` stays private until the subject is a moderator;
- * then the proposer is the public edge, not the confirmer.
+ * {@link buildTrustChain} never invents edges. At most one public incoming
+ * kind per subject: the oldest eligible sibling (`createdAt` then `id`).
+ * Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when
+ * the live subject is a `moderator`. `moderator_confirm` never. A pending
+ * propose (subject still `verified`) stays private. Later appoint, confirm,
+ * or propose do not replace an earlier eligible contact.
  */
 
 import type { Account, AccountRole } from '@/lib/auth/store';
@@ -128,12 +131,15 @@ export function isStaffRole(role: AccountRole): boolean {
  *
  * Nodes are accounts whose role is `founder`, `moderator`, or `verified`
  * (never `basis`), sorted founder → moderator → verified, then oldest
- * `createdAt`, then `id`. Public edges are stored `verify` /
- * `moderator_appoint` rows plus `moderator_propose` once the subject is a
- * `moderator` (the proposer is the public actor). `moderator_confirm` is
- * omitted. A pending propose (subject still `verified`) stays private.
- * Actor and subject must both be in the node set. No synthetic edges.
- * Lightning addresses, view keys, and linking keys are omitted.
+ * `createdAt`, then `id`. Groups stored edges by `subjectId` and projects
+ * at most one incoming kind per subject: the oldest eligible sibling
+ * (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and
+ * `moderator_propose` only when the live subject is a `moderator`.
+ * `moderator_confirm` never. A pending propose (subject still `verified`)
+ * stays private. Later appoint, confirm, or propose do not replace an
+ * earlier eligible contact. Actor and subject must both be in the node
+ * set. No synthetic edges. Lightning addresses, view keys, and linking
+ * keys are omitted.
  *
  * @param accounts - Live accounts (roles as stored).
  * @param edges - Stored trust edges (any order).
@@ -151,9 +157,23 @@ export function buildTrustChain(
     role: account.role,
   }));
   const byId = new Map(chainAccounts.map((account) => [account.id, account]));
+  const grouped = new Map<string, TrustEdge[]>();
+  for (const edge of edges) {
+    const siblings = grouped.get(edge.subjectId);
+    if (siblings === undefined) {
+      grouped.set(edge.subjectId, [edge]);
+    } else {
+      siblings.push(edge);
+    }
+  }
   const publicEdges: TrustChainEdge[] = [];
   for (const edge of edges) {
-    if (!isProjectedTrustEdge(edge, byId.get(edge.subjectId))) {
+    const siblings = grouped.get(edge.subjectId);
+    /* v8 ignore next 3 -- every edge was just inserted into grouped by subjectId */
+    if (siblings === undefined) {
+      continue;
+    }
+    if (!isProjectedTrustEdge(edge, byId.get(edge.subjectId), siblings)) {
       continue;
     }
     if (!nodeIds.has(edge.actorId) || !nodeIds.has(edge.subjectId)) {
@@ -282,26 +302,57 @@ export function isChainAccount(
 /**
  * Whether a stored edge appears on the public trust chain.
  *
- * `verify` and `moderator_appoint` always project when both ends are chain
- * accounts. `moderator_propose` projects only once the subject is a
- * `moderator` (the proposer is the public actor). `moderator_confirm` never
- * projects.
+ * True iff `edge.kind` is the oldest eligible kind among `subjectEdges`
+ * (default `[edge]`), by `createdAt` then `id`. Eligible: `verify`,
+ * `moderator_appoint`, and `moderator_propose` only when the live subject
+ * is a `moderator`. `moderator_confirm` never. Later siblings do not
+ * replace an earlier eligible contact.
  *
  * @param edge - Stored grant.
  * @param subject - Live subject account, if loaded.
- * @returns `true` when the edge is public.
+ * @param subjectEdges - Stored edges for this subject (default `[edge]`).
+ * @returns `true` when the edge is the public incoming kind.
  */
 export function isProjectedTrustEdge(
   edge: TrustEdge,
   subject: Account | undefined,
+  subjectEdges: readonly TrustEdge[] = [edge],
 ): edge is TrustEdge & { kind: TrustChainKind } {
-  if (edge.kind === 'verify' || edge.kind === 'moderator_appoint') {
-    return true;
+  const winning = winningPublicKind(subject, subjectEdges);
+  return winning !== undefined && edge.kind === winning;
+}
+
+/** Oldest eligible public incoming kind among `subjectEdges`, or none. */
+function winningPublicKind(
+  subject: Account | undefined,
+  subjectEdges: readonly TrustEdge[],
+): TrustChainKind | undefined {
+  const eligible: TrustEdge[] = [];
+  for (const sibling of subjectEdges) {
+    if (sibling.kind === 'moderator_confirm') {
+      continue;
+    }
+    if (sibling.kind === 'moderator_propose' && subject?.role !== 'moderator') {
+      continue;
+    }
+    if (
+      sibling.kind === 'verify' ||
+      sibling.kind === 'moderator_appoint' ||
+      sibling.kind === 'moderator_propose'
+    ) {
+      eligible.push(sibling);
+    }
   }
-  if (edge.kind === 'moderator_propose') {
-    return subject?.role === 'moderator';
+  if (eligible.length === 0) {
+    return undefined;
   }
-  return false;
+  const oldest = eligible.slice().sort(compareTrustEdgesOldestFirst)[0];
+  /* v8 ignore next 3 -- eligible.length === 0 already returned */
+  if (oldest === undefined) {
+    return undefined;
+  }
+  /* v8 ignore next -- confirm was filtered from eligible */
+  return oldest.kind === 'moderator_confirm' ? undefined : oldest.kind;
 }
 
 /** Oldest `createdAt` first, then `id`. */
