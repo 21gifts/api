@@ -323,10 +323,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'photo' in raw;
       let decodedPhoto: ForumPhoto | null | undefined = undefined;
       if (photoKeyPresent) {
-        if (parsed.data.photo === null) {
+        const incoming = parsed.data.photo;
+        if (incoming === null) {
           decodedPhoto = null;
+        } else if (incoming === undefined) {
+          return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
         } else {
-          const decoded = decodeForumPhoto(parsed.data.photo.contentType, parsed.data.photo.data);
+          const decoded = decodeForumPhoto(incoming.contentType, incoming.data);
           if (decoded === null) {
             return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
           }
