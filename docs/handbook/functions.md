@@ -745,16 +745,16 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (`GET /`, `GET /activity`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), PUT `/about` About me on the profile note (creates without LN), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address. `GET /activity` is Bearer-only (no rules gate) and returns given/received sats for the session account.
+- **Purpose:** Authenticated account routes (`GET /`, `GET /activity`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), PUT `/about` About me on the profile note (`{ text, photo? }`: omitted photo keeps, `null` clears, object sets the same JPEG/PNG/WebP as a forum post; creates without LN, including photo-only empty text), `GET /about/photo` (Bearer profile-note bytes), forum-laws dismiss, living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address. `GET /activity` is Bearer-only (no rules gate) and returns given/received sats for the session account.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `notificationStore` (profile-note `notifyForumPost`), optional `nostrKek` (required to sign the mint probe), optional `giftStore`, `rates`, and `fiatRates` (defaults empty in-memory; used by `GET /activity`; missing fiat never 503).
-- **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted` + `aboutMe`. `GET /activity` is 200 activity JSON (zeros without Coinbase / Frankfurter when empty) or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`. Logs `account.about.set` / `account.about.failed` on PUT `/about`. A won PUT `/about` inline claim create calls `notifyForumPost` after `updateText` with the bio (best-effort). PUT `/about` does not call `ensureProfileMessage`. Updating an already-live note does not notify. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`.
+- **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto`. `GET /activity` is 200 activity JSON (zeros without Coinbase / Frankfurter when empty) or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`. Logs `account.about.set` / `account.about.failed` on PUT `/about`; `GET /about/photo` 503 logs `account.about.photo.failed`. A won PUT `/about` inline claim create calls `notifyForumPost` after the text/photo writes (best-effort). PUT `/about` does not call `ensureProfileMessage`. Updating an already-live note does not notify. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`.
 - **Used by:** `createApp`.
 
 ## Function: viewRoutes
 
-- **Purpose:** Hono sub-app for public `GET /:viewKey` and `GET /:viewKey/activity`. Param not 64 lowercase hex or unknown key → 404 `{ error: 'Not found' }`. Identity hit → `store.accountHasPasskey(account.id)`, load live profile-note text (`deletedAt` null) for `aboutMe`, then `serializeViewProfile(account, hasPasskey, aboutMe)`. Activity hit → given/received sats for that account. No auth; not a session.
+- **Purpose:** Hono sub-app for public `GET /:viewKey`, `GET /:viewKey/about/photo`, and `GET /:viewKey/activity`. Param not 64 lowercase hex or unknown key → 404 `{ error: 'Not found' }`. Identity hit → `store.accountHasPasskey(account.id)`, load live profile-note text (`deletedAt` null) for `aboutMe` and `aboutMeHasPhoto`, then `serializeViewProfile(account, hasPasskey, aboutMe, aboutMeHasPhoto)`. Photo hit → `forumPhotoResponse` bytes for the live profile note (404 `{ error: 'Photo not found' }` when missing). Activity hit → given/received sats for that account. No auth; not a session.
 - **Inputs:** `ViewRouteDeps`: `store`, optional `messageStore`, `giftStore`, `rates`, `fiatRates`, and `now` (defaults empty in-memory / `Date.now`; used by About me and `GET /:viewKey/activity`). Missing fiat never 503.
-- **Returns / side effects:** Hono app mounted at `/view` so the public paths are `GET /view/:viewKey` and `GET /view/:viewKey/activity`. Identity 503 logs `view.get.failed`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`.
+- **Returns / side effects:** Hono app mounted at `/view` so the public paths are `GET /view/:viewKey`, `GET /view/:viewKey/about/photo`, and `GET /view/:viewKey/activity`. Identity 503 logs `view.get.failed`. Photo 503 logs `view.photo.failed`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`.
 - **Used by:** `createApp`.
 
 ## Function: messagesRoutes
@@ -825,7 +825,21 @@
 - **Purpose:** Decode a base64 forum photo, enforce the 1 MiB cap, and set MIME from magic bytes (declared `contentType` is ignored).
 - **Inputs:** Declared `contentType` string (non-authoritative) and standard base64 `data`.
 - **Returns / side effects:** `{ contentType, bytes }` with a copied `Uint8Array`, or `null` on invalid base64, empty, oversize, or unrecognized magic. No I/O.
-- **Used by:** `POST /messages`.
+- **Used by:** `POST /messages`, `PUT /me/about`.
+
+## Function: forumPhotoResponse
+
+- **Purpose:** Build the public photo HTTP response used by `GET /messages/:id/photo`, `GET /me/about/photo`, and `GET /view/:viewKey/about/photo`. Sets jpeg/png/webp `Content-Type`, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, and inline `Content-Disposition` `photo.jpg|png|webp`.
+- **Inputs:** `ForumPhoto` (`contentType` plus `bytes`).
+- **Returns / side effects:** `200` `Response` whose body is `photo.bytes`. No I/O.
+- **Used by:** `serveForumPhoto`, `meRoutes` GET `/about/photo`, `viewRoutes` GET `/:viewKey/about/photo`.
+
+## Function: updatePhoto
+
+- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map; Postgres `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING` list columns.
+- **Inputs:** Message `id` and `ForumPhoto | null` (`null` clears).
+- **Returns / side effects:** Updated row copy with `hasPhoto` true iff photo is non-null, or `undefined` when no row has that id.
+- **Used by:** `PUT /me/about` when the `photo` key is present on an already-live profile note.
 
 ## Function: forumContentFingerprint
 
@@ -1207,29 +1221,29 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the ten public fields (including location) plus `viewKey`, `setup`, `missing`, `hasPosted`, and `aboutMe`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
-- **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null`.
-- **Returns / side effects:** `OwnerAccountResponse` (fifteen fields including `hasPosted`, `location`, and `aboutMe`). No I/O. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the ten public fields (including location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`, so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, and About me photo display. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null` plus `aboutMeHasPhoto: boolean`.
+- **Returns / side effects:** `OwnerAccountResponse` (sixteen fields including `hasPosted`, `location`, `aboutMe`, and `aboutMeHasPhoto`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts`.
 
 ## Function: serializeOwnerAccountWithPosts
 
-- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null` — see `src/lib/auth/account-json.ts` 195: `if (row !== undefined && row.deletedAt === null)`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`.
+- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename, and `aboutMeHasPhoto` from `row.hasPhoto === true`. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`.
 - **Inputs:** `Account`, `Pick<MessageStore, 'accountHasLivePost' | 'getById'>`.
-- **Returns / side effects:** `OwnerAccountResponse` including `hasPosted` and `aboutMe`. Overlay lookup is `accountHasLivePost`; spend/invoice lookup is `accountHasLiveTopLevelPost`. Store throw is unhandled.
+- **Returns / side effects:** `OwnerAccountResponse` including `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`. Overlay lookup is `accountHasLivePost`; spend/invoice lookup is `accountHasLiveTopLevelPost`. Store throw is unhandled.
 - **Used by:** `meRoutes` and `authRoutes`.
 
 ## Function: membersRoutes
 
-- **Purpose:** Hono sub-app for `GET /members/:accountId`, `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and `GET /members/:accountId/replies`. Bearer + `requireAction(forum.read)` on all; UUID path. Profile card is live identity plus optional `profileMessage` via `serializeMessage`, derived `aboutMe`, uncapped live `postCount` / `replyCount` from `countByAccount`, and `trust` via `accountTrust`. Activity is given/received sats for that member (`buildAccountActivity`). Posts is live-only top-level notes newest-first (cap 200, same serialize as signed-in `GET /messages` including `accountId` / `replyCount` / `payable`; omits `parentId`; missing-file `hasVideo` direct replies are deleted and subtracted from `replyCount`). Replies is live-only member replies newest-first (cap 200, `payable` false, optional `parentId`, no `replyCount`; a child that cannot serialize is omitted, siblings still 200).
+- **Purpose:** Hono sub-app for `GET /members/:accountId`, `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and `GET /members/:accountId/replies`. Bearer + `requireAction(forum.read)` on all; UUID path. Profile card is live identity plus optional `profileMessage` via `serializeMessage`, derived `aboutMe`, `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount`, and `trust` via `accountTrust`. Activity is given/received sats for that member (`buildAccountActivity`). Posts is live-only top-level notes newest-first (cap 200, same serialize as signed-in `GET /messages` including `accountId` / `replyCount` / `payable`; omits `parentId`; missing-file `hasVideo` direct replies are deleted and subtracted from `replyCount`). Replies is live-only member replies newest-first (cap 200, `payable` false, optional `parentId`, no `replyCount`; a child that cannot serialize is omitted, siblings still 200).
 - **Inputs:** `MembersRouteDeps` (`authStore`, `messageStore`, required `trustStore`, `now`, optional `giftStore`, `rates`, and `fiatRates` used by `GET /:accountId/activity`; missing fiat never 503).
-- **Returns / side effects:** Hono app mounted at `/members`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Logs `members.get.failed`, `members.posts.failed`, `members.replies.failed`, or `account.activity.failed` on 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`. GET JSON includes `aboutMe`.
+- **Returns / side effects:** Hono app mounted at `/members`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Logs `members.get.failed`, `members.posts.failed`, `members.replies.failed`, or `account.activity.failed` on 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`. GET JSON includes `aboutMe` and `aboutMeHasPhoto`.
 - **Used by:** `createApp`.
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Seven fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
-- **Inputs:** `Account`, `hasPasskey: boolean`, `aboutMe: string | null`.
+- **Purpose:** Public profile card for the capability URL. Eight fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
+- **Inputs:** `Account`, `hasPasskey: boolean`, `aboutMe: string | null`, `aboutMeHasPhoto: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.
 

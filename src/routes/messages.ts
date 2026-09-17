@@ -13,6 +13,7 @@ import {
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
   forumContentFingerprint,
+  forumPhotoResponse,
   normalizeForumText,
   serializeHiddenMessage,
   serializeMessage,
@@ -256,21 +257,7 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
-    const ext =
-      photo.contentType === 'image/png'
-        ? 'png'
-        : photo.contentType === 'image/webp'
-          ? 'webp'
-          : 'jpg';
-    return new Response(photo.bytes, {
-      status: 200,
-      headers: {
-        'Content-Type': photo.contentType,
-        'Cache-Control': 'public, max-age=86400',
-        'Access-Control-Allow-Origin': '*',
-        'Content-Disposition': `inline; filename="photo.${ext}"`,
-      },
-    });
+    return forumPhotoResponse(photo);
   } catch {
     logEvent('messages.photo.failed');
     return Response.json({ error: 'Messages are unavailable' }, { status: 503 });

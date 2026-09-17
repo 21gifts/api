@@ -35,6 +35,12 @@ const NOSTR_KEK = parseNostrKek('cd'.repeat(32));
 const NOTE_ID = 'note-ada';
 const BIO = 'I build on Bitcoin';
 const JSON_HEADERS = { ...AUTH, 'content-type': 'application/json' };
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+const JPEG_B64 = Buffer.from(JPEG_BYTES).toString('base64');
+const JPEG_PHOTO = { contentType: 'image/jpeg', data: JPEG_B64 };
+const PHOTO_ERROR = {
+  error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+};
 
 interface MountOpts {
   messages?: InMemoryMessageStore;
@@ -115,6 +121,15 @@ async function putAbout(
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
+}
+
+async function seedNoteWithPhoto(text: string = 'Ada'): Promise<InMemoryMessageStore> {
+  const messages = new InMemoryMessageStore();
+  await messages.create(
+    { ...nameOnlyNote({ text }), hasPhoto: true },
+    { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+  );
+  return messages;
 }
 
 describe('PUT /me/about', () => {
@@ -738,6 +753,113 @@ describe('PUT /me/about', () => {
     expect(stored?.profileMessageId).toBe(live[0]?.id);
     expect(await messages.getById(live[0]!.id)).toBeDefined();
   });
+
+  it('creates a note with text and a jpeg photo when none exists', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const res = await putAbout(store, { text: 'Hi', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('Hi');
+    expect(body.aboutMeHasPhoto).toBe(true);
+    const stored = await store.getAccount('acc');
+    expect(stored?.profileMessageId).toEqual(expect.any(String));
+    const photo = await messages.getPhoto(stored!.profileMessageId!);
+    expect(photo?.contentType).toBe('image/jpeg');
+    expect(photo?.bytes).toEqual(JPEG_BYTES);
+  });
+
+  it('creates a photo-only note when text is empty and a photo is sent', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const res = await putAbout(store, { text: '', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(true);
+    const stored = await store.getAccount('acc');
+    expect(stored?.profileMessageId).toEqual(expect.any(String));
+    const note = await messages.getById(stored!.profileMessageId!);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(true);
+    expect((await messages.getPhoto(stored!.profileMessageId!))?.bytes).toEqual(JPEG_BYTES);
+  });
+
+  it('does not delete a collapsed live photo note when create is retried', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const realGetById = messages.getById.bind(messages);
+    let skippedLiveLookup = false;
+    vi.spyOn(messages, 'getById').mockImplementation(async (id: string) => {
+      if (!skippedLiveLookup && id === NOTE_ID) {
+        skippedLiveLookup = true;
+        return undefined;
+      }
+      return realGetById(id);
+    });
+    const res = await putAbout(store, { text: 'Hi', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    expect(await messages.getById(NOTE_ID)).toBeDefined();
+    expect((await messages.getPhoto(NOTE_ID))?.bytes).toEqual(JPEG_BYTES);
+    const body = (await res.json()) as { aboutMeHasPhoto: boolean };
+    expect(body.aboutMeHasPhoto).toBe(true);
+  });
+
+  it('attaches a jpeg to an already-live note without a photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: 'Hi' })]);
+    const res = await putAbout(store, { text: 'Hi', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('Hi');
+    expect(body.aboutMeHasPhoto).toBe(true);
+    expect((await messages.getPhoto(NOTE_ID))?.bytes).toEqual(JPEG_BYTES);
+    expect((await messages.getById(NOTE_ID))?.hasPhoto).toBe(true);
+  });
+
+  it('clears a stored photo when photo is null', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const res = await putAbout(store, { text: 'Hi', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('Hi');
+    expect(body.aboutMeHasPhoto).toBe(false);
+    expect(await messages.getPhoto(NOTE_ID)).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.hasPhoto).toBe(false);
+  });
+
+  it('keeps a stored photo when the photo key is omitted', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Ada');
+    const res = await putAbout(store, { text: 'Hi' }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('Hi');
+    expect(body.aboutMeHasPhoto).toBe(true);
+    expect((await messages.getPhoto(NOTE_ID))?.bytes).toEqual(JPEG_BYTES);
+  });
+
+  it('returns 400 when photo data is not a jpeg/png/webp under 1 MiB', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const res = await putAbout(store, {
+      text: 'Hi',
+      photo: { contentType: 'image/jpeg', data: '!!!not-base64!!!' },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PHOTO_ERROR);
+  });
+
+  it('returns 400 when photo is not an object or null', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const res = await putAbout(store, { text: 'Hi', photo: true });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PHOTO_ERROR);
+  });
 });
 
 describe('GET /me aboutMe', () => {
@@ -747,7 +869,74 @@ describe('GET /me aboutMe', () => {
     const messages = new InMemoryMessageStore([nameOnlyNote({ text: 'Ada' })]);
     const res = await mount(store, { messages }).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { aboutMe: string | null };
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
     expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(false);
+  });
+});
+
+describe('GET /me/about/photo', () => {
+  it('returns 401 without a bearer', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/about/photo');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 404 when there is no profile note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const res = await mount(store).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 when the profile note id is missing from the store', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const res = await mount(store, { messages: new InMemoryMessageStore() }).request(
+      '/me/about/photo',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 when the profile note is hidden', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
+    const res = await mount(store, { messages }).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 when the live note has no photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    const res = await mount(store, { messages }).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns jpeg bytes when the live note has a photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto();
+    const res = await mount(store, { messages }).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('returns 503 when getById throws', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(messages, 'getById').mockRejectedValue(new Error('store down'));
+    const res = await mount(store, { messages }).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.about.photo.failed')).toBe(true);
   });
 });

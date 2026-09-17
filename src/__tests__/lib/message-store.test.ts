@@ -1110,6 +1110,31 @@ describe('InMemoryMessageStore', () => {
     expect(await store.updateText('missing', 'x')).toBeUndefined();
   });
 
+  it('updatePhoto sets and clears bytes without changing sats or eventId', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
+    const updated = await store.updatePhoto('a', JPEG);
+    expect(updated?.hasPhoto).toBe(true);
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    expect(updated?.text).toBe('first');
+    const photo = await store.getPhoto('a');
+    expect(photo).toEqual(JPEG);
+    expect(photo?.bytes).not.toBe(JPEG.bytes);
+    const stored = await store.getById('a');
+    expect(stored?.hasPhoto).toBe(true);
+    expect(stored?.sats).toBe(21);
+    expect(stored?.eventId).toBe('ee'.repeat(32));
+    expect(updated).not.toBe(stored);
+    const cleared = await store.updatePhoto('a', null);
+    expect(cleared?.hasPhoto).toBe(false);
+    expect(cleared?.sats).toBe(21);
+    expect(cleared?.eventId).toBe('ee'.repeat(32));
+    expect(await store.getPhoto('a')).toBeNull();
+    expect((await store.getById('a'))?.hasPhoto).toBe(false);
+    expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
+  });
+
   it('getById and claimUnsigned lease a row', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -3146,6 +3171,50 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['m1', 'bio']);
     sql.nextRows = [];
     expect(await store.updateText('missing', 'x')).toBeUndefined();
+  });
+
+  it('updatePhoto issues UPDATE … RETURNING and maps the row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'bio',
+        created_at: new Date(0),
+        has_photo: true,
+        event_id: 'ee'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 21,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const updated = await store.updatePhoto('m1', JPEG);
+    expect(updated?.hasPhoto).toBe(true);
+    expect(updated?.sats).toBe(21);
+    expect(updated?.eventId).toBe('ee'.repeat(32));
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE message SET photo = \$2, photo_content_type = \$3 WHERE id = \$1 RETURNING/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['m1', JPEG.bytes, 'image/jpeg']);
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'bio',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: 'ee'.repeat(32),
+        nostr_publish_state: 'published',
+        sats: 21,
+      },
+    ];
+    const cleared = await store.updatePhoto('m1', null);
+    expect(cleared?.hasPhoto).toBe(false);
+    expect(sql.queries[1]?.params).toEqual(['m1', null, null]);
+    sql.nextRows = [];
+    expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });
 
   it('getById maps nostr_event JSON string', async () => {

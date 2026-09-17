@@ -39,7 +39,7 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the ten public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * `hasPosted`, and `aboutMe`.
+ * `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -64,6 +64,12 @@ export interface OwnerAccountResponse extends AccountResponse {
    * the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
+  /**
+   * True when the live profile note (`deletedAt === null`) has a stored
+   * photo. False when there is no live note. Independent of `aboutMe`
+   * (a photo-only / name-copy note can still have a photo).
+   */
+  aboutMeHasPhoto: boolean;
 }
 
 /**
@@ -89,6 +95,11 @@ export interface ViewProfileResponse {
    * the profile note is missing or soft-hidden (`deletedAt` set).
    */
   aboutMe: string | null;
+  /**
+   * True when the live profile note (`deletedAt === null`) has a stored
+   * photo. False when there is no live note.
+   */
+  aboutMeHasPhoto: boolean;
 }
 
 /**
@@ -142,20 +153,23 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *
  * Includes `viewKey` so the owner can copy the capability URL. The second
- * argument is the live-post flag (`hasPosted`); the third is About me.
+ * argument is the live-post flag (`hasPosted`); the third is About me;
+ * the fourth is whether the live profile note has a photo.
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
  * @param account - Stored account.
  * @param hasPosted - True when the account has a live non-profile forum row.
  * @param aboutMe - Profile bio, or `null` when unfilled.
- * @returns Fifteen fields including `viewKey`, `setup`, `missing`,
- * `hasPosted`, `location`, and `aboutMe`.
+ * @param aboutMeHasPhoto - True when the live profile note has a photo.
+ * @returns Sixteen fields including `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `location`, `aboutMe`, and `aboutMeHasPhoto`.
  */
 export function serializeOwnerAccount(
   account: Account,
   hasPosted: boolean,
   aboutMe: string | null,
+  aboutMeHasPhoto: boolean,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -164,6 +178,7 @@ export function serializeOwnerAccount(
     missing: accountMissing(account),
     hasPosted,
     aboutMe,
+    aboutMeHasPhoto,
   };
 }
 
@@ -179,9 +194,10 @@ export function serializeOwnerAccount(
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @returns Owner JSON including `hasPosted` and `aboutMe`. `aboutMe` is
- *   `null` when the profile note is missing or `deletedAt` is set, else
- *   `aboutMeFromNote(account.name, row.text, row.name)`.
+ * @returns Owner JSON including `hasPosted`, `aboutMe`, and
+ *   `aboutMeHasPhoto`. `aboutMe` is `null` when the profile note is missing
+ *   or `deletedAt` is set, else `aboutMeFromNote(account.name, row.text, row.name)`.
+ *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
  */
 export async function serializeOwnerAccountWithPosts(
   account: Account,
@@ -190,13 +206,15 @@ export async function serializeOwnerAccountWithPosts(
   const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
   let aboutMe: string | null = null;
+  let aboutMeHasPhoto = false;
   if (typeof profileId === 'string' && profileId.trim() !== '') {
     const row = await messages.getById(profileId);
     if (row !== undefined && row.deletedAt === null) {
       aboutMe = aboutMeFromNote(account.name, row.text, row.name);
+      aboutMeHasPhoto = row.hasPhoto === true;
     }
   }
-  return serializeOwnerAccount(account, hasPosted, aboutMe);
+  return serializeOwnerAccount(account, hasPosted, aboutMe, aboutMeHasPhoto);
 }
 
 /**
@@ -207,12 +225,15 @@ export async function serializeOwnerAccountWithPosts(
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
- * @returns Seven public profile fields (including location and aboutMe).
+ * @param aboutMeHasPhoto - True when the live profile note has a photo.
+ * @returns Eight public profile fields (including location, aboutMe, and
+ *   aboutMeHasPhoto).
  */
 export function serializeViewProfile(
   account: Account,
   hasPasskey: boolean,
   aboutMe: string | null,
+  aboutMeHasPhoto: boolean,
 ): ViewProfileResponse {
   return {
     name: account.name,
@@ -222,5 +243,6 @@ export function serializeViewProfile(
     createdAt: account.createdAt,
     hasPasskey,
     aboutMe,
+    aboutMeHasPhoto,
   };
 }
