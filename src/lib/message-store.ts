@@ -1980,7 +1980,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     hasPhoto: Boolean(row.has_photo),
-    photoCount: Number(row.photo_count ?? (Boolean(row.has_photo) ? 1 : 0)),
+    photoCount: Number(row.photo_count ?? (row.has_photo ? 1 : 0)),
     hasVideo:
       row.video_content_type !== null &&
       row.video_content_type !== undefined &&
