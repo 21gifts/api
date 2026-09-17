@@ -340,10 +340,11 @@ async function publicThread(
 }
 
 /**
- * Build the `/conversations` route group.
+ * Build the `/conversations` route group. `GET /` lists the inbox and never
+ * pins `moderator_group`; `GET /moderator-group` is the moderator-only tool.
  *
  * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
- * @returns A Hono app with list/open/read/reply/invoice routes.
+ * @returns A Hono app with list/open/read/reply/invoice routes and GET `/moderator-group`.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
@@ -357,20 +358,13 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       }
       try {
         const platform = await platformAccount(deps.authStore);
-        let threads = await deps.store.listVisible(
+        const threads = await deps.store.listVisible(
           account.id,
           isStaffRole(account.role),
           platform?.id ?? null,
           CONVERSATION_LIST_LIMIT,
-          account.role === 'moderator',
+          false,
         );
-        if (account.role === 'moderator' && platform !== undefined) {
-          const group = await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
-          threads = [group, ...threads.filter((thread) => thread.id !== group.id)].slice(
-            0,
-            CONVERSATION_LIST_LIMIT,
-          );
-        }
         const conversations: PublicConversation[] = [];
         const staff = isStaffRole(account.role);
         const platformId = platform?.id ?? null;
@@ -385,7 +379,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             (thread.lastText !== '' || thread.lastSats > 0);
-          if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
+          if (!inbound && !ownContactTicket) {
             continue;
           }
           const unread = await deps.store.hasUnread(thread.id, account.id, staff, platformId);
@@ -456,6 +450,30 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         return c.json(await publicThread(thread, account, deps.authStore, platformId, unread), 200);
       } catch {
         logEvent('conversations.open.failed');
+        return c.json({ error: 'Conversations are unavailable' }, 503);
+      }
+    })
+    .get('/moderator-group', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (account.role !== 'moderator') {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const platform = await platformAccount(deps.authStore);
+        if (platform === undefined) {
+          logEvent('conversations.moderator_group.failed');
+          return c.json({ error: 'Conversations are unavailable' }, 503);
+        }
+        const thread = await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
+        return c.json(
+          { conversation: await publicThread(thread, account, deps.authStore, platform.id) },
+          200,
+        );
+      } catch {
+        logEvent('conversations.moderator_group.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
       }
     })

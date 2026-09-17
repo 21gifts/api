@@ -216,6 +216,11 @@ test('POST /conversations without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /conversations/moderator-group without bearer is 401', async ({ request }) => {
+  const res = await request.get('/conversations/moderator-group');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /conversations/:id without bearer is 401', async ({ request }) => {
   const res = await request.get('/conversations/:id');
   expect(res.status()).toBe(401);
