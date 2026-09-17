@@ -119,9 +119,10 @@ export interface AppDeps {
    */
   spendApiToken?: string;
   /**
-   * Spend-worker ping after a new top-level forum post (default:
-   * `resolveSpendPing(process.env, fetchImpl)`). Unset `SPEND_URL` or
-   * `SPEND_API_TOKEN` → omitted; `POST /messages` still 200.
+   * Spend-worker ping after a new top-level forum post or a `moderator_group`
+   * persist (default: `resolveSpendPing(process.env, fetchImpl)`). Unset
+   * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
+   * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
   /** Gift invoices issued for the spend worker (default: in-memory). */
