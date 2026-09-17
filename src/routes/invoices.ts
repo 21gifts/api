@@ -66,9 +66,10 @@ export interface InvoiceRouteDeps {
    */
   giftRecorder?: GiftRecorder;
   /**
-   * Optional in-app notification store. When present with `pushStore`, a spend
-   * gift-reply fans out via {@link notifyForumReply} with `auth` so
-   * `notificationLevel` filters in-app rows and Web Push.
+   * Optional in-app notification store. A spend gift-reply fans out via
+   * {@link notifyForumReply} with `auth` so `notificationLevel` filters
+   * in-app rows when this store is set, and Web Push when `pushStore` is
+   * set. Missing `pushStore` still writes in-app rows.
    */
   notificationStore?: NotificationStore;
   /**
