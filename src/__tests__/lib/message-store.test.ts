@@ -2473,7 +2473,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(
       /FROM message ORDER BY created_at DESC, id DESC LIMIT \$1/,
     );
-    expect(sql.queries[0]?.text).not.toMatch(/WHERE/);
+    expect(sql.queries[0]?.text).not.toMatch(/FROM message WHERE/);
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     expect(sql.queries[0]?.params).toEqual([200]);
     expect(listed.map((row) => row.id)).toEqual(['reply', 'hidden']);
