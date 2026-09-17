@@ -286,12 +286,13 @@ ID).
     "missing": ["name", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
+    "aboutMeHasPhoto": false,
     "notificationLevel": "all"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, and `notificationLevel`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`).
 
 ### `POST /auth/passkey/authenticate/begin`
 
