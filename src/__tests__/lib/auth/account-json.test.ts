@@ -106,7 +106,12 @@ describe('serializeOwnerAccount', () => {
   });
 
   it('includes a stored notificationLevel on owner JSON', () => {
-    const json = serializeOwnerAccount({ ...account, notificationLevel: 'active' }, false, null);
+    const json = serializeOwnerAccount(
+      { ...account, notificationLevel: 'active' },
+      false,
+      null,
+      false,
+    );
     expect(json.notificationLevel).toBe('active');
   });
 
