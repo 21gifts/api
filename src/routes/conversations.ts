@@ -896,7 +896,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           }
           return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
         }
-        /* v8 ignore next 3 -- fake BOLT11s in tests decode to null */
         const inspected = inspectBolt11(zap.pr);
         const description = inspected?.description ?? null;
         const descriptionHash = inspected?.descriptionHash ?? null;
@@ -911,7 +910,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             result: 'not_zap',
             httpStatus: 400,
             pr: zap.pr,
-            /* v8 ignore next -- inspectBolt11 is null on fake test invoices */
             paymentHash: inspected?.paymentHash ?? null,
             description,
             descriptionHash,
@@ -930,7 +928,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           result: 'ok',
           httpStatus: 200,
           pr: zap.pr,
-          /* v8 ignore next -- inspectBolt11 is null on fake test invoices */
           paymentHash: inspected?.paymentHash ?? null,
           description,
           descriptionHash,

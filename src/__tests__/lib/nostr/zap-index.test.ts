@@ -3801,6 +3801,9 @@ describe('conversation zap ingest', () => {
       createdAt: 2,
       rulesAgreedAt: null,
     });
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    await ensureAccountNostrKey(auth, 'acc-pn-anon-pay', parseNostrKek('11'.repeat(32)));
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember(
       'acc-pn-anon-pay',
@@ -3855,6 +3858,71 @@ describe('conversation zap ingest', () => {
     expect(rows[0]?.text).toBe('');
     expect(rows[0]?.nostrPublishState).toBe('skipped');
     expect(rows[0]?.name.length).toBeGreaterThan(0);
+    expect(rows[0]?.senderPubkey).not.toBeNull();
+  });
+
+  it('appends a PN gift when the payer account is missing', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-gone-recv',
+      lightningAddress: 'gone-recv@example.com',
+      messageId: 'm-pn-gone-profile',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-gone-pay',
+      'acc-pn-gone-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-gone',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-gone-pay',
+      authorAccountId: 'acc-pn-gone-recv',
+      amountSats: 21,
+      lightningAddress: 'gone-recv@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]] },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-gone',
+      paymentHash: '44'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-gone',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-gone'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '44'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.senderPubkey).toBeNull();
   });
 
   it('queries a conversation invoice e-tag when listLatest has no signed notes', async () => {

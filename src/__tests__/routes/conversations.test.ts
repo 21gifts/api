@@ -2427,6 +2427,40 @@ describe('POST /conversations/:id/invoice', () => {
     });
   });
 
+  it('returns 400 when a decoded bolt11 is still not NIP-57', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: 'zap',
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 600,
+    });
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: messages,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    inspectSpy.mockRestore();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+  });
+
   it('returns pr, amountSats, and messageId on success', async () => {
     const { auth, conversations, messages, threadId, kek } = await payableThread();
     const app = new Hono().route(
@@ -2441,6 +2475,14 @@ describe('POST /conversations/:id/invoice', () => {
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: 'zap',
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 600,
+    });
     const res = await withNip57True(async () =>
       app.request(`/conversations/${threadId}/invoice`, {
         method: 'POST',
@@ -2448,6 +2490,7 @@ describe('POST /conversations/:id/invoice', () => {
         body: JSON.stringify({ sats: 21, text: 'cheers' }),
       }),
     );
+    inspectSpy.mockRestore();
     expect(res.status).toBe(200);
     const body = (await res.json()) as { pr: string; amountSats: number; messageId: string };
     expect(body.pr).toBe('lnbc21n1test');

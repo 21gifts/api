@@ -288,24 +288,28 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query zap relays for kind:9735 receipts on recent forum notes, index
- * validated ones, then insert a payer gift-reply and fan out zap
- * in-app notifications to every account except skip (Web Push only to
- * bell subscribers). Retries receipts that have a payer and no gift-reply
- * id yet. The gift-reply insert does not call `notifyForumReply`.
+ * Query zap relays for kind:9735 receipts on recent forum notes and on
+ * open conversation-invoice e-tags, index validated ones, then insert a
+ * payer gift-reply (forum) or append the paid PN row (conversation invoice)
+ * and fan out zap in-app notifications to every account except skip (Web
+ * Push only to bell subscribers). Conversation invoices skip `addSats`,
+ * gift-reply, and `notifyZap`. Retries receipts that have a payer and no
+ * gift-reply id yet. The gift-reply insert does not call `notifyForumReply`.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
  * validation, and ingest persist. They still run `verifyReceipt` then
- * `tryEnsureGiftReply`. Every other rejection reason is re-validated on each
- * tick and writes again whenever the decision changes. The memory is
- * process-local, so the first tick after a restart may re-persist decisions it
- * has forgotten, bounded by the receipts that tick queries. Ticks are not
- * serialised (`setInterval` does not await the previous tick), so the ingest
- * skip is per tick, not a guarantee across concurrent ticks.
+ * `tryEnsureGiftReply` unless the receipt matches a conversation invoice.
+ * Every other rejection reason is re-validated on each tick and writes again
+ * whenever the decision changes. The memory is process-local, so the first
+ * tick after a restart may re-persist decisions it has forgotten, bounded by
+ * the receipts that tick queries. Ticks are not serialised (`setInterval`
+ * does not await the previous tick), so the ingest skip is per tick, not a
+ * guarantee across concurrent ticks.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
- *   optional `pushStore` and `notificationStore`.
+ *   optional `pushStore`, `notificationStore`, and `conversations` (PN
+ *   invoices append here; omitted → `rejected`/`conversation`).
  * @returns Resolves when the tick's ingest pass finishes.
  */
 export async function indexOpenZapReceipts(args: {
@@ -1031,11 +1035,8 @@ async function appendConversationGift(args: {
   }
   /* v8 ignore stop */
   const payer = await args.auth.getAccount(args.invoice.payerAccountId);
-  /* v8 ignore next -- payer may have no stored nostr key */
   const pubkey = (await args.auth.getNostrPublicKey(args.invoice.payerAccountId)) ?? '';
-  /* v8 ignore next -- payer/name may be missing on an abandoned invoice */
   const nameTrim = payer?.name?.trim() ?? '';
-  /* v8 ignore next -- empty name falls back to a truncated pubkey or "npub" */
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
   const text = commentFromZapRequest(args.invoice.zapRequest);
   await args.conversations.appendMessage({
@@ -1044,7 +1045,6 @@ async function appendConversationGift(args: {
     text,
     createdAt: new Date(args.now()),
     senderAccountId: args.invoice.payerAccountId,
-    /* v8 ignore next -- nameless inbound has no stored pubkey */
     senderPubkey: pubkey === '' ? null : pubkey,
     name,
     ...unsignedConversationDefaults(),
