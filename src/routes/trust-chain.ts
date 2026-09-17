@@ -1,36 +1,57 @@
 import { Hono } from 'hono';
+import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { buildTrustChain, isChainAccount } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
+import { bearerToken } from '@/routes/me';
 
 /**
- * Public trust-chain graph. No auth. Nodes and edges come from stored
- * accounts and trust edges only — never inferred.
+ * Trust-chain graph. Bearer session required (any role). Nodes and edges
+ * come from stored accounts and trust edges only — never inferred.
  *
  * Bare `GET /trust-chain` returns founder seeds (no edges) so a thousand-person
  * chain is not dumped on first paint. `?around=<id>` returns that account plus
  * one hop of stored public edges.
  */
 
-/** Collaborators the public trust-chain route needs. */
+/** Collaborators the trust-chain route needs. */
 export interface TrustChainRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
   /** Trust-edge persistence port. */
   trustStore: TrustStore;
+  /** Clock returning epoch milliseconds (injected for testability). */
+  now: () => number;
+}
+
+/** Resolve the account behind a request's bearer session, or `null`. */
+async function authedAccount(
+  deps: TrustChainRouteDeps,
+  header: string | undefined,
+): Promise<Account | null> {
+  const token = bearerToken(header);
+  if (token === null) {
+    return null;
+  }
+  return resolveSession(deps.authStore, deps.now(), token);
 }
 
 /**
  * Build the `/trust-chain` route group.
  *
- * Mounted at `/trust-chain` so the public path is `GET /trust-chain`.
+ * Mounted at `/trust-chain` so the path is `GET /trust-chain`. Requires a
+ * member Bearer session; missing or invalid Bearer is 401.
  *
- * @param deps - Auth store and trust-edge store.
+ * @param deps - Auth store, trust-edge store, and clock.
  * @returns A Hono app with `GET /`.
  */
 export function trustChainRoutes(deps: TrustChainRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
+    const caller = await authedAccount(deps, c.req.header('authorization'));
+    if (caller === null) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const around = c.req.query('around');
       if (around !== undefined && around !== '') {

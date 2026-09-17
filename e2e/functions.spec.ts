@@ -1,5 +1,33 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
+const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+
+async function memberSession(request: APIRequestContext): Promise<{ authorization: string }> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eFnTrust${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name,
+          lightningAddress: `e2e-fn-trust-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  return { authorization: `Bearer ${token}` };
+}
+
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
   const res = await request.post('/auth/passkey/register/begin');
   expect(res.status()).toBe(200);
@@ -1378,39 +1406,41 @@ test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 
 test('Function: isChainAccount — GET /trust-chain around a missing id is 404', async ({
   request,
 }) => {
-  expect((await request.get('/trust-chain?around=ghost')).status()).toBe(404);
+  const auth = await memberSession(request);
+  expect((await request.get('/trust-chain?around=ghost', { headers: auth })).status()).toBe(404);
 });
 
-test('Function: isStaffRole — GET /trust-chain is empty on default boot', async ({ request }) => {
+test('Function: isStaffRole — GET /trust-chain without bearer is 401', async ({ request }) => {
   const res = await request.get('/trust-chain');
-  expect(res.status()).toBe(200);
+  expect(res.status()).toBe(401);
 });
 
 test('Function: buildTrustChain — GET /trust-chain is empty on default boot', async ({
   request,
 }) => {
-  const res = await request.get('/trust-chain');
+  const auth = await memberSession(request);
+  const res = await request.get('/trust-chain', { headers: auth });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { nodes: unknown[]; edges: unknown[] };
   expect(body.nodes).toEqual([]);
   expect(body.edges).toEqual([]);
 });
 
-test('Function: accountTrust — GET /trust-chain is empty on default boot', async ({ request }) => {
-  expect((await request.get('/trust-chain')).status()).toBe(200);
+test('Function: accountTrust — GET /trust-chain without bearer is 401', async ({ request }) => {
+  expect((await request.get('/trust-chain')).status()).toBe(401);
 });
 
-test('Function: serializeTrustEdge — GET /trust-chain is empty on default boot', async ({
+test('Function: serializeTrustEdge — GET /trust-chain without bearer is 401', async ({
   request,
 }) => {
-  expect((await request.get('/trust-chain')).status()).toBe(200);
+  expect((await request.get('/trust-chain')).status()).toBe(401);
 });
 
-test('Function: InMemoryTrustStore — GET /trust-chain is empty on default boot', async ({
+test('Function: InMemoryTrustStore — GET /trust-chain without bearer is 401', async ({
   request,
 }) => {
   const res = await request.get('/trust-chain');
-  expect(res.status()).toBe(200);
+  expect(res.status()).toBe(401);
 });
 
 test('Function: PostgresTrustStore — default boot has no DATABASE_URL', async ({ request }) => {
@@ -1421,11 +1451,10 @@ test('Function: migrateTrustSchema — default boot has no DATABASE_URL', async 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: trustChainRoutes — GET /trust-chain is empty on default boot', async ({
-  request,
-}) => {
+test('Function: trustChainRoutes — GET /trust-chain without bearer is 401', async ({ request }) => {
   const res = await request.get('/trust-chain');
-  expect(res.status()).toBe(200);
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
 test('Function: trustRoutes — POST /trust/verify without bearer is 401', async ({ request }) => {

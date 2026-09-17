@@ -1737,8 +1737,8 @@
 
 ## Function: trustChainRoutes
 
-- **Purpose:** Hono sub-app for public `GET /trust-chain`. No auth. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` returns that chain member plus one hop of stored public edges via `listEdgesTouching` (public kinds only). Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
-- **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`.
+- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` returns that chain member plus one hop of stored public edges via `listEdgesTouching` (public kinds only). Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
 - **Used by:** `createApp`.
 
