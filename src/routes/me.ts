@@ -385,16 +385,22 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             ...unsignedNostrDefaults(),
           };
           const created = await deps.messages.create(row, createPhoto);
+          const insertedThisRequest = created.id === messageId;
+          const discardInsert = async (): Promise<void> => {
+            if (insertedThisRequest) {
+              await deps.messages.deleteById(created.id);
+            }
+          };
           const live = await deps.store.getAccount(owner.id);
           if (live === undefined) {
-            await deps.messages.deleteById(created.id);
+            await discardInsert();
             return c.json({ error: 'Unauthorized' }, 401);
           }
           const liveId = live.profileMessageId;
           if (typeof liveId === 'string' && liveId.trim() !== '') {
             const winner = await deps.messages.getById(liveId);
             if (winner !== undefined && winner.deletedAt === null) {
-              await deps.messages.deleteById(created.id);
+              await discardInsert();
               owner = live;
               noteId = liveId;
             }
@@ -411,7 +417,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
                 created.id,
               );
               if (!claimed) {
-                await deps.messages.deleteById(created.id);
+                await discardInsert();
                 const after = await deps.store.getAccount(owner.id);
                 if (after === undefined) {
                   return c.json({ error: 'Unauthorized' }, 401);
@@ -429,13 +435,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
                 }
               }
             } catch (err) {
-              await deps.messages.deleteById(created.id);
+              await discardInsert();
               throw err;
             }
             if (noteId === undefined) {
               const confirmed = await deps.store.getAccount(owner.id);
               if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
-                await deps.messages.deleteById(created.id);
+                await discardInsert();
                 if (confirmed === undefined) {
                   return c.json({ error: 'Unauthorized' }, 401);
                 }
@@ -453,7 +459,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
               } else {
                 owner = { ...live, profileMessageId: created.id };
                 noteId = created.id;
-                createdThisRequest = true;
+                createdThisRequest = insertedThisRequest;
               }
             }
           }

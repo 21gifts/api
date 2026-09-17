@@ -785,6 +785,27 @@ describe('PUT /me/about', () => {
     expect((await messages.getPhoto(stored!.profileMessageId!))?.bytes).toEqual(JPEG_BYTES);
   });
 
+  it('does not delete a collapsed live photo note when create is retried', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const realGetById = messages.getById.bind(messages);
+    let skippedLiveLookup = false;
+    vi.spyOn(messages, 'getById').mockImplementation(async (id: string) => {
+      if (!skippedLiveLookup && id === NOTE_ID) {
+        skippedLiveLookup = true;
+        return undefined;
+      }
+      return realGetById(id);
+    });
+    const res = await putAbout(store, { text: 'Hi', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    expect(await messages.getById(NOTE_ID)).toBeDefined();
+    expect((await messages.getPhoto(NOTE_ID))?.bytes).toEqual(JPEG_BYTES);
+    const body = (await res.json()) as { aboutMeHasPhoto: boolean };
+    expect(body.aboutMeHasPhoto).toBe(true);
+  });
+
   it('attaches a jpeg to an already-live note without a photo', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
