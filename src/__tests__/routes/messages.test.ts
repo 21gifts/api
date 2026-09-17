@@ -570,7 +570,7 @@ describe('GET /messages', () => {
     expect(body.messages[0]?.role).toBe('basis');
   });
 
-  it('returns 503 and logs when listLatest throws', async () => {
+  it('returns 503 and logs when listFeed throws', async () => {
     const res = await mount(await rulesStore(), throwingStore()).request('/messages', {
       headers: AUTH,
     });

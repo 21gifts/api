@@ -2517,6 +2517,22 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
+Unknown `mode`, `limit` outside 1–200, or a bad/mismatched `cursor` → **Response** `400`:
+
+```json
+{ "error": "Invalid mode" }
+```
+
+```json
+{ "error": "Invalid limit" }
+```
+
+```json
+{ "error": "Invalid cursor" }
+```
+
+`mode=active` is paid notes plus unpaid founder/moderator notes; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
+
 Missing rules → **Response** `409`:
 
 ```json
