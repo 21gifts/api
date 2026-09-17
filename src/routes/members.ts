@@ -239,7 +239,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, account.role, undefined, true));
+            const payable =
+              kept.eventId !== null &&
+              account.lightningAddress !== null &&
+              account.lightningAddress.trim() !== '';
+            messages.push(serializeMessage(kept, payable, account.role, undefined, true));
           } catch {
             continue;
           }

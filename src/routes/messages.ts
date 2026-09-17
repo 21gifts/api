@@ -385,7 +385,7 @@ async function persistForumPost(
   extraPhotos?: readonly ForumPhoto[],
 ): Promise<Response> {
   const payableOf = (row: MessageRow): boolean =>
-    (row.parentId ?? null) === null && row.eventId !== null && account.lightningAddress !== null;
+    row.eventId !== null && account.lightningAddress !== null;
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
     const fp =
@@ -803,7 +803,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           try {
             const author = await deps.authStore.getAccount(row.accountId);
             const role = author?.role ?? 'basis';
-            messages.push(serializeMessage(kept, false, role, undefined, includeAccountId));
+            const payable =
+              kept.eventId !== null && author !== undefined && author.lightningAddress !== null;
+            messages.push(serializeMessage(kept, payable, role, undefined, includeAccountId));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;
@@ -912,10 +914,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
           const payable =
-            row.parentId === null &&
-            row.eventId !== null &&
-            author !== undefined &&
-            author.lightningAddress !== null;
+            row.eventId !== null && author !== undefined && author.lightningAddress !== null;
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -1028,27 +1027,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         return c.json({ error: 'Not found' }, 404);
-      }
-      if (row.parentId !== null) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            authorAccountId: row.accountId ?? account.id,
-            amountSats: parsed.data.sats,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'no_author',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
       }
       if (row.accountId === null) {
         await persistInvoiceAttempt(

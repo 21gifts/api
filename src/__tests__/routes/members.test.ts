@@ -800,7 +800,7 @@ describe('GET /members/:accountId/replies', () => {
     expect(await res.json()).toEqual({ messages: [] });
   });
 
-  it('lists the member live replies newest-first with parentId and payable false', async () => {
+  it('lists the member live replies newest-first with parentId and payable from eventId and LN', async () => {
     const authStore = await seededCaller();
     await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
       lightningAddress: 'ada@walletofsatoshi.com',
@@ -873,12 +873,81 @@ describe('GET /members/:accountId/replies', () => {
     expect(body.messages.map((row) => row.id)).toEqual([MEMBER_REPLY_NEW, MEMBER_REPLY_OLD]);
     expect(body.messages[0]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[0]?.parentId).toBe(OTHER_POST);
-    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.payable).toBe(true);
     expect(body.messages[0]).not.toHaveProperty('replyCount');
     expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[1]?.parentId).toBe(OTHER_POST);
     expect(body.messages[1]?.payable).toBe(false);
     expect(body.messages[1]).not.toHaveProperty('replyCount');
+  });
+
+  it('lists member replies as not payable when the member has no Lightning Address', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_NEW,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'signed reply',
+      createdAt: new Date(now() + 2_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; payable: boolean }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(MEMBER_REPLY_NEW);
+    expect(body.messages[0]?.payable).toBe(false);
+  });
+
+  it('lists member replies as not payable when the Lightning Address is blank', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { lightningAddress: '   ' });
+    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: OTHER_POST,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: 'other parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: MEMBER_REPLY_NEW,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'signed reply',
+      createdAt: new Date(now() + 2_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: OTHER_POST,
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ payable: boolean }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.payable).toBe(false);
   });
 
   it('drops a missing-file video reply from the list', async () => {

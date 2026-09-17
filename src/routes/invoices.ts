@@ -204,6 +204,11 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return;
       }
       const parent = await deps.messageStore.getById(invoice.messageId);
+      if (parent !== undefined && parent.deletedAt === null && parent.parentId !== null) {
+        const sats = Math.floor(invoice.amountMsat / 1000);
+        await deps.messageStore.addSats(invoice.messageId, sats);
+        return;
+      }
       const accounts = await deps.authStore.listAccounts();
       const platform = accounts.find((item) => item.isPlatform === true);
       if (parent === undefined || parent.deletedAt !== null || platform === undefined) {

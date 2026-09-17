@@ -167,6 +167,30 @@ function uuidPostStore(): InMemoryMessageStore {
   ]);
 }
 
+function uuidReplyStore(): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: POST_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'first',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+    {
+      id: REPLY_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-01T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: POST_ID,
+    },
+  ]);
+}
+
 describe('GET /invoices/passkey', () => {
   it('returns 503 when the spend token is not configured', async () => {
     const res = await createApp({ spendApiToken: '' }).request(
@@ -1405,6 +1429,27 @@ describe('POST /invoices/proof', () => {
     expect(replies[0]?.sats).toBe(1);
     expect(replies[0]?.text).toBe('gm');
     expect(replies[0]?.nostrPublishState).toBe('pending');
+  });
+
+  it('addSats a reply invoice without creating a nested gift-reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidReplyStore();
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
+    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 
   it('does not double addSats or create a second gift-reply on the same preimage', async () => {
