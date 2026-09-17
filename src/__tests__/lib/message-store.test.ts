@@ -3054,6 +3054,20 @@ describe('PostgresMessageStore', () => {
     expect(await new PostgresMessageStore(sql).getPhoto('m1')).toBeNull();
   });
 
+  it('getExtraPhoto returns null outside 1–9 and when the row is empty or null', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.getExtraPhoto('m1', 0)).toBeNull();
+    expect(await store.getExtraPhoto('m1', 10)).toBeNull();
+    expect(sql.queries).toEqual([]);
+    sql.nextRows = [];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [{ photo: null, photo_content_type: 'image/jpeg' }];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: null }];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+  });
+
   it('getExtraPhoto maps a bytea row', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
