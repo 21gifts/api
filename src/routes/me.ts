@@ -323,11 +323,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'photo' in raw;
       let decodedPhoto: ForumPhoto | null | undefined = undefined;
       if (photoKeyPresent) {
-        const incoming = parsed.data.photo;
+        // Zod types optional `photo` as T | null | undefined. A present JSON
+        // key is T | null (`undefined` cannot appear in JSON).
+        const incoming = parsed.data.photo as { contentType: string; data: string } | null;
         if (incoming === null) {
           decodedPhoto = null;
-        } else if (incoming === undefined) {
-          return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
         } else {
           const decoded = decodeForumPhoto(incoming.contentType, incoming.data);
           if (decoded === null) {
@@ -389,8 +389,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           };
           const created = await deps.messages.create(row, createPhoto);
           const insertedThisRequest = created.id === messageId;
-          const discardInsert = async (): Promise<void> => {
-            if (insertedThisRequest) {
+          const discardInsert = async (winnerId?: string | null): Promise<void> => {
+            if (insertedThisRequest && created.id !== winnerId) {
               await deps.messages.deleteById(created.id);
             }
           };
@@ -403,7 +403,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           if (typeof liveId === 'string' && liveId.trim() !== '') {
             const winner = await deps.messages.getById(liveId);
             if (winner !== undefined && winner.deletedAt === null) {
-              await discardInsert();
+              await discardInsert(liveId);
               owner = live;
               noteId = liveId;
             }
@@ -420,8 +420,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
                 created.id,
               );
               if (!claimed) {
-                await discardInsert();
                 const after = await deps.store.getAccount(owner.id);
+                await discardInsert(after?.profileMessageId);
                 if (after === undefined) {
                   return c.json({ error: 'Unauthorized' }, 401);
                 }
@@ -444,7 +444,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             if (noteId === undefined) {
               const confirmed = await deps.store.getAccount(owner.id);
               if (confirmed === undefined || confirmed.profileMessageId !== created.id) {
-                await discardInsert();
+                await discardInsert(confirmed?.profileMessageId);
                 if (confirmed === undefined) {
                   return c.json({ error: 'Unauthorized' }, 401);
                 }
