@@ -276,6 +276,15 @@ export interface AuthStore {
    * Account ids with no Nostr pubkey yet, oldest first, capped at `limit`.
    */
   listAccountIdsWithoutNostrKey(limit: number): Promise<string[]>;
+  /**
+   * Account ids whose live `role` is founder or moderator.
+   *
+   * `verified` is not staff. Used by GET `/messages?mode=active` so unpaid
+   * staff notes stay on the Active feed without selecting `account` per row.
+   *
+   * @returns Founder and moderator account ids (order unspecified).
+   */
+  listStaffAccountIds(): Promise<string[]>;
 }
 
 /** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
@@ -585,6 +594,21 @@ export class InMemoryAuthStore implements AuthStore {
       .sort(compareAccountsForList)
       .slice(0, limit)
       .map((account) => account.id);
+    return ids;
+  }
+
+  /**
+   * Account ids whose live `role` is founder or moderator.
+   *
+   * @returns Founder and moderator ids from the in-memory map (`verified` omitted).
+   */
+  async listStaffAccountIds(): Promise<string[]> {
+    const ids: string[] = [];
+    for (const account of this.#accounts.values()) {
+      if (account.role === 'founder' || account.role === 'moderator') {
+        ids.push(account.id);
+      }
+    }
     return ids;
   }
 

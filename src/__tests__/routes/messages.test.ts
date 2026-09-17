@@ -6,7 +6,13 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
-import { MESSAGE_MAX_LENGTH, truncatePubkeyDisplay, unsignedNostrDefaults } from '@/lib/message';
+import {
+  MESSAGE_MAX_LENGTH,
+  decodeMessageFeedCursor,
+  encodeMessageFeedCursor,
+  truncatePubkeyDisplay,
+  unsignedNostrDefaults,
+} from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -142,6 +148,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
   };
   return {
     listLatest: boom,
+    listFeed: boom,
     listReplies: boom,
     listDebug: boom,
     listHidden: boom,
@@ -257,6 +264,48 @@ describe('GET /messages', () => {
     expect(await messageStore.getById('5c5051d3-adba-44f9-a964-9bd0df1ce084')).toBeUndefined();
   });
 
+  it('keeps nextCursor when a full page drops a missing-file parent', async () => {
+    const goneId = '5c5051d3-adba-44f9-a964-9bd0df1ce090';
+    const liveId = '5c5051d3-adba-44f9-a964-9bd0df1ce091';
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: goneId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date(now() + 1),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+      {
+        id: liveId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'still here',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request('/messages?limit=1', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(body.messages).toEqual([]);
+    expect(typeof body.nextCursor).toBe('string');
+    expect(await messageStore.getById(goneId)).toBeUndefined();
+    expect(await messageStore.getById(liveId)).toBeDefined();
+  });
+
   it('lists a live parent with replyCount after dropping a missing-file video reply', async () => {
     const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce085';
     const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce086';
@@ -306,8 +355,8 @@ describe('GET /messages', () => {
     };
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]?.id).toBe(parentId);
-    expect(body.messages[0]?.replyCount).toBe(1);
-    expect(await messageStore.getById(goneChildId)).toBeUndefined();
+    expect(body.messages[0]?.replyCount).toBe(2);
+    expect(await messageStore.getById(goneChildId)).toBeDefined();
     expect(await messageStore.getById(keptChildId)).toBeDefined();
     expect(await messageStore.getById(parentId)).toBeDefined();
   });
@@ -522,6 +571,281 @@ describe('GET /messages', () => {
     expect(body.messages[0]).not.toHaveProperty('role');
     expect(body.messages[0]).not.toHaveProperty('accountId');
     expect(body.messages[0]?.hasVideo).toBe(false);
+  });
+
+  it('pages with limit and nextCursor', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'note-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'oldest',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'note-2',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'middle',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'note-3',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'newest',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(authStore, messageStore);
+    const first = await app.request('/messages?limit=2', { headers: AUTH });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(firstBody.messages.map((row) => row.id)).toEqual(['note-3', 'note-2']);
+    expect(typeof firstBody.nextCursor).toBe('string');
+    const cursor = firstBody.nextCursor;
+    expect(cursor).toBeDefined();
+    if (cursor === undefined) {
+      throw new Error('expected nextCursor');
+    }
+    const second = await app.request(`/messages?limit=2&cursor=${encodeURIComponent(cursor)}`, {
+      headers: AUTH,
+    });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(secondBody.messages.map((row) => row.id)).toEqual(['note-1']);
+    expect(secondBody).not.toHaveProperty('nextCursor');
+  });
+
+  it('omits notes with sats greater than zero in unpaid mode', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'unpaid-note',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'unpaid',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'paid-note',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 21,
+    });
+    const res = await mount(authStore, messageStore).request('/messages?mode=unpaid', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id)).toEqual(['unpaid-note']);
+  });
+
+  it('includes unpaid staff and paid basis in active mode', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'founder-1',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Founder',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: now(),
+      rulesAgreedAt: now(),
+    });
+    await authStore.createAccount({
+      id: 'mod-1',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mod',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: now(),
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'unpaid-basis',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'unpaid basis',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'paid-basis',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'paid basis',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 21,
+    });
+    await messageStore.create({
+      id: 'unpaid-founder',
+      accountId: 'founder-1',
+      name: 'Founder',
+      text: 'unpaid founder',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'unpaid-moderator',
+      accountId: 'mod-1',
+      name: 'Mod',
+      text: 'unpaid moderator',
+      createdAt: new Date(now() + 3),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages?mode=active', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id).sort()).toEqual(
+      ['paid-basis', 'unpaid-founder', 'unpaid-moderator'].sort(),
+    );
+    expect(body.messages.map((row) => row.id)).not.toContain('unpaid-basis');
+  });
+
+  it('lists only positive sats newest-sats-first in popular mode', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'zero',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'zero',
+      createdAt: new Date(now() + 3),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'low',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'low',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 10,
+    });
+    await messageStore.create({
+      id: 'high',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'high',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 50,
+    });
+    const res = await mount(authStore, messageStore).request('/messages?mode=popular', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; sats: number }> };
+    expect(body.messages.map((row) => row.id)).toEqual(['high', 'low']);
+    expect(body.messages.map((row) => row.sats)).toEqual([50, 10]);
+    const paged = await mount(authStore, messageStore).request('/messages?mode=popular&limit=1', {
+      headers: AUTH,
+    });
+    expect(paged.status).toBe(200);
+    const pagedBody = (await paged.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(pagedBody.messages.map((row) => row.id)).toEqual(['high']);
+    expect(typeof pagedBody.nextCursor).toBe('string');
+    expect(pagedBody.nextCursor).toBeDefined();
+    if (pagedBody.nextCursor === undefined) {
+      throw new Error('expected popular nextCursor');
+    }
+    expect(decodeMessageFeedCursor(pagedBody.nextCursor)).toMatchObject({
+      k: 's',
+      s: 50,
+      i: 'high',
+    });
+    const secondPopular = await mount(authStore, messageStore).request(
+      `/messages?mode=popular&limit=1&cursor=${encodeURIComponent(pagedBody.nextCursor)}`,
+      { headers: AUTH },
+    );
+    expect(secondPopular.status).toBe(200);
+    const secondPopularBody = (await secondPopular.json()) as { messages: Array<{ id: string }> };
+    expect(secondPopularBody.messages.map((row) => row.id)).toEqual(['low']);
+  });
+
+  it('returns 400 for an invalid mode', async () => {
+    const res = await mount(await rulesStore()).request('/messages?mode=nope', { headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid mode' });
+  });
+
+  it('returns 400 for an invalid limit', async () => {
+    const app = mount(await rulesStore());
+    for (const limit of ['0', '201', 'abc']) {
+      const res = await app.request(`/messages?limit=${limit}`, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid limit' });
+    }
+  });
+
+  it('returns 400 for an invalid cursor', async () => {
+    const app = mount(await rulesStore());
+    const garbage = await app.request('/messages?cursor=%%%', { headers: AUTH });
+    expect(garbage.status).toBe(400);
+    expect(await garbage.json()).toEqual({ error: 'Invalid cursor' });
+    const popularCursor = encodeMessageFeedCursor({
+      k: 's',
+      s: 21,
+      c: new Date(now()).toISOString(),
+      i: '00000000-0000-0000-0000-000000000001',
+    });
+    const wrongKind = await app.request(
+      `/messages?mode=all&cursor=${encodeURIComponent(popularCursor)}`,
+      { headers: AUTH },
+    );
+    expect(wrongKind.status).toBe(400);
+    expect(await wrongKind.json()).toEqual({ error: 'Invalid cursor' });
+    const timeCursor = encodeMessageFeedCursor({
+      k: 't',
+      c: new Date(now()).toISOString(),
+      i: '00000000-0000-0000-0000-000000000001',
+    });
+    const popularWrongKind = await app.request(
+      `/messages?mode=popular&cursor=${encodeURIComponent(timeCursor)}`,
+      { headers: AUTH },
+    );
+    expect(popularWrongKind.status).toBe(400);
+    expect(await popularWrongKind.json()).toEqual({ error: 'Invalid cursor' });
   });
 });
 
@@ -1781,6 +2105,7 @@ describe('POST /messages', () => {
     const store: MessageStore = {
       ...base,
       listLatest: (limit) => base.listLatest(limit),
+      listFeed: (query) => base.listFeed(query),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
@@ -1870,6 +2195,7 @@ describe('POST /messages', () => {
     const store: MessageStore = {
       ...base,
       listLatest: (limit) => base.listLatest(limit),
+      listFeed: (query) => base.listFeed(query),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
@@ -2066,6 +2392,7 @@ describe('POST /messages', () => {
       await namedStore('Ada'),
       throwingStore({
         listLatest: async () => [],
+        listFeed: async () => [],
       }),
     ).request('/messages', {
       method: 'POST',
@@ -3407,6 +3734,7 @@ describe('POST /messages/:id/invoice', () => {
     });
     const store: MessageStore = {
       listLatest: (limit) => base.listLatest(limit),
+      listFeed: (query) => base.listFeed(query),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
@@ -4732,6 +5060,7 @@ describe('GET /messages/:id/photo', () => {
       await seededStore(),
       throwingStore({
         listLatest: async () => [],
+        listFeed: async () => [],
         create: async (row) => row,
       }),
     ).request('/messages/00000000-0000-0000-0000-000000000000/photo');

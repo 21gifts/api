@@ -496,6 +496,18 @@ export class PostgresAuthStore implements AuthStore {
     return rows.map((row) => row.id);
   }
 
+  /**
+   * Account ids whose live `role` is founder or moderator.
+   *
+   * @returns Ids from `SELECT id FROM account WHERE role IN ('founder', 'moderator')`.
+   */
+  async listStaffAccountIds(): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator')`,
+    );
+    return rows.map((row) => row.id);
+  }
+
   async #evictExpiredSessions(now: number): Promise<void> {
     const cutoff = now - SESSION_TTL_MS;
     await this.#sql.execute(

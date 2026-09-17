@@ -113,6 +113,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS account_profile_message_uidx
 -- Soft-hide stamps (HTTP DELETE /messages/:id). No FK on deleted_by.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid;
+CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0;
 CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
   ON message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
