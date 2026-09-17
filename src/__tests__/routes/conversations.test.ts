@@ -1492,6 +1492,44 @@ describe('moderator_group', () => {
     );
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'no_public_post',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not ping when the only post today is the profile note', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+      profileMessageId: LIVING_ROOM_POST_ID,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'no_public_post',
+      ),
+    ).toBe(true);
   });
 
   it('does not ping when the living-room post is on a previous UTC day', async () => {
@@ -1580,6 +1618,11 @@ describe('moderator_group', () => {
     );
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'posted_unreachable',
+      ),
+    ).toBe(true);
     expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
   });
 
