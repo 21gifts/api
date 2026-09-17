@@ -400,22 +400,27 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             : unsignedConversationDefaults()),
         });
         if (thread.kind === 'moderator_group') {
-          const address = account.lightningAddress?.trim() ?? '';
-          if (address !== '' && deps.spendPing !== undefined) {
-            const publicToday = await hasLivingRoomPostOnUtcDay(
-              deps.messageStore,
-              account,
-              deps.now(),
-            );
-            if (publicToday) {
-              try {
-                await deps.spendPing.ping(address, created.id, 'moderator');
-              } catch {
-                /* ping must not fail the persist */
+          try {
+            const address = account.lightningAddress?.trim() ?? '';
+            if (address !== '' && deps.spendPing !== undefined) {
+              const publicToday = await hasLivingRoomPostOnUtcDay(
+                deps.messageStore,
+                account,
+                deps.now(),
+              );
+              if (publicToday) {
+                try {
+                  await deps.spendPing.ping(address, created.id, 'moderator');
+                } catch {
+                  /* persist must not fail */
+                }
+              } else {
+                logEvent('spend.ping.skipped', { reason: 'no_public_post' });
               }
-            } else {
-              logEvent('spend.ping.skipped', { reason: 'no_public_post' });
             }
+          } catch {
+            /* persist must not fail */
+            logEvent('spend.ping.skipped', { reason: 'posted_unreachable' });
           }
         }
         return c.json(

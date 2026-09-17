@@ -2697,7 +2697,8 @@ in the HTTP body) only when Lightning Address is a non-empty trimmed
 string, `spendPing` is set, **and** the caller has a live living-room
 top-level post (not the profile note) whose `createdAt` is on the same
 UTC day. No such post → **200**, no ping, log `spend.ping.skipped` /
-`no_public_post`. Ping throw still **200**. Empty or invalid text is
+`no_public_post`. Ping throw still **200**. Living-room lookup failure
+after persist is still **200**, no ping. Empty or invalid text is
 **400** and does not ping. Founder / verified / basis **404** on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus

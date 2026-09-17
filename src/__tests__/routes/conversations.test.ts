@@ -1553,6 +1553,36 @@ describe('moderator_group', () => {
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
   });
 
+  it('still returns 200 when living-room lookup throws after persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const messages = livingRoomStore();
+    vi.spyOn(messages, 'listPostsByAccount').mockRejectedValue(new Error('boom'));
+    const res = await mount(auth, conversations, messages, spendPing).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
+  });
+
   it('does not ping when lightningAddress is missing', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
