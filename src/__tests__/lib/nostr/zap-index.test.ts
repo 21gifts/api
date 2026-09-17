@@ -3477,6 +3477,138 @@ describe('indexOpenZapReceipts', () => {
     expect(siblings[0]?.id).toBe(replyId);
   });
 
+  it('does not occupy the gift-reply retry queue when the zapped note is a reply', async () => {
+    class HoldRetryStore extends InMemoryMessageStore {
+      payerWrites: Array<string | null> = [];
+
+      override updateZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['updateZapReceiptGift']> {
+        if (args[0] === 'r-queue-drop-reply' && args[1].payerAccountId !== undefined) {
+          this.payerWrites.push(args[1].payerAccountId);
+        }
+        return super.updateZapReceiptGift(...args);
+      }
+
+      override listZapReceiptsAwaitingGiftReply(
+        _limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        // Keep retryGiftReplies from dropping the reply receipt itself.
+        return Promise.resolve([]);
+      }
+
+      peekZapReceiptsAwaitingGiftReply(
+        limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        return super.listZapReceiptsAwaitingGiftReply(limit);
+      }
+    }
+    const store = new HoldRetryStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-parent',
+    });
+    const topAwaitId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-top',
+      eventId: 'ce'.repeat(32),
+      createAccount: false,
+    });
+    await store.recordZapReceipt('r-queue-drop-top', topAwaitId, 7);
+    await store.updateZapReceiptGift('r-queue-drop-top', {
+      payerAccountId: 'payer-queue-drop-top',
+    });
+    const replyEventId = 'cd'.repeat(32);
+    const replyId = 'm-queue-drop-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-queue-drop-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-queue-drop',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-queue-drop@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-queue-drop'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-queue-drop',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-queue-drop',
+      authorAccountId: 'acc-queue-drop-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-queue-drop',
+      paymentHash: 'cf'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-queue-drop-reply',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-queue-drop'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'cf'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const gift = await store.getZapReceiptGift('r-queue-drop-reply');
+    expect(gift?.payerAccountId).toBeNull();
+    expect(gift?.giftReplyId).toBeNull();
+    expect(store.payerWrites).toEqual([null]);
+    expect(await store.peekZapReceiptsAwaitingGiftReply(10)).toEqual([
+      {
+        receiptEventId: 'r-queue-drop-top',
+        messageId: topAwaitId,
+        sats: 7,
+        payerAccountId: 'payer-queue-drop-top',
+        comment: '',
+      },
+    ]);
+  });
+
   it('queries a reply eventId and does not insert a nested gift-reply', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

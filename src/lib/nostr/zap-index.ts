@@ -560,10 +560,11 @@ export async function indexZapReceipt(args: {
  * account except skip (Web Push only to bell subscribers). Conversation
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
  * runs only when the paid message is top-level (`parentId` null); a reply
- * zap is `addSats` only (no nested gift-reply). Retries receipts that have
- * a payer and no gift-reply id yet, and drops reply receipts from that
- * awaiting-gift-reply queue. The gift-reply insert does not call
- * `notifyForumReply`.
+ * zap is `addSats` only (no nested gift-reply) and clears `payerAccountId`
+ * so the receipt never occupies the awaiting-gift-reply queue. Retries
+ * receipts that have a payer and no gift-reply id yet, and drops
+ * already-queued reply receipts from that queue. The gift-reply insert
+ * does not call `notifyForumReply`.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
@@ -1366,7 +1367,9 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
  * missing or soft-hidden. Create/link failures propagate so
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
  * Does not call `notifyForumReply`; zap ingest already called `notifyZap`
- * after indexing.
+ * after indexing. When the parent is itself a reply, sets `payerAccountId`
+ * to null and returns without `store.create` so the receipt never occupies
+ * the awaiting-gift-reply queue.
  *
  * @param args - Payer, parent, text, receipt id.
  */
@@ -1379,15 +1382,17 @@ async function insertGiftReply(
     text: string;
   },
 ): Promise<void> {
+  if (args.parent.parentId !== null) {
+    // Stop awaiting: a reply zap must not nest a gift-reply child.
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+    return;
+  }
   await args.store.updateZapReceiptGift(args.receiptEventId, {
     payerAccountId: args.payer.id,
     comment: args.text,
   });
   const receipt = await args.store.getZapReceiptGift(args.receiptEventId);
   if (receipt === undefined || receipt.giftReplyId !== null) {
-    return;
-  }
-  if (args.parent.parentId !== null) {
     return;
   }
   const pubkey = (await args.auth.getNostrPublicKey(args.payer.id)) ?? '';
