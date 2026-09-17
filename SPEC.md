@@ -455,7 +455,7 @@ Omits `parentId`. Replies by that member are not listed.
 Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
-`serializeMessage` with `payable` false, `accountId`, and optional
+`serializeMessage` with `payable` when `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
 `parentId` when set; omits `replyCount`. Top-level notes by that member
 are not listed.
 
@@ -2211,9 +2211,13 @@ response.
 When the invoice has `messageId`, the api inserts a platform-account
 gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post. Repeat proof with the same preimage is idempotent (existing
-reply id skips `addSats`). Parent missing/deleted or platform missing: skip
-attach, log `invoice.gift_reply.failed`, still **200** + gift persist.
+on that post, then `notifyForumReply`. When `messageId` is already a reply,
+attach persists a deterministic `spendGiftReplyId` marker under that reply,
+`markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
+existing marker is `markDeleted` only and does not `addSats`; no nested
+gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
+idempotent. Parent missing/deleted or platform missing: skip attach, log
+`invoice.gift_reply.failed`, still **200** + gift persist.
 
 Success → **Response** `200`:
 
@@ -2476,10 +2480,12 @@ Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
-zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt still increments
-the **parent** `sats`. After that increment (never in the same SQL CTE), the worker
-inserts a reply from the payer (`text` from the zap-request comment or `""`,
-`sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
+zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
+paid row (`:id`, which may be a reply). After that increment (never in the same
+SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
+comment or `""`, `sats` = this zap) only when the paid row is top-level
+(`parentId` null). A zap on a signed reply is `addSats` only (no nested
+gift-reply). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
 every account except the resolved payer, then filtered by each account's
@@ -2605,7 +2611,7 @@ Public (Bearer optional). Lists **direct live 21.gifts-author replies**
 then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
 children are omitted. Each item is the public message JSON (`photoCount` 0–10 always present;
 `hasPhoto` still means photo 0 exists) with
-`payable` false and no `replyCount`. Unauthenticated items omit
+`payable` when `eventId` and a non-blank Lightning Address are set, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in replies include `accountId` (21gifts author id).
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).

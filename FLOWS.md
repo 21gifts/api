@@ -156,7 +156,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under that post first, then `addSats` (the daily gift is visible in the thread, not a silent wallet credit)
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply)
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note**, not on a daily timer. Invoice HTTP
