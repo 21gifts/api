@@ -4,6 +4,7 @@ import {
   accountTrust,
   buildTrustChain,
   isChainAccount,
+  isProjectedTrustEdge,
   isStaffRole,
   serializeTrustEdge,
   type TrustEdge,
@@ -45,6 +46,62 @@ describe('isChainAccount', () => {
       'moderator',
       'founder',
     ]);
+  });
+});
+
+describe('isProjectedTrustEdge', () => {
+  it('projects verify when the subject is undefined', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'v', actorId: 'm', kind: 'verify' }),
+        undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('projects moderator_appoint', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' }),
+        account({ id: 'm', role: 'moderator' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('projects moderator_propose when the subject is a moderator', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' }),
+        account({ id: 'm', role: 'moderator' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('omits moderator_propose when the subject is verified', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'v', actorId: 'm', kind: 'moderator_propose' }),
+        account({ id: 'v', role: 'verified' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('omits moderator_propose when the subject is undefined', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' }),
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it('omits moderator_confirm even when the subject is a moderator', () => {
+    expect(
+      isProjectedTrustEdge(
+        edge({ id: 'e', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm' }),
+        account({ id: 'm', role: 'moderator' }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -95,28 +152,33 @@ describe('buildTrustChain', () => {
     expect(chain.nodes.map((node) => node.id)).toEqual(['same', 'same']);
   });
 
-  it('projects stored public edges and never invents or includes propose', () => {
+  it('projects stored public edges, omits confirm, and shows propose only for moderators', () => {
     const founder = account({ id: 'f', role: 'founder', name: 'F' });
-    const moderator = account({ id: 'm', role: 'moderator', name: 'M' });
+    const proposer = account({ id: 'p', role: 'moderator', name: 'P', createdAt: 2 });
+    const moderator = account({ id: 'm', role: 'moderator', name: 'M', createdAt: 3 });
     const verified = account({ id: 'v', role: 'verified', name: 'V' });
     const basis = account({ id: 'b', role: 'basis', name: 'B' });
     const disconnected = account({ id: 'd', role: 'verified', name: 'D' });
     const edges: TrustEdge[] = [
       edge({ id: 'e-verify', subjectId: 'v', actorId: 'm', kind: 'verify' }),
-      edge({ id: 'e-propose', subjectId: 'v', actorId: 'm', kind: 'moderator_propose' }),
+      edge({ id: 'e-pending', subjectId: 'v', actorId: 'm', kind: 'moderator_propose' }),
+      edge({ id: 'e-propose', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' }),
       edge({ id: 'e-confirm', subjectId: 'm', actorId: 'f', kind: 'moderator_confirm' }),
       edge({ id: 'e-appoint', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' }),
       edge({ id: 'e-basis-actor', subjectId: 'v', actorId: 'b', kind: 'verify' }),
       edge({ id: 'e-basis-subject', subjectId: 'b', actorId: 'f', kind: 'verify' }),
     ];
-    const chain = buildTrustChain([founder, moderator, verified, basis, disconnected], edges);
-    expect(chain.nodes.map((node) => node.id)).toEqual(['f', 'm', 'd', 'v']);
+    const chain = buildTrustChain(
+      [founder, proposer, moderator, verified, basis, disconnected],
+      edges,
+    );
+    expect(chain.nodes.map((node) => node.id)).toEqual(['f', 'p', 'm', 'd', 'v']);
     expect(chain.edges).toEqual([
       { from: 'm', to: 'v', kind: 'verify' },
-      { from: 'f', to: 'm', kind: 'moderator_confirm' },
+      { from: 'p', to: 'm', kind: 'moderator_propose' },
       { from: 'f', to: 'm', kind: 'moderator_appoint' },
     ]);
-    expect(chain.edges.map((item) => item.kind)).not.toContain('moderator_propose');
+    expect(chain.edges.map((item) => item.kind)).not.toContain('moderator_confirm');
     expect(chain.edges.some((item) => item.to === 'd')).toBe(false);
   });
 });

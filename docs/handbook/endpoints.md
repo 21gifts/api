@@ -513,7 +513,7 @@
 
 ## Endpoint: GET /trust-chain
 
-- **Purpose:** Stored trust graph. Bearer session required (any role). Bare `GET` returns founder seeds only (`edges` empty) so a large chain is not dumped on first paint. `?around=<id>` returns that chain member plus one hop of stored public edges (`verify` / `moderator_confirm` / `moderator_appoint`; never `moderator_propose`). Nodes are founder/moderator/verified (never basis). Never invents edges; omits lightning addresses, view keys, and linking keys.
+- **Purpose:** Stored trust graph. Bearer session required (any role). Bare `GET` returns founder seeds only (`edges` empty) so a large chain is not dumped on first paint. `?around=<id>` returns that chain member plus one hop of stored public edges (`verify` / `moderator_propose` only if subject.role is `moderator` / `moderator_appoint`; `moderator_confirm` never). A pending propose stays private. Nodes are founder/moderator/verified (never basis). Never invents edges; omits lightning addresses, view keys, and linking keys.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session or with an invalid Bearer. 404 `{ error: 'Not found' }` when `around` is supplied but is not a uuid, is unknown, or is not a chain member (including Postgres `22P02`). Omitting `around` (or empty) is founder seeds, not 404. Unauthenticated `around` is 401, not 404. 503 `{ error: 'Trust chain is unavailable' }` when listing accounts or edges throws (`trust.chain.failed`).
 - **Used by:** signed-in app `/trust-chain` via app `GET /trust/graph`.
 - **Auth:** `Authorization: Bearer` session.
@@ -551,6 +551,13 @@
 - **Purpose:** Operator backfill of a stored trust edge. Body `{ "subjectId", "actorId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Inserts the edge, logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`, and returns `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' }`; 404 `{ error: 'Not found' }` when subject or actor is missing or not a UUID; 409 `{ error: 'Conflict' }` on duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
 - **Used by:** Operator `gifts-debug trust-edge` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: DELETE /debug/trust-edges
+
+- **Purpose:** Operator delete of a stored trust edge. Body `{ "subjectId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Removes the unique `(subjectId, kind)` row, logs `debug.trust_edges.deleted` `{ subjectId, kind }`, and returns the deleted `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId" and "kind" strings' }`; 404 `{ error: 'Not found' }` when `subjectId` is not a UUID or no row matches; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.delete_failed`).
+- **Used by:** Operator `gifts-debug trust-edge-delete` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /me/setup/skip

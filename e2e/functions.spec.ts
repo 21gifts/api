@@ -1415,6 +1415,14 @@ test('Function: isStaffRole — GET /trust-chain without bearer is 401', async (
   expect(res.status()).toBe(401);
 });
 
+test('Function: isProjectedTrustEdge — GET /trust-chain is empty on default boot', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.get('/trust-chain', { headers: auth });
+  expect(res.status()).toBe(200);
+});
+
 test('Function: buildTrustChain — GET /trust-chain is empty on default boot', async ({
   request,
 }) => {
@@ -1466,5 +1474,12 @@ test('Function: debugTrustRoutes — POST /debug/trust-edges without bearer is 4
   request,
 }) => {
   const res = await request.post('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugTrustRoutes — DELETE /debug/trust-edges without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.delete('/debug/trust-edges');
   expect(res.status()).toBe(401);
 });

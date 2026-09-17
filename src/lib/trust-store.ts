@@ -46,6 +46,15 @@ export interface TrustStore {
    * @throws Error whose message is {@link DUPLICATE_TRUST_EDGE}.
    */
   insertEdge(edge: TrustEdge): Promise<TrustEdge>;
+
+  /**
+   * Delete the stored `(subjectId, kind)` row, if any.
+   *
+   * @param subjectId - Account that received the status.
+   * @param kind - Grant kind to remove.
+   * @returns A copy of the deleted edge, or `undefined` when none matched.
+   */
+  deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined>;
 }
 
 /** Idempotent DDL for the trust_edge table (matches `docs/schema/trust_edge.sql`). */
@@ -140,6 +149,29 @@ export class InMemoryTrustStore implements TrustStore {
     const stored = copyEdge(edge);
     this.#edges.push(stored);
     return Promise.resolve(copyEdge(stored));
+  }
+
+  /**
+   * Remove the `(subjectId, kind)` row and return a copy, or `undefined`.
+   *
+   * @param subjectId - Account that received the status.
+   * @param kind - Grant kind to remove.
+   * @returns A copy of the deleted edge, or `undefined`.
+   */
+  deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined> {
+    const index = this.#edges.findIndex(
+      (stored) => stored.subjectId === subjectId && stored.kind === kind,
+    );
+    if (index < 0) {
+      return Promise.resolve(undefined);
+    }
+    const removed = this.#edges[index];
+    /* v8 ignore next 3 -- findIndex ≥ 0 always yields a row */
+    if (removed === undefined) {
+      return Promise.resolve(undefined);
+    }
+    this.#edges.splice(index, 1);
+    return Promise.resolve(copyEdge(removed));
   }
 }
 
@@ -236,6 +268,22 @@ export class PostgresTrustStore implements TrustStore {
       throw error;
     }
     return copyEdge(edge);
+  }
+
+  /**
+   * Delete the `(subjectId, kind)` row from `trust_edge`.
+   *
+   * @param subjectId - Account that received the status (`$1`).
+   * @param kind - Grant kind (`$2`).
+   * @returns The deleted row, or `undefined` when none matched.
+   */
+  async deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined> {
+    const rows = await this.#sql.query<TrustSqlRow>(
+      `DELETE FROM trust_edge WHERE subject_id = $1 AND kind = $2 RETURNING id, subject_id, actor_id, kind, created_at`,
+      [subjectId, kind],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapTrustRow(row);
   }
 }
 

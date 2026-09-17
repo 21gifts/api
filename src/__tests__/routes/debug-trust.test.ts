@@ -67,6 +67,19 @@ function post(app: Hono, token: string | undefined, body: unknown): Promise<Resp
   );
 }
 
+function del(app: Hono, token: string | undefined, body: unknown): Promise<Response> {
+  return Promise.resolve(
+    app.request('/debug/trust-edges', {
+      method: 'DELETE',
+      headers: {
+        'content-type': 'application/json',
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
+}
+
 describe('POST /debug/trust-edges', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
@@ -254,6 +267,7 @@ describe('POST /debug/trust-edges', () => {
       insertEdge: async () => {
         throw new Error('boom');
       },
+      deleteEdge: async () => undefined,
     };
     const res = await post(mount(await seeded(), throwing), 'secret', {
       subjectId: SUBJECT,
@@ -281,5 +295,100 @@ describe('POST /debug/trust-edges', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { createdAt: string };
     expect(Number.isNaN(Date.parse(body.createdAt))).toBe(false);
+  });
+});
+
+describe('DELETE /debug/trust-edges', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns 401 without a matching bearer', async () => {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), undefined, {
+      subjectId: SUBJECT,
+      kind: 'moderator_confirm',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 for a bad body', async () => {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {});
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with "subjectId" and "kind" strings',
+    });
+  });
+
+  it('returns 404 for a non-uuid subjectId', async () => {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+      subjectId: 'nope',
+      kind: 'moderator_confirm',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when no edge matches', async () => {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+      subjectId: SUBJECT,
+      kind: 'moderator_confirm',
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('deletes the edge without changing account.role', async () => {
+    const store = await seeded();
+    const trustStore = new InMemoryTrustStore();
+    await trustStore.insertEdge({
+      id: 'edge-1',
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'moderator_confirm',
+      createdAt: now(),
+    });
+    const res = await del(mount(store, trustStore), 'secret', {
+      subjectId: SUBJECT,
+      kind: 'moderator_confirm',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      id: 'edge-1',
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'moderator_confirm',
+      createdAt: '2026-09-12T12:00:00.000Z',
+    });
+    expect(await trustStore.listEdges()).toEqual([]);
+    expect((await store.getAccount(SUBJECT))?.role).toBe('basis');
+    expect(parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.deleted')).toBe(
+      true,
+    );
+  });
+
+  it('returns 503 when deleteEdge throws', async () => {
+    const throwing: TrustStore = {
+      listEdges: async () => [],
+      listEdgesForSubject: async () => [],
+      listEdgesTouching: async () => [],
+      insertEdge: async (row) => row,
+      deleteEdge: async () => {
+        throw new Error('boom');
+      },
+    };
+    const res = await del(mount(await seeded(), throwing), 'secret', {
+      subjectId: SUBJECT,
+      kind: 'moderator_confirm',
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    expect(
+      parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.delete_failed'),
+    ).toBe(true);
   });
 });

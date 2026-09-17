@@ -1693,9 +1693,16 @@
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain?around=`).
 
+## Function: isProjectedTrustEdge
+
+- **Purpose:** Whether a stored edge appears on the public Trust Chain. `verify` and `moderator_appoint` project; `moderator_propose` projects only when the subject is a `moderator`; `moderator_confirm` never.
+- **Inputs:** `edge` (`TrustEdge`), `subject` (`Account | undefined`).
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `buildTrustChain`, `trustChainRoutes` (`GET /trust-chain?around=`).
+
 ## Function: buildTrustChain
 
-- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_confirm` / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; never includes `moderator_propose`; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
+- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are founder/moderator/verified only (never `basis`), sorted founder then moderator then verified, then oldest `createdAt`, then `id`. Edges are stored `verify` / `moderator_propose` (only if subject.role is `moderator`) / `moderator_appoint` whose actor and subject are both in the node set. Never invents edges; `moderator_confirm` is omitted; a pending propose (subject still `verified`) stays private; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `{ nodes, edges }` (`TrustChain`). No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain`).
@@ -1709,10 +1716,10 @@
 
 ## Function: serializeTrustEdge
 
-- **Purpose:** JSON projection of a stored trust edge for operator backfill responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
+- **Purpose:** JSON projection of a stored trust edge for operator POST and DELETE `/debug/trust-edges` responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
 - **Inputs:** `TrustEdge` (epoch-ms `createdAt`).
 - **Returns / side effects:** `TrustEdgeJson`. No I/O.
-- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` 200 body).
+- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` and `DELETE /debug/trust-edges` 200 body).
 
 ## Function: migrateTrustSchema
 
@@ -1724,20 +1731,20 @@
 ## Function: InMemoryTrustStore
 
 - **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
-- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists.
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists. `deleteEdge(subjectId, kind)` removes that unique row or returns `undefined`.
 - **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `trustStore`.
 
 ## Function: PostgresTrustStore
 
-- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`.
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`. `deleteEdge` is `DELETE … RETURNING` on `(subject_id, kind)` and returns `undefined` when no row matches.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: trustChainRoutes
 
-- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` returns that chain member plus one hop of stored public edges via `listEdgesTouching` (public kinds only). Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
+- **Purpose:** Hono sub-app for `GET /trust-chain`. Bearer session required (any role). Missing or invalid Bearer → 401 `{ error: 'Unauthorized' }`. Bare GET (no `around`, or empty) returns founder seeds (no edges). `?around=<id>` uses `isProjectedTrustEdge` after loading candidate accounts: one hop of stored public edges (`verify` / `moderator_propose` when the subject is a `moderator` / `moderator_appoint`; never `moderator_confirm`). Pending-propose verified neighbors are not nodes. Empty arrays when none. Invalid uuid (Postgres `22P02`), unknown, or basis `around` → 404 after a valid session. Other store throw → 503 `{ error: 'Trust chain is unavailable' }` and log `trust.chain.failed`.
 - **Inputs:** `TrustChainRouteDeps`: `authStore`, `trustStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/trust-chain` (`GET /`).
 - **Used by:** `createApp`.
@@ -1751,7 +1758,7 @@
 
 ## Function: debugTrustRoutes
 
-- **Purpose:** Operator backfill `POST /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. Body `{ subjectId, actorId, kind }` (four `TrustKind` values). Inserts a stored edge and returns `serializeTrustEdge` (ISO `createdAt`). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
-- **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`).
-- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. 400 bad body; 404 missing subject/actor; 409 duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 on unexpected store throw (`debug.trust_edges.failed`).
-- **Used by:** `createApp`; operator `gifts-debug trust-edge`.
+- **Purpose:** Operator backfill `POST /debug/trust-edges` and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. Both return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`; unused by DELETE).
+- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`).
+- **Used by:** `createApp`; operator `gifts-debug trust-edge` / `gifts-debug trust-edge-delete`.

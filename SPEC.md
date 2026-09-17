@@ -130,6 +130,7 @@ Public base URLs used in examples:
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
 | POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                       |
 | POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`              |
+| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                |
 | GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
 | POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
 | DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                 |
@@ -462,9 +463,11 @@ Missing or invalid Bearer → **Response** `401`:
 Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
-one hop of **stored** public edges (`verify` / `moderator_confirm` /
-`moderator_appoint`; `moderator_propose` omitted) whose actor or subject
-is `<id>`. Nodes are `founder` / `moderator` / `verified` (never `basis`).
+one hop of **stored** public edges (`verify` / `moderator_propose` only if
+subject.role is `moderator` / `moderator_appoint`; `moderator_confirm`
+never) whose actor or subject is `<id>`. A pending propose (subject still
+`verified`) stays private and is not a hop neighbor. Nodes are `founder` /
+`moderator` / `verified` (never `basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
@@ -1190,6 +1193,33 @@ Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 ```
 
 `createdAt` is ISO-8601.
+
+### `DELETE /debug/trust-edges`
+
+Operator delete of a stored trust edge. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
+other debug routes). Does **not** change `account.role`. Unique
+`(subjectId, kind)` means one row is enough to identify.
+
+**Request**:
+
+```json
+{
+  "subjectId": "<uuid>",
+  "kind": "moderator_confirm"
+}
+```
+
+`kind` is one of `verify`, `moderator_propose`, `moderator_confirm`,
+`moderator_appoint`.
+
+Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\" and \"kind\" strings" }`.
+Non-UUID `subjectId` or no matching row → **404** `{ "error": "Not found" }`.
+Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
+logged as `debug.trust_edges.delete_failed`.
+Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
+
+**Response** `200` is the deleted edge, same JSON as `POST /debug/trust-edges`.
 
 ### `GET /debug/contacts`
 

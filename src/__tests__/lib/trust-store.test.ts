@@ -149,6 +149,20 @@ describe('InMemoryTrustStore', () => {
       store.insertEdge({ ...EARLY, id: 'other', actorId: 'someone-else' }),
     ).rejects.toThrow('duplicate trust edge');
   });
+
+  it('deleteEdge removes the matching row and leaves others', async () => {
+    const store = new InMemoryTrustStore([EARLY, LATE]);
+    const removed = await store.deleteEdge('sub', 'verify');
+    expect(removed).toEqual(EARLY);
+    expect(removed).not.toBe(EARLY);
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['b']);
+  });
+
+  it('deleteEdge returns undefined when no row matches', async () => {
+    const store = new InMemoryTrustStore([EARLY]);
+    expect(await store.deleteEdge('sub', 'moderator_confirm')).toBeUndefined();
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['a']);
+  });
 });
 
 describe('PostgresTrustStore', () => {
@@ -250,6 +264,37 @@ describe('PostgresTrustStore', () => {
     await expect(new PostgresTrustStore(sql).insertEdge(EARLY)).rejects.toBeNull();
   });
 
+  it('deleteEdge uses DELETE RETURNING and maps the row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'e1',
+        subject_id: 'sub',
+        actor_id: 'act',
+        kind: 'moderator_confirm',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+      },
+    ];
+    const removed = await new PostgresTrustStore(sql).deleteEdge('sub', 'moderator_confirm');
+    expect(sql.queries[0]?.text).toMatch(
+      /DELETE FROM trust_edge WHERE subject_id = \$1 AND kind = \$2 RETURNING id, subject_id, actor_id, kind, created_at/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['sub', 'moderator_confirm']);
+    expect(removed).toEqual({
+      id: 'e1',
+      subjectId: 'sub',
+      actorId: 'act',
+      kind: 'moderator_confirm',
+      createdAt: Date.parse('2026-08-28T12:00:00.000Z'),
+    });
+  });
+
+  it('deleteEdge returns undefined when RETURNING is empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresTrustStore(sql).deleteEdge('sub', 'verify')).toBeUndefined();
+  });
+
   it('propagates list query errors', async () => {
     const sql = new MockSql();
     sql.queryError = new Error('list boom');
@@ -258,5 +303,8 @@ describe('PostgresTrustStore', () => {
       'list boom',
     );
     await expect(new PostgresTrustStore(sql).listEdgesTouching('sub')).rejects.toThrow('list boom');
+    await expect(new PostgresTrustStore(sql).deleteEdge('sub', 'verify')).rejects.toThrow(
+      'list boom',
+    );
   });
 });
