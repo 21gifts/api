@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS message_invoice (
   is_nip57_invoice boolean NOT NULL DEFAULT false
 );
 ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb;
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_id uuid;
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_message_id uuid;
 CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx

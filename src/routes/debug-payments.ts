@@ -4,7 +4,9 @@ import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 
 /**
- * Operator debug surface for forum invoice attempts and zap ingest rows.
+ * Operator debug surface for `message_invoice` attempts (forum and
+ * conversation invoices; `serializeInvoice` omits `conversationId` and
+ * `conversationMessageId`) and zap ingest rows.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  */
 

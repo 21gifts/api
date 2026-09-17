@@ -193,7 +193,13 @@ Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs.
+with PNs. Lightning gifts in a Direct/Contact thread use
+`POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed
+when a matching zap receipt is ingested: the api appends a conversation
+message (`text` + `sats`, or empty `text` with `sats` only) and does **not**
+credit the counterpart's profile note or insert a forum gift-reply.
+`GET /conversations/:id?sinceMessageId=` long-polls until that predetermined
+row exists. Damus threads cannot be invoiced.
 
 ---
 

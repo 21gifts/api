@@ -93,7 +93,7 @@
 
 ## Endpoint: GET /debug/invoices
 
-- **Purpose:** Operator listing of forum `POST /messages/:id/invoice` attempts newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. `serializeInvoice` omits `conversationId` and `conversationMessageId`. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
 - **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -408,7 +408,7 @@
 
 ## Endpoint: GET /conversations
 
-- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists threads with at least one inbound message for the viewer (empty and outbound-only member/Damus omitted). The member's own `member_platform` contact thread is listed when it has a message, even if outbound-only. Inbound = not `conversationFromMe`; Damus null sender is inbound. The singleton `moderator_group` named `Moderators` is listed for `role === 'moderator'` even when empty (bypass inbound skip only for this kind). The empty `moderator_group` is pinned first for moderators and remains listed even when 200 newer threads exist (still cap 200). Founder / verified / basis never see it. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe, accountId? }] }` — optional counterpart 21.gifts `accountId` (omitted for Damus-only counterparts); no event ids or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `DEBUG_TOKEN` cannot read this inbox.
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists threads with at least one inbound message for the viewer (empty and outbound-only member/Damus omitted). The member's own `member_platform` contact thread is listed when it has a message, even if outbound-only. Inbound = not `conversationFromMe`; Damus null sender is inbound. The singleton `moderator_group` named `Moderators` is listed for `role === 'moderator'` even when empty (bypass inbound skip only for this kind). The empty `moderator_group` is pinned first for moderators and remains listed even when 200 newer threads exist (still cap 200). Founder / verified / basis never see it. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe, lastSats, accountId? }] }` — optional counterpart 21.gifts `accountId` (omitted for Damus-only counterparts); no event ids or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `lastSats` is the last message's sats (0 for unpaid text). `DEBUG_TOKEN` cannot read this inbox.
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
 - **Auth:** `Authorization: Bearer` session.
@@ -443,9 +443,16 @@
 
 ## Endpoint: GET /conversations/:id
 
-- **Purpose:** Bearer required. `:id` is a UUID. Messages oldest-first (cap 200) as `{ messages: [{ id, name, text, createdAt, fromMe, accountId? }] }`. Envelope is `{ messages }` only (no counterpart `accountId` on the thread). Optional `accountId` is the sender 21.gifts account (omitted when `senderAccountId` is null). `fromMe` is true when that message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. 404 when the session may not see the thread. `moderator_group` is 404 `{ error: 'Not found' }` unless `role === 'moderator'` (no existence leak). Unauthenticated 401.
-- **Errors:** 401 Unauthorized; 404 Not found; 503 Conversations are unavailable.
-- **Used by:** App conversation thread.
+- **Purpose:** Bearer required. `:id` is a UUID. Messages oldest-first (cap 200) as `{ messages: [{ id, name, text, createdAt, fromMe, sats, accountId? }] }`. Envelope is `{ messages }` only (no counterpart `accountId` on the thread). Optional `accountId` is the sender 21.gifts account (omitted when `senderAccountId` is null). `fromMe` is true when that message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. Optional `?sinceMessageId=` (UUID) long-polls until that id is in the thread (pay-sheet confirmation); timeout still 200 with the current messages. 404 when the session may not see the thread. `moderator_group` is 404 `{ error: 'Not found' }` unless `role === 'moderator'` (no existence leak). Unauthenticated 401.
+- **Errors:** 401 Unauthorized; 400 `{ error: 'Expected sinceMessageId to be a UUID' }`; 404 Not found; 503 Conversations are unavailable.
+- **Used by:** App conversation thread and gift pay-sheet poll.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /conversations/:id/invoice
+
+- **Purpose:** Bearer required. Body `{ sats: <int 1..10_000_000>, text? }`. Issues a NIP-57 BOLT11 to the counterpart's Lightning Address (profile-note `e` tag). 200 `{ pr, amountSats, messageId }` — `messageId` is the predetermined conversation row, inserted only after zap ingest. Gift-only omits text. Damus threads are not invoiced.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with a positive "sats" integer; 400 Text must be 1–500 characters; 400 Set a name before posting; 400 Cannot message yourself; 400 The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`, Damus, missing counterpart LN / profile event); 400 Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found; 429 Too many payments; 503 Messages are unavailable / Conversations are unavailable (persist failure after a successful LNURL mint is 503 and the response has no `pr`).
+- **Used by:** App inbox amount composer.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /conversations/:id
