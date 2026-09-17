@@ -375,7 +375,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           const ownContactTicket =
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
-            thread.lastText !== '';
+            (thread.lastText !== '' || thread.lastSats > 0);
           if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
             continue;
           }
@@ -460,15 +460,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const timeoutMs = deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
         const pollMs = deps.waitPollMs ?? WAIT_SATS_POLL_MS;
         const sleep = deps.waitSleep ?? defaultWaitSatsSleep;
-        let rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
-        while (
-          sinceMessageId !== undefined &&
-          !rows.some((row) => row.id === sinceMessageId) &&
-          deps.now() - started < timeoutMs
-        ) {
+        while (sinceMessageId !== undefined && deps.now() - started < timeoutMs) {
+          const found = await deps.store.getMessageById(sinceMessageId);
+          if (found?.conversationId === id) {
+            break;
+          }
           await sleep(pollMs);
-          rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
         }
+        const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
         const platformId = platform?.id ?? null;
         return c.json(
           {
@@ -537,6 +536,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           name: senderName !== '' ? senderName : '21.gifts',
           ...(thread.kind === 'moderator_group'
             ? {
+                sats: 0,
                 eventId: null,
                 nostrPublishState: 'skipped' as const,
                 nostrEvent: null,

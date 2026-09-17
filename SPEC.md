@@ -117,34 +117,34 @@ Public base URLs used in examples:
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)        |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                               |
 | POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`) |
-| GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                        |
-| POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                       |
-| POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                        |
-| GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                  |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                          |
-| POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                       |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)        |
-| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                  |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                          |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                                   |
-| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                     |
-| GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)          |
-| GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                  |
-| GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                       |
-| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                     |
-| POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                       |
-| POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`              |
-| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                |
-| GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                           |
-| POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                 |
-| DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                 |
-| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                               |
-| GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                          |
-| GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                               |
-| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                          |
-| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post           |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)             |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                  |>>>>>>> 24dde54 (01a0ac4e - Send bitcoin in private conversations)
+| GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                                   |
+| POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                                  |
+| POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                                   |
+| GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                             |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                     |
+| POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                  |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                   |
+| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                             |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                     |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                                              |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                |
+| GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                     |
+| GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                             |
+| GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                  |
+| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                |
+| POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                  |
+| POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                         |
+| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                           |
+| GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                                      |
+| POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                            |
+| DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                            |
+| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                          |
+| GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                                     |
+| GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                                          |
+| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                     |
+| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                      |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                        |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                             |
 
 ### `GET /healthz`
 

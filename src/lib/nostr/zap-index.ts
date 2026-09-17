@@ -495,6 +495,63 @@ async function ingestOneReceipt(
       );
       return;
     }
+    const address = conversationInvoice.lightningAddress;
+    if (address === null || address.trim() === '') {
+      logEvent('nostr.zap.rejected', { reason: 'address' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'address',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    const providerPubkey = await resolveProviderPubkey({
+      address: address.trim().toLowerCase(),
+      fetchImpl: args.fetchImpl,
+      nowMs: args.now(),
+    });
+    if (providerPubkey === null) {
+      logEvent('nostr.zap.rejected', { reason: 'provider' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'provider',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    if (event.pubkey.toLowerCase() !== providerPubkey.toLowerCase()) {
+      logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'pubkey',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
     await appendConversationGift({
       conversations: args.conversations,
       auth: args.auth,

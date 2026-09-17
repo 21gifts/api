@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { CONVERSATION_LIST_LIMIT } from '@/lib/conversation';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults } from '@/lib/message';
@@ -255,6 +256,51 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.lastFromMe).toBe(true);
     expect(body.conversations[0]?.lastText).toBe('help');
     expect(body.conversations[0]?.accountId).toBe('plat');
+  });
+
+  it('lists the member own platform thread when the last row is gift-only', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-gift',
+      conversationId: thread.id,
+      text: '',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 21,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{
+        kind: string;
+        lastText: string;
+        lastSats: number;
+      }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('member_platform');
+    expect(body.conversations[0]?.lastSats).toBe(21);
+    expect(body.conversations[0]?.lastText).toBe('');
+  });
+
+  it('omits the member own platform thread when it has no messages', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: unknown[] };
+    expect(body.conversations).toHaveLength(0);
   });
 
   it('lists a two-way thread with lastFromMe from the latest sender', async () => {
@@ -1476,6 +1522,7 @@ describe('moderator_group', () => {
         senderAccountId: `o${i}`,
         senderPubkey: null,
         name: 'Bob',
+        sats: 0,
         eventId: null,
         nostrPublishState: 'pending',
         nostrEvent: null,
@@ -2617,5 +2664,68 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ id: string }> };
     expect(body.messages.some((row) => row.id === giftId)).toBe(true);
+  });
+
+  it('unblocks when the gift id is outside the oldest list window', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const giftId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    for (let i = 0; i < CONVERSATION_LIST_LIMIT; i += 1) {
+      await conversations.appendMessage({
+        id: `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`,
+        conversationId: thread.id,
+        text: 'old',
+        createdAt: new Date(now() + i),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+    await conversations.appendMessage({
+      id: giftId,
+      conversationId: thread.id,
+      text: '',
+      createdAt: new Date(now() + CONVERSATION_LIST_LIMIT),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 21,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    let slept = 0;
+    const clock = { t: 0 };
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore: new InMemoryMessageStore(),
+        now: () => clock.t,
+        waitTimeoutMs: 5,
+        waitPollMs: 1,
+        waitSleep: async () => {
+          slept += 1;
+          clock.t += 1;
+        },
+      }),
+    );
+    const res = await app.request(`/conversations/${thread.id}?sinceMessageId=${giftId}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(slept).toBe(0);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages).toHaveLength(CONVERSATION_LIST_LIMIT);
+    expect(body.messages.some((row) => row.id === giftId)).toBe(false);
   });
 });

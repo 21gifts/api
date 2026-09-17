@@ -4104,4 +4104,316 @@ describe('conversation zap ingest', () => {
     expect(await store.listReplies(profileId)).toEqual([]);
     expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
   });
+
+  it('rejects a conversation gift when the receipt pubkey does not match', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-pk-recv',
+      lightningAddress: 'pn-pubkey@example.com',
+      messageId: 'm-pn-pk-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-pk-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-pk@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-pk-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-pk-pay',
+      'acc-pn-pk-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-pk',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-pk-pay',
+      authorAccountId: 'acc-pn-pk-recv',
+      amountSats: 21,
+      lightningAddress: 'pn-pubkey@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-pk',
+      paymentHash: '55'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: '55555555-5555-4555-8555-555555555555',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-pk',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-pk'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('pubkey');
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+    expect((await store.getById(profileId))?.sats).toBe(0);
+    expect(await store.listReplies(profileId)).toEqual([]);
+  });
+
+  it('rejects a conversation gift when the LNURL provider is unresolved', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-prov-recv',
+      lightningAddress: 'pn-provider@example.com',
+      messageId: 'm-pn-prov-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-prov-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-prov@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-prov-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-prov-pay',
+      'acc-pn-prov-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-prov',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-prov-pay',
+      authorAccountId: 'acc-pn-prov-recv',
+      amountSats: 21,
+      lightningAddress: 'pn-provider@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-prov',
+      paymentHash: '66'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: '66666666-6666-4666-8666-666666666666',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-prov',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-prov'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '66'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: failFetch(),
+      conversations,
+    });
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('provider');
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+    expect((await store.getById(profileId))?.sats).toBe(0);
+    expect(await store.listReplies(profileId)).toEqual([]);
+  });
+
+  it('rejects a conversation gift when the invoice lightning address is missing', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-addr-recv',
+      lightningAddress: 'pn-addr-null@example.com',
+      messageId: 'm-pn-addr-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-addr-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-addr@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-addr-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-addr-pay',
+      'acc-pn-addr-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-addr',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-addr-pay',
+      authorAccountId: 'acc-pn-addr-recv',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-addr',
+      paymentHash: '77'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: '77777777-7777-4777-8777-777777777777',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-addr',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-addr'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '77'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('address');
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+    expect((await store.getById(profileId))?.sats).toBe(0);
+    expect(await store.listReplies(profileId)).toEqual([]);
+  });
+
+  it('rejects a conversation gift when the invoice lightning address is blank', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-blank-recv',
+      lightningAddress: 'pn-addr-blank@example.com',
+      messageId: 'm-pn-blank-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-blank-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-blank@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-blank-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-blank-pay',
+      'acc-pn-blank-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-blank',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-blank-pay',
+      authorAccountId: 'acc-pn-blank-recv',
+      amountSats: 21,
+      lightningAddress: '   ',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-blank',
+      paymentHash: '88'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: '88888888-8888-4888-8888-888888888888',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-blank',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-blank'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '88'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('address');
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+    expect((await store.getById(profileId))?.sats).toBe(0);
+    expect(await store.listReplies(profileId)).toEqual([]);
+  });
 });
