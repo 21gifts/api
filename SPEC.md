@@ -516,8 +516,9 @@ subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
 (FIFO). JSON `{ "proposals": [ … ] }` including an empty list. Each item
 is `{ subject: { id, name, role: "verified" }, proposedBy: { id, name },
 createdAt }` with ISO-8601 `createdAt`. A missing actor is
-`{ id, name: null }`. Public `GET /trust-chain` still omits
-`moderator_propose`.
+`{ id, name: null }`. `GET /trust-chain` still omits a pending
+`moderator_propose`. Once the subject is a `moderator`, that propose is a
+public chain edge.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
