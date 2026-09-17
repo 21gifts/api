@@ -123,9 +123,7 @@ async function putAbout(
   });
 }
 
-async function seedNoteWithPhoto(
-  text: string = 'Ada',
-): Promise<InMemoryMessageStore> {
+async function seedNoteWithPhoto(text: string = 'Ada'): Promise<InMemoryMessageStore> {
   const messages = new InMemoryMessageStore();
   await messages.create(
     { ...nameOnlyNote({ text }), hasPhoto: true },

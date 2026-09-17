@@ -326,10 +326,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         if (parsed.data.photo === null) {
           decodedPhoto = null;
         } else {
-          const decoded = decodeForumPhoto(
-            parsed.data.photo.contentType,
-            parsed.data.photo.data,
-          );
+          const decoded = decodeForumPhoto(parsed.data.photo.contentType, parsed.data.photo.data);
           if (decoded === null) {
             return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
           }

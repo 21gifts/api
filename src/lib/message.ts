@@ -470,11 +470,7 @@ export function decodeForumPhoto(_contentType: string, data: string): ForumPhoto
  */
 export function forumPhotoResponse(photo: ForumPhoto): Response {
   const ext =
-    photo.contentType === 'image/png'
-      ? 'png'
-      : photo.contentType === 'image/webp'
-        ? 'webp'
-        : 'jpg';
+    photo.contentType === 'image/png' ? 'png' : photo.contentType === 'image/webp' ? 'webp' : 'jpg';
   return new Response(photo.bytes, {
     status: 200,
     headers: {
