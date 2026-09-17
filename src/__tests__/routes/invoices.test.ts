@@ -289,7 +289,7 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null });
+    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
   });
 
   it('returns hasPosted false for an account without messages', async () => {
@@ -312,7 +312,7 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null });
+    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
   });
 
   it('returns hasPosted true when the account has a live top-level non-profile message', async () => {
@@ -336,7 +336,11 @@ describe('GET /invoices/posted', () => {
       messageStore: livePostStore(),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: true, messageId: 'post-alice' });
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+    });
   });
 
   it('returns hasPosted true with messageId null when the list has no non-profile row', async () => {
@@ -371,7 +375,7 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: true, messageId: null });
+    expect(await res.json()).toEqual({ hasPosted: true, messageId: null, postedAt: null });
   });
 
   it('returns hasPosted false when the account has only a profile note', async () => {
@@ -407,7 +411,7 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null });
+    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
   });
 
   it('returns hasPosted false when the account has only a live reply', async () => {
@@ -431,7 +435,7 @@ describe('GET /invoices/posted', () => {
       messageStore: liveReplyStore(),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null });
+    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
   });
 
   it('returns the live top-level post id as messageId', async () => {
@@ -455,7 +459,11 @@ describe('GET /invoices/posted', () => {
       messageStore: uuidPostStore(),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: true, messageId: POST_ID });
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: POST_ID,
+      postedAt: '2026-08-01T00:00:00.000Z',
+    });
   });
 
   it('returns the newest live top-level post id as messageId', async () => {
@@ -499,7 +507,11 @@ describe('GET /invoices/posted', () => {
       messageStore,
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: true, messageId: NEWER_POST_ID });
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: NEWER_POST_ID,
+      postedAt: '2026-08-02T00:00:00.000Z',
+    });
   });
 });
 

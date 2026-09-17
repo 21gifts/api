@@ -285,19 +285,26 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
       if (account === undefined) {
-        return c.json({ hasPosted: false, messageId: null }, 200);
+        return c.json({ hasPosted: false, messageId: null, postedAt: null }, 200);
       }
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(
         account.id,
         account.profileMessageId ?? null,
       );
       if (!hasPosted) {
-        return c.json({ hasPosted: false, messageId: null }, 200);
+        return c.json({ hasPosted: false, messageId: null, postedAt: null }, 200);
       }
       const posts = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
       const profileId = account.profileMessageId ?? null;
       const newest = posts.find((row) => row.id !== profileId);
-      return c.json({ hasPosted: true, messageId: newest === undefined ? null : newest.id }, 200);
+      return c.json(
+        {
+          hasPosted: true,
+          messageId: newest === undefined ? null : newest.id,
+          postedAt: newest === undefined ? null : newest.createdAt.toISOString(),
+        },
+        200,
+      );
     })
     .post('/', async (c) => {
       const denied = authGate(

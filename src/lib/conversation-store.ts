@@ -1,6 +1,6 @@
 /**
  * Persistence for private messaging threads (member↔member, member↔platform,
- * member↔Damus).
+ * member↔Damus, closed moderator_group singleton).
  *
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. New public tables are covered by `db_change` attach.
@@ -25,19 +25,23 @@ export interface ConversationStore {
 
   /**
    * Threads the viewer may see: own participation, plus every platform
-   * thread when `staff` is true. Newest `lastMessageAt` first, then `id`
-   * descending, capped at `limit`.
+   * thread when `staff` is true. The `moderator_group` singleton is
+   * included only when `moderator` is true — never via participation or
+   * the staff / platform-id bypass. Newest `lastMessageAt` first, then
+   * `id` descending, capped at `limit`.
    *
    * @param accountId - Session account.
    * @param staff - Founder/moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
    * @param limit - Maximum rows.
+   * @param moderator - When true, include `moderator_group`. Default false.
    */
   listVisible(
     accountId: string,
     staff: boolean,
     platformId: string | null,
     limit: number,
+    moderator?: boolean,
   ): Promise<ConversationThread[]>;
 
   /**
@@ -84,6 +88,16 @@ export interface ConversationStore {
     counterpartPubkey: string,
     now: Date,
   ): Promise<ConversationThread>;
+
+  /**
+   * Open or insert the closed singleton `moderator_group` thread.
+   * `accountA` is the platform account; `accountB` and `counterpartPubkey`
+   * are null. Unique on `kind`. Concurrent unique-violation re-selects.
+   *
+   * @param platformId - Official platform account id.
+   * @param now - Creation / last-message instant when inserting.
+   */
+  ensureModeratorGroup(platformId: string, now: Date): Promise<ConversationThread>;
 
   /** One message by id, or `undefined`. */
   getMessageById(id: string): Promise<ConversationMessageRow | undefined>;
@@ -138,7 +152,7 @@ export interface ConversationStore {
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
-  kind text NOT NULL CHECK (kind IN ('member_member', 'member_platform', 'member_damus')),
+  kind text NOT NULL CHECK (kind IN ('member_member', 'member_platform', 'member_damus', 'moderator_group')),
   account_a uuid NOT NULL REFERENCES account (id),
   account_b uuid REFERENCES account (id),
   counterpart_pubkey text,
@@ -156,6 +170,11 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   WHERE kind = 'member_damus'`,
   `CREATE INDEX IF NOT EXISTS conversation_last_message_at_idx
   ON conversation (last_message_at DESC, id DESC)`,
+  `ALTER TABLE conversation DROP CONSTRAINT IF EXISTS conversation_kind_check`,
+  `ALTER TABLE conversation ADD CONSTRAINT conversation_kind_check
+  CHECK (kind IN ('member_member', 'member_platform', 'member_damus', 'moderator_group'))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS conversation_moderator_group_uidx
+  ON conversation (kind) WHERE kind = 'moderator_group'`,
   `CREATE TABLE IF NOT EXISTS conversation_message (
   id uuid PRIMARY KEY,
   conversation_id uuid NOT NULL REFERENCES conversation (id),
@@ -274,9 +293,10 @@ export class InMemoryConversationStore implements ConversationStore {
     staff: boolean,
     platformId: string | null,
     limit: number,
+    moderator = false,
   ): Promise<ConversationThread[]> {
     const listed = this.#threads
-      .filter((thread) => visibleTo(thread, accountId, staff, platformId))
+      .filter((thread) => visibleTo(thread, accountId, staff, platformId, moderator))
       .sort(compareThreadsNewestFirst)
       .slice(0, limit)
       .map((thread) => this.#hydrate(thread));
@@ -365,6 +385,29 @@ export class InMemoryConversationStore implements ConversationStore {
         accountA: memberId,
         accountB: null,
         counterpartPubkey: pubkey,
+        now,
+      }),
+    );
+  }
+
+  /**
+   * Open or insert the closed singleton `moderator_group` thread.
+   *
+   * @param platformId - Official platform account id.
+   * @param now - Creation / last-message instant when inserting.
+   * @returns The existing or newly inserted thread.
+   */
+  ensureModeratorGroup(platformId: string, now: Date): Promise<ConversationThread> {
+    const existing = this.#threads.find((thread) => thread.kind === 'moderator_group');
+    if (existing !== undefined) {
+      return Promise.resolve(this.#hydrate(existing));
+    }
+    return Promise.resolve(
+      this.#insertThread({
+        kind: 'moderator_group',
+        accountA: platformId,
+        accountB: null,
+        counterpartPubkey: null,
         now,
       }),
     );
@@ -588,16 +631,22 @@ export class PostgresConversationStore implements ConversationStore {
     staff: boolean,
     platformId: string | null,
     limit: number,
+    moderator = false,
   ): Promise<ConversationThread[]> {
     const rows = await this.#sql.query<ConversationSqlRow>(
       `SELECT ${THREAD_SELECT}
        FROM conversation c
-       WHERE c.account_a = $1 OR c.account_b = $1
-          OR ($2::boolean AND c.kind = 'member_platform')
-          OR ($2::boolean AND $3::uuid IS NOT NULL AND (c.account_a = $3 OR c.account_b = $3))
+       WHERE (
+         (c.kind <> 'moderator_group' AND (
+           c.account_a = $1 OR c.account_b = $1
+           OR ($2::boolean AND c.kind = 'member_platform')
+           OR ($2::boolean AND $3::uuid IS NOT NULL AND (c.account_a = $3 OR c.account_b = $3))
+         ))
+         OR ($5::boolean AND c.kind = 'moderator_group')
+       )
        ORDER BY c.last_message_at DESC, c.id DESC
        LIMIT $4`,
-      [accountId, staff, platformId, limit],
+      [accountId, staff, platformId, limit, moderator],
     );
     return rows.map((row) => mapThread(row));
   }
@@ -734,6 +783,47 @@ export class PostgresConversationStore implements ConversationStore {
       `SELECT ${THREAD_SELECT} FROM conversation c
        WHERE c.kind = 'member_damus' AND c.account_a = $1 AND c.counterpart_pubkey = $2`,
       [memberId, pubkey],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw new Error('conversation open failed');
+    }
+    return mapThread(row);
+  }
+
+  /**
+   * Open or insert the closed singleton `moderator_group` thread.
+   *
+   * @param platformId - Official platform account id.
+   * @param now - Creation / last-message instant when inserting.
+   * @returns The existing or newly inserted thread.
+   */
+  async ensureModeratorGroup(platformId: string, now: Date): Promise<ConversationThread> {
+    const existing = await this.#sql.query<ConversationSqlRow>(
+      `SELECT ${THREAD_SELECT} FROM conversation c
+       WHERE c.kind = 'moderator_group'`,
+      [],
+    );
+    const found = existing[0];
+    if (found !== undefined) {
+      return mapThread(found);
+    }
+    const id = crypto.randomUUID();
+    try {
+      await this.#sql.execute(
+        `INSERT INTO conversation (id, kind, account_a, account_b, counterpart_pubkey, created_at, last_message_at)
+         VALUES ($1, 'moderator_group', $2, NULL, NULL, $3, $3)`,
+        [id, platformId, now],
+      );
+    } catch (error: unknown) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+    }
+    const rows = await this.#sql.query<ConversationSqlRow>(
+      `SELECT ${THREAD_SELECT} FROM conversation c
+       WHERE c.kind = 'moderator_group'`,
+      [],
     );
     const row = rows[0];
     if (row === undefined) {
@@ -902,7 +992,11 @@ function visibleTo(
   accountId: string,
   staff: boolean,
   platformId: string | null,
+  moderator = false,
 ): boolean {
+  if (thread.kind === 'moderator_group') {
+    return moderator === true;
+  }
   if (thread.accountA === accountId || thread.accountB === accountId) {
     return true;
   }
@@ -952,7 +1046,12 @@ function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
 }
 
 function parseKind(raw: string): ConversationKind {
-  if (raw === 'member_member' || raw === 'member_platform' || raw === 'member_damus') {
+  if (
+    raw === 'member_member' ||
+    raw === 'member_platform' ||
+    raw === 'member_damus' ||
+    raw === 'moderator_group'
+  ) {
     return raw;
   }
   throw new Error(`Unknown conversation kind "${raw}"`);
@@ -1012,7 +1111,9 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     name: row.name,
     eventId: row.event_id,
     nostrPublishState:
-      state === 'pending' || state === 'published' || state === 'failed' ? state : 'pending',
+      state === 'pending' || state === 'published' || state === 'failed' || state === 'skipped'
+        ? state
+        : 'pending',
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalEpoch(row.claimed_until),
   };

@@ -49,7 +49,7 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gifts.record_failed` and still returns **200**. When the issued invoice stored
 `messageId`, proof inserts a platform-account gift-reply first, then
 `addSats` (idempotent). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId }`.
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -1863,15 +1863,16 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true, "messageId": "<uuid>" }
+{ "hasPosted": true, "messageId": "<uuid>", "postedAt": "<iso-8601>" }
 ```
 
-or `{ "hasPosted": false, "messageId": null }` when there is no account for the
+or `{ "hasPosted": false, "messageId": null, "postedAt": null }` when there is no account for the
 address or the account has no live **top-level** forum message other than the
 auto-created profile note. Replies do not count. Photo-only / empty-text
 top-level notes still count. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
-`listPostsByAccount` yields no non-profile row. Replies and the auto profile
+`listPostsByAccount` yields no non-profile row. `postedAt` is that row's
+`createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile
 note never become `messageId`.
 
 ### `POST /invoices`
@@ -2626,12 +2627,16 @@ and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
-inbound and listed. `GET /conversations/:id` and `POST` still return/open
-outbound-only and empty threads. Newest `lastMessageAt` first.
-Cap 200. List/open rows may include optional `accountId` of the
-counterpart 21.gifts account (omitted for Damus-only counterparts).
-Member JSON never includes event ids or npubs; Damus-only counterpart
-`name` may be a truncated npub.
+inbound and listed. Kind includes `moderator_group`. The empty group is
+listed for moderators only (`role === 'moderator'`), named `Moderators`;
+founder / verified / basis never see it. The empty `moderator_group` is
+pinned first for moderators and remains listed even when 200 newer
+threads exist (still cap 200). `GET /conversations/:id` and
+`POST` still return/open outbound-only and empty threads. Newest
+`lastMessageAt` first. Cap 200. List/open rows may include optional
+`accountId` of the counterpart 21.gifts account (omitted for Damus-only
+counterparts). Member JSON never includes event ids or npubs; Damus-only
+counterpart `name` may be a truncated npub.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -2687,7 +2692,9 @@ Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
-missing, or the session may not see it.
+missing, or the session may not see it. Kind includes `moderator_group`;
+founder / verified / basis get **404** `{ "error": "Not found" }` on that
+id (no existence leak). Moderators only.
 
 Success → **Response** `200`:
 
@@ -2714,7 +2721,18 @@ Success → **Response** `200`:
 Bearer session required. Body `{ "text": "…" }` 1–500 via
 `normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
 platform thread persist as the platform account; the worker signs with the
-platform nsec. Relay failure does not block local persist.
+platform nsec. Relay failure does not block local persist. Kind includes
+`moderator_group`: persist as the moderator account with
+`nostrPublishState` skipped (never Nostr). After a new persist on
+`moderator_group`, ping `{ address, kind: "moderator" }` (no `messageId`
+in the HTTP body) only when Lightning Address is a non-empty trimmed
+string, `spendPing` is set, **and** the caller has a live living-room
+top-level post (not the profile note) whose `createdAt` is on the same
+UTC day. No such post → **200**, no ping, log `spend.ping.skipped` /
+`no_public_post`. Ping throw still **200**. Living-room lookup failure
+after persist is still **200**, no ping, log `spend.ping.skipped` /
+`posted_unreachable`. Empty or invalid text is
+**400** and does not ping. Founder / verified / basis **404** on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member
