@@ -2961,6 +2961,23 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
   });
 
+  it('create extras without photo 0 throws before insert', async () => {
+    const sql = new MockSql();
+    const row: MessageRow = {
+      id: 'm-no-zero',
+      accountId: 'acc',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    await expect(new PostgresMessageStore(sql).create(row, undefined, undefined, [JPEG2])).rejects.toThrow(
+      'extra photos require photo 0',
+    );
+    expect(sql.executes).toEqual([]);
+  });
+
   it('create extras INSERT binds message_extra_photo after the message row', async () => {
     const sql = new MockSql();
     const row: MessageRow = {
