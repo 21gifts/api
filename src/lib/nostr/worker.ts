@@ -161,8 +161,10 @@ function reservedContent(
  * After a member reply is stored, `notifyForumReply` always runs with `auth`
  * (in-app every account except the actor; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
- * still calls `notifyZap` after a newly indexed receipt. It does not call
- * `notifyForumReply` for the gift-reply. When a conversation store is present, also
+ * still calls `notifyZap` after a newly indexed forum receipt. PN ingest
+ * appends a conversation gift (`appendConversationGift`) and does not call
+ * `notifyZap`. It does not call `notifyForumReply` for the gift-reply. When a
+ * conversation store is present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *

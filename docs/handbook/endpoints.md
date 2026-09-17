@@ -93,7 +93,7 @@
 
 ## Endpoint: GET /debug/invoices
 
-- **Purpose:** Operator listing of forum `POST /messages/:id/invoice` attempts newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. `serializeInvoice` omits `conversationId` and `conversationMessageId`. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
 - **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -450,7 +450,7 @@
 
 ## Endpoint: POST /conversations/:id/invoice
 
-- **Purpose:** Bearer required. Body `{ sats, text? }`. Issues a NIP-57 BOLT11 to the counterpart's Lightning Address (profile-note `e` tag). 200 `{ pr, amountSats, messageId }` — `messageId` is the predetermined conversation row, inserted only after zap ingest. Gift-only omits text. Damus threads are not invoiced.
+- **Purpose:** Bearer required. Body `{ sats: <int 1..10_000_000>, text? }`. Issues a NIP-57 BOLT11 to the counterpart's Lightning Address (profile-note `e` tag). 200 `{ pr, amountSats, messageId }` — `messageId` is the predetermined conversation row, inserted only after zap ingest. Gift-only omits text. Damus threads are not invoiced.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a positive "sats" integer; 400 Text must be 1–500 characters; 400 Set a name before posting; 400 Cannot message yourself; 400 The author's wallet cannot receive this Bitcoin payment (`noZap`, `not_zap`, Damus, missing counterpart LN / profile event); 400 Could not start the Bitcoin payment (`unreachable` and other LNURL transport failures); 404 Not found; 429 Too many payments; 503 Messages are unavailable / Conversations are unavailable (persist failure after a successful LNURL mint is 503 and the response has no `pr`).
 - **Used by:** App inbox amount composer.
 - **Auth:** `Authorization: Bearer` session.

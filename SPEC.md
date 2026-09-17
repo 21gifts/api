@@ -1378,9 +1378,10 @@ Environment:
 
 ### `GET /debug/invoices`
 
-Operator listing of forum `POST /messages/:id/invoice` attempts. Authenticated
-with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
-session.
+Operator listing of all `message_invoice` attempts (forum
+`POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`).
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not
+an end-user session.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -1429,6 +1430,8 @@ Success → **Response** `200`:
 
 `lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
 was stored. Rows are newest-first, capped at **200**. Never includes nsec.
+`serializeInvoice` omits `conversationId` and `conversationMessageId` even
+when the row is a conversation invoice.
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
@@ -2855,7 +2858,7 @@ optional sender `accountId`).
 
 ### `POST /conversations/:id/invoice`
 
-Bearer session required. Body `{ "sats": <positive int>, "text"?: "…" }`.
+Bearer session required. Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`.
 Optional `text` is the NIP-57 comment (empty = gift-only). Issues a BOLT11
 against the counterpart's Lightning Address using their profile-note event
 id as the zap `e` tag. The conversation row is **not** inserted until the
