@@ -593,6 +593,28 @@ describe('debugMessagesRoutes', () => {
     );
   });
 
+  it('returns 404 extra still for a bad file, missing row, or photo 0 only', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ id: HIDDEN_ID, text: 'one' }), JPEG);
+    const app = mount(store, 'secret');
+    const headers = { authorization: 'Bearer secret' };
+    const badFile = await app.request(`/debug/messages/${HIDDEN_ID}/photo/0.jpg`, { headers });
+    expect(badFile.status).toBe(404);
+    expect(await badFile.json()).toEqual({ error: 'Photo not found' });
+    const junk = await app.request(`/debug/messages/${HIDDEN_ID}/photo/foo.jpg`, { headers });
+    expect(junk.status).toBe(404);
+    expect(await junk.json()).toEqual({ error: 'Photo not found' });
+    const missing = await app.request(`/debug/messages/${UNKNOWN_ID}/photo/1.jpg`, { headers });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Photo not found' });
+    const noExtra = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`, { headers });
+    expect(noExtra.status).toBe(404);
+    expect(await noExtra.json()).toEqual({ error: 'Photo not found' });
+    const badId = await app.request('/debug/messages/not-a-uuid/photo/1.jpg', { headers });
+    expect(badId.status).toBe(404);
+    expect(await badId.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 503 on restore when debug is not configured', async () => {
     const app = mount(new InMemoryMessageStore(), undefined);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, { method: 'POST' });
