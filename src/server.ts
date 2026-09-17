@@ -342,7 +342,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
-  app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore }));
+  app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
   app.route('/trust', trustRoutes({ authStore: store, trustStore, now }));
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
   app.route(

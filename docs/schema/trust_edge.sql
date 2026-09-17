@@ -1,5 +1,5 @@
 -- Trust edges: who granted which staff status to whom.
--- Public GET /trust-chain projects stored verify / moderator_confirm /
+-- Session GET /trust-chain projects stored verify / moderator_confirm /
 -- moderator_appoint edges only. moderator_propose is stored but not shown.
 -- Operator PATCH /debug/accounts/:id does not write this table.
 

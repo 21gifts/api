@@ -100,7 +100,7 @@
 
 ## Endpoint: GET /debug/zap-ingests
 
-- **Purpose:** Operator listing of kind:9735 ingest decisions newest-first (cap 200): `outcome` (`indexed` \| `rejected`), `reason`, receipt id, note/message ids, amount, and the receipt event frame. ISO `createdAt`. Never includes nsec. One `nostr_zap_ingest` row is written per receipt per decision change per process (the memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per known receipt); receipts whose remembered decision is terminal (`indexed` or `rejected`/`duplicate`) skip note lookup, account/LNURL validation, and ingest persist, but still run `verifyReceipt` then `tryEnsureGiftReply`.
+- **Purpose:** Operator listing of kind:9735 ingest decisions newest-first (cap 200): `outcome` (`indexed` \| `rejected`), `reason`, receipt id, note/message ids, amount, and the receipt event frame. ISO `createdAt`. Never includes nsec. One `nostr_zap_ingest` row is written per receipt per decision change per process (the memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per receipt that tick still queries (`listLatest`)). A repeated identical `outcome:reason` is normally not written again, because the memory is consulted before the write; that is not a guarantee, since the memory is set only after the write resolves, worker ticks are not serialised, and a failed write leaves it untouched. Receipts whose remembered decision is terminal (`indexed` or `rejected`/`duplicate`) skip note lookup, account/LNURL validation, and ingest persist, but still run `verifyReceipt` then `tryEnsureGiftReply`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.zap_ingests.list_failed`).
 - **Used by:** Operators debugging zap receipt indexing.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -513,10 +513,10 @@
 
 ## Endpoint: GET /trust-chain
 
-- **Purpose:** Public stored trust graph. No auth. Bare `GET` returns founder seeds only (`edges` empty) so a large chain is not dumped on first paint. `?around=<id>` returns that chain member plus one hop of stored public edges (`verify` / `moderator_confirm` / `moderator_appoint`; never `moderator_propose`). Nodes are founder/moderator/verified (never basis). Never invents edges; omits lightning addresses, view keys, and linking keys.
-- **Errors:** 404 `{ error: 'Not found' }` when `around` is supplied but is not a uuid, is unknown, or is not a chain member (including Postgres `22P02`). Omitting `around` (or empty) is founder seeds, not 404. 503 `{ error: 'Trust chain is unavailable' }` when listing accounts or edges throws (`trust.chain.failed`).
-- **Used by:** Public trust-chain page and any unauthenticated client.
-- **Auth:** none.
+- **Purpose:** Stored trust graph. Bearer session required (any role). Bare `GET` returns founder seeds only (`edges` empty) so a large chain is not dumped on first paint. `?around=<id>` returns that chain member plus one hop of stored public edges (`verify` / `moderator_confirm` / `moderator_appoint`; never `moderator_propose`). Nodes are founder/moderator/verified (never basis). Never invents edges; omits lightning addresses, view keys, and linking keys.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session or with an invalid Bearer. 404 `{ error: 'Not found' }` when `around` is supplied but is not a uuid, is unknown, or is not a chain member (including Postgres `22P02`). Omitting `around` (or empty) is founder seeds, not 404. Unauthenticated `around` is 401, not 404. 503 `{ error: 'Trust chain is unavailable' }` when listing accounts or edges throws (`trust.chain.failed`).
+- **Used by:** signed-in app `/trust-chain` via app `GET /trust/graph`.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /trust/verify
 

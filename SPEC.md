@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-16 (a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread).
+**Status**: living document. Last revised 2026-09-16 (`GET /trust-chain` requires a member Bearer session; neighborhood graph unchanged; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread).
 
 ---
 
@@ -94,7 +94,7 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                     |
 | GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
 | GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
-| GET    | `/trust-chain`                               | none                       | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges        |
+| GET    | `/trust-chain`                               | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges        |
 | POST   | `/trust/verify`                              | Bearer                     | Staff: confirm a person in real life (`verified`)                                 |
 | POST   | `/trust/propose-moderator`                   | Bearer                     | Staff: propose a verified member as moderator                                     |
 | POST   | `/trust/confirm-moderator`                   | Bearer                     | Staff: second, independent confirmation → `moderator`                             |
@@ -452,7 +452,14 @@ BTC-USD.
 
 ### `GET /trust-chain`
 
-Public stored trust graph. No auth. Bare `GET /trust-chain` returns
+Stored trust graph. Bearer session required (any role, including basis).
+Missing or invalid Bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
 one hop of **stored** public edges (`verify` / `moderator_confirm` /
@@ -461,7 +468,8 @@ is `<id>`. Nodes are `founder` / `moderator` / `verified` (never `basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
-unknown, or `basis` → **404** `{ "error": "Not found" }`.
+unknown, or `basis` → **404** `{ "error": "Not found" }`. Unauthenticated
+`around` is 401, not 404.
 
 Store throw → **Response** `503`:
 
