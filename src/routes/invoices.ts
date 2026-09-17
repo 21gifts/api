@@ -67,7 +67,8 @@ export interface InvoiceRouteDeps {
   giftRecorder?: GiftRecorder;
   /**
    * Optional in-app notification store. When present with `pushStore`, a spend
-   * gift-reply fans out via {@link notifyForumReply}.
+   * gift-reply fans out via {@link notifyForumReply} with `auth` so
+   * `notificationLevel` filters in-app rows and Web Push.
    */
   notificationStore?: NotificationStore;
   /**
@@ -232,6 +233,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           account: platform,
           created,
           parentId: invoice.messageId,
+          auth: deps.authStore,
           /* v8 ignore next 4 -- createApp always injects notificationStore and pushStore */
           ...(deps.notificationStore === undefined
             ? {}
