@@ -30,9 +30,10 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
  * the payment preimage as proof. A proof with `messageId` attaches a platform
  * gift-reply when that message is a top-level post. If `messageId` is already
- * a reply, the proof `addSats`s the reply, persists a deterministic
- * `spendGiftReplyId` marker under that reply, then `markDeleted` so live
- * `listReplies` omits it. The api does not pay.
+ * a reply, the proof persists a deterministic `spendGiftReplyId` marker
+ * under that reply, `markDeleted` so live `listReplies` omits it, then
+ * `addSats`s the reply. A live existing marker is `markDeleted` only and
+ * does not `addSats`. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
