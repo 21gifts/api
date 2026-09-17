@@ -263,6 +263,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         const account = member.account;
         let profileMessage: ReturnType<typeof serializeMessage> | null = null;
         let aboutMe: string | null = null;
+        let aboutMeHasPhoto = false;
         const profileId = account.profileMessageId;
         if (typeof profileId === 'string' && profileId.trim() !== '') {
           const row = await deps.messageStore.getById(profileId);
@@ -274,6 +275,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
             profileMessage = serializeMessage(row, payable, account.role, children.length, true);
             aboutMe = aboutMeFromNote(account.name, row.text, row.name);
+            aboutMeHasPhoto = row.hasPhoto === true;
           }
         }
         const counts = await deps.messageStore.countByAccount(account.id);
@@ -289,6 +291,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             createdAt: new Date(account.createdAt).toISOString(),
             profileMessage,
             aboutMe,
+            aboutMeHasPhoto,
             postCount: counts.postCount,
             replyCount: counts.replyCount,
             trust: accountTrust(account.id, accounts, edges),

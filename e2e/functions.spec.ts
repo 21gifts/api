@@ -141,6 +141,20 @@ test('Function: aboutMeFromNote — PUT /me/about without bearer is 401', async 
   expect(res.status()).toBe(401);
 });
 
+test('Function: forumPhotoResponse — GET /me/about/photo without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/me/about/photo');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: updatePhoto — GET /view/:viewKey/about/photo without a key is 404', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey/about/photo');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: buildAccountActivity — GET /me/activity without bearer is 401', async ({
   request,
 }) => {
@@ -1480,6 +1494,13 @@ test('Function: trustChainRoutes — GET /trust-chain without bearer is 401', as
   const res = await request.get('/trust-chain');
   expect(res.status()).toBe(401);
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: pendingModeratorProposals — GET /trust/proposals without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/trust/proposals');
+  expect(res.status()).toBe(401);
 });
 
 test('Function: trustRoutes — POST /trust/verify without bearer is 401', async ({ request }) => {

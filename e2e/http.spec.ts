@@ -100,6 +100,11 @@ test('PUT /me/about without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /me/about/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me/about/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /me/activity without bearer is 401', async ({ request }) => {
   const res = await request.get('/me/activity');
   expect(res.status()).toBe(401);
@@ -603,6 +608,11 @@ test('GET /trust-chain?around= without bearer is 401', async ({ request }) => {
 test('GET /trust-chain?around= missing id is 404', async ({ request }) => {
   const auth = await memberSession(request);
   expect((await request.get('/trust-chain?around=ghost', { headers: auth })).status()).toBe(404);
+});
+
+test('GET /trust/proposals without bearer is 401', async ({ request }) => {
+  const res = await request.get('/trust/proposals');
+  expect(res.status()).toBe(401);
 });
 
 test('POST /trust/verify without bearer is 401', async ({ request }) => {

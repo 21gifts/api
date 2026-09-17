@@ -296,14 +296,14 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`). `hasPosted` is true when the account has a live forum row that is not the auto-created profile note (`profileMessageId` excluded). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `setup` is the next wizard step (`name` \| `lightning-address` \| `rules`) or `null` when complete; skip timestamps count as done for the wizard. `missing` lists factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step.
 - **Errors:** 401 if missing/expired.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -324,7 +324,7 @@
 
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`). `hasPasskey` is true when the account already has a passkey credential. `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). No auth. Not a session.
+- **Purpose:** Public capability URL. Read-only profile card (`name`, `location` (`string | null`, never omit, never `""`), `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`). `hasPasskey` is true when the account already has a passkey credential. `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. No auth. Not a session.
 - **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown. 503 `{ "error": "Messages are unavailable" }` when the profile-note read throws (`view.get.failed`).
 - **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
 - **Auth:** none.
@@ -506,10 +506,24 @@
 
 ## Endpoint: PUT /me/about
 
-- **Purpose:** Bearer required. Body `{ text }`. Writes About me onto the profile forum note (creates a new live note without a Lightning Address when the note is missing or soft-hidden via `deletedAt`, then claims `profileMessageId` via `claimProfileMessageId` only while the pointer still matches the missing/hidden read; a lost claim deletes the insert and adopts a live winner). A won inline claim create calls `notifyForumPost` after `updateText` with the bio (best-effort; enqueue failure still 200). Adopting a live CAS winner does not notify. PUT `/about` does not call `ensureProfileMessage` (no name-copy insert). Updating an already-live note does not notify. Empty text with no live note does not create or notify. The hidden row stays hidden. Empty text clears the bio (`aboutMe` null; the live note row is kept). Name-only auto-copy is not a bio, including after a display-name rename (Ada→Grace with note text still `Ada` stays `null`). Requires a display name (not LN). Success is owner JSON with `aboutMe`.
-- **Errors:** 401 without session; 400 if the body is not `{ text: string }`, text is longer than 500 characters (`About me must be at most 500 characters`), or text contains C0/DEL control characters; 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
+- **Purpose:** Bearer required. Body `{ text, photo? }`. `text` is required. `photo` omitted keeps a stored photo; JSON `null` clears it; `{ contentType, data }` is `decodeForumPhoto` (same JPEG/PNG/WebP under 1 MiB as `POST /messages`). Writes About me onto the profile forum note (creates a new live note without a Lightning Address when the note is missing or soft-hidden via `deletedAt`, including photo-only empty text with a decoded photo, then claims `profileMessageId` via `claimProfileMessageId` only while the pointer still matches the missing/hidden read; a lost claim deletes the insert and adopts a live winner). A won inline claim create calls `notifyForumPost` after the writes (best-effort; enqueue failure still 200). Adopting a live CAS winner does not notify. PUT `/about` does not call `ensureProfileMessage` (no name-copy insert). Updating an already-live note does not notify. Empty text with `photo` omitted or `null` and no live note does not create or notify. The hidden row stays hidden. Empty text clears the bio (`aboutMe` null; the live note row is kept). Name-only auto-copy is not a bio, including after a display-name rename (Ada→Grace with note text still `Ada` stays `null`). A live photo still sets `aboutMeHasPhoto`. Requires a display name (not LN). Success is owner JSON with `aboutMe` and `aboutMeHasPhoto`.
+- **Errors:** 401 without session; 400 if the body is not `{ text: string }`, text is longer than 500 characters (`About me must be at most 500 characters`), or text contains C0/DEL control characters; 400 `{ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }` when `photo` is present but neither `null` nor a decodable `{ contentType, data }`; 409 `{ error: 'missing_requirements', missing: ['name'] }` when name is blank; 503 `{ error: 'Messages are unavailable' }` when the store throws (`account.about.failed`).
 - **Used by:** App profile About me editor.
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /me/about/photo
+
+- **Purpose:** Bearer required. Raw profile-note photo bytes via `forumPhotoResponse` (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, inline `photo.jpg|png|webp`). Does not expose `profileMessageId`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without session; 404 `{ error: 'Photo not found' }` when there is no live profile note or no photo; 503 `{ error: 'Messages are unavailable' }` (`account.about.photo.failed`).
+- **Used by:** App signed-in About me photo display.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /view/:viewKey/about/photo
+
+- **Purpose:** Public. Same bytes as `GET /me/about/photo` for the account behind the 64-hex view key (`forumPhotoResponse`). No auth. Not a session.
+- **Errors:** 404 `{ error: 'Not found' }` when the param is not 64 lowercase hex or the key is unknown; 404 `{ error: 'Photo not found' }` when there is no live profile note or no photo; 503 `{ error: 'Messages are unavailable' }` (`view.photo.failed`).
+- **Used by:** App public view-key About me photo.
+- **Auth:** none.
 
 ## Endpoint: GET /trust-chain
 
@@ -517,6 +531,13 @@
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session or with an invalid Bearer. 404 `{ error: 'Not found' }` when `around` is supplied but is not a uuid, is unknown, or is not a chain member (including Postgres `22P02`). Omitting `around` (or empty) is founder seeds, not 404. Unauthenticated `around` is 401, not 404. 503 `{ error: 'Trust chain is unavailable' }` when listing accounts or edges throws (`trust.chain.failed`).
 - **Used by:** signed-in app `/trust-chain` via app `GET /trust/graph`.
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /trust/proposals
+
+- **Purpose:** Bearer session required (founder or moderator; not `DEBUG_TOKEN`). Lists pending `moderator_propose` rows via `pendingModeratorProposals`: live subject `role` is `verified` and the subject has no `moderator_confirm` / `moderator_appoint`. JSON `{ "proposals": [ { subject: { id, name, role: "verified" }, proposedBy: { id, name }, createdAt } ] }` with ISO-8601 `createdAt` (empty list is 200). Oldest `createdAt` first, then propose-edge id. Missing subjects are omitted; a missing actor is `{ id, name: null }`. No `forum.read` / rules gate — a founder/moderator without rules agreement is still 200. Logs `trust.proposals.listed` with `{ count }` only. `GET /trust-chain` still omits a pending `moderator_propose`. Once the subject is a `moderator`, that propose is a public chain edge.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not founder/moderator; 503 `{ error: 'Trust chain is unavailable' }` when listing accounts/edges or projecting throws (`trust.proposals.failed`).
+- **Used by:** Staff moderator-proposal queue in the app.
+- **Auth:** `Authorization: Bearer` session (founder or moderator). Not `DEBUG_TOKEN`.
 
 ## Endpoint: POST /trust/verify
 

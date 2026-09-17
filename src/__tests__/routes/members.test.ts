@@ -159,6 +159,7 @@ describe('GET /members/:accountId', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       createdAt: new Date(1_700_000_000_000).toISOString(),
       aboutMe: null,
+      aboutMeHasPhoto: false,
       postCount: 1,
       replyCount: 0,
     });
@@ -172,6 +173,53 @@ describe('GET /members/:accountId', () => {
     expect(profile).not.toHaveProperty('eventId');
     expect(body['trust']).toEqual(NULL_TRUST);
     expect(body['aboutMe']).toBeNull();
+    expect(body['aboutMeHasPhoto']).toBe(false);
+  });
+
+  it('sets aboutMeHasPhoto true when the live note has a jpeg photo', async () => {
+    const authStore = await seededCaller();
+    const messageStore = new InMemoryMessageStore();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      profileMessageId: noteId,
+    });
+    await messageStore.create(
+      {
+        id: noteId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+        eventId: 'ee'.repeat(32),
+      },
+      { contentType: 'image/jpeg', bytes: jpeg },
+    );
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
+      profileMessage: { hasPhoto: boolean } | null;
+    };
+    expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(true);
+    expect(body.profileMessage?.hasPhoto).toBe(true);
   });
 
   it('returns aboutMe from a real profile-note bio and keeps profileMessage', async () => {
@@ -245,9 +293,14 @@ describe('GET /members/:accountId', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string | null; aboutMe: string | null };
+    const body = (await res.json()) as {
+      name: string | null;
+      aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
+    };
     expect(body.name).toBe('Grace');
     expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(false);
   });
 
   it('returns profileMessage null when no note exists', async () => {
@@ -271,6 +324,7 @@ describe('GET /members/:accountId', () => {
       location: string | null;
       profileMessage: null;
       aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
       postCount: number;
       replyCount: number;
       trust: typeof NULL_TRUST;
@@ -278,6 +332,7 @@ describe('GET /members/:accountId', () => {
     expect(body.location).toBeNull();
     expect(body.profileMessage).toBeNull();
     expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(false);
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
     expect(body.trust).toEqual(NULL_TRUST);
@@ -379,11 +434,13 @@ describe('GET /members/:accountId', () => {
     const body = (await res.json()) as {
       profileMessage: null;
       aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
       postCount: number;
       replyCount: number;
     };
     expect(body.profileMessage).toBeNull();
     expect(body.aboutMe).toBeNull();
+    expect(body.aboutMeHasPhoto).toBe(false);
     expect(body.postCount).toBe(0);
     expect(body.replyCount).toBe(0);
     const account = await authStore.getAccount(ACCOUNT_ID);

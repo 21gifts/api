@@ -105,12 +105,31 @@ function post(
   );
 }
 
+function get(app: Hono, path: string, token: string | undefined): Promise<Response> {
+  return Promise.resolve(
+    app.request(path, {
+      method: 'GET',
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+    }),
+  );
+}
+
 const throwingList: TrustStore = {
   listEdges: async () => [],
   listEdgesTouching: async () => [],
   listEdgesForSubject: async () => {
     throw new Error('list boom');
   },
+  insertEdge: async (row) => row,
+  deleteEdge: async () => undefined,
+};
+
+const throwingListEdges: TrustStore = {
+  listEdges: async () => {
+    throw new Error('list boom');
+  },
+  listEdgesTouching: async () => [],
+  listEdgesForSubject: async () => [],
   insertEdge: async (row) => row,
   deleteEdge: async () => undefined,
 };
@@ -1306,5 +1325,130 @@ describe('POST /trust/*', () => {
         true,
       );
     });
+  });
+});
+
+describe('GET /trust/proposals', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns 401 without a session', async () => {
+    const { authStore, trustStore } = await staffed();
+    const res = await get(mount(authStore, trustStore), '/trust/proposals', undefined);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 when the caller is not staff', async () => {
+    const { authStore, trustStore } = await staffed();
+    const res = await get(mount(authStore, trustStore), '/trust/proposals', 'other');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 200 with an empty list for founder and moderator', async () => {
+    const { authStore, trustStore } = await staffed();
+    const app = mount(authStore, trustStore);
+    for (const token of ['founder', 'mod'] as const) {
+      const res = await get(app, '/trust/proposals', token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ proposals: [] });
+    }
+    const listed = parsedEvents(warn).filter(
+      (event) => event['event'] === 'trust.proposals.listed',
+    );
+    expect(listed).toHaveLength(2);
+    expect(listed.every((event) => event['count'] === 0)).toBe(true);
+  });
+
+  it('returns 200 with one pending propose for a founder', async () => {
+    const createdAt = Date.parse('2026-09-16T00:00:00.000Z');
+    const { authStore, trustStore } = await staffed([
+      account({ id: SUBJECT, role: 'verified', name: 'Ada' }),
+    ]);
+    await trustStore.insertEdge({
+      id: 'propose',
+      subjectId: SUBJECT,
+      actorId: MOD,
+      kind: 'moderator_propose',
+      createdAt,
+    });
+    const res = await get(mount(authStore, trustStore), '/trust/proposals', 'founder');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      proposals: [
+        {
+          subject: { id: SUBJECT, name: 'Ada', role: 'verified' },
+          proposedBy: { id: MOD, name: 'Mod' },
+          createdAt: '2026-09-16T00:00:00.000Z',
+        },
+      ],
+    });
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'trust.proposals.listed' && event['count'] === 1,
+      ),
+    ).toBe(true);
+  });
+
+  it('omits confirmed and appointed subjects', async () => {
+    const appointedId = '55555555-5555-4555-8555-555555555555';
+    const { authStore, trustStore } = await staffed([
+      account({ id: SUBJECT, role: 'verified', name: 'Confirmed' }),
+      account({ id: appointedId, role: 'verified', name: 'Appointed' }),
+    ]);
+    await trustStore.insertEdge({
+      id: 'p-confirm',
+      subjectId: SUBJECT,
+      actorId: MOD,
+      kind: 'moderator_propose',
+      createdAt: 1,
+    });
+    await trustStore.insertEdge({
+      id: 'confirm',
+      subjectId: SUBJECT,
+      actorId: FOUNDER,
+      kind: 'moderator_confirm',
+      createdAt: 2,
+    });
+    await trustStore.insertEdge({
+      id: 'p-appoint',
+      subjectId: appointedId,
+      actorId: MOD,
+      kind: 'moderator_propose',
+      createdAt: 1,
+    });
+    await trustStore.insertEdge({
+      id: 'appoint',
+      subjectId: appointedId,
+      actorId: FOUNDER,
+      kind: 'moderator_appoint',
+      createdAt: 2,
+    });
+    const res = await get(mount(authStore, trustStore), '/trust/proposals', 'mod');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ proposals: [] });
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'trust.proposals.listed' && event['count'] === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 503 when listEdges throws', async () => {
+    const { authStore } = await staffed();
+    const res = await get(mount(authStore, throwingListEdges), '/trust/proposals', 'founder');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'trust.proposals.failed')).toBe(
+      true,
+    );
   });
 });
