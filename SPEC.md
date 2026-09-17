@@ -2875,7 +2875,10 @@ for Damus threads, missing counterpart LN / profile event, LNURL `noZap`, or a
 non-NIP-57 invoice. **400** `{ "error": "Could not start the Bitcoin payment" }`
 when LNURL is unreachable or another transport failure. **400**
 `{ "error": "Cannot message yourself" }`. **429** Too many payments. **503**
-`{ "error": "Messages are unavailable" }` without a KEK.
+`{ "error": "Messages are unavailable" }` without a KEK. **503**
+`{ "error": "Conversations are unavailable" }` when the ok-path
+`recordInvoiceAttempt` throws after a successful LNURL mint (no `pr` in the
+response).
 
 ### `GET /notifications`
 

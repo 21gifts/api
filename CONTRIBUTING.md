@@ -54,7 +54,7 @@ api/
 │   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
-│   │   ├── conversations.ts  # GET/POST /conversations, GET/POST /conversations/:id, POST /:id/invoice
+│   │   ├── conversations.ts  # GET/POST /conversations, GET/POST /conversations/:id, POST /conversations/:id/invoice
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
