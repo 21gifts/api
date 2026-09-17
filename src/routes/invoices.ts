@@ -29,7 +29,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Spend-worker invoice routes: check passkey eligibility and a live
  * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
  * the payment preimage as proof. A proof with `messageId` attaches a platform
- * gift-reply under that post. The api does not pay.
+ * gift-reply only when that message is a top-level post; if `messageId` is
+ * already a reply, the proof `addSats`s the reply only. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -56,7 +57,12 @@ export interface InvoiceRouteDeps {
    */
   messageStore: Pick<
     MessageStore,
-    'accountHasLiveTopLevelPost' | 'getById' | 'addSats' | 'create' | 'listPostsByAccount'
+    | 'accountHasLiveTopLevelPost'
+    | 'getById'
+    | 'addSats'
+    | 'create'
+    | 'listPostsByAccount'
+    | 'markDeleted'
   >;
   /** Clock, epoch milliseconds. */
   now: () => number;
@@ -204,11 +210,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return;
       }
       const parent = await deps.messageStore.getById(invoice.messageId);
-      if (parent !== undefined && parent.deletedAt === null && parent.parentId !== null) {
-        const sats = Math.floor(invoice.amountMsat / 1000);
-        await deps.messageStore.addSats(invoice.messageId, sats);
-        return;
-      }
       const accounts = await deps.authStore.listAccounts();
       const platform = accounts.find((item) => item.isPlatform === true);
       if (parent === undefined || parent.deletedAt !== null || platform === undefined) {
@@ -220,6 +221,27 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const name = nameTrim !== '' ? nameTrim : '21.gifts';
       const text = invoice.comment ?? '';
       const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
+      if (parent.parentId !== null) {
+        await deps.messageStore.addSats(invoice.messageId, sats);
+        await deps.messageStore.create({
+          id: replyId,
+          accountId: platform.id,
+          name,
+          text,
+          createdAt: new Date(paidAtMs),
+          hasPhoto: false,
+          hasVideo: false,
+          videoContentType: null,
+          contentFp: null,
+          ...unsignedNostrDefaults(),
+          parentId: invoice.messageId,
+          sats,
+          nostrPublishState: 'skipped',
+          authorPubkey,
+        });
+        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+        return;
+      }
       const created = await deps.messageStore.create({
         id: replyId,
         accountId: platform.id,

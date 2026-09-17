@@ -4035,6 +4035,54 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.payable).toBe(true);
   });
 
+  it('marks a signed reply with a whitespace Lightning Address as not payable in the thread', async () => {
+    const parentId = '2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e';
+    const replyId = '2f2f2f2f-2f2f-42f2-82f2-2f2f2f2f2f2f';
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    await store.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'signed reply',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: '   ',
+    });
+    const res = await mount(authStore, store).request(`/messages/${parentId}/replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; payable: boolean }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.text).toBe('signed reply');
+    expect(body.messages[0]?.payable).toBe(false);
+  });
+
   it('returns 404 for a non-uuid id without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/messages/not-a-uuid/replies');
     expect(res.status).toBe(404);

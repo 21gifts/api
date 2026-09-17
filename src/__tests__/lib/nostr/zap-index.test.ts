@@ -1068,6 +1068,18 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
+    // Child with the same eventId so reply collection dedups via `seen`.
+    rows.push({
+      id: 'm-chunk-child-dup',
+      accountId: 'acc-chunk',
+      name: 'Ada',
+      text: 'child-dup',
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, 23)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-chunk-0',
+      eventId: firstId,
+    });
     const store = new InMemoryMessageStore(rows);
     await ingest({
       store,
@@ -3458,6 +3470,128 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+  });
+
+  it('queries a reply eventId and does not insert a nested gift-reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-watch-parent',
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      messageId: 'm-gift-watch-parent',
+    });
+    const replyEventId = 'bb'.repeat(32);
+    const replyId = 'm-gift-watch-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await store.create({
+      id: 'm-gift-watch-unsigned-parent',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'unsigned parent',
+      createdAt: new Date('2026-08-28T00:00:02.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-null-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'null eventId child',
+      createdAt: new Date('2026-08-28T00:00:03.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-empty-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'empty eventId child',
+      createdAt: new Date('2026-08-28T00:00:04.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: '',
+    });
+    await auth.createAccount({
+      id: 'payer-gift-watch',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-gift-watch@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-watch'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift-watch',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-gift-watch',
+      authorAccountId: 'acc-gift-watch-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-watch',
+      paymentHash: '55'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-watch',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-gift-watch'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
     expect((await store.getById(replyId))?.sats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
     const siblings = await store.listReplies(parentId);

@@ -113,7 +113,8 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
  * Empty after process restart; the first tick may then re-persist a forgotten
  * decision, but only for the receipts that tick still queries. A receipt is
- * queried only while its message is present in the current `listLatest` result.
+ * queried while its message is in the current `listLatest` result, or is a
+ * reply of one of those latest rows (non-null child `eventId`).
  *
  * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
  * the receipt id when the message goes away and would record it again, but this
@@ -552,13 +553,17 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query zap relays for kind:9735 receipts on recent forum notes and on
- * open conversation-invoice e-tags, index validated ones, then insert a
- * payer gift-reply (forum) or append the paid PN row (conversation invoice)
- * and fan out zap in-app notifications to every account except skip (Web
- * Push only to bell subscribers). Conversation invoices skip `addSats`,
- * gift-reply, and `notifyZap`. Retries receipts that have a payer and no
- * gift-reply id yet. The gift-reply insert does not call `notifyForumReply`.
+ * Query zap relays for kind:9735 receipts on recent forum notes, their
+ * nested replies, and open conversation-invoice e-tags, index validated
+ * ones, then insert a payer gift-reply (forum) or append the paid PN row
+ * (conversation invoice) and fan out zap in-app notifications to every
+ * account except skip (Web Push only to bell subscribers). Conversation
+ * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
+ * runs only when the paid message is top-level (`parentId` null); a reply
+ * zap is `addSats` only (no nested gift-reply). Retries receipts that have
+ * a payer and no gift-reply id yet, and drops reply receipts from that
+ * awaiting-gift-reply queue. The gift-reply insert does not call
+ * `notifyForumReply`.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
@@ -625,6 +630,19 @@ export async function indexOpenZapReceipts(args: {
     }
     seen.add(row.eventId);
     eventIds.push(row.eventId);
+  }
+  for (const row of rows) {
+    const children = await args.store.listReplies(row.id, MESSAGE_LIST_LIMIT);
+    for (const child of children) {
+      if (child.eventId === null || child.eventId === '') {
+        continue;
+      }
+      if (seen.has(child.eventId)) {
+        continue;
+      }
+      seen.add(child.eventId);
+      eventIds.push(child.eventId);
+    }
   }
   if (eventIds.length === 0) {
     await retryGiftReplies(args);

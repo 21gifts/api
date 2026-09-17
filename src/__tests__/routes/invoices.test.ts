@@ -167,6 +167,13 @@ function uuidPostStore(): InMemoryMessageStore {
   ]);
 }
 
+/** Same derivation as production `spendGiftReplyId` (not exported). */
+function spendGiftReplyId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
 function uuidReplyStore(): InMemoryMessageStore {
   return new InMemoryMessageStore([
     {
@@ -1450,6 +1457,12 @@ describe('POST /invoices/proof', () => {
     expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
     expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
+    const marker = await messageStore.getById(spendGiftReplyId(unpaid().id));
+    expect(marker).toBeDefined();
+    expect(marker?.deletedAt).not.toBeNull();
+    expect(marker?.deletedBy).toBe('plat');
+    expect(marker?.parentId).toBe(REPLY_ID);
+    expect(marker?.nostrPublishState).toBe('skipped');
   });
 
   it('does not double addSats or create a second gift-reply on the same preimage', async () => {
@@ -1471,6 +1484,30 @@ describe('POST /invoices/proof', () => {
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
+  });
+
+  it('does not double addSats or create a second gift-reply on a reply invoice with the same preimage', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidReplyStore();
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 

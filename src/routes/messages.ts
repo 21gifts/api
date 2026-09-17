@@ -96,6 +96,22 @@ const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
 
 /**
+ * Whether a forum row can mint a zap: signed `eventId` plus a non-blank
+ * author Lightning Address. Whitespace-only addresses are not payable.
+ *
+ * @param row - Forum row (`eventId` is the mint gate).
+ * @param author - Author account when known.
+ * @returns True when list/get should mark the note payable.
+ */
+function payableOf(
+  row: { eventId: string | null },
+  author: { lightningAddress: string | null } | undefined,
+): boolean {
+  const address = author?.lightningAddress;
+  return row.eventId !== null && typeof address === 'string' && address.trim() !== '';
+}
+
+/**
  * Persist an invoice attempt without failing the HTTP payment response.
  *
  * @param store - Forum store.
@@ -384,8 +400,6 @@ async function persistForumPost(
   video?: ForumVideo,
   extraPhotos?: readonly ForumPhoto[],
 ): Promise<Response> {
-  const payableOf = (row: MessageRow): boolean =>
-    row.eventId !== null && account.lightningAddress !== null;
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
     const fp =
@@ -402,7 +416,7 @@ async function persistForumPost(
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
         return c.json(
-          serializeMessage(existing, payableOf(existing), account.role, undefined, true),
+          serializeMessage(existing, payableOf(existing, account), account.role, undefined, true),
           200,
         );
       }
@@ -494,7 +508,7 @@ async function persistForumPost(
       }
     }
     return c.json(
-      serializeMessage(created, payableOf(created), account.role, undefined, true),
+      serializeMessage(created, payableOf(created, account), account.role, undefined, true),
       200,
     );
   } catch {
@@ -646,8 +660,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         for (const row of rows) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable =
-            row.eventId !== null && author !== undefined && author.lightningAddress !== null;
+          const payable = payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -803,8 +816,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           try {
             const author = await deps.authStore.getAccount(row.accountId);
             const role = author?.role ?? 'basis';
-            const payable =
-              kept.eventId !== null && author !== undefined && author.lightningAddress !== null;
+            const payable = payableOf(kept, author);
             messages.push(serializeMessage(kept, payable, role, undefined, includeAccountId));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -913,8 +925,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable =
-            row.eventId !== null && author !== undefined && author.lightningAddress !== null;
+          const payable = payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
