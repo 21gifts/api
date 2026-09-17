@@ -180,9 +180,9 @@ describe('GET /view/:viewKey', () => {
     ]);
     const bioRes = await mount(bioStore, bioMessages).request(`/view/${VIEW_KEY}`);
     expect(bioRes.status).toBe(200);
-    expect(((await bioRes.json()) as { aboutMe: string | null }).aboutMe).toBe(
-      'I build on Bitcoin',
-    );
+    const bioBody = (await bioRes.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(bioBody.aboutMe).toBe('I build on Bitcoin');
+    expect(bioBody.aboutMeHasPhoto).toBe(false);
 
     const nameStore = new InMemoryAuthStore();
     await adaAccount(nameStore, { profileMessageId: NOTE_ID });
@@ -340,6 +340,30 @@ describe('GET /view/:viewKey/about/photo', () => {
     const res = await mount(store, messages).request(`/view/${VIEW_KEY}/about/photo`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('sets aboutMeHasPhoto true when the live note has a photo', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'I build on Bitcoin',
+        createdAt: new Date(1_000_000),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('I build on Bitcoin');
+    expect(body.aboutMeHasPhoto).toBe(true);
+    expect(body).not.toHaveProperty('profileMessageId');
   });
 
   it('returns jpeg bytes when the live note has a photo', async () => {

@@ -785,6 +785,19 @@ describe('PUT /me/about', () => {
     expect((await messages.getPhoto(stored!.profileMessageId!))?.bytes).toEqual(JPEG_BYTES);
   });
 
+  it('attaches a jpeg to an already-live note without a photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: 'Hi' })]);
+    const res = await putAbout(store, { text: 'Hi', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body.aboutMe).toBe('Hi');
+    expect(body.aboutMeHasPhoto).toBe(true);
+    expect((await messages.getPhoto(NOTE_ID))?.bytes).toEqual(JPEG_BYTES);
+    expect((await messages.getById(NOTE_ID))?.hasPhoto).toBe(true);
+  });
+
   it('clears a stored photo when photo is null', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
