@@ -1031,6 +1031,8 @@ describe('indexOpenZapReceipts', () => {
         base.resetSignedEvent(...args),
       updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
         base.updateText(...args),
+      updatePhoto: (...args: Parameters<InMemoryMessageStore['updatePhoto']>) =>
+        base.updatePhoto(...args),
       updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
         base.updateSignedEvent(...args),
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1212,6 +1214,8 @@ describe('indexOpenZapReceipts', () => {
           base.resetSignedEvent(...args),
         updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
           base.updateText(...args),
+        updatePhoto: (...args: Parameters<InMemoryMessageStore['updatePhoto']>) =>
+          base.updatePhoto(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
@@ -1493,6 +1497,8 @@ describe('indexOpenZapReceipts', () => {
           base.resetSignedEvent(...args),
         updateText: (...args: Parameters<InMemoryMessageStore['updateText']>) =>
           base.updateText(...args),
+        updatePhoto: (...args: Parameters<InMemoryMessageStore['updatePhoto']>) =>
+          base.updatePhoto(...args),
         updateSignedEvent: (...args: Parameters<InMemoryMessageStore['updateSignedEvent']>) =>
           base.updateSignedEvent(...args),
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>

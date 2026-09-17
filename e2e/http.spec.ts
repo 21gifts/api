@@ -100,6 +100,11 @@ test('PUT /me/about without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /me/about/photo without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me/about/photo');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /me/activity without bearer is 401', async ({ request }) => {
   const res = await request.get('/me/activity');
   expect(res.status()).toBe(401);

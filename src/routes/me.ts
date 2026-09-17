@@ -14,7 +14,14 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
-import { normalizeForumText, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import {
+  decodeForumPhoto,
+  forumPhotoResponse,
+  normalizeForumText,
+  unsignedNostrDefaults,
+  type ForumPhoto,
+  type MessageRow,
+} from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
 import { notifyForumPost } from '@/lib/notification';
@@ -126,8 +133,22 @@ const confirmBody = z.object({ nonce: z.string() });
 /** Body schema for skipping a wizard step. */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 
-/** Body schema for writing About me. */
-const aboutBody = z.object({ text: z.string() });
+/** Body schema for writing About me (required text; optional photo tri-state). */
+const aboutBody = z.object({
+  text: z.string(),
+  photo: z
+    .union([
+      z.object({
+        contentType: z.string(),
+        data: z.string(),
+      }),
+      z.null(),
+    ])
+    .optional(),
+});
+
+/** Same decode-failure string as `POST /messages`. */
+const ABOUT_PHOTO_ERROR = 'Photo must be a JPEG, PNG, or WebP under 1 MiB';
 
 /**
  * Build the `/me` route group.
@@ -256,14 +277,64 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.location.set', { accountId: current.id });
       return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
     })
+    .get('/about/photo', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      try {
+        const profileId = account.profileMessageId;
+        if (typeof profileId !== 'string' || profileId.trim() === '') {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const row = await deps.messages.getById(profileId);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const photo = await deps.messages.getPhoto(profileId);
+        if (photo === null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        return forumPhotoResponse(photo);
+      } catch {
+        logEvent('account.about.photo.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .put('/about', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const parsed = aboutBody.safeParse(await c.req.json().catch(() => null));
+      const raw: unknown = await c.req.json().catch(() => null);
+      const parsed = aboutBody.safeParse(raw);
       if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+        const textOk =
+          raw !== null &&
+          typeof raw === 'object' &&
+          !Array.isArray(raw) &&
+          typeof (raw as { text?: unknown }).text === 'string';
+        if (!textOk) {
+          return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+        }
+        return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
+      }
+      const photoKeyPresent =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'photo' in raw;
+      let decodedPhoto: ForumPhoto | null | undefined = undefined;
+      if (photoKeyPresent) {
+        if (parsed.data.photo == null) {
+          decodedPhoto = null;
+        } else {
+          const decoded = decodeForumPhoto(
+            parsed.data.photo.contentType,
+            parsed.data.photo.data,
+          );
+          if (decoded === null) {
+            return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
+          }
+          decodedPhoto = decoded;
+        }
       }
       const normalized = normalizeForumText(parsed.data.text);
       if (normalized === null) {
@@ -289,7 +360,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             noteId = existingId;
           }
         }
-        if (noteId === undefined && normalized === '') {
+        if (noteId === undefined && normalized === '' && decodedPhoto == null) {
           const latest = await storedAccount(deps, owner.id);
           /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
           if (latest === null) {
@@ -300,18 +371,19 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         }
         if (noteId === undefined) {
           const messageId = crypto.randomUUID();
+          const createPhoto = decodedPhoto ?? undefined;
           const row: MessageRow = {
             id: messageId,
             accountId: owner.id,
             name: displayName,
             text: normalized,
             createdAt: new Date(deps.now()),
-            hasPhoto: false,
+            hasPhoto: createPhoto !== undefined,
             hasVideo: false,
             videoContentType: null,
             ...unsignedNostrDefaults(),
           };
-          const created = await deps.messages.create(row);
+          const created = await deps.messages.create(row, createPhoto);
           const live = await deps.store.getAccount(owner.id);
           if (live === undefined) {
             await deps.messages.deleteById(created.id);
@@ -386,6 +458,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           }
         }
         await deps.messages.updateText(noteId, normalized);
+        if (photoKeyPresent && !createdThisRequest) {
+          await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
+        }
         const liveRow = await deps.messages.getById(noteId);
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);

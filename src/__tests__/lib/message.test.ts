@@ -7,6 +7,7 @@ import {
   decodeForumPhoto,
   detectImageContentType,
   forumContentFingerprint,
+  forumPhotoResponse,
   normalizeForumText,
   serializeDebugMessage,
   serializeHiddenMessage,
@@ -535,5 +536,23 @@ describe('decodeForumPhoto', () => {
   it('rejects wrong magic', () => {
     const gif = Buffer.from([0x47, 0x49, 0x46, 0x38]).toString('base64');
     expect(decodeForumPhoto('image/gif', gif)).toBeNull();
+  });
+});
+
+describe('forumPhotoResponse', () => {
+  it('sets content-type and inline filename from stored mime', async () => {
+    const cases = [
+      { contentType: 'image/jpeg' as const, ext: 'jpg' },
+      { contentType: 'image/png' as const, ext: 'png' },
+      { contentType: 'image/webp' as const, ext: 'webp' },
+    ];
+    for (const { contentType, ext } of cases) {
+      const bytes = new Uint8Array([1, 2, 3]);
+      const res = forumPhotoResponse({ contentType, bytes });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe(contentType);
+      expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.${ext}"`);
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    }
   });
 });

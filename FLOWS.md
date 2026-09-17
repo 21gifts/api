@@ -93,24 +93,25 @@ Until an invoice payer is injected, start returns **503**
 boots. Live verification payments do **not** work today. Edit or unlink clears
 any pending verification (`SPEC.md`).
 
-### Identity copy — **Shipped** (name / location / About me) + **Sketch** (photo)
+### Identity copy — **Shipped** (name / location / About me / About me photo)
 
 Receiver name is stored on the account (`POST /me/name`). Optional free-text
 location is stored on the account (`POST /me/location`); empty or whitespace
 after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
-not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text }`): a
+not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text, photo? }`): a
 non-blank name is required (409 otherwise); Lightning Address is not; empty
-text clears the bio (`aboutMe` null; a live note row is kept). When no live
-note exists, empty text does not create or notify; a non-empty write against
+text clears the bio (`aboutMe` null; a live note row is kept). Optional
+`photo` uses the same JPEG/PNG/WebP decode as a forum post (`omitted` keeps,
+`null` clears, object sets). When no live note exists, empty text without a
+new photo does not create or notify; a photo-only or non-empty write against
 a missing or hidden note creates a live note without LN and notifies after
-the bio write. Auto name-copy is not a bio (`aboutMe` is `null`).
-`POST /me/name` still no-ops the note without LN; `POST /me/lightning-address`
-still creates the name-copy note. Rename does not create a second note.
-Other members read live identity plus `aboutMe` via `GET /members/:accountId`
-(Bearer; rules required). Photo beyond that note stays custodial `kind:0`
-metadata signed server-side (`about` is the profile-note text when present,
-else `21.gifts`). **Do not invent** `POST /me/profile`.
+the write. Auto name-copy is not a bio (`aboutMe` is `null`); a photo still
+sets `aboutMeHasPhoto`. `POST /me/name` still no-ops the note without LN;
+`POST /me/lightning-address` still creates the name-copy note. Rename does
+not create a second note. Other members read live identity plus `aboutMe`
+and `aboutMeHasPhoto` via `GET /members/:accountId` (Bearer; rules required).
+Kind:0 `picture` stays the brand icon. **Do not invent** `POST /me/profile`.
 
 ### View-key link — **Shipped**
 

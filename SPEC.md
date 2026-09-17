@@ -79,18 +79,20 @@ Public base URLs used in examples:
 | GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe`)                   |
 | GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound) |
 | GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                   |
+| GET    | `/view/:viewKey/about/photo`                 | none                       | Profile-note photo bytes for the view-key card                                    |
 | GET    | `/view/:viewKey/activity`                    | none                       | Public given/received payload for the account behind the view key                 |
 | POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                        |
 | POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set)               |
 | POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                  |
-| PUT    | `/me/about`                                  | Bearer                     | Set/clear About me on the profile note (creates the note without LN)              |
+| PUT    | `/me/about`                                  | Bearer                     | Set/clear About me text and optional photo on the profile note                    |
+| GET    | `/me/about/photo`                            | Bearer                     | Owner profile-note photo bytes                                                    |
 | POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                            |
 | POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                |
 | POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                         |
 | DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                   |
 | POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                            |
 | POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                 |
-| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + uncapped counts + `trust`                   |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`        |
 | GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                     |
 | GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                          |
 | GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                  |
@@ -333,7 +335,8 @@ Missing or invalid bearer → **Response** `401`:
   "setup": "name",
   "missing": ["name", "lightning-address", "rules"],
   "hasPosted": false,
-  "aboutMe": null
+  "aboutMe": null,
+  "aboutMeHasPhoto": false
 }
 ```
 
@@ -359,6 +362,7 @@ stays `null`)).
 | `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                       |
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only).                                                                                        |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
+| `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                          |
 
 ### `GET /me/activity`
 
@@ -420,11 +424,13 @@ is a real bio, else `null` when the profile note is missing or
 soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy
 is not a bio, including after a display-name rename when the note text
 still equals the stored profile-note `name` (Ada→Grace with text `Ada`
-stays `null`); keep `profileMessage`), uncapped live `postCount` /
-`replyCount` from `countByAccount` (not the latest-200 window), and
-`trust` (`verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`,
-each `{ id, name }` or `null`). Default `trust` is all-null when no
-stored edges exist. Never `viewKey` / `eventId`.
+stays `null`); keep `profileMessage`), `aboutMeHasPhoto` (true when the
+live profile note has a stored photo; false when `profileMessage` is
+`null`), uncapped live `postCount` / `replyCount` from `countByAccount`
+(not the latest-200 window), and `trust` (`verifiedBy` / `proposedBy` /
+`confirmedBy` / `appointedBy`, each `{ id, name }` or `null`). Default
+`trust` is all-null when no stored edges exist. Never `viewKey` /
+`eventId`.
 
 ### `GET /members/:accountId/posts`
 
@@ -589,7 +595,7 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (seven fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (eight fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
@@ -599,7 +605,8 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
   "lightningAddressVerified": false,
   "createdAt": 0,
   "hasPasskey": false,
-  "aboutMe": null
+  "aboutMe": null,
+  "aboutMeHasPhoto": false
 }
 ```
 
@@ -609,8 +616,10 @@ profile is still unclaimed. `aboutMe` is the profile-note text when it is a
 real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto
 name-copy is not a bio, including after a display-name rename when the note
 text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
-stays `null`)). Store throw on the profile-note read → **503**
-`{ "error": "Messages are unavailable" }` (`view.get.failed`).
+stays `null`)). `aboutMeHasPhoto` is true when the live profile note has a
+stored photo; bytes are `GET /view/:viewKey/about/photo`. Store throw on the
+profile-note read → **503** `{ "error": "Messages are unavailable" }`
+(`view.get.failed`).
 
 ### `GET /view/:viewKey/activity`
 
@@ -685,8 +694,12 @@ cards. Does not create or update a profile forum note.
 Set or clear About me on the profile forum note. Body:
 
 ```json
-{ "text": "I build on Bitcoin" }
+{ "text": "I build on Bitcoin", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
 ```
+
+`text` is required. `photo` is optional: omitted leaves a stored photo;
+JSON `null` clears it; `{ contentType, data }` is decoded with
+`decodeForumPhoto` (same JPEG/PNG/WebP under 1 MiB as `POST /messages`).
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -694,6 +707,13 @@ Body is not JSON with a `text` string → **Response** `400`:
 
 ```json
 { "error": "Expected a JSON body with a \"text\" string" }
+```
+
+`text` is a string but `photo` is present and neither `null` nor
+`{ contentType, data }`, or decode fails → **Response** `400`:
+
+```json
+{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
 ```
 
 Text longer than 500 characters after trim (or containing a disallowed
@@ -712,16 +732,17 @@ Display name is blank → **Response** `409`:
 Lightning Address is not required. Empty `text` clears the bio
 (`aboutMe` becomes `null`; a live note row is kept with empty text).
 When no live profile note exists (missing or soft-hidden), empty text
-does not create a note and does not notify. A non-empty write with no
-live note (missing or soft-hidden) creates a new live note even without
-a Lightning Address and claims `profileMessageId` via
-`claimProfileMessageId` only while the pointer still matches the
-missing/hidden read (not on owner JSON); a lost claim deletes the
-insert and adopts a live winner. A won inline create calls
-`notifyForumPost` after the text write (best-effort; enqueue failure
-still 200). Updating an already-live note does not notify. The hidden
-row stays hidden. A published sats=0 note is unsigned
-(`resetSignedEvent`) so kind:1 can be rewritten.
+with `photo` omitted or `null` does not create a note and does not
+notify. Empty text **with** a decoded photo creates a photo-only live
+note. A non-empty write with no live note (missing or soft-hidden)
+creates a new live note even without a Lightning Address and claims
+`profileMessageId` via `claimProfileMessageId` only while the pointer
+still matches the missing/hidden read (not on owner JSON); a lost claim
+deletes the insert and adopts a live winner. A won inline create calls
+`notifyForumPost` after the writes (best-effort; enqueue failure still
+200). Updating an already-live note does not notify. The hidden row
+stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
+so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
 
@@ -729,7 +750,29 @@ Success → **Response** `200` with the account (same shape as `GET /me`).
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
-text `Ada` stays `null`)).
+text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
+has a stored photo.
+
+### `GET /me/about/photo`
+
+Bearer. Raw profile-note photo bytes (`forumPhotoResponse`: jpeg/png/webp
+`Content-Type`, one-day public cache, CORS `*`, inline filename).
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+No live profile note or no photo → **Response** `404`
+`{ "error": "Photo not found" }`.
+
+Store throw → **Response** `503` `{ "error": "Messages are unavailable" }`
+(`account.about.photo.failed`).
+
+### `GET /view/:viewKey/about/photo`
+
+Public. Same bytes as `GET /me/about/photo` for the account behind the
+view key. Invalid or unknown key → **404** `{ "error": "Not found" }`.
+No live note or no photo → **404** `{ "error": "Photo not found" }`.
+Store throw → **503** `{ "error": "Messages are unavailable" }`
+(`view.photo.failed`).
 
 ### `POST /me/forum-laws-dismissed`
 

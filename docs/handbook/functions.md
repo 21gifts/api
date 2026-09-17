@@ -825,7 +825,21 @@
 - **Purpose:** Decode a base64 forum photo, enforce the 1 MiB cap, and set MIME from magic bytes (declared `contentType` is ignored).
 - **Inputs:** Declared `contentType` string (non-authoritative) and standard base64 `data`.
 - **Returns / side effects:** `{ contentType, bytes }` with a copied `Uint8Array`, or `null` on invalid base64, empty, oversize, or unrecognized magic. No I/O.
-- **Used by:** `POST /messages`.
+- **Used by:** `POST /messages`, `PUT /me/about`.
+
+## Function: forumPhotoResponse
+
+- **Purpose:** Build the public photo HTTP response used by `GET /messages/:id/photo`, `GET /me/about/photo`, and `GET /view/:viewKey/about/photo`. Sets jpeg/png/webp `Content-Type`, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, and inline `Content-Disposition` `photo.jpg|png|webp`.
+- **Inputs:** `ForumPhoto` (`contentType` plus `bytes`).
+- **Returns / side effects:** `200` `Response` whose body is `photo.bytes`. No I/O.
+- **Used by:** `serveForumPhoto`, `meRoutes` GET `/about/photo`, `viewRoutes` GET `/:viewKey/about/photo`.
+
+## Function: updatePhoto
+
+- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map; Postgres `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING` list columns.
+- **Inputs:** Message `id` and `ForumPhoto | null` (`null` clears).
+- **Returns / side effects:** Updated row copy with `hasPhoto` true iff photo is non-null, or `undefined` when no row has that id.
+- **Used by:** `PUT /me/about` when the `photo` key is present on an already-live profile note.
 
 ## Function: forumContentFingerprint
 
@@ -1207,16 +1221,16 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the ten public fields (including location) plus `viewKey`, `setup`, `missing`, `hasPosted`, and `aboutMe`, so the owner can copy the capability URL and the client can route onboarding, action gates, and the introduce-yourself popup. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
-- **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null`.
-- **Returns / side effects:** `OwnerAccountResponse` (fifteen fields including `hasPosted`, `location`, and `aboutMe`). No I/O. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the ten public fields (including location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`, so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, and About me photo display. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null` plus `aboutMeHasPhoto: boolean`.
+- **Returns / side effects:** `OwnerAccountResponse` (sixteen fields including `hasPosted`, `location`, `aboutMe`, and `aboutMeHasPhoto`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts`.
 
 ## Function: serializeOwnerAccountWithPosts
 
-- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null` — see `src/lib/auth/account-json.ts` 195: `if (row !== undefined && row.deletedAt === null)`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`.
+- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename, and `aboutMeHasPhoto` from `row.hasPhoto === true`. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`.
 - **Inputs:** `Account`, `Pick<MessageStore, 'accountHasLivePost' | 'getById'>`.
-- **Returns / side effects:** `OwnerAccountResponse` including `hasPosted` and `aboutMe`. Overlay lookup is `accountHasLivePost`; spend/invoice lookup is `accountHasLiveTopLevelPost`. Store throw is unhandled.
+- **Returns / side effects:** `OwnerAccountResponse` including `hasPosted`, `aboutMe`, and `aboutMeHasPhoto`. Overlay lookup is `accountHasLivePost`; spend/invoice lookup is `accountHasLiveTopLevelPost`. Store throw is unhandled.
 - **Used by:** `meRoutes` and `authRoutes`.
 
 ## Function: membersRoutes
@@ -1228,8 +1242,8 @@
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Seven fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
-- **Inputs:** `Account`, `hasPasskey: boolean`, `aboutMe: string | null`.
+- **Purpose:** Public profile card for the capability URL. Eight fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
+- **Inputs:** `Account`, `hasPasskey: boolean`, `aboutMe: string | null`, `aboutMeHasPhoto: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.
 

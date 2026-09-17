@@ -7,6 +7,7 @@ import { viewRoutes } from '@/routes/view';
 
 const VIEW_KEY = 'a'.repeat(64);
 const NOTE_ID = 'note-ada';
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
 function mount(
   store: InMemoryAuthStore,
@@ -77,7 +78,7 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the seven-field public profile without Authorization', async () => {
+  it('returns the eight-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
@@ -91,14 +92,17 @@ describe('GET /view/:viewKey', () => {
       createdAt: 1_000_000,
       hasPasskey: false,
       aboutMe: null,
+      aboutMeHasPhoto: false,
     });
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('id');
     expect(raw).not.toContain('linkingKey');
     expect(raw).not.toContain('role');
     expect(raw).not.toContain('viewKey');
+    expect(raw).not.toContain('profileMessageId');
     expect(Object.keys(body).sort()).toEqual([
       'aboutMe',
+      'aboutMeHasPhoto',
       'createdAt',
       'hasPasskey',
       'lightningAddress',
@@ -128,6 +132,7 @@ describe('GET /view/:viewKey', () => {
       createdAt: 1_000_000,
       hasPasskey: true,
       aboutMe: null,
+      aboutMeHasPhoto: false,
     });
   });
 
@@ -261,6 +266,72 @@ describe('GET /view/:viewKey', () => {
     expect(
       warn.mock.calls.some(
         (call) => typeof call[0] === 'string' && call[0].includes('view.get.failed'),
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+  });
+});
+
+describe('GET /view/:viewKey/about/photo', () => {
+  it('returns 404 Not found for an invalid key', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/view/abcd/about/photo');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 Photo not found when the live note has no photo', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}/about/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns jpeg bytes when the live note has a photo', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(1_000_000),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}/about/photo`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('returns 503 when getById throws', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(messages, 'getById').mockRejectedValue(new Error('store down'));
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}/about/photo`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(
+      warn.mock.calls.some(
+        (call) => typeof call[0] === 'string' && call[0].includes('view.photo.failed'),
       ),
     ).toBe(true);
     warn.mockRestore();

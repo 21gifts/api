@@ -24,14 +24,14 @@ const account: Account = {
   rulesAgreedAt: null,
 };
 
-function note(text: string): MessageRow {
+function note(text: string, hasPhoto = false): MessageRow {
   return {
     id: 'note-1',
     accountId: 'acc',
     name: 'Ada',
     text,
     createdAt: new Date(0),
-    hasPhoto: false,
+    hasPhoto,
     ...unsignedNostrDefaults(),
   };
 }
@@ -72,7 +72,7 @@ describe('serializeDebugAccount', () => {
 
 describe('serializeOwnerAccount', () => {
   it('includes viewKey, setup, missing, hasPosted, and aboutMe alongside the ten public fields', () => {
-    const json = serializeOwnerAccount(account, false, null);
+    const json = serializeOwnerAccount(account, false, null, false);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
@@ -89,21 +89,31 @@ describe('serializeOwnerAccount', () => {
       missing: ['rules'],
       hasPosted: false,
       aboutMe: null,
+      aboutMeHasPhoto: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
     expect(json.missing).toEqual(['rules']);
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
   it('passes hasPosted and aboutMe through', () => {
-    const json = serializeOwnerAccount(account, true, 'I build on Bitcoin');
+    const json = serializeOwnerAccount(account, true, 'I build on Bitcoin', false);
     expect(json.hasPosted).toBe(true);
     expect(json.aboutMe).toBe('I build on Bitcoin');
+    expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('passes aboutMeHasPhoto independently of aboutMe', () => {
+    const json = serializeOwnerAccount(account, false, null, true);
+    expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(true);
     expect(json).not.toHaveProperty('profileMessageId');
   });
 });
@@ -126,6 +136,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(getByIdCalls).toBe(0);
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('isPlatform');
   });
@@ -137,6 +148,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     });
     expect(json.hasPosted).toBe(true);
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
   });
 
   it('passes profileMessageId as the exclude id and skips blank ids', async () => {
@@ -154,6 +166,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(seen).toEqual({ accountId: 'acc', excludeId: 'note-1' });
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
 
     let blankCalls = 0;
@@ -179,6 +192,20 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
     );
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
+  });
+
+  it('sets aboutMeHasPhoto true on a name-copy note with a photo', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => note('Ada', true),
+      },
+    );
+    expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json).not.toHaveProperty('profileMessageId');
   });
 
   it('sets aboutMe to the profile-note bio', async () => {
@@ -190,6 +217,19 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
+    expect(json.aboutMeHasPhoto).toBe(false);
+  });
+
+  it('sets aboutMeHasPhoto true when getById returns hasPhoto true', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => note('I build on Bitcoin', true),
+      },
+    );
+    expect(json.aboutMe).toBe('I build on Bitcoin');
+    expect(json.aboutMeHasPhoto).toBe(true);
   });
 
   it('sets aboutMe null when the note is the stored name after a rename', async () => {
@@ -201,6 +241,7 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
     );
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
   });
 
   it('sets aboutMe to a real bio after a display-name rename', async () => {
@@ -212,6 +253,7 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
+    expect(json.aboutMeHasPhoto).toBe(false);
   });
 
   it('sets aboutMe null when the profile note is soft-hidden', async () => {
@@ -223,12 +265,35 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
     );
     expect(json.aboutMe).toBeNull();
+    expect(json.aboutMeHasPhoto).toBe(false);
+  });
+
+  it('sets aboutMeHasPhoto false when the profile note is missing or hidden', async () => {
+    const missing = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+    );
+    expect(missing.aboutMe).toBeNull();
+    expect(missing.aboutMeHasPhoto).toBe(false);
+
+    const hidden = await serializeOwnerAccountWithPosts(
+      { ...account, profileMessageId: 'note-1' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => ({ ...note('I build on Bitcoin', true), deletedAt: new Date(1) }),
+      },
+    );
+    expect(hidden.aboutMe).toBeNull();
+    expect(hidden.aboutMeHasPhoto).toBe(false);
   });
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly seven public profile fields', () => {
-    const json = serializeViewProfile(account, false, null);
+  it('emits exactly eight public profile fields', () => {
+    const json = serializeViewProfile(account, false, null, false);
     expect(json).toEqual({
       name: 'Ada',
       location: null,
@@ -237,18 +302,21 @@ describe('serializeViewProfile', () => {
       createdAt: 1,
       hasPasskey: false,
       aboutMe: null,
+      aboutMeHasPhoto: false,
     });
     expect(json).not.toHaveProperty('id');
     expect(json).not.toHaveProperty('linkingKey');
     expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
-    expect(Object.keys(json)).toHaveLength(7);
+    expect(json).not.toHaveProperty('profileMessageId');
+    expect(Object.keys(json)).toHaveLength(8);
   });
 
   it('passes through hasPasskey and aboutMe', () => {
-    const json = serializeViewProfile(account, true, 'Hello');
+    const json = serializeViewProfile(account, true, 'Hello', true);
     expect(json.hasPasskey).toBe(true);
     expect(json.aboutMe).toBe('Hello');
+    expect(json.aboutMeHasPhoto).toBe(true);
   });
 });

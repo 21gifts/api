@@ -7,6 +7,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
+import { forumPhotoResponse } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 
 /**
@@ -48,12 +49,12 @@ const VIEW_KEY_RE = /^[0-9a-f]{64}$/;
 /**
  * Build the `/view` route group.
  *
- * Mounted at `/view` so the public paths are `GET /view/:viewKey` and
- * `GET /view/:viewKey/activity`. No auth. Never calls `resolveSession`.
- * Never accepts the key as Bearer.
+ * Mounted at `/view` so the public paths are `GET /view/:viewKey`,
+ * `GET /view/:viewKey/about/photo`, and `GET /view/:viewKey/activity`.
+ * No auth. Never calls `resolveSession`. Never accepts the key as Bearer.
  *
  * @param deps - Shared auth store, optional message store for About me, and optional activity collaborators including the fiat book.
- * @returns A Hono app exposing `GET /:viewKey/activity` and `GET /:viewKey`.
+ * @returns A Hono app exposing `GET /:viewKey/about/photo`, `GET /:viewKey/activity`, and `GET /:viewKey`.
  */
 export function viewRoutes(deps: ViewRouteDeps): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
@@ -63,6 +64,34 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
   const now = deps.now ?? Date.now;
 
   return new Hono()
+    .get('/:viewKey/about/photo', async (c) => {
+      const viewKey = c.req.param('viewKey');
+      if (!VIEW_KEY_RE.test(viewKey)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const account = await deps.store.getAccountByViewKey(viewKey);
+      if (account === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const profileId = account.profileMessageId;
+        if (typeof profileId !== 'string' || profileId.trim() === '') {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const row = await messageStore.getById(profileId);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const photo = await messageStore.getPhoto(profileId);
+        if (photo === null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        return forumPhotoResponse(photo);
+      } catch {
+        logEvent('view.photo.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .get('/:viewKey/activity', async (c) => {
       const viewKey = c.req.param('viewKey');
       if (!VIEW_KEY_RE.test(viewKey)) {
@@ -100,15 +129,16 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
       const hasPasskey = await deps.store.accountHasPasskey(account.id);
       try {
         let aboutMe: string | null = null;
+        let aboutMeHasPhoto = false;
         const profileId = account.profileMessageId;
         if (typeof profileId === 'string' && profileId.trim() !== '') {
           const row = await messageStore.getById(profileId);
-          aboutMe =
-            row !== undefined && row.deletedAt === null
-              ? aboutMeFromNote(account.name, row.text, row.name)
-              : null;
+          if (row !== undefined && row.deletedAt === null) {
+            aboutMe = aboutMeFromNote(account.name, row.text, row.name);
+            aboutMeHasPhoto = row.hasPhoto === true;
+          }
         }
-        return c.json(serializeViewProfile(account, hasPasskey, aboutMe), 200);
+        return c.json(serializeViewProfile(account, hasPasskey, aboutMe, aboutMeHasPhoto), 200);
       } catch {
         logEvent('view.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

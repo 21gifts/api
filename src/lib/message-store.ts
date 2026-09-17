@@ -430,6 +430,17 @@ export interface MessageStore {
    */
   updateText(id: string, text: string): Promise<MessageRow | undefined>;
 
+  /**
+   * Replace or clear the stored photo. Does not change text, sats, or event ids.
+   * Does not recompute `content_fp` (same as `updateText`).
+   *
+   * @param id - Message id.
+   * @param photo - Decoded photo to store, or `null` to clear.
+   * @returns The updated row copy (`hasPhoto` true iff photo is non-null), or
+   *   `undefined` when no row has that id.
+   */
+  updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined>;
+
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
     id: string,
@@ -1450,6 +1461,21 @@ export class InMemoryMessageStore implements MessageStore {
       return Promise.resolve(undefined);
     }
     row.text = text;
+    return Promise.resolve(copyRow(row));
+  }
+
+  updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    if (photo === null) {
+      this.#photos.delete(id);
+      row.hasPhoto = false;
+    } else {
+      this.#photos.set(id, copyPhoto(photo));
+      row.hasPhoto = true;
+    }
     return Promise.resolve(copyRow(row));
   }
 
@@ -2502,6 +2528,15 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
       [id, text],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+      [id, photo === null ? null : photo.bytes, photo === null ? null : photo.contentType],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);
