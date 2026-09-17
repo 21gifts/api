@@ -126,7 +126,7 @@ Public base URLs used in examples:
 | PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                   |
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                             |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                     |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator forum invoice attempts (`DEBUG_TOKEN`)                                              |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                            |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                |
 | GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                     |
 | GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                             |
