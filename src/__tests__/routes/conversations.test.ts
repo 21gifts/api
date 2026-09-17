@@ -6,7 +6,7 @@ import { CONVERSATION_LIST_LIMIT } from '@/lib/conversation';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults } from '@/lib/message';
-import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
@@ -2545,6 +2545,53 @@ describe('POST /conversations/:id/invoice', () => {
     expect(body.messageId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     );
+  });
+
+  it('returns 503 when recording an ok invoice attempt throws', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const messageStore: MessageStore = new Proxy(messages, {
+      get(target, prop) {
+        if (prop === 'recordInvoiceAttempt') {
+          return () => Promise.reject(new Error('disk'));
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: 'zap',
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 600,
+    });
+    const app = new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: conversations,
+        authStore: auth,
+        messageStore,
+        now,
+        nostrKek: kek,
+        fetchImpl: lnurlFetchImpl(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await withNip57True(async () =>
+      app.request(`/conversations/${threadId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      }),
+    );
+    inspectSpy.mockRestore();
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Conversations are unavailable' });
+    expect(body).not.toHaveProperty('pr');
   });
 
   it('returns 503 when listing the thread throws', async () => {

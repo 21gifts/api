@@ -82,7 +82,7 @@ async function defaultWaitSatsSleep(ms: number): Promise<void> {
   });
 }
 
-/** Persist an invoice attempt without changing the HTTP response on failure. */
+/** Persist a non-ok invoice attempt without changing the HTTP response on failure. Ok persist must fail the request. */
 async function persistInvoiceAttempt(
   store: MessageStore,
   row: MessageInvoiceAttempt,
@@ -919,22 +919,27 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           });
           return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
         }
-        await persist({
-          messageId: profile.id,
-          authorAccountId: counterpart.id,
-          amountSats: parsed.data.sats,
-          lightningAddress: address,
-          zapRequest,
-          result: 'ok',
-          httpStatus: 200,
-          pr: zap.pr,
-          paymentHash: inspected?.paymentHash ?? null,
-          description,
-          descriptionHash,
-          isNip57Invoice: true,
-          conversationMessageId,
-          lnurlResponse: zap.lnurlResponse,
-        });
+        await deps.messageStore.recordInvoiceAttempt(
+          invoiceAttemptBase({
+            now: deps.now(),
+            payerAccountId: account.id,
+            conversationId: thread.id,
+            messageId: profile.id,
+            authorAccountId: counterpart.id,
+            amountSats: parsed.data.sats,
+            lightningAddress: address,
+            zapRequest,
+            result: 'ok',
+            httpStatus: 200,
+            pr: zap.pr,
+            paymentHash: inspected?.paymentHash ?? null,
+            description,
+            descriptionHash,
+            isNip57Invoice: true,
+            conversationMessageId,
+            lnurlResponse: zap.lnurlResponse,
+          }),
+        );
         return c.json(
           { pr: zap.pr, amountSats: zap.amountSats, messageId: conversationMessageId },
           200,
