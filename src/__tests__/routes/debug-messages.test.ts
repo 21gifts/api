@@ -35,11 +35,16 @@ const REPLY_ID = '00000000-0000-4000-8000-000000000003';
 const HIDDEN_PHOTO_ID = '00000000-0000-4000-8000-000000000004';
 const HIDDEN_PNG_ID = '00000000-0000-4000-8000-000000000005';
 const HIDDEN_WEBP_ID = '00000000-0000-4000-8000-000000000006';
+const HIDDEN_EXTRA_ID = '00000000-0000-4000-8000-000000000007';
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000099';
 const HIDDEN_AT = new Date('2026-09-01T12:00:00.000Z');
 const JPEG: ForumPhoto = {
   contentType: 'image/jpeg',
   bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+};
+const JPEG2: ForumPhoto = {
+  contentType: 'image/jpeg',
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
 };
 const PNG: ForumPhoto = {
   contentType: 'image/png',
@@ -424,6 +429,29 @@ describe('debugMessagesRoutes', () => {
         (e) => e['event'] === 'debug.messages.photo.get' && e['messageId'] === HIDDEN_PHOTO_ID,
       ),
     ).toBe(true);
+  });
+
+  it('returns 200 extra still bytes for a hidden note', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(
+      forumRow({
+        id: HIDDEN_EXTRA_ID,
+        text: 'pics',
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'staff',
+      }),
+      JPEG,
+      undefined,
+      [JPEG2],
+    );
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_EXTRA_ID}/photo/1.jpg`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.jpg"');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG2.bytes);
   });
 
   it('returns 404 photo when a hidden note has no photo', async () => {

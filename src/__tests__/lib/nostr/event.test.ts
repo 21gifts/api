@@ -5,6 +5,7 @@ import {
   buildKind0Event,
   buildKind1Event,
   buildKind10002Event,
+  forumExtraPhotoUrl,
   forumPhotoUrl,
   kind1ContentWithHashtags,
   kind1HasHashtag,
@@ -212,6 +213,45 @@ describe('kind1', () => {
       ['p', noteAuthorPubkey],
     ]);
   });
+
+  it('keeps an omitted or empty extraPhotos arg bit-identical to five-arg one-photo', () => {
+    const photo = {
+      url: 'http://127.0.0.1:3000/messages/m1/photo.jpg',
+      mime: 'image/jpeg' as const,
+    };
+    const threeArg = buildKind1Event('hello', 1, photo);
+    const fiveArg = buildKind1Event('hello', 1, photo, undefined, undefined);
+    const emptyExtras = buildKind1Event('hello', 1, photo, undefined, undefined, []);
+    expect(fiveArg).toEqual(threeArg);
+    expect(emptyExtras).toEqual(threeArg);
+  });
+
+  it('appends extra still URL lines and imeta without a poster', () => {
+    const photo = {
+      url: 'http://127.0.0.1:3000/messages/m1/photo.jpg',
+      mime: 'image/jpeg' as const,
+    };
+    const extra = {
+      url: 'http://127.0.0.1:3000/messages/m1/photo/1.jpg',
+      mime: 'image/jpeg' as const,
+      dim: '640x480',
+      size: 12,
+    };
+    const event = buildKind1Event('hello', 1, photo, undefined, undefined, [extra]);
+    expect(event.content).toBe(
+      'hello\nhttp://127.0.0.1:3000/messages/m1/photo.jpg\nhttp://127.0.0.1:3000/messages/m1/photo/1.jpg\n\n#bitcoin #21gifts',
+    );
+    expect(event.tags.filter((tag) => tag[0] === 'imeta')).toEqual([
+      ['imeta', 'url http://127.0.0.1:3000/messages/m1/photo.jpg', 'm image/jpeg'],
+      [
+        'imeta',
+        'url http://127.0.0.1:3000/messages/m1/photo/1.jpg',
+        'm image/jpeg',
+        'dim 640x480',
+        'size 12',
+      ],
+    ]);
+  });
 });
 
 describe('kind0', () => {
@@ -231,6 +271,15 @@ describe('kind0', () => {
     );
     expect(forumPhotoUrl('https://api.21.gifts', 'm1', 'image/webp')).toBe(
       'https://api.21.gifts/messages/m1/photo.webp',
+    );
+    expect(forumExtraPhotoUrl('https://api.21.gifts/', 'm1', 1)).toBe(
+      'https://api.21.gifts/messages/m1/photo/1.jpg',
+    );
+    expect(forumExtraPhotoUrl('https://api.21.gifts', 'm1', 2, 'image/png')).toBe(
+      'https://api.21.gifts/messages/m1/photo/2.png',
+    );
+    expect(forumExtraPhotoUrl('https://api.21.gifts', 'm1', 1, 'image/webp')).toBe(
+      'https://api.21.gifts/messages/m1/photo/1.webp',
     );
     expect(buildKind0Event('Ada', null, 1).tags).toEqual([]);
   });

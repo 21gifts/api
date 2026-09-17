@@ -5,7 +5,9 @@
  * `DATABASE_URL` is set. List queries never select the `photo` bytea column —
  * only `(photo IS NOT NULL) AS has_photo`. Bytes are loaded via {@link MessageStore.getPhoto}.
  * `video_content_type` (MIME) lives in Postgres; video bytes live on disk under
- * `MEDIA_DIR`, not as bytea.
+ * `MEDIA_DIR`, not as bytea. Extra stills (indices 1–9) live in
+ * `message_extra_photo`; photo 0 stays on `message.photo`. List queries never
+ * select extra or photo bytea.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -164,26 +166,38 @@ export interface MessageStore {
   listHidden(limit: number): Promise<MessageRow[]>;
 
   /**
-   * Persist a new message row and optional photo and video.
+   * Persist a new message row and optional photo, video, and extra stills.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
    * `row.eventId` is null, stores `content_fp` from
-   * {@link forumContentFingerprint} (video bytes win when both exist). A live
-   * unique-index hit returns the existing row instead of inserting a second
-   * note. Rows that already carry an `eventId` leave `content_fp` null.
+   * {@link forumContentFingerprint} (video bytes win when both exist; extras
+   * are hashed only for a still gallery). A live unique-index hit returns the
+   * existing row instead of inserting a second note and does not insert extras.
+   * Rows that already carry an `eventId` leave `content_fp` null.
+   *
+   * `extraPhotos` are indices 1..length (max 9). Empty/omitted = none. When
+   * `video` is set, extras are ignored. When extras are non-empty, `photo`
+   * (index 0) is required.
    *
    * A non-null `parentId` requires a live parent (`deletedAt` null). A missing
    * or soft-hidden parent throws and does not insert. An existing-id hit still
    * returns the stored row even if that row's parent was later deleted.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
-   * @param photo - Optional decoded photo (copied into storage).
+   * @param photo - Optional decoded photo (copied into storage; index 0).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
-   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo` and
-   *   `hasVideo` / `videoContentType` from `video`. On media collapse, the
-   *   existing live row (possibly a different id than `row.id`).
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @returns The stored row (a copy is fine) with `hasPhoto` set from `photo`,
+   *   `photoCount` from photo 0 plus extras, and `hasVideo` / `videoContentType`
+   *   from `video`. On media collapse, the existing live row (possibly a
+   *   different id than `row.id`).
    */
-  create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow>;
+  create(
+    row: MessageRow,
+    photo?: ForumPhoto,
+    video?: ForumVideo,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<MessageRow>;
 
   /**
    * Oldest live row for the same account, parent, and content fingerprint.
@@ -269,6 +283,23 @@ export interface MessageStore {
    * @returns A copy of the photo, or `null` when missing / no photo.
    */
   getPhoto(id: string): Promise<ForumPhoto | null>;
+
+  /**
+   * Load one extra still (indices 1–9) for a message id.
+   *
+   * @param id - Message id.
+   * @param index - Extra index (1–9). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range.
+   */
+  getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null>;
+
+  /**
+   * Extra stills for a message id, ordered by index ascending.
+   *
+   * @param id - Message id.
+   * @returns Copies of extras (length 0–9). Empty when none.
+   */
+  listExtraPhotos(id: string): Promise<ForumPhoto[]>;
 
   /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
@@ -798,6 +829,14 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   ON message (account_id, parent_id, content_fp)
   WHERE deleted_at IS NULL AND parent_id IS NOT NULL
     AND account_id IS NOT NULL AND content_fp IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS message_extra_photo (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  idx smallint NOT NULL,
+  photo bytea NOT NULL,
+  photo_content_type text NOT NULL,
+  PRIMARY KEY (message_id, idx),
+  CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
+)`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -946,6 +985,8 @@ export class InMemoryMessageStore implements MessageStore {
   /** Lowercase payment hash → durable-for-process receipt ownership tombstone. */
   readonly #zapPayments = new Map<string, { receiptEventId: string; createdAt: Date }>();
   readonly #photos = new Map<string, ForumPhoto>();
+  /** Extra stills; array index 0 = idx 1. */
+  readonly #extraPhotos = new Map<string, ForumPhoto[]>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
 
@@ -955,6 +996,17 @@ export class InMemoryMessageStore implements MessageStore {
    */
   constructor(seed: readonly MessageRow[] = []) {
     this.#rows = seed.map((row) => copyRow(row));
+  }
+
+  /** Copy a row and set `hasPhoto` / `photoCount` from the photo maps. */
+  #withListedMedia(row: MessageRow): MessageRow {
+    const copy = copyRow(row);
+    const hasPhoto0 = this.#photos.has(row.id) || row.hasPhoto === true;
+    copy.hasPhoto = hasPhoto0;
+    copy.hasVideo = row.hasVideo === true;
+    copy.videoContentType = row.videoContentType ?? null;
+    copy.photoCount = (hasPhoto0 ? 1 : 0) + (this.#extraPhotos.get(row.id)?.length ?? 0);
+    return copy;
   }
 
   /**
@@ -977,10 +1029,7 @@ export class InMemoryMessageStore implements MessageStore {
     });
     return Promise.resolve(
       sorted.slice(0, limit).map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
+        const copy = this.#withListedMedia(row);
         const replyCount = this.#rows.filter(
           (child) =>
             child.parentId === row.id && child.deletedAt === null && child.accountId !== null,
@@ -1011,13 +1060,7 @@ export class InMemoryMessageStore implements MessageStore {
         return a.id.localeCompare(b.id);
       })
       .slice(0, limit)
-      .map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
-        return copy;
-      });
+      .map((row) => this.#withListedMedia(row));
     return Promise.resolve(replies);
   }
 
@@ -1037,15 +1080,7 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.id.localeCompare(a.id);
     });
-    return Promise.resolve(
-      sorted.slice(0, limit).map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
-        return copy;
-      }),
-    );
+    return Promise.resolve(sorted.slice(0, limit).map((row) => this.#withListedMedia(row)));
   }
 
   /**
@@ -1065,15 +1100,7 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.id.localeCompare(a.id);
     });
-    return Promise.resolve(
-      sorted.slice(0, limit).map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
-        return copy;
-      }),
-    );
+    return Promise.resolve(sorted.slice(0, limit).map((row) => this.#withListedMedia(row)));
   }
 
   /**
@@ -1109,10 +1136,17 @@ export class InMemoryMessageStore implements MessageStore {
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
-   * @returns A copy of the stored row with `hasPhoto` from `photo` and
-   *   `hasVideo` / `videoContentType` from `video`.
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9). Ignored when `video` is set.
+   * @returns A copy of the stored row with `hasPhoto` from `photo`,
+   *   `photoCount` from photo 0 plus extras, and `hasVideo` / `videoContentType`
+   *   from `video`.
    */
-  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+  async create(
+    row: MessageRow,
+    photo?: ForumPhoto,
+    video?: ForumVideo,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<MessageRow> {
     const existingById = this.#rows.find((item) => item.id === row.id);
     if (existingById !== undefined) {
       return copyRow(existingById);
@@ -1123,9 +1157,21 @@ export class InMemoryMessageStore implements MessageStore {
         return copyRow(existing);
       }
     }
+    const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
+    if (extras.length > 0 && photo === undefined) {
+      throw new Error('extra photos require photo 0');
+    }
     const contentFp =
       (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
-        ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
+        ? video !== undefined
+          ? forumContentFingerprint(row.text, video.bytes)
+          : extras.length > 0
+            ? forumContentFingerprint(
+                row.text,
+                photo!.bytes,
+                extras.map((item) => item.bytes),
+              )
+            : forumContentFingerprint(row.text, photo!.bytes)
         : null;
     if (contentFp !== null && row.accountId !== null) {
       const existing = await this.findLiveByAccountContent(
@@ -1146,6 +1192,7 @@ export class InMemoryMessageStore implements MessageStore {
       hasVideo,
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
+      photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
@@ -1160,7 +1207,13 @@ export class InMemoryMessageStore implements MessageStore {
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }
-    return copyRow(stored);
+    if (extras.length > 0) {
+      this.#extraPhotos.set(
+        stored.id,
+        extras.map((item) => copyPhoto(item)),
+      );
+    }
+    return this.#withListedMedia(stored);
   }
 
   /**
@@ -1190,7 +1243,7 @@ export class InMemoryMessageStore implements MessageStore {
     });
     // Live media collapse keeps at most one match; append order is oldest-first.
     const first = matches[0];
-    return Promise.resolve(first === undefined ? undefined : copyRow(first));
+    return Promise.resolve(first === undefined ? undefined : this.#withListedMedia(first));
   }
 
   /**
@@ -1272,10 +1325,7 @@ export class InMemoryMessageStore implements MessageStore {
     });
     return Promise.resolve(
       sorted.slice(0, limit).map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
+        const copy = this.#withListedMedia(row);
         const replyCount = this.#rows.filter(
           (child) =>
             child.parentId === row.id && child.deletedAt === null && child.accountId !== null,
@@ -1305,13 +1355,7 @@ export class InMemoryMessageStore implements MessageStore {
         return b.id.localeCompare(a.id);
       })
       .slice(0, limit)
-      .map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
-        return copy;
-      });
+      .map((row) => this.#withListedMedia(row));
     return Promise.resolve(replies);
   }
 
@@ -1326,9 +1370,35 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(photo === undefined ? null : copyPhoto(photo));
   }
 
+  /**
+   * Load one extra still (indices 1–9) for a message id.
+   *
+   * @param id - Message id.
+   * @param index - Extra index (1–9). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range.
+   */
+  async getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null> {
+    if (index < 1 || index > 9) {
+      return null;
+    }
+    const list = this.#extraPhotos.get(id);
+    const photo = list?.[index - 1];
+    return photo === undefined ? null : copyPhoto(photo);
+  }
+
+  /**
+   * Extra stills for a message id, ordered by index ascending.
+   *
+   * @param id - Message id.
+   * @returns Copies of extras (length 0–9). Empty when none.
+   */
+  async listExtraPhotos(id: string): Promise<ForumPhoto[]> {
+    return (this.#extraPhotos.get(id) ?? []).map(copyPhoto);
+  }
+
   getById(id: string): Promise<MessageRow | undefined> {
     const row = this.#rows.find((item) => item.id === id);
-    return Promise.resolve(row === undefined ? undefined : copyRow(row));
+    return Promise.resolve(row === undefined ? undefined : this.#withListedMedia(row));
   }
 
   getByEventId(eventId: string): Promise<MessageRow | undefined> {
@@ -1770,6 +1840,7 @@ export class InMemoryMessageStore implements MessageStore {
         await removeForumVideo(item.id, mime);
       }
       this.#photos.delete(item.id);
+      this.#extraPhotos.delete(item.id);
     }
     this.#rows.splice(0, this.#rows.length, ...this.#rows.filter((item) => !ids.has(item.id)));
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
@@ -1859,6 +1930,7 @@ interface MessageSqlRow {
   text: string;
   created_at: Date | string;
   has_photo: boolean | number | string | null;
+  photo_count?: number | string | null;
   video_content_type?: string | null;
   parent_id?: string | null;
   author_pubkey?: string | null;
@@ -1908,6 +1980,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     hasPhoto: Boolean(row.has_photo),
+    photoCount: Number(row.photo_count ?? (Boolean(row.has_photo) ? 1 : 0)),
     hasVideo:
       row.video_content_type !== null &&
       row.video_content_type !== undefined &&
@@ -1957,6 +2030,7 @@ function isUniqueViolation(error: unknown): boolean {
 /** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
 const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               (photo IS NOT NULL) AS has_photo,
+              ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM message_extra_photo e WHERE e.message_id = message.id), 0)) AS photo_count,
               video_content_type,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats,
@@ -2202,17 +2276,36 @@ export class PostgresMessageStore implements MessageStore {
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9). Ignored when `video` is set.
    * @returns The stored row after a successful insert (a copy) with `hasPhoto`
-   *   from `photo` and `hasVideo` / `videoContentType` from `video`. INSERT
+   *   from `photo`, `photoCount` from photo 0 plus extras, and `hasVideo` /
+   *   `videoContentType` from `video`. INSERT
    *   failure unlinks the video (`removeForumVideo`), except unique violation
    *   when `getById(stored.id)` matches that id (gift-reply retry, no unlink).
    */
-  async create(row: MessageRow, photo?: ForumPhoto, video?: ForumVideo): Promise<MessageRow> {
+  async create(
+    row: MessageRow,
+    photo?: ForumPhoto,
+    video?: ForumVideo,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<MessageRow> {
+    const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
+    if (extras.length > 0 && photo === undefined) {
+      throw new Error('extra photos require photo 0');
+    }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
     const contentFp =
       (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
-        ? forumContentFingerprint(row.text, video?.bytes ?? photo!.bytes)
+        ? video !== undefined
+          ? forumContentFingerprint(row.text, video.bytes)
+          : extras.length > 0
+            ? forumContentFingerprint(
+                row.text,
+                photo!.bytes,
+                extras.map((item) => item.bytes),
+              )
+            : forumContentFingerprint(row.text, photo!.bytes)
         : null;
     const stored = copyRow({
       ...unsignedNostrDefaults(),
@@ -2221,6 +2314,7 @@ export class PostgresMessageStore implements MessageStore {
       hasVideo,
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
+      photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
@@ -2293,6 +2387,17 @@ export class PostgresMessageStore implements MessageStore {
         }
       }
       throw err;
+    }
+    for (const [i, extra] of extras.entries()) {
+      try {
+        await this.#sql.execute(
+          `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type) VALUES ($1,$2,$3,$4)`,
+          [stored.id, i + 1, extra.bytes, extra.contentType],
+        );
+      } catch (err) {
+        await this.deleteById(stored.id);
+        throw err;
+      }
     }
     return stored;
   }
@@ -2983,6 +3088,61 @@ export class PostgresMessageStore implements MessageStore {
       contentType: row.photo_content_type as ForumPhotoContentType,
       bytes: toUint8Array(row.photo),
     };
+  }
+
+  /**
+   * Load one extra still (indices 1–9) for a message id.
+   *
+   * @param id - Message id (`$1`).
+   * @param index - Extra index (1–9) (`$2`). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range / bad type.
+   */
+  async getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null> {
+    if (index < 1 || index > 9) {
+      return null;
+    }
+    const rows = await this.#sql.query<MessagePhotoSqlRow>(
+      `SELECT photo, photo_content_type FROM message_extra_photo WHERE message_id = $1 AND idx = $2`,
+      [id, index],
+    );
+    const row = rows[0];
+    if (row === undefined || row.photo === null || row.photo_content_type === null) {
+      return null;
+    }
+    if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+      return null;
+    }
+    return {
+      contentType: row.photo_content_type as ForumPhotoContentType,
+      bytes: toUint8Array(row.photo),
+    };
+  }
+
+  /**
+   * Extra stills for a message id, ordered by index ascending.
+   *
+   * @param id - Message id (`$1`).
+   * @returns Copies of extras (length 0–9). Empty when none. Skips unrecognized types.
+   */
+  async listExtraPhotos(id: string): Promise<ForumPhoto[]> {
+    const rows = await this.#sql.query<MessagePhotoSqlRow & { idx: number | string }>(
+      `SELECT idx, photo, photo_content_type FROM message_extra_photo WHERE message_id = $1 ORDER BY idx ASC`,
+      [id],
+    );
+    const extras: ForumPhoto[] = [];
+    for (const row of rows) {
+      if (row.photo === null || row.photo_content_type === null) {
+        continue;
+      }
+      if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+        continue;
+      }
+      extras.push({
+        contentType: row.photo_content_type as ForumPhotoContentType,
+        bytes: toUint8Array(row.photo),
+      });
+    }
+    return extras;
   }
 }
 

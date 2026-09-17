@@ -46,6 +46,10 @@ const LINKING_KEY = `02${'a'.repeat(64)}`;
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const JPEG_B64 = Buffer.from(JPEG_BYTES).toString('base64');
+const JPEG2_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+const JPEG2_B64 = Buffer.from(JPEG2_BYTES).toString('base64');
+const JPEG3_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0x01]);
+const JPEG3_B64 = Buffer.from(JPEG3_BYTES).toString('base64');
 
 function mount(
   authStore: InMemoryAuthStore,
@@ -150,6 +154,8 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listPostsByAccount: boom,
     listRepliesByAccount: boom,
     getPhoto: boom,
+    getExtraPhoto: boom,
+    listExtraPhotos: boom,
     deleteById: boom,
     markDeleted: boom,
     markUndeleted: boom,
@@ -1385,6 +1391,7 @@ describe('POST /messages', () => {
       id: created.id,
       text: 'hello with photo',
       hasPhoto: true,
+      photoCount: 1,
     });
 
     const photo = await app.request(`/messages/${created.id}/photo`, { headers: AUTH });
@@ -1409,6 +1416,47 @@ describe('POST /messages', () => {
     const body = JSON.stringify({
       text: 'same caption',
       photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+    });
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { id: string; payable: boolean };
+    expect(firstJson.payable).toBe(false);
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    const secondJson = (await second.json()) as Record<string, unknown>;
+    expect(secondJson['id']).toBe(firstJson.id);
+    expect(secondJson['payable']).toBe(false);
+    expect(secondJson).not.toHaveProperty('contentFp');
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('collapses a repeated photos gallery post to the same id without 429', async () => {
+    const limiter = new PostRateLimiter();
+    const store = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore: await namedStore('Ada'),
+        now,
+        postLimiter: limiter,
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const body = JSON.stringify({
+      text: 'same caption',
+      photos: [
+        { contentType: 'image/jpeg', data: JPEG_B64 },
+        { contentType: 'image/jpeg', data: JPEG2_B64 },
+      ],
     });
     const first = await app.request('/messages', {
       method: 'POST',
@@ -1728,6 +1776,8 @@ describe('POST /messages', () => {
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       getPhoto: (id) => base.getPhoto(id),
+      getExtraPhoto: (id, index) => base.getExtraPhoto(id, index),
+      listExtraPhotos: (id) => base.listExtraPhotos(id),
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
@@ -1813,6 +1863,8 @@ describe('POST /messages', () => {
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       create: async () => ({ ...existing, createdAt: new Date(existing.createdAt.getTime()) }),
       getPhoto: (id) => base.getPhoto(id),
+      getExtraPhoto: (id, index) => base.getExtraPhoto(id, index),
+      listExtraPhotos: (id) => base.listExtraPhotos(id),
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
@@ -1885,6 +1937,103 @@ describe('POST /messages', () => {
           contentType: 'image/gif',
           data: Buffer.from([0x47, 0x49, 0x46, 0x38]).toString('base64'),
         },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
+  });
+
+  it('posts a singular photo with photoCount 1 and no extra still', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { id: string; hasPhoto: boolean; photoCount: number };
+    expect(created.hasPhoto).toBe(true);
+    expect(created.photoCount).toBe(1);
+    const extra = await app.request(`/messages/${created.id}/photo/1.jpg`);
+    expect(extra.status).toBe(404);
+    expect(await extra.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('posts a photos gallery of two stills and serves index 0 and 1', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: [
+          { contentType: 'image/jpeg', data: JPEG_B64 },
+          { contentType: 'image/jpeg', data: JPEG2_B64 },
+        ],
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { id: string; hasPhoto: boolean; photoCount: number };
+    expect(created.photoCount).toBe(2);
+    expect(created.hasPhoto).toBe(true);
+    const photo0 = await app.request(`/messages/${created.id}/photo.jpg`);
+    expect(photo0.status).toBe(200);
+    expect(new Uint8Array(await photo0.arrayBuffer())).toEqual(JPEG_BYTES);
+    const photo1 = await app.request(`/messages/${created.id}/photo/1.jpg`);
+    expect(photo1.status).toBe(200);
+    expect(new Uint8Array(await photo1.arrayBuffer())).toEqual(JPEG2_BYTES);
+  });
+
+  it('uses photos over singular photo when both are sent', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        photos: [
+          { contentType: 'image/jpeg', data: JPEG2_B64 },
+          { contentType: 'image/jpeg', data: JPEG3_B64 },
+        ],
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { id: string; photoCount: number };
+    expect(created.photoCount).toBe(2);
+    const photo0 = await app.request(`/messages/${created.id}/photo`);
+    expect(photo0.status).toBe(200);
+    expect(new Uint8Array(await photo0.arrayBuffer())).toEqual(JPEG2_BYTES);
+    const photo1 = await app.request(`/messages/${created.id}/photo/1.jpg`);
+    expect(photo1.status).toBe(200);
+    expect(new Uint8Array(await photo1.arrayBuffer())).toEqual(JPEG3_BYTES);
+  });
+
+  it('rejects more than 10 photos before decode', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: Array.from({ length: 11 }, () => ({ contentType: 'image/jpeg', data: 'x' })),
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'At most 10 photos' });
+  });
+
+  it('rejects an invalid gallery item in photos', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: [
+          {
+            contentType: 'image/gif',
+            data: Buffer.from([0x47, 0x49, 0x46, 0x38]).toString('base64'),
+          },
+        ],
       }),
     });
     expect(res.status).toBe(400);
@@ -3050,6 +3199,8 @@ describe('POST /messages/:id/invoice', () => {
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       getPhoto: (id) => base.getPhoto(id),
+      getExtraPhoto: (id, index) => base.getExtraPhoto(id, index),
+      listExtraPhotos: (id) => base.listExtraPhotos(id),
       getById: (id) => base.getById(id),
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
@@ -3350,6 +3501,7 @@ describe('GET /messages/:id', () => {
       sats: 0,
       payable: false,
       hasPhoto: false,
+      photoCount: 0,
       hasVideo: false,
       videoContentType: null,
     });
@@ -5099,6 +5251,7 @@ describe('GET /messages/hidden', () => {
           createdAt: new Date(now()).toISOString(),
           sats: 0,
           hasPhoto: false,
+          photoCount: 0,
           hasVideo: false,
           videoContentType: null,
           parentId: null,

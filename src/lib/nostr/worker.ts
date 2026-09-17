@@ -24,6 +24,7 @@ import {
   buildKind0Content,
   buildKind1Event,
   buildKind10002Event,
+  forumExtraPhotoUrl,
   forumPhotoUrl,
   type Kind1Photo,
   type Kind1ReplyTo,
@@ -502,6 +503,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       let stored = false;
       const apiBase = resolvePublicApiBase(deps.env);
       let photo: Kind1Photo | undefined;
+      let extraPhotos: Kind1Photo[] | undefined;
       if (apiBase !== '') {
         const storedPhoto = await deps.messages.getPhoto(row.id);
         const videoMime = row.videoContentType;
@@ -532,6 +534,13 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
           };
+          const storedExtras = await deps.messages.listExtraPhotos(row.id);
+          if (storedExtras.length > 0) {
+            extraPhotos = storedExtras.map((item, i) => ({
+              url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
+              mime: item.contentType,
+            }));
+          }
         } else if (row.hasPhoto) {
           logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
         }
@@ -562,9 +571,11 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       const location = isProfile ? null : (account?.location ?? null);
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
-          photo === undefined
-            ? buildKind1Event(row.text, createdAt, undefined, replyTo, location)
-            : buildKind1Event(row.text, createdAt, photo, replyTo, location);
+          extraPhotos !== undefined
+            ? buildKind1Event(row.text, createdAt, photo, replyTo, location, extraPhotos)
+            : photo === undefined
+              ? buildKind1Event(row.text, createdAt, undefined, replyTo, location)
+              : buildKind1Event(row.text, createdAt, photo, replyTo, location);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,

@@ -1670,6 +1670,18 @@ Store throw → **Response** `503`:
 { "error": "Messages are unavailable" }
 ```
 
+### `GET /debug/messages/:id/photo/1.jpg`
+
+Operator extra still (indices 1–9), including `.jpeg` / `.png` / `.webp`.
+Same debug token gate as `GET /debug/messages/:id/photo`. Soft-hidden
+rows with an extra still are **200**. Missing extra, missing row,
+non-UUID id, or a file that does not match
+`^([1-9])\.(jpg|jpeg|png|webp)$` → **Response** `404`:
+
+```json
+{ "error": "Photo not found" }
+```
+
 ### `PUT /debug/messages/:id/video`
 
 Operator restore of missing forum-video bytes for an **existing**
@@ -2222,7 +2234,8 @@ display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 `payable` (true when the note is signed and the author has a Lightning
-Address), `hasPhoto`, `hasVideo`, `videoContentType` (`null` when
+Address), `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
+plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for Damus-only authors), and
 `replyCount` of live 21.gifts-author children (`parent_id` match,
@@ -2263,6 +2276,7 @@ Success → **Response** `200`:
       "sats": 0,
       "payable": false,
       "hasPhoto": false,
+      "photoCount": 0,
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis",
@@ -2300,15 +2314,21 @@ when the pubkey maps to a 21.gifts account; unknown npubs are skipped
 ### `POST /messages`
 
 Post to the public member forum. Bearer session required. JSON body (not
-multipart) with text and/or one photo, and an optional parent UUID:
+multipart) with text and/or one photo, optional `photos` (array, max 10,
+each `{ contentType, data }` same shape as singular `photo`), and an
+optional parent UUID:
 
 ```json
 { "text": "…", "inReplyTo": "<uuid>", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
 ```
 
-`{ "text": "hello" }` without `photo` remains valid. Photo-only posts are
-allowed (`text` may be omitted or empty when a photo is present). At least
-one of (non-empty trimmed text, photo) is required. Optional `inReplyTo`
+Non-empty `photos` wins over singular `photo`. Dual-send `{ photo, photos }`
+uses `photos` when the array is non-empty. Eleven items → **400**
+`{ "error": "At most 10 photos" }`. `{ "text": "hello" }` without
+`photo`/`photos` remains valid. Photo-only posts (singular `photo` or
+non-empty `photos`) are allowed (`text` may be omitted or empty when a
+photo is present). At least one of (non-empty trimmed text, singular photo,
+non-empty `photos`) is required. Optional `inReplyTo`
 is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
@@ -2326,7 +2346,8 @@ JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **500** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
-in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `hasVideo`, and
+in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
+(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
 `videoContentType`. May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
@@ -2386,7 +2407,8 @@ Text longer than 500 after trim, or contains a disallowed control →
 { "error": "Text must be 1–500 characters" }
 ```
 
-Whitespace-only / empty text with no photo → **Response** `400`:
+Whitespace-only / empty text with no photo and no non-empty `photos` →
+**Response** `400`:
 
 ```json
 { "error": "Text must be 1–500 characters or include a photo" }
@@ -2397,6 +2419,12 @@ or decoded size `> 1_048_576` → **Response** `400`:
 
 ```json
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
+```
+
+`photos.length > 10` → **Response** `400`:
+
+```json
+{ "error": "At most 10 photos" }
 ```
 
 `inReplyTo` present but not a UUID, the parent is missing, or the parent
@@ -2432,6 +2460,7 @@ Success → **Response** `200`:
   "sats": 0,
   "payable": false,
   "hasPhoto": false,
+  "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
   "role": "basis"
@@ -2519,6 +2548,31 @@ Photo, video, and replies register **before** the public single-note
 `GET /messages/:id` so `/photo`, `/video.mp4` (and `.webm` / `.mov`), and
 `/replies` are not captured as an `:id`.
 
+### `GET /messages/:id/photo/1.jpg`
+
+Public extra still (no bearer). Same handler for `.jpeg` / `.png` /
+`.webp` and indices **1–9**
+(`GET /messages/:id/photo/{1-9}.{jpg|jpeg|png|webp}`). There is **no**
+`/photo/0.jpg` (photo 0 remains `/photo.jpg`). Soft-hidden rows 404 even
+when extra bytes remain. Same headers as photo 0 (`Content-Type`
+jpeg/png/webp, `Cache-Control: public, max-age=86400`,
+`Access-Control-Allow-Origin: *`,
+`Content-Disposition: inline; filename="photo.jpg|png|webp"`). Missing
+message, missing extra, non-UUID id, index 0, or a file that does not
+match `^([1-9])\.(jpg|jpeg|png|webp)$` → **Response** `404`:
+
+```json
+{ "error": "Photo not found" }
+```
+
+Store throw → **Response** `503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
+Success → **Response** `200`: raw image body.
+
 ### `GET /messages/:id/video.mp4`
 
 Fetch optional video bytes for one forum message (same handler for
@@ -2549,7 +2603,8 @@ Success → **Response** `200` or `206`: raw video body,
 Public (Bearer optional). Lists **direct live 21.gifts-author replies**
 (`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt`
 then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
-children are omitted. Each item is the public message JSON with
+children are omitted. Each item is the public message JSON (`photoCount` 0–10 always present;
+`hasPhoto` still means photo 0 exists) with
 `payable` false and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in replies include `accountId` (21gifts author id).
 Photo and video bytes are never included. `:id` is a UUID
@@ -2581,6 +2636,7 @@ Success → **Response** `200`:
       "sats": 0,
       "payable": false,
       "hasPhoto": false,
+      "photoCount": 0,
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis"
@@ -2598,7 +2654,8 @@ Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
 **after** photo, video, `GET /messages/:id/replies`,
 `DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
 captured as `:id`. Returns
-the public message JSON (`sats`, `payable`, `hasPhoto`, `hasVideo`,
+the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
+(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Never includes
 `accountId`, `deletedAt`, or `deletedBy`. Top-level Damus-only notes
 (`accountId` null, `parentId` null) omit `role` and set `payable` false.
@@ -2650,6 +2707,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "sats": 0,
   "payable": false,
   "hasPhoto": false,
+  "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
   "role": "basis"
@@ -2710,6 +2768,7 @@ Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
 desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
+`photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
 `hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
 on top-level), and `deletedBy: { id, name, role }` resolved from
 `authStore.getAccount` (missing account keeps that id with `name` /
@@ -2750,6 +2809,7 @@ Success (including an empty list) → **Response** `200`:
       "createdAt": "2026-08-28T12:00:00.000Z",
       "sats": 0,
       "hasPhoto": false,
+      "photoCount": 0,
       "hasVideo": false,
       "videoContentType": null,
       "parentId": null,

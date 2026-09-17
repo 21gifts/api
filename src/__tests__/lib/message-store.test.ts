@@ -88,10 +88,14 @@ const JPEG: ForumPhoto = {
   contentType: 'image/jpeg',
   bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
 };
+const JPEG2: ForumPhoto = {
+  contentType: 'image/jpeg',
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+};
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(47);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(48);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -1987,6 +1991,51 @@ describe('InMemoryMessageStore', () => {
     expect(again?.bytes[0]).toBe(0xff);
   });
 
+  it('create with two stills stores photo 0 and extra index 1', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create({ ...EARLY, text: '' }, JPEG, undefined, [JPEG2]);
+    expect(created.photoCount).toBe(2);
+    expect(created.hasPhoto).toBe(true);
+    expect(await store.getPhoto('a')).toEqual(JPEG);
+    expect(await store.getExtraPhoto('a', 1)).toEqual(JPEG2);
+    expect(await store.getExtraPhoto('a', 0)).toBeNull();
+    expect(await store.getExtraPhoto('a', 10)).toBeNull();
+    const listed = await store.listExtraPhotos('a');
+    expect(listed).toEqual([JPEG2]);
+    listed[0]!.bytes[0] = 0;
+    expect((await store.getExtraPhoto('a', 1))?.bytes[0]).toBe(0xff);
+  });
+
+  it('deleteById clears extra stills', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: '' }, JPEG, undefined, [JPEG2]);
+    expect(await store.deleteById('a')).toBe(true);
+    expect(await store.getExtraPhoto('a', 1)).toBeNull();
+    expect(await store.listExtraPhotos('a')).toEqual([]);
+  });
+
+  it('throws when extras are set without photo 0', async () => {
+    const store = new InMemoryMessageStore();
+    await expect(
+      store.create({ ...EARLY, id: 'no-zero', text: '' }, undefined, undefined, [JPEG2]),
+    ).rejects.toThrow('extra photos require photo 0');
+  });
+
+  it('ignores extras when a video is set', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const created = await store.create(
+      { ...EARLY, id: 'clip-x', text: 'clip' },
+      JPEG,
+      { contentType: 'video/mp4', bytes: mp4 },
+      [JPEG2],
+    );
+    expect(created.hasPhoto).toBe(true);
+    expect(created.photoCount).toBe(1);
+    expect(await store.listExtraPhotos('clip-x')).toEqual([]);
+  });
+
   it('create with text and photo keeps both', async () => {
     const store = new InMemoryMessageStore();
     const created = await store.create({ ...EARLY, hasPhoto: true }, JPEG);
@@ -2803,6 +2852,40 @@ describe('PostgresMessageStore', () => {
     expect(created.id).toBe('m1');
   });
 
+  it('create on 23505 does not INSERT extras when getById finds the same id', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: true,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const row: MessageRow = {
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date(0),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    const created = await new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]);
+    expect(created.id).toBe('m1');
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message \(/);
+    expect(sql.executes.some((item) => /INSERT INTO message_extra_photo/.test(item.text))).toBe(
+      false,
+    );
+  });
+
   it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
@@ -2878,6 +2961,56 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[5]).toBe('image/jpeg');
   });
 
+  it('create extras INSERT binds message_extra_photo after the message row', async () => {
+    const sql = new MockSql();
+    const row: MessageRow = {
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    await new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message \(/);
+    expect(sql.executes[1]?.text).toMatch(/INSERT INTO message_extra_photo/);
+    expect(sql.executes[1]?.text).toMatch(/\(message_id, idx, photo, photo_content_type\)/);
+    expect(sql.executes[1]?.text).toMatch(/VALUES \(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*\)/);
+    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType]);
+  });
+
+  it('create deletes the row and rethrows when an extra INSERT fails', async () => {
+    const extraError = new Error('extra insert boom');
+    const sql = new MockSql();
+    const execute = sql.execute.bind(sql);
+    sql.execute = async (text: string, params: readonly unknown[] = []): Promise<void> => {
+      await execute(text, params);
+      if (/INSERT INTO message_extra_photo/.test(text)) {
+        throw extraError;
+      }
+    };
+    const row: MessageRow = {
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    await expect(
+      new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]),
+    ).rejects.toBe(extraError);
+    expect(sql.executes.some((item) => /INSERT INTO message_extra_photo/.test(item.text))).toBe(
+      true,
+    );
+    expect(sql.queries[0]?.text).toMatch(/WITH/);
+    expect(sql.queries[0]?.text).toMatch(/targets AS/);
+    expect(sql.queries[0]?.text).toMatch(/DELETE FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/id = \$1 OR parent_id = \$1/);
+  });
+
   it('getPhoto maps a bytea row', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/jpeg' }];
@@ -2919,6 +3052,36 @@ describe('PostgresMessageStore', () => {
     const sql = new MockSql();
     sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/gif' }];
     expect(await new PostgresMessageStore(sql).getPhoto('m1')).toBeNull();
+  });
+
+  it('getExtraPhoto maps a bytea row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
+    const store = new PostgresMessageStore(sql);
+    const photo = await store.getExtraPhoto('m1', 1);
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT photo, photo_content_type FROM message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['m1', 1]);
+    expect(photo).toEqual(JPEG2);
+  });
+
+  it('getExtraPhoto maps a number[] bytea payload', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0x00], photo_content_type: 'image/jpeg' }];
+    const photo = await new PostgresMessageStore(sql).getExtraPhoto('m1', 1);
+    expect(photo).toEqual(JPEG2);
+  });
+
+  it('listExtraPhotos maps extra rows in idx order', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ idx: 1, photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
+    const listed = await new PostgresMessageStore(sql).listExtraPhotos('m1');
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT idx, photo, photo_content_type FROM message_extra_photo WHERE message_id = \$1 ORDER BY idx ASC/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+    expect(listed).toEqual([JPEG2]);
   });
 
   it('propagates list query errors', async () => {

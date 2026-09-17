@@ -261,6 +261,14 @@ test('GET /messages/:id/photo UUID path without bearer is 404', async ({ request
   const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo');
   expect(res.status()).toBe(404);
 });
+test('GET /messages/:id/photo/:file without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/:id/photo/:file');
+  expect(res.status()).toBe(404);
+});
+test('GET /messages/:id/photo/:file UUID path without bearer is 404', async ({ request }) => {
+  const res = await request.get('/messages/00000000-0000-0000-0000-000000000000/photo/1.jpg');
+  expect(res.status()).toBe(404);
+});
 test('GET /messages/:id/photo.jpg UUID path without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/photo.jpg');
   expect(res.status()).toBe(404);
@@ -418,6 +426,10 @@ test('GET /debug/messages/:id without bearer is 401', async ({ request }) => {
 
 test('GET /debug/messages/:id/photo without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/messages/:id/photo');
+  expect(res.status()).toBe(401);
+});
+test('GET /debug/messages/:id/photo/:file without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/messages/:id/photo/:file');
   expect(res.status()).toBe(401);
 });
 

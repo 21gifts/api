@@ -2147,6 +2147,8 @@ describe('indexOpenZapReceipts', () => {
       listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
         base.listRepliesByAccount(...args),
       getPhoto: (id: string) => base.getPhoto(id),
+      getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
+      listExtraPhotos: (id: string) => base.listExtraPhotos(id),
       deleteById: (id: string) => base.deleteById(id),
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
       markUndeleted: (id: string) => base.markUndeleted(id),
@@ -2336,6 +2338,8 @@ describe('indexOpenZapReceipts', () => {
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
         getPhoto: (id: string) => base.getPhoto(id),
+        getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
+        listExtraPhotos: (id: string) => base.listExtraPhotos(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
@@ -2662,6 +2666,8 @@ describe('indexOpenZapReceipts', () => {
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
         getPhoto: (id: string) => base.getPhoto(id),
+        getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
+        listExtraPhotos: (id: string) => base.listExtraPhotos(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
