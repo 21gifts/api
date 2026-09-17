@@ -1482,6 +1482,13 @@ test('Function: trustChainRoutes — GET /trust-chain without bearer is 401', as
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
+test('Function: pendingModeratorProposals — GET /trust/proposals without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/trust/proposals');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: trustRoutes — POST /trust/verify without bearer is 401', async ({ request }) => {
   const res = await request.post('/trust/verify', { data: { accountId: 'x' } });
   expect(res.status()).toBe(401);
