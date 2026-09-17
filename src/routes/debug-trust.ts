@@ -47,7 +47,6 @@ function requireDebugToken(deps: DebugTrustRouteDeps): MiddlewareHandler {
   };
 }
 
-/**
 /** Body schema for operator trust-edge delete. */
 const deleteBody = z.object({
   subjectId: z.string(),

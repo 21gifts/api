@@ -1716,10 +1716,10 @@
 
 ## Function: serializeTrustEdge
 
-- **Purpose:** JSON projection of a stored trust edge for operator backfill responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
+- **Purpose:** JSON projection of a stored trust edge for operator POST and DELETE `/debug/trust-edges` responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
 - **Inputs:** `TrustEdge` (epoch-ms `createdAt`).
 - **Returns / side effects:** `TrustEdgeJson`. No I/O.
-- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` 200 body).
+- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` and `DELETE /debug/trust-edges` 200 body).
 
 ## Function: migrateTrustSchema
 
