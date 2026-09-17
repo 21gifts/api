@@ -104,6 +104,32 @@ describe('isProjectedTrustEdge', () => {
       ),
     ).toBe(false);
   });
+
+  it('omits appoint when a verify sibling exists for a moderator', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const verify = edge({ id: 'e-v', subjectId: 'm', actorId: 's', kind: 'verify' });
+    const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
+    const siblings = [verify, appoint];
+    expect(isProjectedTrustEdge(appoint, subject, siblings)).toBe(false);
+    expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(true);
+  });
+
+  it('projects only propose when propose, verify, and appoint exist for a moderator', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const propose = edge({ id: 'e-p', subjectId: 'm', actorId: 'p', kind: 'moderator_propose' });
+    const verify = edge({ id: 'e-v', subjectId: 'm', actorId: 's', kind: 'verify' });
+    const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
+    const siblings = [propose, verify, appoint];
+    expect(isProjectedTrustEdge(propose, subject, siblings)).toBe(true);
+    expect(isProjectedTrustEdge(verify, subject, siblings)).toBe(false);
+    expect(isProjectedTrustEdge(appoint, subject, siblings)).toBe(false);
+  });
+
+  it('projects appoint when a moderator has no verify or propose sibling', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
+    expect(isProjectedTrustEdge(appoint, subject, [appoint])).toBe(true);
+  });
 });
 
 describe('buildTrustChain', () => {
@@ -177,10 +203,24 @@ describe('buildTrustChain', () => {
     expect(chain.edges).toEqual([
       { from: 'm', to: 'v', kind: 'verify' },
       { from: 'p', to: 'm', kind: 'moderator_propose' },
-      { from: 'f', to: 'm', kind: 'moderator_appoint' },
     ]);
     expect(chain.edges.map((item) => item.kind)).not.toContain('moderator_confirm');
     expect(chain.edges.some((item) => item.to === 'd')).toBe(false);
+  });
+
+  it('omits founder appoint when another moderator already verified the subject', () => {
+    const founder = account({ id: 'f', role: 'founder', createdAt: 1 });
+    const verifier = account({ id: 's', role: 'moderator', createdAt: 2 });
+    const subject = account({ id: 'r', role: 'moderator', createdAt: 3 });
+    const chain = buildTrustChain(
+      [founder, verifier, subject],
+      [
+        edge({ id: 'e-v', subjectId: 'r', actorId: 's', kind: 'verify' }),
+        edge({ id: 'e-a', subjectId: 'r', actorId: 'f', kind: 'moderator_appoint' }),
+      ],
+    );
+    expect(chain.nodes.map((node) => node.id)).toEqual(['f', 's', 'r']);
+    expect(chain.edges).toEqual([{ from: 's', to: 'r', kind: 'verify' }]);
   });
 });
 
