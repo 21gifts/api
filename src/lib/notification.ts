@@ -23,8 +23,6 @@ import {
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
-export type { NotificationLevel } from '@/lib/auth/store';
-
 /** Cap for `GET /notifications`. */
 export const NOTIFICATION_LIST_LIMIT = 200;
 
