@@ -350,7 +350,7 @@ export async function notifyForumPost(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
-  /** Optional auth; when set, in-app rows go to every account except the actor. */
+  /** Optional auth; when set, in-app rows go to every account except the actor, then level-filtered. */
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Post author (never notified). */
   account: { id: string };
@@ -407,7 +407,7 @@ export async function notifyForumReply(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
-  /** Optional auth; when set, in-app rows go to every account except the actor. */
+  /** Optional auth; when set, in-app rows go to every account except the actor, then level-filtered. */
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Reply author (never notified). */
   account: { id: string };
@@ -468,7 +468,7 @@ export async function notifyZap(args: {
   notifications?: NotificationStore;
   /** Optional push outbox. */
   pushStore?: PushStore;
-  /** Optional auth; when set, in-app rows go to every account except the payer skip. */
+  /** Optional auth; when set, in-app rows go to every account except the payer skip, then level-filtered. */
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Zapped forum note; requires `note.accountId`. */
   note: MessageRow;
