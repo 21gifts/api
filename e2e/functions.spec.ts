@@ -495,6 +495,20 @@ test('Function: messagesRoutes — GET /messages without bearer is 401', async (
   expect(res.status()).toBe(401);
 });
 
+test('Function: encodeMessageFeedCursor — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: decodeMessageFeedCursor — GET /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: normalizeForumText — POST /messages without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },
