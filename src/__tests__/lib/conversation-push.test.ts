@@ -42,6 +42,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: 'Bob',
     lastText: 'hi',
     lastSenderAccountId: 'acc-a',
+    lastSats: 0,
     ...partial,
   };
 }

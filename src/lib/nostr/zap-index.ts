@@ -19,7 +19,6 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
-import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
