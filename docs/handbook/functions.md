@@ -1781,7 +1781,7 @@
 
 - **Purpose:** Hono sub-app for staff Bearer `GET /proposals` (pending `moderator_propose` via `pendingModeratorProposals`; ISO `createdAt`; empty list is 200; logs `trust.proposals.listed` `{ count }` only) and four POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
 - **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore` and `pushStore`.
-- **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; 200 `{ id, name, role }`.
+- **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; GET `/proposals` 200 `{ proposals }` (empty list included); POST 200 `{ id, name, role }`.
 - **Used by:** `createApp`.
 
 ## Function: debugTrustRoutes
