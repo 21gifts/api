@@ -382,6 +382,34 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.accountId).toBe('someone');
   });
 
+  it('lets staff see a member_platform thread when no platform account exists', async () => {
+    const auth = await seeded('moderator');
+    await withOther(auth, 'someone');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in',
+      conversationId: thread.id,
+      text: 'help',
+      createdAt: new Date(now()),
+      senderAccountId: 'someone',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('someone');
+  });
+
   it('names the counterpart when the viewer is accountB', async () => {
     const auth = await seeded();
     await withOther(auth, 'aaa');
@@ -435,8 +463,37 @@ describe('GET /conversations', () => {
       conversations: Array<{ name: string; accountId?: string }>;
     };
     expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.name).toBe('21.gifts');
-    expect(body.conversations[0]?.accountId).toBe('plat');
+    expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('other');
+  });
+
+  it('lets staff list a member_member platform thread when the platform sorts first', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'zzz');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('plat', 'zzz', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in',
+      conversationId: thread.id,
+      text: 'yo',
+      createdAt: new Date(now()),
+      senderAccountId: 'zzz',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ name: string; accountId?: string }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('zzz');
   });
 
   it('names a counterpart without a display name as member', async () => {

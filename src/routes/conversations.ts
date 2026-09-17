@@ -82,9 +82,18 @@ function canAccess(
  * omit it so a truncated npub is never paired with an account id.
  *
  * Same party selection as {@link counterpartName} `otherId`, except Damus
- * is always `null`.
+ * is always `null`. Staff who are not a party of a thread that includes
+ * the platform see the other account (the member), not the platform.
+ *
+ * @param thread - Stored thread.
+ * @param viewerId - Session account id.
+ * @param platformId - Official platform account id, or `null`.
  */
-function counterpartAccountId(thread: ConversationThread, viewerId: string): string | null {
+function counterpartAccountId(
+  thread: ConversationThread,
+  viewerId: string,
+  platformId: string | null,
+): string | null {
   if (thread.kind === 'member_damus') {
     return null;
   }
@@ -94,10 +103,15 @@ function counterpartAccountId(thread: ConversationThread, viewerId: string): str
   if (thread.accountB === viewerId) {
     return thread.accountA;
   }
-  if (thread.kind === 'member_platform') {
-    return thread.accountA;
+  if (platformId !== null) {
+    if (thread.accountA === platformId) {
+      return thread.accountB;
+    }
+    if (thread.accountB === platformId) {
+      return thread.accountA;
+    }
   }
-  return thread.accountB;
+  return thread.accountA;
 }
 
 /**
@@ -107,16 +121,18 @@ function counterpartAccountId(thread: ConversationThread, viewerId: string): str
  * @param thread - Stored thread.
  * @param viewerId - Session account id.
  * @param authStore - Account lookup.
+ * @param platformId - Official platform account id, or `null`.
  */
 async function counterpartName(
   thread: ConversationThread,
   viewerId: string,
   authStore: AuthStore,
+  platformId: string | null,
 ): Promise<string> {
   if (thread.kind === 'member_damus' && thread.counterpartPubkey !== null) {
     return truncatePubkeyDisplay(thread.counterpartPubkey);
   }
-  const otherId = counterpartAccountId(thread, viewerId);
+  const otherId = counterpartAccountId(thread, viewerId, platformId);
   if (otherId === null) {
     return thread.kind === 'member_platform' ? '21.gifts' : 'member';
   }
@@ -140,7 +156,7 @@ async function publicThread(
   return serializeConversation(
     {
       ...thread,
-      name: await counterpartName(thread, account.id, authStore),
+      name: await counterpartName(thread, account.id, authStore, platformId),
     },
     conversationFromMe({
       senderAccountId: thread.lastSenderAccountId,
@@ -148,7 +164,7 @@ async function publicThread(
       staff: isStaffRole(account.role),
       platformId,
     }),
-    counterpartAccountId(thread, account.id),
+    counterpartAccountId(thread, account.id, platformId),
   );
 }
 
