@@ -1794,6 +1794,20 @@ describe('moderator_group', () => {
     expect(groupBody.conversation.kind).toBe('moderator_group');
   });
 
+  it('skips a moderator_group row even when listVisible returns one', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const inbound = vi.spyOn(conversations, 'hasInboundMessage');
+    conversations.listVisible = async () => [thread];
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations).toHaveLength(0);
+    expect(inbound).not.toHaveBeenCalled();
+  });
+
   it('does not list the moderator group when 200 newer threads exist', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
