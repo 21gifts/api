@@ -379,6 +379,9 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             (thread.lastText !== '' || thread.lastSats > 0);
+          if (thread.kind === 'moderator_group') {
+            continue;
+          }
           if (!inbound && !ownContactTicket) {
             continue;
           }

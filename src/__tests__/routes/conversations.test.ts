@@ -1761,6 +1761,39 @@ describe('moderator_group', () => {
     expect(listed.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
   });
 
+  it('does not list the moderator group after an inbound message from another account', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-inbound',
+      conversationId: thread.id,
+      text: 'hello mods',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const listVisible = vi.spyOn(conversations, 'listVisible');
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
+    expect(listVisible.mock.calls[0]?.[4]).toBe(false);
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(group.status).toBe(200);
+    const groupBody = (await group.json()) as { conversation: { kind: string } };
+    expect(groupBody.conversation.kind).toBe('moderator_group');
+  });
+
   it('does not list the moderator group when 200 newer threads exist', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
