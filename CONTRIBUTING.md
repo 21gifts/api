@@ -230,7 +230,7 @@ api/
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
 │   ├── message.sql           # forum `message` plus `message_invoice` and `nostr_zap_ingest`
 │   ├── contact.sql           # private contact mailbox table for POST /contact
-│   ├── conversation.sql      # PN threads + messages (member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr)
+│   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr)
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)

@@ -20,9 +20,10 @@ import { isStaffRole } from '@/lib/trust';
 /**
  * Inbox unread callback for forum/zap fan-out.
  *
- * Staff comes from `getAccount` + `isStaffRole`; platform id from
- * `listAccounts` / `isPlatform`. Lookup failure yields staff false and
- * `platformId` null.
+ * Staff comes from `getAccount` + `isStaffRole`; `moderator` from
+ * `role === 'moderator'` (pins `moderator_group` like GET `/conversations`);
+ * platform id from `listAccounts` / `isPlatform`. Lookup failure yields
+ * staff false, `moderator` false, and `platformId` null.
  *
  * @param conversations - Conversation store.
  * @param auth - Account lookup.

@@ -493,6 +493,7 @@ export class InMemoryConversationStore implements ConversationStore {
    * @param accountId - Session account.
    * @param staff - Founder/moderator.
    * @param platformId - Official platform account id, or `null`.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
    * @returns Listed unread count.
    */
   unreadCount(
@@ -915,6 +916,7 @@ export class PostgresConversationStore implements ConversationStore {
    * @param accountId - Session account.
    * @param staff - Founder/moderator.
    * @param platformId - Official platform account id, or `null`.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
    * @returns Listed unread count.
    */
   unreadCount(
