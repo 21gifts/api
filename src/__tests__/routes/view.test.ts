@@ -279,6 +279,50 @@ describe('GET /view/:viewKey/about/photo', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
+  it('returns 404 Not found for an unknown view key', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/view/${'b'.repeat(64)}/about/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 Photo not found when the account has no profile note', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store);
+    const res = await mount(store).request(`/view/${VIEW_KEY}/about/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 Photo not found when the profile note is missing', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const res = await mount(store, new InMemoryMessageStore()).request(
+      `/view/${VIEW_KEY}/about/photo`,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 Photo not found when the profile note is hidden', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date(1_000_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(1_000_000), 'staff')).toBe(true);
+    const res = await mount(store, messages).request(`/view/${VIEW_KEY}/about/photo`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 404 Photo not found when the live note has no photo', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store, { profileMessageId: NOTE_ID });

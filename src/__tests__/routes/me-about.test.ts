@@ -855,6 +855,27 @@ describe('GET /me/about/photo', () => {
     expect(await res.json()).toEqual({ error: 'Photo not found' });
   });
 
+  it('returns 404 when the profile note id is missing from the store', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const res = await mount(store, { messages: new InMemoryMessageStore() }).request(
+      '/me/about/photo',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns 404 when the profile note is hidden', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
+    const res = await mount(store, { messages }).request('/me/about/photo', { headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('returns 404 when the live note has no photo', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
