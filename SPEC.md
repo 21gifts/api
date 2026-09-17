@@ -2691,11 +2691,14 @@ Bearer session required. Body `{ "text": "…" }` 1–500 via
 platform thread persist as the platform account; the worker signs with the
 platform nsec. Relay failure does not block local persist. Kind includes
 `moderator_group`: persist as the moderator account with
-`nostrPublishState` skipped (never Nostr). When Lightning Address is a
-non-empty trimmed string and `spendPing` is set, ping kind `moderator`
-without `messageId` in the HTTP body. Ping failure still **200**. Empty
-or invalid text is **400** and does not ping. Founder / verified / basis
-**404** on that id.
+`nostrPublishState` skipped (never Nostr). After a new persist on
+`moderator_group`, ping `{ address, kind: "moderator" }` (no `messageId`
+in the HTTP body) only when Lightning Address is a non-empty trimmed
+string, `spendPing` is set, **and** the caller has a live living-room
+top-level post (not the profile note) whose `createdAt` is on the same
+UTC day. No such post → **200**, no ping, log `spend.ping.skipped` /
+`no_public_post`. Ping throw still **200**. Empty or invalid text is
+**400** and does not ping. Founder / verified / basis **404** on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member
