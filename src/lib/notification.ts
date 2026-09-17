@@ -1,10 +1,12 @@
 /**
- * In-app notification domain: public JSON projection and living-room fan-out.
+ * In-app notification domain: public JSON projection, living-room fan-out,
+ * and targeted `moderator_appointed` (subject only, not a fan-out).
  *
- * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
- * set) and `push_subscription` account ids, except skip. Web Push is still
- * only for `push_subscription` rows. Member HTTP never exposes recipient or
- * actor account ids. Callers catch failures so persist still succeeds.
+ * Living-room in-app recipients are the union of `auth.listAccounts()` (when
+ * `auth` is set) and `push_subscription` account ids, except skip. Web Push
+ * is still only for `push_subscription` rows. Member HTTP never exposes
+ * recipient or actor account ids. Callers catch failures so persist still
+ * succeeds.
  */
 
 import type { AuthStore } from '@/lib/auth/store';
