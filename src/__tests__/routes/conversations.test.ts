@@ -1362,6 +1362,36 @@ describe('moderator_group', () => {
     expect(body.conversations[0]?.lastText).toBe('');
   });
 
+  it('still lists the empty moderator group when 200 newer threads exist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    await conversations.ensureModeratorGroup('plat', new Date(now() - 86_400_000));
+    for (let i = 0; i < 200; i++) {
+      await withOther(auth, `o${i}`);
+      const thread = await conversations.openMemberMember('acc', `o${i}`, new Date(now() + i));
+      await conversations.appendMessage({
+        id: `m${i}`,
+        conversationId: thread.id,
+        text: 'yo',
+        createdAt: new Date(now() + i),
+        senderAccountId: `o${i}`,
+        senderPubkey: null,
+        name: 'Bob',
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(true);
+    expect(body.conversations[0]?.kind).toBe('moderator_group');
+    expect(body.conversations.length).toBeLessThanOrEqual(200);
+  });
+
   it('does not list the group for a founder and GET /:id is 404', async () => {
     const auth = await seeded('founder');
     await withPlatform(auth);

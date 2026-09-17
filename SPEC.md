@@ -2599,7 +2599,9 @@ omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. Kind includes `moderator_group`. The empty group is
 listed for moderators only (`role === 'moderator'`), named `Moderators`;
-founder / verified / basis never see it. `GET /conversations/:id` and
+founder / verified / basis never see it. The empty `moderator_group` is
+pinned first for moderators and remains listed even when 200 newer
+threads exist (still cap 200). `GET /conversations/:id` and
 `POST` still return/open outbound-only and empty threads. Newest
 `lastMessageAt` first. Cap 200. List/open rows may include optional
 `accountId` of the counterpart 21.gifts account (omitted for Damus-only

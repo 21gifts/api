@@ -223,16 +223,20 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       }
       try {
         const platform = await platformAccount(deps.authStore);
-        if (account.role === 'moderator' && platform !== undefined) {
-          await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
-        }
-        const threads = await deps.store.listVisible(
+        let threads = await deps.store.listVisible(
           account.id,
           isStaffRole(account.role),
           platform?.id ?? null,
           CONVERSATION_LIST_LIMIT,
           account.role === 'moderator',
         );
+        if (account.role === 'moderator' && platform !== undefined) {
+          const group = await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
+          threads = [group, ...threads.filter((thread) => thread.id !== group.id)].slice(
+            0,
+            CONVERSATION_LIST_LIMIT,
+          );
+        }
         const conversations: PublicConversation[] = [];
         const staff = isStaffRole(account.role);
         const platformId = platform?.id ?? null;
