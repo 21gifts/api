@@ -2,8 +2,9 @@
  * Private messaging (PN) domain: public JSON projection.
  *
  * Threads are member↔member, member↔platform, or member↔Damus. Member HTTP
- * never exposes account ids, event ids, or npubs (Damus-only display names may
- * use truncated npubs via the routes layer).
+ * may include optional counterpart/sender `accountId` for 21.gifts accounts
+ * and never exposes event ids or npubs (Damus-only display names may use
+ * truncated npubs via the routes layer).
  */
 
 import type { NostrPublishState } from '@/lib/message';
@@ -84,6 +85,8 @@ export interface PublicConversation {
   lastAt: string;
   /** True when the last message was sent by the viewer (or staff-as-platform). */
   lastFromMe: boolean;
+  /** Counterpart 21.gifts account id. Omitted for Damus-only counterparts. */
+  accountId?: string;
 }
 
 /** Member-facing conversation message. */
@@ -98,6 +101,8 @@ export interface PublicConversationMessage {
   createdAt: string;
   /** True when this message was sent by the viewer (or staff-as-platform). */
   fromMe: boolean;
+  /** Sender 21.gifts account id. Omitted when senderAccountId is null (Damus inbound). */
+  accountId?: string;
 }
 
 /**
@@ -143,13 +148,15 @@ export function conversationIsInbound(args: {
  *
  * @param thread - Persisted thread with resolved `name` / `lastText`.
  * @param lastFromMe - Whether the last message was sent by the viewer.
+ * @param accountId - Counterpart 21.gifts account id; omitted when null/empty.
  * @returns Public fields only.
  */
 export function serializeConversation(
   thread: ConversationThread,
   lastFromMe: boolean,
+  accountId?: string | null,
 ): PublicConversation {
-  return {
+  const json: PublicConversation = {
     id: thread.id,
     kind: thread.kind,
     name: thread.name,
@@ -157,6 +164,10 @@ export function serializeConversation(
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
   };
+  if (typeof accountId === 'string' && accountId !== '') {
+    json.accountId = accountId;
+  }
+  return json;
 }
 
 /**
@@ -164,19 +175,24 @@ export function serializeConversation(
  *
  * @param row - Persisted message.
  * @param fromMe - Whether this message was sent by the viewer.
- * @returns Public fields only (`accountId` / event id omitted).
+ * @returns Public fields only (event id omitted; `accountId` when the
+ *   sender is a 21.gifts account).
  */
 export function serializeConversationMessage(
   row: ConversationMessageRow,
   fromMe: boolean,
 ): PublicConversationMessage {
-  return {
+  const json: PublicConversationMessage = {
     id: row.id,
     name: row.name,
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     fromMe,
   };
+  if (typeof row.senderAccountId === 'string' && row.senderAccountId !== '') {
+    json.accountId = row.senderAccountId;
+  }
+  return json;
 }
 
 /**

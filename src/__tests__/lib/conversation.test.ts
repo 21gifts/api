@@ -168,6 +168,22 @@ describe('serializeConversation', () => {
     expect(json).not.toHaveProperty('lastSenderAccountId');
   });
 
+  it('includes accountId when given a non-empty counterpart id', () => {
+    const json = serializeConversation(THREAD, false, 'acc-b');
+    expect(json.accountId).toBe('acc-b');
+    expect(json).not.toHaveProperty('accountA');
+    expect(json).not.toHaveProperty('eventId');
+    expect(json).not.toHaveProperty('npub');
+  });
+
+  it('omits accountId when the counterpart id is null', () => {
+    expect(serializeConversation(THREAD, false, null)).not.toHaveProperty('accountId');
+  });
+
+  it('omits accountId when the counterpart id is empty', () => {
+    expect(serializeConversation(THREAD, false, '')).not.toHaveProperty('accountId');
+  });
+
   it('copies counterpart kind for a platform thread', () => {
     const json = serializeConversation({ ...THREAD, kind: 'member_platform' }, true);
     expect(json).toEqual({
@@ -182,7 +198,7 @@ describe('serializeConversation', () => {
 });
 
 describe('serializeConversationMessage', () => {
-  it('emits public message fields without account or event ids', () => {
+  it('emits public message fields with sender accountId and without event ids', () => {
     const json = serializeConversationMessage(ROW, false);
     expect(json).toEqual({
       id: 'm-1',
@@ -190,11 +206,23 @@ describe('serializeConversationMessage', () => {
       text: 'hello',
       createdAt: '2026-08-29T13:00:00.000Z',
       fromMe: false,
+      accountId: 'acc-a',
     });
-    expect(json).not.toHaveProperty('accountId');
     expect(json).not.toHaveProperty('eventId');
     expect(json).not.toHaveProperty('senderAccountId');
     expect(json).not.toHaveProperty('senderPubkey');
+  });
+
+  it('omits accountId when senderAccountId is null', () => {
+    expect(
+      serializeConversationMessage({ ...ROW, senderAccountId: null }, false),
+    ).not.toHaveProperty('accountId');
+  });
+
+  it('omits accountId when senderAccountId is empty', () => {
+    expect(serializeConversationMessage({ ...ROW, senderAccountId: '' }, false)).not.toHaveProperty(
+      'accountId',
+    );
   });
 
   it('sets fromMe from the viewer-relative flag', () => {
