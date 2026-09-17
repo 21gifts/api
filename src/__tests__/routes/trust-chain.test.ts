@@ -162,6 +162,34 @@ describe('GET /trust-chain', () => {
     });
   });
 
+  it('omits founder appoint when the subject was verified by someone else', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
+    await authStore.createAccount(account({ id: 's', role: 'moderator', name: 'S', createdAt: 2 }));
+    await authStore.createAccount(account({ id: 'r', role: 'moderator', name: 'R', createdAt: 3 }));
+    await signIn(authStore, 'f');
+    const edges: TrustEdge[] = [
+      { id: 'e-v', subjectId: 'r', actorId: 's', kind: 'verify', createdAt: 10 },
+      { id: 'e-a', subjectId: 'r', actorId: 'f', kind: 'moderator_appoint', createdAt: 11 },
+    ];
+    const app = mount(authStore, new InMemoryTrustStore(edges));
+    const aroundFounder = await app.request('/trust-chain?around=f', { headers: AUTH });
+    expect(aroundFounder.status).toBe(200);
+    expect(await aroundFounder.json()).toEqual({
+      nodes: [{ id: 'f', name: 'F', role: 'founder' }],
+      edges: [],
+    });
+    const aroundSubject = await app.request('/trust-chain?around=r', { headers: AUTH });
+    expect(aroundSubject.status).toBe(200);
+    expect(await aroundSubject.json()).toEqual({
+      nodes: [
+        { id: 's', name: 'S', role: 'moderator' },
+        { id: 'r', name: 'R', role: 'moderator' },
+      ],
+      edges: [{ from: 's', to: 'r', kind: 'verify' }],
+    });
+  });
+
   it('returns 404 when around is missing or not on the chain', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
