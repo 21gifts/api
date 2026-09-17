@@ -93,6 +93,8 @@ export interface PublicConversation {
   lastFromMe: boolean;
   /** Last message sats; `0` when none / unpaid text. */
   lastSats: number;
+  /** True when the viewer has inbound messages newer than last-read. */
+  unread: boolean;
   /** Counterpart 21.gifts account id. Omitted for Damus-only counterparts. */
   accountId?: string;
 }
@@ -158,12 +160,14 @@ export function conversationIsInbound(args: {
  *
  * @param thread - Persisted thread with resolved `name` / `lastText`.
  * @param lastFromMe - Whether the last message was sent by the viewer.
+ * @param unread - Whether the viewer has unread inbound messages in this thread.
  * @param accountId - Counterpart 21.gifts account id; omitted when null/empty.
  * @returns Public fields only.
  */
 export function serializeConversation(
   thread: ConversationThread,
   lastFromMe: boolean,
+  unread: boolean,
   accountId?: string | null,
 ): PublicConversation {
   const json: PublicConversation = {
@@ -174,6 +178,7 @@ export function serializeConversation(
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
     lastSats: thread.lastSats,
+    unread,
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;

@@ -416,9 +416,16 @@
 
 ## Endpoint: GET /conversations
 
-- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists threads with at least one inbound message for the viewer (empty and outbound-only member/Damus omitted). The member's own `member_platform` contact thread is listed when it has a message, even if outbound-only. Inbound = not `conversationFromMe`; Damus null sender is inbound. The singleton `moderator_group` named `Moderators` is listed for `role === 'moderator'` even when empty (bypass inbound skip only for this kind). The empty `moderator_group` is pinned first for moderators and remains listed even when 200 newer threads exist (still cap 200). Founder / verified / basis never see it. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe, lastSats, accountId? }] }` — optional counterpart 21.gifts `accountId` (omitted for Damus-only counterparts); no event ids or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `lastSats` is the last message's sats (0 for unpaid text). `DEBUG_TOKEN` cannot read this inbox.
+- **Purpose:** Bearer required. Lists threads the session may see: own member threads plus, when role is founder or moderator, all platform threads. Lists threads with at least one inbound message for the viewer (empty and outbound-only member/Damus omitted). The member's own `member_platform` contact thread is listed when it has a message, even if outbound-only. Inbound = not `conversationFromMe`; Damus null sender is inbound. The singleton `moderator_group` named `Moderators` is listed for `role === 'moderator'` even when empty (bypass inbound skip only for this kind). The empty `moderator_group` is pinned first for moderators and remains listed even when 200 newer threads exist (still cap 200). Founder / verified / basis never see it. `GET /conversations/:id` and `POST` are unchanged for outbound-only and empty threads. Newest last-message first (cap 200). Public JSON is `{ conversations: [{ id, kind, name, lastText, lastAt, lastFromMe, lastSats, unread, accountId? }], unreadCount }` — optional counterpart 21.gifts `accountId` (omitted for Damus-only counterparts); no event ids or npubs (Damus-only `name` may be a truncated npub). `lastFromMe` is true when the last message was sent by the viewer, or by the platform identity a staff viewer is acting as; Damus inbound (`senderAccountId` null) is false. `lastSats` is the last message's sats (0 for unpaid text). `unreadCount` is the number of listed rows with `unread: true` (same cap/filter). List GET does not stamp last-read. `DEBUG_TOKEN` cannot read this inbox.
 - **Errors:** 401 Unauthorized; 503 `{ error: 'Conversations are unavailable' }` (`conversations.list.failed`).
 - **Used by:** App conversation list.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /conversations/:id/read
+
+- **Purpose:** Bearer required. UUID `:id`. After `getById` + `canAccess`, `markRead(id, account.id, new Date(deps.now()))`. 200 `{ ok: true }`. Does not copy DMs into Notifications. `GET /conversations/:id` does not mark read. Registered before `POST /conversations/:id`. `DEBUG_TOKEN` cannot use this.
+- **Errors:** 401 Unauthorized; 404 `{ error: 'Not found' }` (unknown / other-account / non-uuid); 503 `{ error: 'Conversations are unavailable' }` (`conversations.read.failed`).
+- **Used by:** App mark-conversation-read control.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /notifications
@@ -444,7 +451,7 @@
 
 ## Endpoint: POST /conversations
 
-- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind`, `lastFromMe`, and optional counterpart `accountId`; empty new threads are `lastFromMe: false`; Damus-only counterparts omit `accountId`).
+- **Purpose:** Bearer required. Body `{ forumMessageId }` (forum note UUID). Opens or returns the thread with that note's author (21gifts account or Damus pubkey). 200 is the public conversation object (includes `kind`, `lastFromMe`, `unread`, and optional counterpart `accountId`; empty new threads are `lastFromMe: false` and `unread: false`; Damus-only counterparts omit `accountId`).
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with a "forumMessageId" string; 400 `{ error: 'Cannot message yourself' }` when the author is the session account; 404 `{ error: 'Not found' }` for a non-UUID / missing note / Damus note without pubkey; 503 Conversations are unavailable.
 - **Used by:** App "message the author" from a forum note.
 - **Auth:** `Authorization: Bearer` session.

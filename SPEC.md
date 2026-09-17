@@ -118,6 +118,7 @@ Public base URLs used in examples:
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
 | POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
+| POST   | `/conversations/:id/read`                    | Bearer                     | Stamp last-read for the viewer                                                                            |
 | GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                                                |
 | POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                                               |
 | POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                                                |
@@ -147,7 +148,6 @@ Public base URLs used in examples:
 | GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
-
 ### `GET /healthz`
 
 Liveness probe. No I/O; always succeeds when the process is up.
@@ -2866,14 +2866,19 @@ Success → **Response** `200`:
       "lastAt": "2026-08-29T12:00:00.000Z",
       "lastFromMe": false,
       "lastSats": 0,
+      "unread": true,
       "accountId": "<uuid>"
     }
-  ]
+  ],
+  "unreadCount": 1
 }
 ```
 
-`accountId` is the counterpart 21.gifts account. It is omitted for
-Damus-only counterparts (never JSON `null`).
+`unreadCount` is the number of listed rows with `unread: true` (same
+cap/filter, not a second uncapped query). Per-row `unread` is `hasUnread`
+(outbound-only listed contact tickets are `false`). List GET does not stamp
+last-read. `accountId` is the counterpart 21.gifts account. It is omitted
+for Damus-only counterparts (never JSON `null`).
 
 ### `POST /conversations`
 
@@ -2888,7 +2893,8 @@ Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
 the session account → **400** `{ "error": "Cannot message yourself" }`.
 
 Success → **Response** `200` (same public conversation object as list
-rows, including optional counterpart `accountId`).
+rows, including `unread` and optional counterpart `accountId`; empty new
+thread is `unread: false`).
 
 ### `GET /conversations/:id`
 
@@ -2979,6 +2985,23 @@ when LNURL is unreachable or another transport failure. **400**
 `{ "error": "Conversations are unavailable" }` when the ok-path
 `recordInvoiceAttempt` throws after a successful LNURL mint (no `pr` in the
 response).
+
+### `POST /conversations/:id/read`
+
+Bearer session required. `:id` is a UUID. Stamps last-read for the session
+account via `markRead`. Does not copy DMs into Notifications.
+`GET /conversations/:id` does not mark read.
+
+Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
+Non-uuid `:id`, missing thread, or session may not see it → **404**
+`{ "error": "Not found" }`.
+Store failure → **503** `{ "error": "Conversations are unavailable" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true }
+```
 
 ### `GET /notifications`
 

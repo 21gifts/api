@@ -314,6 +314,7 @@ async function publicThread(
   account: Account,
   authStore: AuthStore,
   platformId: string | null,
+  unread: boolean,
 ): Promise<PublicConversation> {
   return serializeConversation(
     {
@@ -326,6 +327,7 @@ async function publicThread(
       staff: isStaffRole(account.role),
       platformId,
     }),
+    unread,
     counterpartAccountId(thread, account.id, platformId),
   );
 }
@@ -379,9 +381,18 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
             continue;
           }
-          conversations.push(await publicThread(thread, account, deps.authStore, platformId));
+          const unread = await deps.store.hasUnread(thread.id, account.id, staff, platformId);
+          conversations.push(
+            await publicThread(thread, account, deps.authStore, platformId, unread),
+          );
         }
-        return c.json({ conversations }, 200);
+        return c.json(
+          {
+            conversations,
+            unreadCount: conversations.filter((row) => row.unread).length,
+          },
+          200,
+        );
       } catch {
         logEvent('conversations.list.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -428,10 +439,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const platform = await platformAccount(deps.authStore);
-        return c.json(
-          await publicThread(thread, account, deps.authStore, platform?.id ?? null),
-          200,
+        const platformId = platform?.id ?? null;
+        const unread = await deps.store.hasUnread(
+          thread.id,
+          account.id,
+          isStaffRole(account.role),
+          platformId,
         );
+        return c.json(await publicThread(thread, account, deps.authStore, platformId, unread), 200);
       } catch {
         logEvent('conversations.open.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -487,6 +502,28 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
       } catch {
         logEvent('conversations.get.failed');
+        return c.json({ error: 'Conversations are unavailable' }, 503);
+      }
+    })
+    .post('/:id/read', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!CONVERSATION_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const thread = await deps.store.getById(id);
+        const platform = await platformAccount(deps.authStore);
+        if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        await deps.store.markRead(id, account.id, new Date(deps.now()));
+        return c.json({ ok: true }, 200);
+      } catch {
+        logEvent('conversations.read.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
       }
     })

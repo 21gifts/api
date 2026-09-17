@@ -63,6 +63,35 @@ export interface ConversationStore {
   ): Promise<boolean>;
 
   /**
+   * True when the thread has at least one inbound message whose `createdAt`
+   * is strictly greater than this viewer's last-read stamp. Missing last-read
+   * means never read (any inbound is unread). Outbound-only and empty are
+   * false.
+   *
+   * @param conversationId - Thread to inspect.
+   * @param viewerId - Session account.
+   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @returns Whether the viewer has unread inbound messages in that thread.
+   */
+  hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean>;
+
+  /**
+   * Upsert last-read for `(accountId, conversationId)` to `readAt`. Always
+   * overwrites an existing stamp.
+   *
+   * @param conversationId - Thread to stamp.
+   * @param accountId - Session account.
+   * @param readAt - Stamp instant.
+   */
+  markRead(conversationId: string, accountId: string, readAt: Date): Promise<void>;
+
+  /**
    * Open or return the member↔member thread (`account_a`/`account_b`
    * ordered by id).
    */
@@ -197,6 +226,14 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
   ON conversation_message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `CREATE TABLE IF NOT EXISTS conversation_read (
+  account_id uuid NOT NULL REFERENCES account (id),
+  conversation_id uuid NOT NULL REFERENCES conversation (id),
+  last_read_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, conversation_id)
+)`,
+  `CREATE INDEX IF NOT EXISTS conversation_read_conversation_id_idx
+  ON conversation_read (conversation_id)`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -277,17 +314,30 @@ export async function migrateConversationSchema(sql: SqlClient): Promise<void> {
 export class InMemoryConversationStore implements ConversationStore {
   readonly #threads: ConversationThread[];
   readonly #messages: ConversationMessageRow[];
+  readonly #lastRead: Map<string, Date>;
 
   /**
    * @param seedThreads - Optional seed threads; copied into private storage.
    * @param seedMessages - Optional seed messages; copied into private storage.
+   * @param seedLastRead - Optional last-read stamps; Dates copied into a private map.
    */
   constructor(
     seedThreads: readonly ConversationThread[] = [],
     seedMessages: readonly ConversationMessageRow[] = [],
+    seedLastRead: readonly {
+      accountId: string;
+      conversationId: string;
+      lastReadAt: Date;
+    }[] = [],
   ) {
     this.#threads = seedThreads.map((thread) => copyThread(thread));
     this.#messages = seedMessages.map((row) => copyMessage(row));
+    this.#lastRead = new Map(
+      seedLastRead.map((row) => [
+        lastReadKey(row.accountId, row.conversationId),
+        new Date(row.lastReadAt.getTime()),
+      ]),
+    );
   }
 
   getById(id: string): Promise<ConversationThread | undefined> {
@@ -328,6 +378,41 @@ export class InMemoryConversationStore implements ConversationStore {
           }),
       ),
     );
+  }
+
+  hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const stamp = this.#lastRead.get(lastReadKey(viewerId, conversationId));
+    return Promise.resolve(
+      this.#messages.some((row) => {
+        if (row.conversationId !== conversationId) {
+          return false;
+        }
+        if (
+          !conversationIsInbound({
+            senderAccountId: row.senderAccountId,
+            viewerId,
+            staff,
+            platformId,
+          })
+        ) {
+          return false;
+        }
+        if (stamp === undefined) {
+          return true;
+        }
+        return row.createdAt.getTime() > stamp.getTime();
+      }),
+    );
+  }
+
+  markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
+    this.#lastRead.set(lastReadKey(accountId, conversationId), new Date(readAt.getTime()));
+    return Promise.resolve();
   }
 
   openMemberMember(accountA: string, accountB: string, now: Date): Promise<ConversationThread> {
@@ -690,6 +775,47 @@ export class PostgresConversationStore implements ConversationStore {
     return rows[0]?.exists === true;
   }
 
+  async hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM conversation_message
+         LEFT JOIN conversation_read
+           ON conversation_read.account_id = $2
+          AND conversation_read.conversation_id = conversation_message.conversation_id
+         WHERE conversation_message.conversation_id = $1
+           AND (
+             sender_account_id IS NULL
+             OR (
+               sender_account_id IS DISTINCT FROM $2
+               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
+             )
+           )
+           AND (
+             conversation_read.last_read_at IS NULL
+             OR conversation_message.created_at > conversation_read.last_read_at
+           )
+       ) AS exists`,
+      [conversationId, viewerId, staff, platformId],
+    );
+    return rows[0]?.exists === true;
+  }
+
+  async markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO conversation_read (account_id, conversation_id, last_read_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (account_id, conversation_id)
+       DO UPDATE SET last_read_at = EXCLUDED.last_read_at`,
+      [accountId, conversationId, readAt],
+    );
+  }
+
   async openMemberMember(
     accountA: string,
     accountB: string,
@@ -1003,6 +1129,10 @@ export class PostgresConversationStore implements ConversationStore {
       [platformId],
     );
   }
+}
+
+function lastReadKey(accountId: string, conversationId: string): string {
+  return `${accountId}\0${conversationId}`;
 }
 
 function orderedPair(a: string, b: string): [string, string] {

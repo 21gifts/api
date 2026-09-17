@@ -191,7 +191,9 @@ replies from `basis` (not the parent author) are **403**; `verified` /
 `moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
-member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
+member→platform via `POST /contact`. Inbox threads have per-viewer unread
+via `GET /conversations` (`unread` / `unreadCount`) and
+`POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
 with PNs. Lightning gifts in a Direct/Contact thread use
