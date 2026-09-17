@@ -381,7 +381,7 @@
 
 ## Function: webPushTopicFromTag
 
-- **Purpose:** Sanitize a Web Push payload `tag` into an RFC 8030 Topic header value: URL-and-filename-safe Base64 alphabet `A-Za-z0-9_-`, at most 32 characters. Production tags (`forum_post:<uuid>`, `forum_reply:<uuid>`, `zap:<id>`) drop the colon so push services accept the request.
+- **Purpose:** Sanitize a Web Push payload `tag` into an RFC 8030 Topic header value: URL-and-filename-safe Base64 alphabet `A-Za-z0-9_-`, at most 32 characters. Production tags (`forum_post:<uuid>`, `forum_reply:<uuid>`, `zap:<id>`, `moderator_appointed:<subjectId>`) drop the colon so push services accept the request.
 - **Inputs:** `tag` string from the JSON payload.
 - **Returns / side effects:** Sanitized string, or `undefined` when empty after stripping disallowed characters (omit the Topic header). No I/O. Never logs.
 - **Used by:** `WebPushSender.send`.
@@ -402,7 +402,7 @@
 
 ## Function: InMemoryNotificationStore
 
-- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, and zap notifications. Default empty so the process boots without a database.
+- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, zap, and moderator appointment notifications. Default empty so the process boots without a database.
 - **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only.
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `notificationStore`; memory `openBootStores` omits it.
@@ -490,6 +490,13 @@
 - **Inputs:** `messageId` string used only in `tag` (receipt UUID on the `notifyZap` path).
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` before enqueue/send.
 - **Used by:** `enqueueZapPush`, `notifyZap`.
+
+## Function: buildModeratorAppointedPushPayload
+
+- **Purpose:** English payload for the appointed subject only (not a living-room fan-out). `type: 'forum'` (outbox CHECK stays forum|zap), title `You are a moderator`, body `You were appointed a moderator in the living room.`, url `/welcome`, tag `moderator_appointed:<subjectId>`. Shared template omits optional `unreadCount` (`notifyModeratorAppointed` merges it per recipient when `notifications` is set).
+- **Inputs:** `subjectId` string used in `tag`.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
+- **Used by:** `notifyModeratorAppointed`.
 
 ## Function: pushRoutes
 
@@ -704,7 +711,7 @@
 ## Function: createApp
 
 - **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/invoices`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / appoint-moderator), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, `/notifications`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator" }` without `messageId`; forum `POST /messages` still two-arg daily ping), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. `messagesRoutes` receives `notificationStore`, not `conversationStore`. `invoiceRoutes` receives `notificationStore` and `pushStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator" }` without `messageId`; forum `POST /messages` still two-arg daily ping), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. `messagesRoutes` receives `notificationStore`, not `conversationStore`. `invoiceRoutes` receives `notificationStore` and `pushStore`. `trustRoutes` receives `notificationStore` and `pushStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -773,7 +780,7 @@
 
 ## Function: notificationRoutes
 
-- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (cap 200; `unreadCount` is total unread, not page length; each item `type` is `'forum_post' | 'forum_reply' | 'zap'`), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list.
+- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (cap 200; `unreadCount` is total unread, not page length; each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list.
 - **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id`; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed`).
 - **Used by:** `createApp`.
@@ -864,7 +871,7 @@
 
 ## Function: serializeNotification
 
-- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap'`.
+- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`.
 - **Inputs:** `NotificationRow` (includes recipient/actor account ids).
 - **Returns / side effects:** `{ id, type, parentId, replyId, name, text, createdAt, readAt }` with ISO-8601 dates; `readAt` null stays null. Omits recipient and actor account ids. No I/O.
 - **Used by:** `notificationRoutes`.
@@ -896,6 +903,13 @@
 - **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName? }`.
 - **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null` and payload from `buildZapPushPayload(replyId)`. Outbox JSON may include `unreadCount` for the home-screen badge (recipient's current unread count, merged per push recipient when `notifications` is set; omitted when `notifications` is omitted).
 - **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a receipt.
+
+## Function: notifyModeratorAppointed
+
+- **Purpose:** Targeted to the **subject only**, not a living-room fan-out. Does not call `fanoutToBellSubscribers`. Persist a `moderator_appointed` row when `notifications` is set (`parentId` and `replyId` = `subject.id`, `text` `''`, `name` is `actor.name ?? 'Someone'`, `actorAccountId` is `actor.id`, `readAt` null) and enqueue a `/welcome` Web Push (`type: 'forum'`, `messageId: subject.id`, tag `moderator_appointed:<subjectId>`) when `pushStore` is set. Missing both stores is a no-op. Unique duplicate create is fine (store returns existing). May throw (`push.fanout.failed`); callers wrap so persist still succeeds.
+- **Inputs:** `{ notifications?, pushStore?, subject, actor, nowMs }`.
+- **Returns / side effects:** Void. Writes one in-app row for the subject when `notifications` is set. When `pushStore` is set, enqueues one outbox row with payload from `buildModeratorAppointedPushPayload(subject.id)` (url `/welcome`, tag `moderator_appointed:<subjectId>`). When `notifications` is also set, merge `unreadCount` for that recipient into the payload JSON.
+- **Used by:** `trustRoutes` `POST /trust/confirm-moderator` and `POST /trust/appoint-moderator` after every 200 that leaves/keeps the subject as `moderator` (new grant **and** idempotent already-moderator same-actor 200). Failure logs `push.enqueue.failed`; HTTP still 200.
 
 ## Function: serializeConversationMessage
 
@@ -1758,8 +1772,8 @@
 
 ## Function: trustRoutes
 
-- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`.
-- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`.
+- **Purpose:** Hono sub-app for staff Bearer POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
+- **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore` and `pushStore`.
 - **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; 200 `{ id, name, role }`.
 - **Used by:** `createApp`.
 

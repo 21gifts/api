@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
+import { notifyModeratorAppointed } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
+import type { PushStore } from '@/lib/push-store';
 import { isStaffRole, type TrustEdge, type TrustKind } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { bearerToken } from '@/routes/me';
@@ -21,6 +24,10 @@ export interface TrustRouteDeps {
   trustStore: TrustStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Optional in-app notification persistence. */
+  notificationStore?: NotificationStore;
+  /** Optional Web Push outbox. */
+  pushStore?: PushStore;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -79,7 +86,7 @@ async function loadTargetAccount(
  * `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and
  * `POST /trust/appoint-moderator`.
  *
- * @param deps - Auth store, trust-edge store, and clock.
+ * @param deps - Auth store, trust-edge store, clock, and optional notification/push stores.
  * @returns A Hono app with the four staff POSTs.
  */
 export function trustRoutes(deps: TrustRouteDeps): Hono {
@@ -242,6 +249,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         if (subject.role === 'moderator') {
+          await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
         }
         if (subject.role !== 'verified') {
@@ -255,6 +263,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Trust chain is unavailable' }, 503);
         }
         logEvent('trust.moderator_confirmed', { subjectId: subject.id, actorId: caller.id });
+        await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
       if (subject.role !== 'verified') {
@@ -276,6 +285,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_confirmed', { subjectId: subject.id, actorId: caller.id });
+      await notifySubjectAppointed(deps, subject, caller);
       return c.json(accountSummary(updated), 200);
     })
     .post('/appoint-moderator', async (c) => {
@@ -314,6 +324,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         if (subject.role === 'moderator') {
+          await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
         }
         const updated = { ...subject, role: 'moderator' as const };
@@ -324,6 +335,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Trust chain is unavailable' }, 503);
         }
         logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
+        await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
       if (subject.role === 'moderator') {
@@ -341,8 +353,28 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
+      await notifySubjectAppointed(deps, subject, caller);
       return c.json(accountSummary(updated), 200);
     });
+}
+
+/** Best-effort targeted notify of the appointed subject; persist still 200. */
+async function notifySubjectAppointed(
+  deps: TrustRouteDeps,
+  subject: Account,
+  caller: Account,
+): Promise<void> {
+  try {
+    await notifyModeratorAppointed({
+      subject: { id: subject.id },
+      actor: { id: caller.id, name: caller.name },
+      nowMs: deps.now(),
+      ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+      ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+    });
+  } catch {
+    logEvent('push.enqueue.failed');
+  }
 }
 
 /** Fully formed edge using the injected clock and a fresh uuid. */
