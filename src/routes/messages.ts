@@ -110,9 +110,7 @@ function payableOf(
 ): boolean {
   const address = author?.lightningAddress;
   const eventId = row.eventId;
-  return (
-    eventId !== null && eventId !== '' && typeof address === 'string' && address.trim() !== ''
-  );
+  return eventId !== null && eventId !== '' && typeof address === 'string' && address.trim() !== '';
 }
 
 /**
