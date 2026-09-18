@@ -2864,6 +2864,20 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getExtraPhoto('a', 1))?.bytes[0]).toBe(0xff);
   });
 
+  it('listFeed includes photoCount from extra stills', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'feed-stills', text: '' }, JPEG, undefined, [JPEG2]);
+    const listed = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: new Set(),
+    });
+    const row = listed.find((item) => item.id === 'feed-stills');
+    expect(row?.photoCount).toBe(2);
+    expect(row?.hasPhoto).toBe(true);
+  });
+
   it('deleteById clears extra stills', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, text: '' }, JPEG, undefined, [JPEG2]);
@@ -4138,6 +4152,8 @@ describe('PostgresMessageStore', () => {
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);
+    expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
+    expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);
     const popular = sql.queries.filter((query) => query.text.includes('sats DESC'));
     expect(popular).toHaveLength(2);
     sql.nextRows = [
@@ -4407,6 +4423,8 @@ describe('PostgresMessageStore', () => {
     for (const query of sql.queries) {
       expect(query.text).toMatch(/deleted_at IS NULL/);
     }
+    const active = sql.queries.filter((query) => query.text.includes('ANY('));
+    expect(active.some((query) => query.params[0] === 10 && query.params[1] === '{}')).toBe(true);
   });
 
   it('propagates create execute errors', async () => {
