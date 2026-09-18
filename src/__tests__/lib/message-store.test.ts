@@ -95,12 +95,14 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(48);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(50);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo_content_type text/i);
     expect(MESSAGE_SCHEMA_SQL[1]).toMatch(/CREATE INDEX IF NOT EXISTS message_created_at_idx/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_feed_created_idx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_feed_popular_idx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS photo bytea/i,
     );
@@ -804,6 +806,151 @@ describe('InMemoryMessageStore', () => {
     expect(await store.getById('n')).toBeDefined();
     expect(await store.getById('z')).toBeDefined();
     expect(await store.listLatest(10)).toHaveLength(2);
+  });
+
+  it('listFeed pages all, unpaid, active, and popular and skips replies and hidden', async () => {
+    const unpaidStaff = {
+      ...LATE,
+      id: 'staff-unpaid',
+      accountId: 'staff',
+      text: 'staff unpaid',
+      createdAt: new Date('2026-08-04T00:00:00.000Z'),
+    };
+    const paid = { ...LATE, id: 'paid', sats: 21, createdAt: new Date('2026-08-05T00:00:00.000Z') };
+    const popularLow = {
+      ...EARLY,
+      id: 'pop-low',
+      sats: 5,
+      createdAt: new Date('2026-08-06T00:00:00.000Z'),
+    };
+    const popularHigh = {
+      ...EARLY,
+      id: 'pop-high',
+      sats: 50,
+      createdAt: new Date('2026-08-06T01:00:00.000Z'),
+    };
+    const hidden = {
+      ...EARLY,
+      id: 'hidden-feed',
+      text: 'hidden',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    };
+    const store = new InMemoryMessageStore([
+      EARLY,
+      LATE,
+      unpaidStaff,
+      paid,
+      popularLow,
+      popularHigh,
+      hidden,
+    ]);
+    await store.create({
+      ...LATE,
+      id: 'feed-reply',
+      parentId: 'a',
+      text: 'child',
+    });
+    const emptyStaff = new Set<string>();
+    const all = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(all.map((row) => row.id)).toEqual([
+      'pop-high',
+      'pop-low',
+      'paid',
+      'staff-unpaid',
+      'b',
+      'a',
+    ]);
+    expect(all.find((row) => row.id === 'a')?.replyCount).toBe(1);
+    const unpaid = await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(unpaid.map((row) => row.id)).toEqual(['staff-unpaid', 'b', 'a']);
+    const active = await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: null,
+      staffAccountIds: new Set(['staff']),
+    });
+    expect(active.map((row) => row.id)).toEqual(['pop-high', 'pop-low', 'paid', 'staff-unpaid']);
+    const popular = await store.listFeed({
+      limit: 10,
+      mode: 'popular',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(popular.map((row) => row.id)).toEqual(['pop-high', 'paid', 'pop-low']);
+    const firstPage = await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(firstPage.map((row) => row.id)).toEqual(['pop-high', 'pop-low']);
+    const last = firstPage[firstPage.length - 1];
+    if (last === undefined) {
+      throw new Error('expected last');
+    }
+    const secondPage = await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: { k: 't', c: last.createdAt, i: last.id },
+      staffAccountIds: emptyStaff,
+    });
+    expect(secondPage.map((row) => row.id)).toEqual(['paid', 'staff-unpaid']);
+    const tieTime = new Date('2026-07-01T00:00:00.000Z');
+    const tied = new InMemoryMessageStore([
+      { ...EARLY, id: 'z-tie', createdAt: tieTime },
+      { ...EARLY, id: 'a-tie', createdAt: tieTime },
+    ]);
+    const tiedPage = await tied.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(tiedPage.map((row) => row.id)).toEqual(['z-tie', 'a-tie']);
+    const popularFirst = await store.listFeed({
+      limit: 1,
+      mode: 'popular',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(popularFirst[0]?.id).toBe('pop-high');
+    const popularSecond = await store.listFeed({
+      limit: 10,
+      mode: 'popular',
+      cursor: {
+        k: 's',
+        s: popularFirst[0]!.sats,
+        c: popularFirst[0]!.createdAt,
+        i: popularFirst[0]!.id,
+      },
+      staffAccountIds: emptyStaff,
+    });
+    expect(popularSecond.map((row) => row.id)).toEqual(['paid', 'pop-low']);
+    const mismatched = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: { k: 's', s: 21, c: last.createdAt, i: last.id },
+      staffAccountIds: emptyStaff,
+    });
+    expect(mismatched.length).toBeGreaterThan(0);
+    const popularMismatchedKind = await store.listFeed({
+      limit: 10,
+      mode: 'popular',
+      cursor: { k: 't', c: last.createdAt, i: last.id },
+      staffAccountIds: emptyStaff,
+    });
+    expect(popularMismatchedKind.map((row) => row.id)).toEqual(['pop-high', 'paid', 'pop-low']);
   });
 
   it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
@@ -2019,6 +2166,20 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getExtraPhoto('a', 1))?.bytes[0]).toBe(0xff);
   });
 
+  it('listFeed includes photoCount from extra stills', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'feed-stills', text: '' }, JPEG, undefined, [JPEG2]);
+    const listed = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: new Set(),
+    });
+    const row = listed.find((item) => item.id === 'feed-stills');
+    expect(row?.photoCount).toBe(2);
+    expect(row?.hasPhoto).toBe(true);
+  });
+
   it('deleteById clears extra stills', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, text: '' }, JPEG, undefined, [JPEG2]);
@@ -3179,6 +3340,90 @@ describe('PostgresMessageStore', () => {
     await expect(new PostgresMessageStore(sql).listLatest(10)).rejects.toThrow('list boom');
   });
 
+  it('listFeed SQL filters by mode and never selects photo bytes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    const staff = new Set(['staff-1']);
+    const timeCursor = { k: 't' as const, c: new Date('2026-08-01T00:00:00.000Z'), i: 'm1' };
+    const satsCursor = {
+      k: 's' as const,
+      s: 21,
+      c: new Date('2026-08-01T00:00:00.000Z'),
+      i: 'm1',
+    };
+    await store.listFeed({ limit: 10, mode: 'all', cursor: null, staffAccountIds: staff });
+    await store.listFeed({ limit: 10, mode: 'all', cursor: timeCursor, staffAccountIds: staff });
+    await store.listFeed({ limit: 10, mode: 'unpaid', cursor: null, staffAccountIds: staff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: timeCursor,
+      staffAccountIds: staff,
+    });
+    await store.listFeed({ limit: 10, mode: 'active', cursor: null, staffAccountIds: staff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: timeCursor,
+      staffAccountIds: staff,
+    });
+    await store.listFeed({ limit: 10, mode: 'popular', cursor: null, staffAccountIds: staff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'popular',
+      cursor: satsCursor,
+      staffAccountIds: staff,
+    });
+    expect(sql.queries).toHaveLength(8);
+    for (const query of sql.queries) {
+      expect(query.text).toMatch(/parent_id IS NULL/);
+      expect(query.text).toMatch(/deleted_at IS NULL/);
+      expect(query.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
+    }
+    const active = sql.queries.filter((query) => query.text.includes('ANY('));
+    expect(active).toHaveLength(2);
+    expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
+    expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);
+    const popular = sql.queries.filter((query) => query.text.includes('sats DESC'));
+    expect(popular).toHaveLength(2);
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+        reply_count: null,
+      },
+    ];
+    const mapped = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+    });
+    expect(mapped[0]?.id).toBe('m1');
+    expect(mapped[0]?.replyCount).toBe(0);
+  });
+
+  it('propagates listFeed query errors', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('feed boom');
+    await expect(
+      new PostgresMessageStore(sql).listFeed({
+        limit: 10,
+        mode: 'all',
+        cursor: null,
+        staffAccountIds: new Set(),
+      }),
+    ).rejects.toThrow('feed boom');
+  });
+
   it('getById maps a row and claim SQL runs', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -3359,6 +3604,42 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [];
     const store = new PostgresMessageStore(sql);
     await store.listLatest(10);
+    const emptyStaff = new Set<string>();
+    const timeCursor = { k: 't' as const, c: new Date('2026-08-01T00:00:00.000Z'), i: 'm1' };
+    const satsCursor = {
+      k: 's' as const,
+      s: 21,
+      c: new Date('2026-08-01T00:00:00.000Z'),
+      i: 'm1',
+    };
+    await store.listFeed({ limit: 10, mode: 'all', cursor: null, staffAccountIds: emptyStaff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: timeCursor,
+      staffAccountIds: emptyStaff,
+    });
+    await store.listFeed({ limit: 10, mode: 'unpaid', cursor: null, staffAccountIds: emptyStaff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: timeCursor,
+      staffAccountIds: emptyStaff,
+    });
+    await store.listFeed({ limit: 10, mode: 'active', cursor: null, staffAccountIds: emptyStaff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: timeCursor,
+      staffAccountIds: emptyStaff,
+    });
+    await store.listFeed({ limit: 10, mode: 'popular', cursor: null, staffAccountIds: emptyStaff });
+    await store.listFeed({
+      limit: 10,
+      mode: 'popular',
+      cursor: satsCursor,
+      staffAccountIds: emptyStaff,
+    });
     await store.listReplies('p1', 10);
     await store.countByAccount('acc');
     await store.listPostsByAccount('acc', 10);
@@ -3373,6 +3654,8 @@ describe('PostgresMessageStore', () => {
     for (const query of sql.queries) {
       expect(query.text).toMatch(/deleted_at IS NULL/);
     }
+    const active = sql.queries.filter((query) => query.text.includes('ANY('));
+    expect(active.some((query) => query.params[0] === 10 && query.params[1] === '{}')).toBe(true);
   });
 
   it('propagates create execute errors', async () => {

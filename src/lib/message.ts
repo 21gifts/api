@@ -23,8 +23,15 @@ export const MESSAGE_MAX_LENGTH = 500;
 /** Hard cap for inbound Damus reply content (may exceed member 500). */
 export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 
-/** Cap for `listLatest` / GET `/messages` (top-level notes only). */
+/** Cap for `listLatest` / GET `/messages` (top-level notes only). Default and max `listFeed` page size. */
 export const MESSAGE_LIST_LIMIT = 200;
+
+/** Server-side forum feed filter for GET `/messages`. */
+export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'popular';
+
+/** Opaque keyset cursor JSON before base64url encoding. */
+export type MessageFeedCursorJson =
+  { k: 't'; c: string; i: string } | { k: 's'; s: number; c: string; i: string };
 
 /** Worker publish state for a forum row. */
 export type NostrPublishState = 'pending' | 'published' | 'failed' | 'skipped';
@@ -512,4 +519,53 @@ export function forumPhotoResponse(photo: ForumPhoto): Response {
       'Content-Disposition': `inline; filename="photo.${ext}"`,
     },
   });
+}
+
+/**
+ * Opaque base64url JSON cursor for GET `/messages` keyset pagination.
+ *
+ * @param cursor - Time (`k: 't'`) or popular (`k: 's'`) cursor fields.
+ * @returns UTF-8 JSON encoded as standard base64url (padding omitted).
+ */
+export function encodeMessageFeedCursor(cursor: MessageFeedCursorJson): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+/**
+ * Decode an opaque feed cursor. Returns null when the payload is not valid
+ * base64url JSON of the expected shape (including invalid ISO `c` / non-finite `s`).
+ * Does not interpret mode; the GET `/` handler rejects the wrong `k` for the mode.
+ *
+ * @param raw - Query `cursor` string.
+ * @returns The decoded cursor, or `null` when the payload is not valid.
+ */
+export function decodeMessageFeedCursor(raw: string): MessageFeedCursorJson | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return null;
+    }
+    const rec = parsed as Record<string, unknown>;
+    const createdAt = rec['c'];
+    const id = rec['i'];
+    if (typeof createdAt !== 'string' || typeof id !== 'string') {
+      return null;
+    }
+    if (Number.isNaN(Date.parse(createdAt))) {
+      return null;
+    }
+    if (rec['k'] === 't') {
+      return { k: 't', c: createdAt, i: id };
+    }
+    if (rec['k'] === 's') {
+      const sats = rec['s'];
+      if (typeof sats !== 'number' || !Number.isFinite(sats)) {
+        return null;
+      }
+      return { k: 's', s: sats, c: createdAt, i: id };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

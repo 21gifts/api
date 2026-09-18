@@ -79,6 +79,16 @@ describe('PostgresAuthStore nostr keys', () => {
     sql.nextRows = [{ id: 'acc' }];
     expect(await store.listAccountIdsWithoutNostrKey(5)).toEqual(['acc']);
   });
+
+  it('listStaffAccountIds selects founder and moderator ids', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'f1' }, { id: 'm1' }];
+    const ids = await new PostgresAuthStore(sql).listStaffAccountIds();
+    expect(sql.queries[0]?.text).toBe(
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator')`,
+    );
+    expect(ids).toEqual(['f1', 'm1']);
+  });
 });
 
 describe('migrateAuthSchema', () => {

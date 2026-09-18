@@ -1232,6 +1232,64 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getNostrPublicKey('acc')).toBeUndefined();
   });
 
+  it('listStaffAccountIds returns founder and moderator ids', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'founder-1',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Founder',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'mod-1',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mod',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'basis-1',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Basis',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'verified-1',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Verified',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    const ids = await store.listStaffAccountIds();
+    expect(ids.sort()).toEqual(['founder-1', 'mod-1']);
+  });
+
   it('claimProfileMessageId sets the pointer only when it still matches', async () => {
     const store = new InMemoryAuthStore();
     expect(await store.claimProfileMessageId('missing', null, 'note-1')).toBe(false);
