@@ -90,7 +90,7 @@ export interface AppDeps {
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
-   * `GET /debug/contacts`, `GET /debug/invoices`,
+   * `GET /debug/contacts`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
@@ -331,7 +331,17 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
-  app.route('/debug', debugPaymentsRoutes({ store: messageStore, debugToken }));
+  app.route(
+    '/debug',
+    debugPaymentsRoutes({
+      store: messageStore,
+      auth: store,
+      now,
+      debugToken,
+      pushStore,
+      notificationStore,
+    }),
+  );
   app.route(
     '/debug/push-ping',
     debugPushRoutes({

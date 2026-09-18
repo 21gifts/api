@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { paymentHashFromReceipt } from '@/lib/account-activity';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
@@ -19,6 +20,7 @@ import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import { notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
+import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
 
@@ -41,6 +43,40 @@ interface ProviderCacheRow {
 }
 
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
+
+type SettleInvoiceResult =
+  | { ok: true; receiptId: string; messageId: string; amountSats: number }
+  | {
+      ok: false;
+      reason: 'shape' | 'note' | 'preimage' | 'invoice' | 'conversation' | 'message' | 'duplicate';
+    };
+
+/** Normalise required operator evidence without allowing control characters. */
+function normalizeManualNote(raw: string): string | null {
+  const note = raw.trim();
+  if (note.length < 1 || note.length > MESSAGE_MAX_LENGTH) {
+    return null;
+  }
+  for (let i = 0; i < note.length; i += 1) {
+    const code = note.charCodeAt(i);
+    if (code < 32 || code === 127) {
+      return null;
+    }
+  }
+  return note;
+}
+
+/**
+ * Deterministic synthetic kind:9735 id for a manually settled payment hash.
+ *
+ * @param paymentHash - Caller-supplied payment hash; case is ignored.
+ * @returns Lowercase 64-hex SHA-256 event id.
+ */
+export function manualReceiptIdForPaymentHash(paymentHash: string): string {
+  return createHash('sha256')
+    .update(`21gifts-manual-settle:${paymentHash.toLowerCase()}`)
+    .digest('hex');
+}
 
 /**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
@@ -176,6 +212,152 @@ function zapIngestRow(args: {
 }
 
 /**
+ * Manually settle a successful forum invoice under operator authority.
+ *
+ * `DEBUG_TOKEN` is the authority for the route caller; the required note is
+ * durable operator evidence. A supplied preimage is additionally verified
+ * against the payment hash and stored only in the synthetic receipt tags.
+ * The duplicate lookup and `recordZapReceipt` are not one transaction, so a
+ * real receipt indexed at exactly the same instant could still count twice;
+ * this debug action is intended long after the normal receipt window.
+ *
+ * @param args - Stores, clock, payment hash, operator note, and optional preimage.
+ * @returns The credited receipt details, or the first validation/lookup failure.
+ */
+export async function settleInvoiceManually(args: {
+  store: MessageStore;
+  auth: AuthStore;
+  now: () => number;
+  paymentHash: string;
+  note: string;
+  preimage?: string;
+  pushStore?: PushStore;
+  notificationStore?: NotificationStore;
+}): Promise<SettleInvoiceResult> {
+  const paymentHash = normalizeHex32(args.paymentHash);
+  if (paymentHash === null) {
+    return { ok: false, reason: 'shape' };
+  }
+  const note = normalizeManualNote(args.note);
+  if (note === null) {
+    return { ok: false, reason: 'note' };
+  }
+  let preimage: string | undefined;
+  if (args.preimage !== undefined) {
+    preimage = normalizeHex32(args.preimage) ?? undefined;
+    if (preimage === undefined) {
+      return { ok: false, reason: 'shape' };
+    }
+    if (!preimageMatchesHash(preimage, paymentHash)) {
+      return { ok: false, reason: 'preimage' };
+    }
+  }
+
+  const invoice = await args.store.findOkInvoiceByPaymentHash(paymentHash);
+  if (
+    invoice === undefined ||
+    !Number.isInteger(invoice.amountSats) ||
+    invoice.amountSats <= 0 ||
+    invoice.pr === null ||
+    invoice.pr.trim() === ''
+  ) {
+    return { ok: false, reason: 'invoice' };
+  }
+  if (invoice.conversationId !== undefined && invoice.conversationId !== null) {
+    return { ok: false, reason: 'conversation' };
+  }
+  const message = await args.store.getById(invoice.messageId);
+  if (message === undefined || message.deletedAt !== null) {
+    return { ok: false, reason: 'message' };
+  }
+
+  const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+  if ((await args.store.getZapReceiptGift(receiptId)) !== undefined) {
+    return { ok: false, reason: 'duplicate' };
+  }
+  const indexed = await args.store.listIndexedZapIngests();
+  if (indexed.some((row) => paymentHashFromReceipt(row.receipt) === paymentHash)) {
+    return { ok: false, reason: 'duplicate' };
+  }
+  if (!(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats))) {
+    return { ok: false, reason: 'duplicate' };
+  }
+
+  const tags: string[][] = [];
+  if (typeof message.eventId === 'string' && message.eventId !== '') {
+    tags.push(['e', message.eventId]);
+  }
+  tags.push(['bolt11', invoice.pr]);
+  if (invoice.zapRequest !== null) {
+    tags.push(['description', JSON.stringify(invoice.zapRequest)]);
+  }
+  if (preimage !== undefined) {
+    tags.push(['preimage', preimage]);
+  }
+  tags.push(['manual', 'debug-settle'], ['note', note]);
+  const receipt = {
+    id: receiptId,
+    pubkey: '',
+    kind: 9735,
+    created_at: Math.floor(args.now() / 1000),
+    content: '',
+    sig: '',
+    tags,
+  } satisfies Record<string, unknown>;
+  await persistZapIngest(
+    args.store,
+    zapIngestRow({
+      receiptId,
+      noteEventId: message.eventId,
+      messageId: message.id,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: invoice.amountSats,
+      receiptPubkey: null,
+      receipt,
+    }),
+  );
+  logEvent('nostr.zap.settled_manually', { messageId: message.id, sats: invoice.amountSats });
+
+  const payer = await args.auth.getAccount(invoice.payerAccountId);
+  if (message.accountId !== null) {
+    try {
+      await notifyZap({
+        note: message,
+        receiptId,
+        amountSats: invoice.amountSats,
+        nowMs: args.now(),
+        auth: args.auth,
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(payer === undefined
+          ? {}
+          : { payerAccountId: payer.id, payerName: payer.name ?? 'Someone' }),
+      });
+    } catch {
+      logEvent('push.enqueue.failed');
+    }
+  }
+  if (payer !== undefined) {
+    try {
+      await insertGiftReply({
+        store: args.store,
+        auth: args.auth,
+        now: args.now,
+        receiptEventId: receiptId,
+        parent: message,
+        amountSats: invoice.amountSats,
+        payer,
+        text: commentFromZapRequest(invoice.zapRequest),
+      });
+    } catch {
+      logEvent('nostr.zap.gift_reply.failed', { receiptId });
+    }
+  }
+  return { ok: true, receiptId, messageId: message.id, amountSats: invoice.amountSats };
+}
+
+/**
  * Validate a kind:9735 receipt against the author's LNURL `nostrPubkey`
  * and add sats to the message once via durable receipt storage.
  *
@@ -300,6 +482,8 @@ export async function indexZapReceipt(args: {
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
  * validation, and ingest persist. They still run `verifyReceipt` then
  * `tryEnsureGiftReply` unless the receipt matches a conversation invoice.
+ * A forum receipt whose payment hash was already manually settled is rejected
+ * with reason `settled` before author/provider lookup and cannot add sats again.
  * Every other rejection reason is re-validated on each tick and writes again
  * whenever the decision changes. The memory is process-local, so the first
  * tick after a restart may re-persist decisions it has forgotten, bounded by
@@ -399,8 +583,9 @@ export async function indexOpenZapReceipts(args: {
  * Returns after id validation when this process already persisted a terminal
  * decision for the receipt id on this store instance (`indexed`, or `rejected`
  * with reason `duplicate`): still runs `verifyReceipt` then `tryEnsureGiftReply`,
- * and does not persist ingest again. Every other rejection reason is
- * re-validated on each call.
+ * and does not persist ingest again. A payment hash already represented by a
+ * synthetic manual receipt is rejected as `settled` before provider lookup.
+ * Every other rejection reason is re-validated on each call.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.
@@ -660,6 +845,27 @@ async function ingestOneReceipt(
         messageId: row.id,
         outcome: 'rejected',
         reason: 'amount',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return;
+  }
+
+  if (
+    (await args.store.getZapReceiptGift(manualReceiptIdForPaymentHash(decoded.paymentHash))) !==
+    undefined
+  ) {
+    logEvent('nostr.zap.rejected', { reason: 'settled' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'settled',
         amountSats,
         receiptPubkey: event.pubkey,
         receipt,

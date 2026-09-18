@@ -98,6 +98,14 @@
 - **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/invoices/settle
+
+- **Purpose:** Manually settle one successful forum `message_invoice` by its 32-byte payment hash. Body `{ paymentHash, note, preimage? }`; `note` is trimmed operator evidence (1–500 characters, no C0/DEL controls). A verified optional preimage is stored in the synthetic kind:9735 tags, but is not required because wallet-internal payments can expose a value that does not hash to the invoice payment hash.
+- **Trust / effects:** `DEBUG_TOKEN` plus the required durable note is the settlement authority; when supplied, `preimage` must be 32-byte hex and hash to `paymentHash`. Success credits `message.sats`, writes an `indexed` `nostr_zap_ingest` with `manual=debug-settle` and `note`, fans out the normal zap notification, and inserts the payer gift-reply. The response contains only `{ receiptId, messageId, amountSats }`, never the note or preimage.
+- **Errors:** 400 `Invalid body` for malformed JSON/types, 400 `Invalid note`, 400 for malformed/mismatched hash or preimage, 404 for a missing invoice/message, 409 for conversation invoices or an already indexed/settled payment, and 503 `Messages are unavailable` when a store operation throws. A later relay receipt for the same hash is recorded as `rejected`/`settled` and cannot add sats again.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`; unset/blank returns 503 and a bad bearer returns 401. This operator-only authority is the same debug token used for role assignment and session minting.
+- **Used by:** `gifts-debug settle <payment-hash> <note> [preimage]` after the normal zap-receipt window has elapsed.
+
 ## Endpoint: GET /debug/zap-ingests
 
 - **Purpose:** Operator listing of kind:9735 ingest decisions newest-first (cap 200): `outcome` (`indexed` \| `rejected`), `reason`, receipt id, note/message ids, amount, and the receipt event frame. ISO `createdAt`. Never includes nsec. One `nostr_zap_ingest` row is written per receipt per decision change per process (the memory is per store instance and empty after a restart, so the first tick after boot may write one `rejected`/`duplicate` row per receipt that tick still queries (`listLatest`)). A repeated identical `outcome:reason` is normally not written again, because the memory is consulted before the write; that is not a guarantee, since the memory is set only after the write resolves, worker ticks are not serialised, and a failed write leaves it untouched. Receipts whose remembered decision is terminal (`indexed` or `rejected`/`duplicate`) skip note lookup, account/LNURL validation, and ingest persist, but still run `verifyReceipt` then `tryEnsureGiftReply`.
