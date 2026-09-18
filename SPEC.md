@@ -114,6 +114,7 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                                                       |
 | POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                                                    |
 | GET    | `/conversations`                             | Bearer                     | List visible private threads                                                                              |
+| GET    | `/conversations/moderator-group`             | Bearer (moderator)         | Open/ensure closed moderator-group tool                                                                   |
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
@@ -2911,11 +2912,9 @@ and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
-inbound and listed. Kind includes `moderator_group`. The empty group is
-listed for moderators only (`role === 'moderator'`), named `Moderators`;
-founder / verified / basis never see it. The empty `moderator_group` is
-pinned first for moderators and remains listed even when 200 newer
-threads exist (still cap 200). `GET /conversations/:id` and
+inbound and listed. This list never includes `moderator_group` (even for
+`role === 'moderator'`). The closed group is `GET /conversations/moderator-group`
+only. `GET /conversations/:id` and
 `POST` still return/open outbound-only and empty threads. Newest
 `lastMessageAt` first. Cap 200. List/open rows may include optional
 `accountId` of the counterpart 21.gifts account (omitted for Damus-only
@@ -2960,6 +2959,16 @@ cap/filter, not a second uncapped query). Per-row `unread` is `hasUnread`
 (outbound-only listed contact tickets are `false`). List GET does not stamp
 last-read. `accountId` is the counterpart 21.gifts account. It is omitted
 for Damus-only counterparts (never JSON `null`).
+
+### `GET /conversations/moderator-group`
+
+Bearer session required. Confirmed moderators (`role === 'moderator'`
+only) open or insert the closed singleton and receive it as
+`{ "conversation": { ... } }` (same public row as a list item, `kind`
+`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Founder / verified / basis get
+**404** `{ "error": "Not found" }` (no existence leak). Missing platform
+account or store failure → **503** `{ "error": "Conversations are unavailable" }`.
+Unauthenticated → **401**.
 
 ### `POST /conversations`
 
