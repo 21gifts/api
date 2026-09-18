@@ -577,7 +577,7 @@ describe('GET /messages', () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
-      id: 'note-1',
+      id: '00000000-0000-4000-8000-000000000001',
       accountId: 'acc',
       name: 'Ada',
       text: 'oldest',
@@ -586,7 +586,7 @@ describe('GET /messages', () => {
       ...unsignedNostrDefaults(),
     });
     await messageStore.create({
-      id: 'note-2',
+      id: '00000000-0000-4000-8000-000000000002',
       accountId: 'acc',
       name: 'Ada',
       text: 'middle',
@@ -595,7 +595,7 @@ describe('GET /messages', () => {
       ...unsignedNostrDefaults(),
     });
     await messageStore.create({
-      id: 'note-3',
+      id: '00000000-0000-4000-8000-000000000003',
       accountId: 'acc',
       name: 'Ada',
       text: 'newest',
@@ -610,7 +610,10 @@ describe('GET /messages', () => {
       messages: Array<{ id: string }>;
       nextCursor?: string;
     };
-    expect(firstBody.messages.map((row) => row.id)).toEqual(['note-3', 'note-2']);
+    expect(firstBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000003',
+      '00000000-0000-4000-8000-000000000002',
+    ]);
     expect(typeof firstBody.nextCursor).toBe('string');
     const cursor = firstBody.nextCursor;
     expect(cursor).toBeDefined();
@@ -625,7 +628,9 @@ describe('GET /messages', () => {
       messages: Array<{ id: string }>;
       nextCursor?: string;
     };
-    expect(secondBody.messages.map((row) => row.id)).toEqual(['note-1']);
+    expect(secondBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000001',
+    ]);
     expect(secondBody).not.toHaveProperty('nextCursor');
   });
 
@@ -740,7 +745,7 @@ describe('GET /messages', () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
-      id: 'zero',
+      id: '00000000-0000-4000-8000-000000000011',
       accountId: 'acc',
       name: 'Ada',
       text: 'zero',
@@ -749,7 +754,7 @@ describe('GET /messages', () => {
       ...unsignedNostrDefaults(),
     });
     await messageStore.create({
-      id: 'low',
+      id: '00000000-0000-4000-8000-000000000012',
       accountId: 'acc',
       name: 'Ada',
       text: 'low',
@@ -759,7 +764,7 @@ describe('GET /messages', () => {
       sats: 10,
     });
     await messageStore.create({
-      id: 'high',
+      id: '00000000-0000-4000-8000-000000000013',
       accountId: 'acc',
       name: 'Ada',
       text: 'high',
@@ -773,7 +778,10 @@ describe('GET /messages', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ id: string; sats: number }> };
-    expect(body.messages.map((row) => row.id)).toEqual(['high', 'low']);
+    expect(body.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000013',
+      '00000000-0000-4000-8000-000000000012',
+    ]);
     expect(body.messages.map((row) => row.sats)).toEqual([50, 10]);
     const paged = await mount(authStore, messageStore).request('/messages?mode=popular&limit=1', {
       headers: AUTH,
@@ -783,7 +791,9 @@ describe('GET /messages', () => {
       messages: Array<{ id: string }>;
       nextCursor?: string;
     };
-    expect(pagedBody.messages.map((row) => row.id)).toEqual(['high']);
+    expect(pagedBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000013',
+    ]);
     expect(typeof pagedBody.nextCursor).toBe('string');
     expect(pagedBody.nextCursor).toBeDefined();
     if (pagedBody.nextCursor === undefined) {
@@ -792,7 +802,7 @@ describe('GET /messages', () => {
     expect(decodeMessageFeedCursor(pagedBody.nextCursor)).toMatchObject({
       k: 's',
       s: 50,
-      i: 'high',
+      i: '00000000-0000-4000-8000-000000000013',
     });
     const secondPopular = await mount(authStore, messageStore).request(
       `/messages?mode=popular&limit=1&cursor=${encodeURIComponent(pagedBody.nextCursor)}`,
@@ -800,7 +810,9 @@ describe('GET /messages', () => {
     );
     expect(secondPopular.status).toBe(200);
     const secondPopularBody = (await secondPopular.json()) as { messages: Array<{ id: string }> };
-    expect(secondPopularBody.messages.map((row) => row.id)).toEqual(['low']);
+    expect(secondPopularBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000012',
+    ]);
   });
 
   it('returns 400 for an invalid mode', async () => {
@@ -846,6 +858,16 @@ describe('GET /messages', () => {
     );
     expect(popularWrongKind.status).toBe(400);
     expect(await popularWrongKind.json()).toEqual({ error: 'Invalid cursor' });
+    const nonUuidId = encodeMessageFeedCursor({
+      k: 't',
+      c: new Date(now()).toISOString(),
+      i: 'note-1',
+    });
+    const nonUuid = await app.request(`/messages?cursor=${encodeURIComponent(nonUuidId)}`, {
+      headers: AUTH,
+    });
+    expect(nonUuid.status).toBe(400);
+    expect(await nonUuid.json()).toEqual({ error: 'Invalid cursor' });
   });
 });
 

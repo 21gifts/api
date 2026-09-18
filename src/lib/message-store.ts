@@ -1141,10 +1141,7 @@ export class InMemoryMessageStore implements MessageStore {
     const afterCursor = sorted.filter((row) => matchesFeedCursor(row, query));
     return Promise.resolve(
       afterCursor.slice(0, query.limit).map((row) => {
-        const copy = copyRow(row);
-        copy.hasPhoto = this.#photos.has(row.id) || row.hasPhoto === true;
-        copy.hasVideo = row.hasVideo === true;
-        copy.videoContentType = row.videoContentType ?? null;
+        const copy = this.#withListedMedia(row);
         const replyCount = this.#rows.filter(
           (child) =>
             child.parentId === row.id && child.deletedAt === null && child.accountId !== null,
@@ -2210,8 +2207,8 @@ export class PostgresMessageStore implements MessageStore {
     if (query.mode === 'unpaid') {
       filters.push('sats = 0');
     } else if (query.mode === 'active') {
-      params.push([...query.staffAccountIds]);
-      filters.push(`(sats > 0 OR account_id = ANY($${params.length}::uuid[]))`);
+      params.push(postgresTextArrayLiteral([...query.staffAccountIds]));
+      filters.push(`(sats > 0 OR account_id::text = ANY($${params.length}::text[]))`);
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
       orderBy = 'sats DESC, created_at DESC, id DESC';

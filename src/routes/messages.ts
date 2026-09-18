@@ -694,6 +694,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (decoded === null) {
           return c.json({ error: 'Invalid cursor' }, 400);
         }
+        if (!MESSAGE_ID_RE.test(decoded.i)) {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        }
         if (mode === 'popular') {
           if (decoded.k !== 's') {
             return c.json({ error: 'Invalid cursor' }, 400);
