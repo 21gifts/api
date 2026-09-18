@@ -2472,7 +2472,8 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first live top-level notes for one account, capped at `limit`,
-   * with `replyCount` of live 21.gifts-author children (same subquery as
+   * with `replyCount` of live attributed children — a 21.gifts author or an
+   * external zapper row with `author_pubkey` (same subquery as
    * {@link listLatest}).
    *
    * @param accountId - Author account id (`$1`).
