@@ -128,6 +128,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
+| POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`    | Operator manual settlement of a paid forum invoice (`DEBUG_TOKEN`)                                        |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                             |
 | GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                  |
 | GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                          |
@@ -1482,6 +1483,62 @@ Environment:
 | -------------- | ----------------------------------------------------------------- |
 | `DATABASE_URL` | When set, attempts are stored in Postgres `message_invoice`.      |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+
+### `POST /debug/invoices/settle`
+
+Operator-only manual settlement for a successful forum invoice whose LNURL
+provider never published its NIP-57 receipt. The request body is:
+
+```json
+{
+  "paymentHash": "<64-hex>",
+  "note": "Wallet history checked by operator",
+  "preimage": "<optional 64-hex>"
+}
+```
+
+`paymentHash` and `note` are required strings. `note` is trimmed and must be
+1–500 characters without C0/DEL controls. `preimage` must be absent or a
+string; when present it must be 32-byte hex whose SHA-256 equals
+`paymentHash`. The optional proof reflects production wallet behaviour:
+wallet-internal payments can display a “preimage” that does not hash to the
+invoice. In that case the matching `DEBUG_TOKEN` plus the durable operator
+note is the settlement authority.
+
+Success → **Response** `200` (never includes the note or preimage):
+
+```json
+{
+  "receiptId": "<64-hex synthetic event id>",
+  "messageId": "<uuid>",
+  "amountSats": 210000
+}
+```
+
+The route credits the message once, persists an indexed synthetic kind:9735
+ingest with `manual=debug-settle` and the note (plus `preimage` only when it
+was supplied and verified), runs the normal zap notification fan-out, and
+inserts the payer gift-reply from the original zap request. A later real
+receipt for the payment hash is persisted as `rejected` / `settled` and does
+not add sats again. A payment hash already represented by any indexed ingest
+cannot be settled manually.
+
+Failures:
+
+- malformed JSON/body field types → `400 { "error": "Invalid body" }`
+- malformed payment hash or supplied preimage → `400 { "error": "Invalid payment hash or preimage" }`
+- invalid note → `400 { "error": "Invalid note" }`
+- supplied preimage/hash mismatch → `400 { "error": "Preimage does not match payment hash" }`
+- no usable successful invoice → `404 { "error": "Invoice not found" }`
+- conversation invoice → `409 { "error": "Conversation invoices cannot be settled" }`
+- missing/hidden target message → `404 { "error": "Message not found" }`
+- already indexed/settled payment → `409 { "error": "Already settled" }`
+- store failure → `503 { "error": "Messages are unavailable" }`
+
+`DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
+The duplicate lookup and receipt write are not one transaction, so a real
+receipt indexed at the exact same instant could still count twice. This is an
+accepted limit for an operator action taken long after the receipt window.
 
 ### `GET /debug/zap-ingests`
 

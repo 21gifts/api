@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -10,7 +11,12 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { indexOpenZapReceipts, indexZapReceipt } from '@/lib/nostr/zap-index';
+import {
+  indexOpenZapReceipts,
+  indexZapReceipt,
+  manualReceiptIdForPaymentHash,
+  settleInvoiceManually,
+} from '@/lib/nostr/zap-index';
 import { InMemoryPushStore } from '@/lib/push-store';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -98,6 +104,437 @@ async function ingest(
     ...args,
   });
 }
+
+/** Seed one successful forum invoice for manual-settle tests. */
+async function seedManualInvoice(
+  store: InMemoryMessageStore,
+  paymentHash: string,
+  overrides: Partial<MessageInvoiceAttempt> = {},
+): Promise<void> {
+  await store.recordInvoiceAttempt({
+    id: `manual-invoice-${paymentHash.slice(0, 4)}`,
+    createdAt: new Date('2026-09-18T11:00:00.000Z'),
+    messageId: 'manual-message',
+    payerAccountId: 'manual-payer',
+    authorAccountId: 'manual-author',
+    amountSats: 210_000,
+    lightningAddress: 'author@example.com',
+    zapRequest: { content: 'manual gift' },
+    result: 'ok',
+    httpStatus: 200,
+    pr: 'lnbc-manual',
+    paymentHash,
+    description: null,
+    descriptionHash: null,
+    isNip57Invoice: true,
+    lnurlResponse: null,
+    ...overrides,
+  });
+}
+
+describe('manual invoice settlement', () => {
+  it('derives a lowercase deterministic 64-hex receipt id', () => {
+    const paymentHash = 'AB'.repeat(32);
+    const expected = createHash('sha256')
+      .update(`21gifts-manual-settle:${paymentHash.toLowerCase()}`)
+      .digest('hex');
+    expect(manualReceiptIdForPaymentHash(paymentHash)).toBe(expected);
+    expect(manualReceiptIdForPaymentHash(paymentHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects malformed hashes, notes, and optional preimages before lookup', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const settle = (paymentHash: string, note: string, preimage?: string) =>
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1,
+        paymentHash,
+        note,
+        ...(preimage === undefined ? {} : { preimage }),
+      });
+    await expect(settle('bad', 'evidence')).resolves.toEqual({ ok: false, reason: 'shape' });
+    await expect(settle('aa'.repeat(32), '   ')).resolves.toEqual({
+      ok: false,
+      reason: 'note',
+    });
+    await expect(settle('aa'.repeat(32), 'a'.repeat(501))).resolves.toEqual({
+      ok: false,
+      reason: 'note',
+    });
+    await expect(settle('aa'.repeat(32), 'bad\u0001note')).resolves.toEqual({
+      ok: false,
+      reason: 'note',
+    });
+    await expect(settle('aa'.repeat(32), 'evidence', 'bad')).resolves.toEqual({
+      ok: false,
+      reason: 'shape',
+    });
+    await expect(settle('aa'.repeat(32), 'evidence', 'bb'.repeat(32))).resolves.toEqual({
+      ok: false,
+      reason: 'preimage',
+    });
+    expect(await store.listZapIngests(10)).toEqual([]);
+  });
+
+  it('rejects missing or unusable successful invoices', async () => {
+    const auth = new InMemoryAuthStore();
+    const hash = '31'.repeat(32);
+    await expect(
+      settleInvoiceManually({
+        store: new InMemoryMessageStore(),
+        auth,
+        now: () => 1,
+        paymentHash: hash,
+        note: 'evidence',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'invoice' });
+
+    for (const overrides of [
+      { amountSats: 1.5 },
+      { amountSats: 0 },
+      { pr: null },
+      { pr: '   ' },
+    ] satisfies Array<Partial<MessageInvoiceAttempt>>) {
+      const store = new InMemoryMessageStore();
+      await seedManualInvoice(store, hash, overrides);
+      await expect(
+        settleInvoiceManually({
+          store,
+          auth,
+          now: () => 1,
+          paymentHash: hash,
+          note: 'evidence',
+        }),
+      ).resolves.toEqual({ ok: false, reason: 'invoice' });
+    }
+  });
+
+  it('rejects conversation, missing, and deleted message targets', async () => {
+    const auth = new InMemoryAuthStore();
+    const conversationStore = new InMemoryMessageStore();
+    await seedManualInvoice(conversationStore, '32'.repeat(32), {
+      conversationId: 'conversation',
+    });
+    await expect(
+      settleInvoiceManually({
+        store: conversationStore,
+        auth,
+        now: () => 1,
+        paymentHash: '32'.repeat(32),
+        note: 'evidence',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'conversation' });
+
+    const missingStore = new InMemoryMessageStore();
+    await seedManualInvoice(missingStore, '33'.repeat(32));
+    await expect(
+      settleInvoiceManually({
+        store: missingStore,
+        auth,
+        now: () => 1,
+        paymentHash: '33'.repeat(32),
+        note: 'evidence',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'message' });
+
+    const deletedStore = new InMemoryMessageStore();
+    await deletedStore.create({
+      id: 'manual-message',
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await deletedStore.markDeleted('manual-message', new Date(2), 'moderator');
+    await seedManualInvoice(deletedStore, '34'.repeat(32));
+    await expect(
+      settleInvoiceManually({
+        store: deletedStore,
+        auth,
+        now: () => 1,
+        paymentHash: '34'.repeat(32),
+        note: 'evidence',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'message' });
+  });
+
+  it('settles with verified preimage, receipt evidence, notification, and gift reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const preimage = '00'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, { conversationId: null });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash: paymentHash.toUpperCase(),
+      note: ' Wallet history checked ',
+      preimage: preimage.toUpperCase(),
+      notificationStore: notifications,
+      pushStore,
+    });
+    warn.mockRestore();
+    expect(result).toEqual({
+      ok: true,
+      receiptId: manualReceiptIdForPaymentHash(paymentHash),
+      messageId,
+      amountSats: 210_000,
+    });
+    expect((await store.getById(messageId))?.sats).toBe(210_000);
+    const ingestRow = (await store.listZapIngests(10))[0];
+    expect(ingestRow?.outcome).toBe('indexed');
+    expect(ingestRow?.receiptPubkey).toBeNull();
+    expect(ingestRow?.receipt).toMatchObject({
+      id: manualReceiptIdForPaymentHash(paymentHash),
+      pubkey: '',
+      kind: 9735,
+      created_at: 1,
+      content: '',
+      sig: '',
+    });
+    expect(ingestRow?.receipt['tags']).toEqual([
+      ['e', NOTE_EVENT_ID],
+      ['bolt11', 'lnbc-manual'],
+      ['description', JSON.stringify({ content: 'manual gift' })],
+      ['preimage', preimage],
+      ['manual', 'debug-settle'],
+      ['note', 'Wallet history checked'],
+    ]);
+    expect((await store.listReplies(messageId))[0]?.text).toBe('manual gift');
+    expect(await notifications.listByRecipient('manual-author', 10)).toHaveLength(1);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain(preimage);
+  });
+
+  it('settles without preimage when the payer is missing', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+      eventId: '',
+    });
+    const hash = '35'.repeat(32);
+    await seedManualInvoice(store, hash, { zapRequest: null });
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 2_000,
+      paymentHash: hash,
+      note: 'wallet screenshot',
+    });
+    expect(result.ok).toBe(true);
+    const tags = (await store.listZapIngests(10))[0]?.receipt['tags'];
+    expect(tags).toEqual([
+      ['bolt11', 'lnbc-manual'],
+      ['manual', 'debug-settle'],
+      ['note', 'wallet screenshot'],
+    ]);
+    expect(await store.listReplies('manual-message')).toEqual([]);
+  });
+
+  it('skips notification for a Damus-only parent but still inserts the payer reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await store.create({
+      id: 'manual-message',
+      accountId: null,
+      name: 'Damus',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: null,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const hash = '36'.repeat(32);
+    await seedManualInvoice(store, hash);
+    const notifications = new InMemoryNotificationStore();
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 2_000,
+      paymentHash: hash,
+      note: 'wallet screenshot',
+      notificationStore: notifications,
+    });
+    expect(result.ok).toBe(true);
+    expect(await notifications.listByRecipient('manual-payer', 10)).toEqual([]);
+    expect(await store.listReplies('manual-message')).toHaveLength(1);
+  });
+
+  it('rejects manual receipt, indexed payment hash, and record races as duplicates', async () => {
+    const auth = new InMemoryAuthStore();
+    const hash = '37'.repeat(32);
+    const receiptStore = new InMemoryMessageStore();
+    await receiptStore.create({
+      id: 'manual-message',
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await seedManualInvoice(receiptStore, hash);
+    const args = {
+      store: receiptStore,
+      auth,
+      now: () => 1,
+      paymentHash: hash,
+      note: 'evidence',
+    };
+    expect((await settleInvoiceManually(args)).ok).toBe(true);
+    await expect(settleInvoiceManually(args)).resolves.toEqual({ ok: false, reason: 'duplicate' });
+
+    const indexedStore = new InMemoryMessageStore();
+    await indexedStore.create({
+      id: 'manual-message',
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await seedManualInvoice(indexedStore, hash);
+    mockedDecode.mockReturnValue({ paymentHash: hash, amountMsat: 210_000_000 });
+    await indexedStore.recordZapIngest({
+      id: 'existing-ingest',
+      createdAt: new Date(1),
+      receiptId: 'existing-receipt',
+      noteEventId: null,
+      messageId: 'manual-message',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 210_000,
+      receiptPubkey: PROVIDER_PUBKEY,
+      receipt: { tags: [['bolt11', 'lnbc-existing']] },
+    });
+    await expect(settleInvoiceManually({ ...args, store: indexedStore })).resolves.toEqual({
+      ok: false,
+      reason: 'duplicate',
+    });
+
+    const raceStore = new InMemoryMessageStore();
+    await raceStore.create({
+      id: 'manual-message',
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await seedManualInvoice(raceStore, hash);
+    raceStore.recordZapReceipt = async () => false;
+    await expect(settleInvoiceManually({ ...args, store: raceStore })).resolves.toEqual({
+      ok: false,
+      reason: 'duplicate',
+    });
+  });
+
+  it('logs notification and gift-reply failures after crediting', async () => {
+    class GiftReplyBoomStore extends InMemoryMessageStore {
+      failCreate = false;
+
+      override create(
+        ...args: Parameters<InMemoryMessageStore['create']>
+      ): ReturnType<InMemoryMessageStore['create']> {
+        if (this.failCreate) {
+          return Promise.reject(new Error('gift reply boom'));
+        }
+        return super.create(...args);
+      }
+    }
+    const store = new GiftReplyBoomStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const hash = '38'.repeat(32);
+    await seedManualInvoice(store, hash);
+    const notifications = new InMemoryNotificationStore();
+    notifications.create = async () => {
+      throw new Error('notify boom');
+    };
+    store.failCreate = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash: hash,
+      note: 'evidence',
+      notificationStore: notifications,
+    });
+    const events = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect(events.some((event) => event['event'] === 'push.enqueue.failed')).toBe(true);
+    expect(events.some((event) => event['event'] === 'nostr.zap.gift_reply.failed')).toBe(true);
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+  });
+});
 
 describe('indexZapReceipt', () => {
   it('adds sats when the provider pubkey matches', async () => {
@@ -975,6 +1412,63 @@ describe('indexOpenZapReceipts', () => {
     expect(ingests).toHaveLength(1);
     expect(ingests[0]?.outcome).toBe('indexed');
     expect(ingests[0]?.reason).toBeNull();
+  });
+
+  it('rejects a later real receipt when its payment hash was manually settled', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+      lightningAddress: 'manual@example.com',
+    });
+    const paymentHash = '29'.repeat(32);
+    await seedManualInvoice(store, paymentHash);
+    const settled = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'wallet evidence',
+    });
+    expect(settled.ok).toBe(true);
+
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 210_000_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'real-receipt-after-manual',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-manual'],
+        ],
+      },
+    ];
+    const fetchImpl = vi.fn(failFetch());
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    const ingests = await store.listZapIngests(10);
+    expect(
+      ingests.some(
+        (row) =>
+          row.receiptId === 'real-receipt-after-manual' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'settled',
+      ),
+    ).toBe(true);
   });
 
   it('persists one rejected/duplicate for a known receipt then skips validation', async () => {
@@ -3306,6 +3800,10 @@ describe('indexOpenZapReceipts', () => {
       override getZapReceiptGift(
         ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
       ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
+        // The manual-settle guard also looks up its own receipt id; count only the real one.
+        if (args[0] !== 'r-vanish') {
+          return super.getZapReceiptGift(...args);
+        }
         giftGets += 1;
         if (giftGets >= 2) {
           return Promise.resolve(undefined);
@@ -3384,6 +3882,10 @@ describe('indexOpenZapReceipts', () => {
       override getZapReceiptGift(
         ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
       ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
+        // The manual-settle guard also looks up its own receipt id; count only the real one.
+        if (args[0] !== 'r-linked') {
+          return super.getZapReceiptGift(...args);
+        }
         giftGets += 1;
         return super.getZapReceiptGift(...args).then((row) => {
           if (giftGets >= 2 && row !== undefined) {
