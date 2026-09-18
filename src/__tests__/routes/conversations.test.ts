@@ -1748,12 +1748,19 @@ describe('moderator_group', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversation: { kind: string; name: string; lastText: string; lastFromMe: boolean };
+      conversation: {
+        kind: string;
+        name: string;
+        lastText: string;
+        lastFromMe: boolean;
+        unread: boolean;
+      };
     };
     expect(body.conversation.kind).toBe('moderator_group');
     expect(body.conversation.name).toBe('Moderators');
     expect(body.conversation.lastText).toBe('');
     expect(body.conversation.lastFromMe).toBe(false);
+    expect(body.conversation.unread).toBe(false);
     const list = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(list.status).toBe(200);
     const listed = (await list.json()) as { conversations: Array<{ kind: string }> };
@@ -1791,8 +1798,9 @@ describe('moderator_group', () => {
       headers: AUTH,
     });
     expect(group.status).toBe(200);
-    const groupBody = (await group.json()) as { conversation: { kind: string } };
+    const groupBody = (await group.json()) as { conversation: { kind: string; unread: boolean } };
     expect(groupBody.conversation.kind).toBe('moderator_group');
+    expect(groupBody.conversation.unread).toBe(true);
   });
 
   it('skips a moderator_group row even when listVisible returns one', async () => {

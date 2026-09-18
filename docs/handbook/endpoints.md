@@ -443,7 +443,7 @@
 
 ## Endpoint: GET /conversations/moderator-group
 
-- **Purpose:** Bearer required. Closed moderator-group tool, not the member inbox. Confirmed `role === 'moderator'` only: `ensureModeratorGroup` then `{ conversation }` via `publicThread` (`kind: 'moderator_group'`, name `Moderators`). Founder / verified / basis → 404 `{ error: 'Not found' }` (same as `canAccess`, no existence leak). Missing platform or store failure → 503 (`conversations.moderator_group.failed`). Unauthenticated 401. Registered before `GET /:id`.
+- **Purpose:** Bearer required. Closed moderator-group tool, not the member inbox. Confirmed `role === 'moderator'` only: `ensureModeratorGroup` then `{ conversation }` via `publicThread` (`kind: 'moderator_group'`, name `Moderators`, `unread` from `hasUnread`). Founder / verified / basis → 404 `{ error: 'Not found' }` (same as `canAccess`, no existence leak). Missing platform or store failure → 503 (`conversations.moderator_group.failed`). Unauthenticated 401. Registered before `GET /:id`.
 - **Errors:** 401 Unauthorized; 404 Not found; 503 `{ error: 'Conversations are unavailable' }` (`conversations.moderator_group.failed`).
 - **Used by:** App moderator-group tool.
 - **Auth:** `Authorization: Bearer` session.

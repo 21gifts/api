@@ -2965,7 +2965,7 @@ for Damus-only counterparts (never JSON `null`).
 Bearer session required. Confirmed moderators (`role === 'moderator'`
 only) open or insert the closed singleton and receive it as
 `{ "conversation": { ... } }` (same public row as a list item, `kind`
-`moderator_group`, `name` `Moderators`). Founder / verified / basis get
+`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Founder / verified / basis get
 **404** `{ "error": "Not found" }` (no existence leak). Missing platform
 account or store failure → **503** `{ "error": "Conversations are unavailable" }`.
 Unauthenticated → **401**.

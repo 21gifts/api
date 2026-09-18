@@ -471,8 +471,16 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Conversations are unavailable' }, 503);
         }
         const thread = await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
+        const unread = await deps.store.hasUnread(
+          thread.id,
+          account.id,
+          isStaffRole(account.role),
+          platform.id,
+        );
         return c.json(
-          { conversation: await publicThread(thread, account, deps.authStore, platform.id) },
+          {
+            conversation: await publicThread(thread, account, deps.authStore, platform.id, unread),
+          },
           200,
         );
       } catch {
