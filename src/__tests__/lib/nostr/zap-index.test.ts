@@ -646,6 +646,20 @@ describe('manual invoice settlement', () => {
       accountId: 'manual-author',
       messageId: 'manual-message',
     });
+    // A known payer, so only the hidden-note guard can keep the gift-reply away.
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
     await seedManualInvoice(store, paymentHash);
     const notifications = new InMemoryNotificationStore();
     const args = {
@@ -660,7 +674,13 @@ describe('manual invoice settlement', () => {
     await expect(settleInvoiceManually(args)).rejects.toThrow('ingest persist boom');
     await store.markDeleted('manual-message', new Date(3_000), 'moderator');
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await expect(settleInvoiceManually(args)).resolves.toMatchObject({ ok: true, resumed: true });
+    // The gift-reply is not even attempted on a hidden note (an attempt would log a failure).
+    const resumeEvents = loggedEvents(warn).map((event) => event['event']);
+    warn.mockRestore();
+    expect(resumeEvents).toContain('nostr.zap.settled_manually');
+    expect(resumeEvents).not.toContain('nostr.zap.gift_reply.failed');
     expect((await store.getById('manual-message'))?.sats).toBe(210_000);
     expect(
       (await store.listIndexedZapIngests()).filter(
