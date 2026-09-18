@@ -116,7 +116,7 @@ api/
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
-│   │       ├── sql.ts        # SqlClient port (Bun adapter is in index.ts)
+│   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL
 │   │       ├── postgres-store.ts  # Durable AuthStore
 │   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
@@ -331,7 +331,7 @@ booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
-`InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
+`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`,
 `PostgresMessageStore`, `backfillZapPayments`, `migrateMessageSchema`,

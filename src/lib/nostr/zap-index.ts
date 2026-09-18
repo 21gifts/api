@@ -214,30 +214,31 @@ async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise
   }
 }
 
+const SAFE_ERROR_NAME_PATTERN = /^[A-Za-z]{1,40}$/;
+const SAFE_DRIVER_FIELD_PATTERN = /^[A-Za-z0-9_]{1,40}$/;
+
 /**
- * Scalar fields for a thrown ingest: `reason` plus optional `error`/`code`/`errno`.
+ * Build allowlisted scalar fields for a thrown ingest without logging free text.
+ *
+ * Error names are limited to ASCII letters; driver `code` and `errno` values
+ * are limited to ASCII alphanumerics and underscores. Messages are never logged
+ * because database and fetch errors can embed values or callback URLs.
  *
  * @param error - Caught value from `ingestOneReceipt`.
- * @returns Fields for `nostr.zap.rejected` (omit empty strings).
+ * @returns Fields for `nostr.zap.rejected`, omitting values outside the allowlist.
  */
 function zapIngestCatchFields(error: unknown): LogFields {
   const fields: { [key: string]: string } = { reason: 'error' };
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
-  if (message !== '') {
-    fields['error'] = message;
+  if (error instanceof Error && SAFE_ERROR_NAME_PATTERN.test(error.name)) {
+    fields['name'] = error.name;
   }
   if (typeof error === 'object' && error !== null) {
-    if ('code' in error) {
-      const code = (error as { code: unknown }).code;
-      if (typeof code === 'string' && code !== '') {
-        fields['code'] = code;
-      }
+    const candidate = error as { code?: unknown; errno?: unknown };
+    if (typeof candidate.code === 'string' && SAFE_DRIVER_FIELD_PATTERN.test(candidate.code)) {
+      fields['code'] = candidate.code;
     }
-    if ('errno' in error) {
-      const errno = (error as { errno: unknown }).errno;
-      if (typeof errno === 'string' && errno !== '') {
-        fields['errno'] = errno;
-      }
+    if (typeof candidate.errno === 'string' && SAFE_DRIVER_FIELD_PATTERN.test(candidate.errno)) {
+      fields['errno'] = candidate.errno;
     }
   }
   return fields;
