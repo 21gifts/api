@@ -1508,6 +1508,7 @@ async function ensureGiftReplyFromReceipt(
   }
   if (resolved.kind === 'account') {
     if (args.parent === undefined || args.parent.deletedAt !== null) {
+      await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
       return;
     }
     await insertGiftReply({
