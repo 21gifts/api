@@ -564,6 +564,24 @@ test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 40
   expect(ingests.status()).toBe(401);
 });
 
+test('Function: settleInvoiceManually — POST /debug/invoices/settle without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/invoices/settle', {
+    data: { paymentHash: 'aa'.repeat(32), note: 'operator evidence' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: manualReceiptIdForPaymentHash — POST /debug/invoices/settle without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/invoices/settle', {
+    data: { paymentHash: 'bb'.repeat(32), note: 'operator evidence' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: serializeContact — POST /contact without bearer is 401', async ({ request }) => {
   const res = await request.post('/contact', {
     data: { text: 'hi' },

@@ -1,7 +1,11 @@
 import { Hono } from 'hono';
+import type { AuthStore } from '@/lib/auth/store';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import type { NotificationStore } from '@/lib/notification-store';
+import { settleInvoiceManually } from '@/lib/nostr/zap-index';
+import type { PushStore } from '@/lib/push-store';
 
 /**
  * Operator debug surface for `message_invoice` attempts (forum and
@@ -14,6 +18,14 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 export interface DebugPaymentsRouteDeps {
   /** Forum persistence port. */
   store: MessageStore;
+  /** Shared account persistence for payer attribution and notifications. */
+  auth: AuthStore;
+  /** Clock returning epoch milliseconds. */
+  now: () => number;
+  /** Optional Web Push persistence used by zap notification fan-out. */
+  pushStore?: PushStore;
+  /** Optional in-app notification persistence. */
+  notificationStore?: NotificationStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -73,10 +85,10 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
 }
 
 /**
- * Build the `/debug` payment debug routes (`/invoices`, `/zap-ingests`).
+ * Build the `/debug` payment debug routes.
  *
- * @param deps - Message store and optional debug token.
- * @returns A Hono app exposing `GET /invoices` and `GET /zap-ingests`.
+ * @param deps - Stores, clock, and optional debug token.
+ * @returns A Hono app exposing invoice list/manual settle and zap-ingest list.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -91,6 +103,73 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ invoices: invoices.map(serializeInvoice) }, 200);
       } catch {
         logEvent('debug.invoices.list_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .post('/invoices/settle', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      const body: unknown = await c.req.json().catch(() => null);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const paymentHash = (body as { paymentHash?: unknown }).paymentHash;
+      const note = (body as { note?: unknown }).note;
+      const preimage = (body as { preimage?: unknown }).preimage;
+      if (
+        typeof paymentHash !== 'string' ||
+        typeof note !== 'string' ||
+        (preimage !== undefined && typeof preimage !== 'string')
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      try {
+        const result = await settleInvoiceManually({
+          store: deps.store,
+          auth: deps.auth,
+          now: deps.now,
+          paymentHash,
+          note,
+          ...(preimage === undefined ? {} : { preimage }),
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notificationStore: deps.notificationStore }),
+        });
+        if (result.ok) {
+          logEvent('debug.invoices.settled', {
+            messageId: result.messageId,
+            amountSats: result.amountSats,
+          });
+          return c.json(
+            {
+              receiptId: result.receiptId,
+              messageId: result.messageId,
+              amountSats: result.amountSats,
+            },
+            200,
+          );
+        }
+        switch (result.reason) {
+          case 'shape':
+            return c.json({ error: 'Invalid payment hash or preimage' }, 400);
+          case 'note':
+            return c.json({ error: 'Invalid note' }, 400);
+          case 'preimage':
+            return c.json({ error: 'Preimage does not match payment hash' }, 400);
+          case 'invoice':
+            return c.json({ error: 'Invoice not found' }, 404);
+          case 'conversation':
+            return c.json({ error: 'Conversation invoices cannot be settled' }, 409);
+          case 'message':
+            return c.json({ error: 'Message not found' }, 404);
+          case 'duplicate':
+            return c.json({ error: 'Already settled' }, 409);
+        }
+      } catch {
+        logEvent('debug.invoices.settle_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

@@ -1,10 +1,15 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import {
   InMemoryMessageStore,
   type MessageInvoiceAttempt,
   type ZapIngestRow,
 } from '@/lib/message-store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryNotificationStore } from '@/lib/notification-store';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -15,7 +20,53 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 function mount(store: InMemoryMessageStore, debugToken: string | undefined): Hono {
-  return new Hono().route('/debug', debugPaymentsRoutes({ store, debugToken }));
+  return new Hono().route(
+    '/debug',
+    debugPaymentsRoutes({
+      store,
+      auth: new InMemoryAuthStore(),
+      now: () => Date.parse('2026-09-18T12:00:00.000Z'),
+      debugToken,
+    }),
+  );
+}
+
+async function seedSettleInvoice(
+  store: InMemoryMessageStore,
+  paymentHash: string,
+  overrides: Partial<MessageInvoiceAttempt> = {},
+): Promise<void> {
+  if (overrides.messageId !== 'missing') {
+    await store.create({
+      id: overrides.messageId ?? 'settle-message',
+      accountId: 'settle-author',
+      name: 'Ada',
+      text: 'paid note',
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+  }
+  await store.recordInvoiceAttempt({
+    id: 'settle-invoice',
+    createdAt: new Date('2026-09-18T11:00:00.000Z'),
+    messageId: 'settle-message',
+    payerAccountId: 'settle-payer',
+    authorAccountId: 'settle-author',
+    amountSats: 210_000,
+    lightningAddress: 'ada@example.com',
+    zapRequest: { content: 'Thank you' },
+    result: 'ok',
+    httpStatus: 200,
+    pr: 'lnbc-settle',
+    paymentHash,
+    description: null,
+    descriptionHash: null,
+    isNip57Invoice: true,
+    lnurlResponse: null,
+    ...overrides,
+  });
 }
 
 describe('debugPaymentsRoutes', () => {
@@ -37,6 +88,8 @@ describe('debugPaymentsRoutes', () => {
     const ingests = await app.request('/debug/zap-ingests');
     expect(ingests.status).toBe(503);
     expect(await ingests.json()).toEqual({ error: 'Debug is not configured' });
+    const settle = await app.request('/debug/invoices/settle', { method: 'POST' });
+    expect(settle.status).toBe(503);
   });
 
   it('returns 503 when the token is blank', async () => {
@@ -49,6 +102,11 @@ describe('debugPaymentsRoutes', () => {
       headers: { authorization: 'Bearer   ' },
     });
     expect(ingests.status).toBe(503);
+    const settle = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers: { authorization: 'Bearer   ' },
+    });
+    expect(settle.status).toBe(503);
   });
 
   it('returns 401 without a matching bearer on both paths', async () => {
@@ -59,6 +117,8 @@ describe('debugPaymentsRoutes', () => {
     const ingests = await app.request('/debug/zap-ingests');
     expect(ingests.status).toBe(401);
     expect(await ingests.json()).toEqual({ error: 'Unauthorized' });
+    const settle = await app.request('/debug/invoices/settle', { method: 'POST' });
+    expect(settle.status).toBe(401);
   });
 
   it('lists invoice attempts newest-first with ISO dates', async () => {
@@ -153,6 +213,160 @@ describe('debugPaymentsRoutes', () => {
     expect(body.ingests[1]?.['reason']).toBe('sig');
     expect(JSON.stringify(body)).not.toMatch(/nsec/i);
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.zap_ingests.listed')).toBe(true);
+  });
+
+  it('validates the manual-settle body and note', async () => {
+    const app = mount(new InMemoryMessageStore(), 'secret');
+    const headers = { authorization: 'Bearer secret', 'content-type': 'application/json' };
+    for (const body of [
+      '{',
+      '[]',
+      '{}',
+      '{"paymentHash":1,"note":"proof"}',
+      `{"paymentHash":"${'aa'.repeat(32)}","note":1}`,
+      `{"paymentHash":"${'aa'.repeat(32)}","note":"proof","preimage":1}`,
+    ]) {
+      const res = await app.request('/debug/invoices/settle', { method: 'POST', headers, body });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid body' });
+    }
+    const invalidNote = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ paymentHash: 'aa'.repeat(32), note: '   ' }),
+    });
+    expect(invalidNote.status).toBe(400);
+    expect(await invalidNote.json()).toEqual({ error: 'Invalid note' });
+  });
+
+  it('maps manual-settle validation and lookup failures', async () => {
+    const headers = { authorization: 'Bearer secret', 'content-type': 'application/json' };
+    const emptyApp = mount(new InMemoryMessageStore(), 'secret');
+    const shape = await emptyApp.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ paymentHash: 'bad', note: 'operator proof' }),
+    });
+    expect(shape.status).toBe(400);
+    expect(await shape.json()).toEqual({ error: 'Invalid payment hash or preimage' });
+
+    const mismatch = await emptyApp.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        paymentHash: 'aa'.repeat(32),
+        note: 'operator proof',
+        preimage: 'bb'.repeat(32),
+      }),
+    });
+    expect(mismatch.status).toBe(400);
+    expect(await mismatch.json()).toEqual({ error: 'Preimage does not match payment hash' });
+
+    const missingInvoice = await emptyApp.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ paymentHash: 'aa'.repeat(32), note: 'operator proof' }),
+    });
+    expect(missingInvoice.status).toBe(404);
+    expect(await missingInvoice.json()).toEqual({ error: 'Invoice not found' });
+
+    const conversationStore = new InMemoryMessageStore();
+    await seedSettleInvoice(conversationStore, 'cc'.repeat(32), {
+      conversationId: 'conversation',
+    });
+    const conversation = await mount(conversationStore, 'secret').request(
+      '/debug/invoices/settle',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ paymentHash: 'cc'.repeat(32), note: 'operator proof' }),
+      },
+    );
+    expect(conversation.status).toBe(409);
+    expect(await conversation.json()).toEqual({
+      error: 'Conversation invoices cannot be settled',
+    });
+
+    const missingMessageStore = new InMemoryMessageStore();
+    await seedSettleInvoice(missingMessageStore, 'dd'.repeat(32), { messageId: 'missing' });
+    const missingMessage = await mount(missingMessageStore, 'secret').request(
+      '/debug/invoices/settle',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ paymentHash: 'dd'.repeat(32), note: 'operator proof' }),
+      },
+    );
+    expect(missingMessage.status).toBe(404);
+    expect(await missingMessage.json()).toEqual({ error: 'Message not found' });
+  });
+
+  it('settles with optional preimage and rejects a second settle', async () => {
+    const store = new InMemoryMessageStore();
+    const preimage = '00'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedSettleInvoice(store, paymentHash);
+    const app = mount(store, 'secret');
+    const request = {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash, note: ' Wallet evidence ', preimage }),
+    };
+    const settled = await app.request('/debug/invoices/settle', request);
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toMatchObject({
+      messageId: 'settle-message',
+      amountSats: 210_000,
+    });
+    expect((await store.getById('settle-message'))?.sats).toBe(210_000);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.invoices.settled')).toBe(true);
+
+    const duplicate = await app.request('/debug/invoices/settle', request);
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toEqual({ error: 'Already settled' });
+  });
+
+  it('passes the optional push and notification stores to manual settle', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = 'ab'.repeat(32);
+    await seedSettleInvoice(store, paymentHash);
+    const app = new Hono().route(
+      '/debug',
+      debugPaymentsRoutes({
+        store,
+        auth: new InMemoryAuthStore(),
+        now: () => Date.parse('2026-09-18T12:00:00.000Z'),
+        debugToken: 'secret',
+        pushStore: new InMemoryPushStore(),
+        notificationStore: new InMemoryNotificationStore(),
+      }),
+    );
+    const settled = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
+    });
+    expect(settled.status).toBe(200);
+    expect((await store.getById('settle-message'))?.sats).toBe(210_000);
+  });
+
+  it('returns 503 when manual settle throws', async () => {
+    class ThrowingStore extends InMemoryMessageStore {
+      override findOkInvoiceByPaymentHash(): Promise<never> {
+        return Promise.reject(new Error('settle boom'));
+      }
+    }
+    const app = mount(new ThrowingStore(), 'secret');
+    const res = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash: 'aa'.repeat(32), note: 'operator proof' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.invoices.settle_failed')).toBe(
+      true,
+    );
   });
 
   it('returns 503 when listing invoices or ingests throws', async () => {

@@ -6,6 +6,7 @@
 #               (GET /debug/accounts, PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
+#               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
 #               POST /debug/trust-edges, DELETE /debug/trust-edges). No raw SQL.
 #
@@ -23,6 +24,7 @@
 #   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
 #   gifts-debug restore <id>         # POST unhide; print GET /debug/messages/:id JSON
+#   gifts-debug settle <payment-hash> <note> [preimage]  # POST manual settle; print response JSON
 #   gifts-debug spend [--raw]        # spend live roster table (default) or JSON
 #   gifts-debug trust-edge <subject-id> <actor-id> <kind>
 #                                      # POST a stored trust edge; print edge JSON
@@ -41,6 +43,7 @@
 #   gifts-debug message <message-id>
 #   gifts-debug video-put <message-id> ./clip.mp4
 #   gifts-debug restore <message-id>
+#   gifts-debug settle <payment-hash> "Wallet history checked" [preimage]
 #   gifts-debug spend
 #   gifts-debug spend --raw
 #   gifts-debug trust-edge <subject-id> <actor-id> verify
@@ -314,6 +317,33 @@ cmd_restore() {
   cmd_message "$id"
 }
 
+cmd_settle() {
+  local payment_hash="${1:-}" note="${2:-}" preimage="${3:-}" payload tmp status body
+  [ -n "$payment_hash" ] || die "usage: gifts-debug settle <payment-hash> <note> [preimage]"
+  [ -n "$note" ] || die "usage: gifts-debug settle <payment-hash> <note> [preimage]"
+  if [ -n "$preimage" ]; then
+    payload="{\"paymentHash\":\"${payment_hash}\",\"note\":\"${note}\",\"preimage\":\"${preimage}\"}"
+  else
+    payload="{\"paymentHash\":\"${payment_hash}\",\"note\":\"${note}\"}"
+  fi
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "${DEBUG_API_URL}/debug/invoices/settle") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
 fetch_recipients() {
   local tmp status body
   tmp=$(mktemp)
@@ -375,6 +405,7 @@ case "${1:-}" in
   message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
   restore) shift; cmd_restore "$@" ;;
+  settle) shift; cmd_settle "$@" ;;
   spend) cmd_spend ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
   trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
