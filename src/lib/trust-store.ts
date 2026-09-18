@@ -5,7 +5,7 @@
  * `DATABASE_URL` is set. Column layout matches `docs/schema/trust_edge.sql`.
  */
 
-import type { SqlClient } from '@/lib/auth/sql';
+import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type { TrustEdge, TrustKind } from '@/lib/trust';
 
 /** Message thrown when `(subjectId, kind)` is already stored. */
@@ -309,14 +309,4 @@ function sortedCopies(edges: readonly TrustEdge[]): TrustEdge[] {
 /** `timestamptz` (Date or ISO string) to epoch ms. */
 function epochMs(value: Date | string): number {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
-}
-
-/** True when `error` is a Postgres unique-violation (`code === '23505'`). */
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
 }

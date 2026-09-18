@@ -293,6 +293,20 @@ describe('PostgresNotificationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['parent', 'forum_reply', 'r-1']);
   });
 
+  it('returns the mapped existing row on Bun errno unique_violation 23505', async () => {
+    const sql = new MockSql();
+    sql.executeError = { errno: '23505' };
+    sql.queryImpl = (text) => {
+      if (text.includes('SELECT')) {
+        return [sqlRow({ id: 'existing-errno' })];
+      }
+      return undefined;
+    };
+    const created = await new PostgresNotificationStore(sql).create(row({ id: 'new' }));
+    expect(created.id).toBe('existing-errno');
+    expect(sql.queries[0]?.params).toEqual(['parent', 'forum_reply', 'r-1']);
+  });
+
   it('throws when 23505 re-select is empty', async () => {
     const sql = new MockSql();
     sql.executeError = { code: '23505' };

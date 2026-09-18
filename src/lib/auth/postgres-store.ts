@@ -1,6 +1,6 @@
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
-import type { SqlClient } from '@/lib/auth/sql';
+import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type {
   Account,
   AccountRole,
@@ -511,15 +511,6 @@ export class PostgresAuthStore implements AuthStore {
       [cutoff],
     );
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
 }
 
 function epochMs(value: Date | string): number {

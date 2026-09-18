@@ -6,7 +6,7 @@
  * `DATABASE_URL` is set. New public tables are covered by `db_change` attach.
  */
 
-import type { SqlClient } from '@/lib/auth/sql';
+import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationIsInbound,
@@ -1393,13 +1393,4 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalEpoch(row.claimed_until),
   };
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
 }

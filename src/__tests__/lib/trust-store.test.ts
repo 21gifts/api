@@ -252,6 +252,14 @@ describe('PostgresTrustStore', () => {
     );
   });
 
+  it('insertEdge maps Bun errno unique violation 23505 to duplicate trust edge', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { errno: '23505' });
+    await expect(new PostgresTrustStore(sql).insertEdge(EARLY)).rejects.toThrow(
+      'duplicate trust edge',
+    );
+  });
+
   it('insertEdge rethrows non-unique execute errors', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('fk boom'), { code: '23503' });
