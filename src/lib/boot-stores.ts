@@ -2,6 +2,7 @@ import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseNostrKek } from '@/lib/nostr/kek';
+import { backfillZapPayments } from '@/lib/nostr/zap-index';
 import {
   InMemoryBtcUsdStore,
   PostgresBtcUsdStore,
@@ -124,7 +125,10 @@ export interface BootFxOptions {
  * constructs {@link PostgresBtcUsdStore} and {@link PostgresFiatStore}, and
  * best-effort fills rates for the outbound gift day range (BTC-USD failures
  * log `gifts.fx.boot_fill.failed`; fiat failures log
- * `gifts.fx.fiat_boot_fill.failed`; neither throws). Memory boots omit
+ * `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres message
+ * store exists, it backfills zap-payment claims after the `db_change` triggers
+ * are attached and before the remaining Postgres stores are constructed.
+ * Memory boots omit
  * `notificationStore` and `trustStore`, leave `nostrKek` undefined, and do
  * not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore} and {@link PostgresTrustStore}.
@@ -135,8 +139,9 @@ export interface BootFxOptions {
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional fetch / URL / clock overrides for tests.
  * @returns Stores to inject into `createApp`.
- * @throws If `databaseUrl` is set and `createClient` is omitted, or if the
- *   SQL path has a missing or malformed `NOSTR_NSEC_KEK`.
+ * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
+ *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
+ *   zap-payment backfill store operation fails.
  */
 export async function openBootStores(
   databaseUrl: string | undefined,
@@ -217,6 +222,7 @@ export async function openBootStores(
   });
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
+  await backfillZapPayments(messageStore);
   const contactStore = new PostgresContactStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);

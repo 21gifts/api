@@ -455,6 +455,19 @@ export interface MessageStore {
   addSats(id: string, extraSats: number): Promise<void>;
 
   /**
+   * Claim a lowercase payment hash for one receipt, preserving the claim
+   * independently of forum-message deletion.
+   *
+   * @param paymentHash - BOLT11 payment hash; stored lowercase.
+   * @param receiptEventId - Kind:9735 or synthetic receipt event id.
+   * @param at - Claim creation time.
+   * @returns `true` when inserted or already owned by `receiptEventId`; `false`
+   *   when another receipt event id owns the hash.
+   * @throws Propagates persistence failures.
+   */
+  claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean>;
+
+  /**
    * Persist a zap receipt once and add its sats to the message.
    * Both adapters forget the receipt id when {@link MessageStore.deleteById}
    * removes that message, so the same event id may be recorded again.
@@ -641,7 +654,14 @@ export interface ZapIngestRow {
   receipt: Record<string, unknown>;
 }
 
-/** Idempotent SQL for the forum table (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars; `docs/schema/message.sql` mirrors the DDL and documents the boot repair statement by comment, the `DO $unwrap$` block lives only in this array). */
+/**
+ * Idempotent SQL for forum messages and their payment records.
+ *
+ * Includes the no-foreign-key payment-claim tombstone and the boot-time unwrap
+ * of `nostr_event` values stored as JSONB string scalars.
+ * `docs/schema/message.sql` mirrors the DDL and documents the repair; the
+ * `DO $unwrap$` block lives only in this array.
+ */
 export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -678,6 +698,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id)`,
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''`,
   `CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS nostr_zap_payment (
+  payment_hash text PRIMARY KEY,
+  receipt_event_id text NOT NULL,
+  created_at timestamptz NOT NULL
+)`,
   `CREATE TABLE IF NOT EXISTS message_invoice (
   id uuid PRIMARY KEY,
   created_at timestamptz NOT NULL,
@@ -918,6 +943,8 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
   /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
   readonly #receipts = new Map<string, MemoryZapReceipt>();
+  /** Lowercase payment hash → durable-for-process receipt ownership tombstone. */
+  readonly #zapPayments = new Map<string, { receiptEventId: string; createdAt: Date }>();
   readonly #photos = new Map<string, ForumPhoto>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
@@ -1539,6 +1566,28 @@ export class InMemoryMessageStore implements MessageStore {
       row.sats += extraSats;
     }
     return Promise.resolve();
+  }
+
+  /**
+   * Claim a lowercase payment hash once, allowing only its current owner to
+   * re-claim it.
+   *
+   * @param paymentHash - BOLT11 payment hash; stored lowercase.
+   * @param receiptEventId - Kind:9735 or synthetic receipt event id.
+   * @param at - Claim creation time.
+   * @returns `true` for a new or same-owner claim; `false` for another owner.
+   */
+  claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean> {
+    const normalizedHash = paymentHash.toLowerCase();
+    const existing = this.#zapPayments.get(normalizedHash);
+    if (existing !== undefined) {
+      return Promise.resolve(existing.receiptEventId === receiptEventId);
+    }
+    this.#zapPayments.set(normalizedHash, {
+      receiptEventId,
+      createdAt: new Date(at.getTime()),
+    });
+    return Promise.resolve(true);
   }
 
   async recordZapReceipt(
@@ -2614,6 +2663,33 @@ export class PostgresMessageStore implements MessageStore {
 
   async addSats(id: string, extraSats: number): Promise<void> {
     await this.#sql.execute(`UPDATE message SET sats = sats + $2 WHERE id = $1`, [id, extraSats]);
+  }
+
+  /**
+   * Claim a lowercase payment hash once, allowing only its stored receipt id
+   * to re-claim it.
+   *
+   * @param paymentHash - BOLT11 payment hash; stored lowercase.
+   * @param receiptEventId - Kind:9735 or synthetic receipt event id.
+   * @param at - Claim creation time.
+   * @returns `true` for a new or same-owner claim; `false` for another owner.
+   * @throws Propagates SQL insert and lookup failures.
+   */
+  async claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean> {
+    const normalizedHash = paymentHash.toLowerCase();
+    await this.#sql.execute(
+      `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (payment_hash) DO NOTHING`,
+      [normalizedHash, receiptEventId, at],
+    );
+    const rows = await this.#sql.query<{ receipt_event_id: string }>(
+      `SELECT receipt_event_id
+       FROM nostr_zap_payment
+       WHERE payment_hash = $1`,
+      [normalizedHash],
+    );
+    return rows[0]?.receipt_event_id === receiptEventId;
   }
 
   async recordZapReceipt(

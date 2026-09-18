@@ -72,6 +72,7 @@ describe('openBootStores', () => {
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
   });
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when blank', async () => {
@@ -101,6 +102,7 @@ describe('openBootStores', () => {
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
   });
 
   it('throws when a URL is set without a client factory', async () => {
@@ -113,13 +115,18 @@ describe('openBootStores', () => {
     const url = ' postgres://gifts21@localhost/gifts21 ';
     const queries: string[] = [];
     const executes: string[] = [];
+    const operations: string[] = [];
     const client: SqlClient = {
       query: async <T>(text: string, _params?: readonly unknown[]): Promise<T[]> => {
         queries.push(text);
+        operations.push(`query:${text}`);
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
         }
         if (text.includes('btc_usd_daily') || text.includes('usd_fiat_daily')) {
+          return [] as T[];
+        }
+        if (text.includes('nostr_zap_ingest')) {
           return [] as T[];
         }
         return [
@@ -132,6 +139,7 @@ describe('openBootStores', () => {
       },
       execute: async (text: string) => {
         executes.push(text);
+        operations.push(`execute:${text}`);
       },
     };
     const factory = vi.fn(() => client);
@@ -187,6 +195,35 @@ describe('openBootStores', () => {
     expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
     expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
     expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
+    const zapPaymentIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS nostr_zap_payment/i.test(q),
+    );
+    expect(zapPaymentIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeIdx).toBeGreaterThan(zapPaymentIdx);
+    // Match the attach statement itself: the message migration's unwrap block also names the trigger.
+    const dbChangeAttachIdx = operations.findIndex(
+      (operation) =>
+        operation.startsWith('execute:') &&
+        operation.includes('CREATE TRIGGER trg_db_change AFTER INSERT OR UPDATE OR DELETE'),
+    );
+    const backfillIdx = operations.findIndex(
+      (operation) =>
+        operation.startsWith('query:') &&
+        operation.includes('nostr_zap_ingest') &&
+        operation.includes("outcome = 'indexed'"),
+    );
+    expect(dbChangeAttachIdx).toBeGreaterThanOrEqual(0);
+    expect(
+      operations.findIndex(
+        (operation) =>
+          operation.startsWith('execute:') &&
+          /CREATE TABLE IF NOT EXISTS db_change/i.test(operation),
+      ),
+    ).toBeLessThan(dbChangeAttachIdx);
+    expect(backfillIdx).toBeGreaterThan(dbChangeAttachIdx);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 0, total: 0 }),
+    );
 
     if (giftStore === undefined) {
       throw new Error('expected QueryGiftStore');

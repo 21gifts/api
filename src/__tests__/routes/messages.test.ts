@@ -168,6 +168,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
+    claimZapPayment: boom,
     recordZapReceipt: boom,
     recordInvoiceAttempt: boom,
     listInvoiceAttempts: boom,
@@ -1747,6 +1748,7 @@ describe('POST /messages', () => {
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
       addSats: (id, extra) => base.addSats(id, extra),
+      claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
       recordZapReceipt: (receiptId, messageId, sats) =>
         base.recordZapReceipt(receiptId, messageId, sats),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
@@ -1831,6 +1833,7 @@ describe('POST /messages', () => {
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
       addSats: (id, extra) => base.addSats(id, extra),
+      claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
       recordZapReceipt: (receiptId, messageId, sats) =>
         base.recordZapReceipt(receiptId, messageId, sats),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
@@ -3065,6 +3068,7 @@ describe('POST /messages/:id/invoice', () => {
       updateSignedEvent: (...args) => base.updateSignedEvent(...args),
       updatePublishState: (...args) => base.updatePublishState(...args),
       addSats: (...args) => base.addSats(...args),
+      claimZapPayment: (...args) => base.claimZapPayment(...args),
       recordZapReceipt: (...args) => base.recordZapReceipt(...args),
       recordInvoiceAttempt: async () => {
         throw new Error('persist boom');

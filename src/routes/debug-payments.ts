@@ -88,7 +88,8 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  * Build the `/debug` payment debug routes.
  *
  * @param deps - Stores, clock, and optional debug token.
- * @returns A Hono app exposing invoice list/manual settle and zap-ingest list.
+ * @returns A Hono app exposing invoice list/manual settle (including whether a
+ *   successful settle resumed) and zap-ingest list.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -148,6 +149,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
               receiptId: result.receiptId,
               messageId: result.messageId,
               amountSats: result.amountSats,
+              resumed: result.resumed,
             },
             200,
           );
