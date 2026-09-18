@@ -966,14 +966,14 @@
 
 ## Function: isStaffAccount
 
-- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. `role` `founder` or `moderator` is staff. `isPlatform === true` is staff even when `role` is `basis`. `verified` is not staff. Does not parse display names or @mentions out of post text.
+- **Purpose:** True when this account is a staff/admin actor. `role` `founder` or `moderator` is staff. `isPlatform === true` is staff even when `role` is `basis`. `verified` is not staff. Does not parse display names or @mentions out of post text. `mentions` fan-out no longer uses this flag.
 - **Inputs:** `{ role: string; isPlatform?: boolean }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap` via `actorIsStaffFromAuth`.
 
 ## Function: wantsNotification
 
-- **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `all` is always true. `active` is `isActive`. `mentions` is a staff actor or `mentionedAccountId === recipientAccountId` when the mention id is non-null.
+- **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `all` is always true. `active` is `isActive`. `mentions` is `mentionedAccountId === recipientAccountId` when the mention id is non-null (reply/zap on the recipient's own note). A staff/platform actor is not enough.
 - **Inputs:** `{ level: NotificationLevel; actorIsStaff: boolean; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.

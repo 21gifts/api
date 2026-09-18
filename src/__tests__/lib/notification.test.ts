@@ -1251,7 +1251,7 @@ describe('wantsNotification', () => {
       actorIsStaff: true,
       isActive: false,
       mentionedAccountId: null,
-      expected: { all: true, active: false, mentions: true },
+      expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'reply-to-me',
@@ -1323,7 +1323,7 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 
-  it('notifies all and mentions on a staff unpaid forum post; active is dropped', async () => {
+  it('notifies only all on a staff unpaid forum post; mentions and active are dropped', async () => {
     const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
     const notifications = new InMemoryNotificationStore();
     const auth = {
@@ -1342,7 +1342,7 @@ describe('notification level fan-out', () => {
       created,
     });
     expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
-    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });

@@ -133,8 +133,9 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
 /**
  * Whether a recipient at `level` should receive this living-room event.
  *
- * `all` is always true. `active` is `isActive`. `mentions` is a staff actor
- * or `mentionedAccountId === recipientAccountId` (both non-null).
+ * `all` is always true. `active` is `isActive`. `mentions` is
+ * `mentionedAccountId === recipientAccountId` (both non-null). A staff actor
+ * is not enough; living-room admin posts were matching almost every event.
  *
  * @param args - Recipient level, actor staff flag, active flag, mention target, recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
@@ -151,9 +152,6 @@ export function wantsNotification(args: {
   }
   if (args.level === 'active') {
     return args.isActive;
-  }
-  if (args.actorIsStaff) {
-    return true;
   }
   return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
 }
