@@ -2630,6 +2630,29 @@ describe('indexOpenZapReceipts', () => {
       getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit: number) =>
         base.listZapReceiptsAwaitingGiftReply(limit),
+      attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+        base.attributeZapReceipt(...args),
+      recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+        base.recordZapper(...args),
+      listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+        base.listZapperPubkeys(...args),
+      listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+        base.listZappers(...args),
+      blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+        base.blockPubkey(...args),
+      unblockPubkeyByMessage: (
+        ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+      ) => base.unblockPubkeyByMessage(...args),
+      listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+        base.listBlockedPubkeys(...args),
+      listBlockedPubkeyRows: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>) =>
+        base.listBlockedPubkeyRows(...args),
+      markDeletedByExternalPubkey: (
+        ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+      ) => base.markDeletedByExternalPubkey(...args),
+      listUnattributedIndexedReceipts: (
+        ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+      ) => base.listUnattributedIndexedReceipts(...args),
       listInvoiceAttemptsForPayer: (payerAccountId: string) =>
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
@@ -2824,6 +2847,30 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+          base.attributeZapReceipt(...args),
+        recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+          base.recordZapper(...args),
+        listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+          base.listZapperPubkeys(...args),
+        listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+          base.listZappers(...args),
+        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+          base.blockPubkey(...args),
+        unblockPubkeyByMessage: (
+          ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+        ) => base.unblockPubkeyByMessage(...args),
+        listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+          base.listBlockedPubkeys(...args),
+        listBlockedPubkeyRows: (
+          ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
+        ) => base.listBlockedPubkeyRows(...args),
+        markDeletedByExternalPubkey: (
+          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+        ) => base.markDeletedByExternalPubkey(...args),
+        listUnattributedIndexedReceipts: (
+          ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+        ) => base.listUnattributedIndexedReceipts(...args),
         listInvoiceAttemptsForPayer: (payerAccountId: string) =>
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
@@ -3149,6 +3196,30 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+          base.attributeZapReceipt(...args),
+        recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+          base.recordZapper(...args),
+        listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+          base.listZapperPubkeys(...args),
+        listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+          base.listZappers(...args),
+        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+          base.blockPubkey(...args),
+        unblockPubkeyByMessage: (
+          ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+        ) => base.unblockPubkeyByMessage(...args),
+        listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+          base.listBlockedPubkeys(...args),
+        listBlockedPubkeyRows: (
+          ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
+        ) => base.listBlockedPubkeyRows(...args),
+        markDeletedByExternalPubkey: (
+          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+        ) => base.markDeletedByExternalPubkey(...args),
+        listUnattributedIndexedReceipts: (
+          ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+        ) => base.listUnattributedIndexedReceipts(...args),
         listInvoiceAttemptsForPayer: (payerAccountId: string) =>
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
