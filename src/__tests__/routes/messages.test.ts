@@ -431,6 +431,25 @@ describe('GET /messages', () => {
     }
   });
 
+  it('marks a note with an empty eventId as not payable', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'empty-eid',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '',
+    });
+    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ payable: boolean }> };
+    expect(body.messages[0]?.payable).toBe(false);
+  });
+
   it('marks a signed note without a Lightning Address as not payable', async () => {
     const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
@@ -2471,6 +2490,105 @@ describe('POST /messages/:id/invoice', () => {
     }
   });
 
+  it('issues a zap invoice when a signed reply is payable', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    const replyId = '12121212-1212-4121-8121-121212121212';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+    });
+    const prevPublishPublic = process.env['NOSTR_PUBLISH_PUBLIC'];
+    delete process.env['NOSTR_PUBLISH_PUBLIC'];
+    let callbackUrl: string | undefined;
+    try {
+      const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/.well-known/lnurlp/')) {
+          return new Response(
+            JSON.stringify({
+              callback: 'https://walletofsatoshi.com/lnurlp/callback',
+              minSendable: 1000,
+              maxSendable: 10_000_000_000,
+              allowsNostr: true,
+              nostrPubkey: 'aa'.repeat(32),
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          );
+        }
+        callbackUrl = url;
+        return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+        }),
+      );
+      await withNip57True(async () => {
+        const res = await app.request(`/messages/${replyId}/invoice`, {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ sats: 21 }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+        expect(callbackUrl).toBeDefined();
+        const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
+        expect(nostrParam).toBeTruthy();
+        const zapRequest = JSON.parse(nostrParam ?? '') as { tags: string[][] };
+        const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
+        expect(relaysTag).toBeDefined();
+        expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
+      });
+    } finally {
+      if (prevPublishPublic === undefined) {
+        delete process.env['NOSTR_PUBLISH_PUBLIC'];
+      } else {
+        process.env['NOSTR_PUBLISH_PUBLIC'] = prevPublishPublic;
+      }
+    }
+  });
+
   it('ensures a Nostr key for a payer who has none yet', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
@@ -2620,6 +2738,71 @@ describe('POST /messages/:id/invoice', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_author');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.pr).toBeNull();
+  });
+
+  it('returns 400 no_author when a signed reply author Lightning Address is whitespace', async () => {
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: '   ',
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    const replyId = '12121212-1212-4121-8121-121212121212';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = vi.fn(async (_input: string | URL | Request): Promise<Response> => {
+      throw new Error('lnurl must not run');
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: new Uint8Array(32).fill(1),
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request(`/messages/${replyId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(fetchImpl).not.toHaveBeenCalled();
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]?.result).toBe('no_author');
@@ -3122,6 +3305,44 @@ describe('POST /messages/:id/invoice', () => {
     expect(await messageStore.listInvoiceAttempts(10)).toHaveLength(0);
   });
 
+  it('persists no_event when the note eventId is empty', async () => {
+    const kek = new Uint8Array(32).fill(2);
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'abababab-abab-4bab-8bab-abababababab',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '',
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/abababab-abab-4bab-8bab-abababababab/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_event');
+    expect(attempts[0]?.httpStatus).toBe(400);
+  });
+
   it('persists no_event when the note has no eventId', async () => {
     const kek = new Uint8Array(32).fill(2);
     const authStore = await namedStore('Ada');
@@ -3592,6 +3813,53 @@ describe('GET /messages/:id', () => {
     expect(body.role).toBe('basis');
   });
 
+  it('marks a signed reply with a Lightning Address as payable', async () => {
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b';
+    const replyId = '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/messages/${replyId}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { payable: boolean; role: string; parentId?: string };
+    expect(body.payable).toBe(true);
+    expect(body.role).toBe('basis');
+    expect(body.parentId).toBe(parentId);
+  });
+
   it('defaults role to basis when the author account is missing', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -3847,6 +4115,94 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.text).toBe('member reply');
     expect(body.messages[0]?.payable).toBe(false);
     expect(body.messages[0]).not.toHaveProperty('accountId');
+  });
+
+  it('marks a signed reply with a Lightning Address as payable in the thread', async () => {
+    const parentId = '2a2a2a2a-2a2a-42a2-82a2-2a2a2a2a2a2a';
+    const replyId = '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b';
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    await store.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'signed reply',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const res = await mount(await namedStore('Ada'), store).request(
+      `/messages/${parentId}/replies`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; payable: boolean }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.text).toBe('signed reply');
+    expect(body.messages[0]?.payable).toBe(true);
+  });
+
+  it('marks a signed reply with a whitespace Lightning Address as not payable in the thread', async () => {
+    const parentId = '2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e';
+    const replyId = '2f2f2f2f-2f2f-42f2-82f2-2f2f2f2f2f2f';
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    await store.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'signed reply',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'ee'.repeat(32),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const authStore = await namedStore('Ada');
+    const account = await authStore.getAccount('acc');
+    expect(account).toBeDefined();
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({
+      ...account,
+      lightningAddress: '   ',
+    });
+    const res = await mount(authStore, store).request(`/messages/${parentId}/replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; payable: boolean }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.text).toBe('signed reply');
+    expect(body.messages[0]?.payable).toBe(false);
   });
 
   it('returns 404 for a non-uuid id without a session', async () => {

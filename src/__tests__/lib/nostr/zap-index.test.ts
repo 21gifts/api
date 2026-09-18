@@ -1068,6 +1068,18 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
+    // Child with the same eventId so reply collection dedups via `seen`.
+    rows.push({
+      id: 'm-chunk-child-dup',
+      accountId: 'acc-chunk',
+      name: 'Ada',
+      text: 'child-dup',
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, 23)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-chunk-0',
+      eventId: firstId,
+    });
     const store = new InMemoryMessageStore(rows);
     await ingest({
       store,
@@ -3381,6 +3393,344 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
+  it('does not insert a nested gift-reply when the zapped note is a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-reply-parent',
+      lightningAddress: 'zap-gift-reply-parent@example.com',
+      messageId: 'm-gift-reply-parent',
+    });
+    const replyEventId = 'dd'.repeat(32);
+    const replyId = 'm-gift-reply-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-gift-reply-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-gift-reply',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-gift-reply@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-reply'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift-reply',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-gift-reply',
+      authorAccountId: 'acc-gift-reply-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-reply-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-reply',
+      paymentHash: '44'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-reply',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-gift-reply'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '44'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+  });
+
+  it('does not occupy the gift-reply retry queue when the zapped note is a reply', async () => {
+    class HoldRetryStore extends InMemoryMessageStore {
+      payerWrites: Array<string | null> = [];
+
+      override updateZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['updateZapReceiptGift']> {
+        if (args[0] === 'r-queue-drop-reply' && args[1].payerAccountId !== undefined) {
+          this.payerWrites.push(args[1].payerAccountId);
+        }
+        return super.updateZapReceiptGift(...args);
+      }
+
+      override listZapReceiptsAwaitingGiftReply(
+        _limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        // Keep retryGiftReplies from dropping the reply receipt itself.
+        return Promise.resolve([]);
+      }
+
+      peekZapReceiptsAwaitingGiftReply(
+        limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        return super.listZapReceiptsAwaitingGiftReply(limit);
+      }
+    }
+    const store = new HoldRetryStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-parent',
+    });
+    const topAwaitId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-top',
+      eventId: 'ce'.repeat(32),
+      createAccount: false,
+    });
+    await store.recordZapReceipt('r-queue-drop-top', topAwaitId, 7);
+    await store.updateZapReceiptGift('r-queue-drop-top', {
+      payerAccountId: 'payer-queue-drop-top',
+    });
+    const replyEventId = 'cd'.repeat(32);
+    const replyId = 'm-queue-drop-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-queue-drop-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-queue-drop',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-queue-drop@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-queue-drop'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-queue-drop',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-queue-drop',
+      authorAccountId: 'acc-queue-drop-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-queue-drop',
+      paymentHash: 'cf'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-queue-drop-reply',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-queue-drop'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'cf'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const gift = await store.getZapReceiptGift('r-queue-drop-reply');
+    expect(gift?.payerAccountId).toBeNull();
+    expect(gift?.giftReplyId).toBeNull();
+    expect(store.payerWrites).toEqual([null]);
+    expect(await store.peekZapReceiptsAwaitingGiftReply(10)).toEqual([
+      {
+        receiptEventId: 'r-queue-drop-top',
+        messageId: topAwaitId,
+        sats: 7,
+        payerAccountId: 'payer-queue-drop-top',
+        comment: '',
+      },
+    ]);
+  });
+
+  it('queries a reply eventId and does not insert a nested gift-reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-watch-parent',
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      messageId: 'm-gift-watch-parent',
+    });
+    const replyEventId = 'bb'.repeat(32);
+    const replyId = 'm-gift-watch-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await store.create({
+      id: 'm-gift-watch-unsigned-parent',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'unsigned parent',
+      createdAt: new Date('2026-08-28T00:00:02.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-null-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'null eventId child',
+      createdAt: new Date('2026-08-28T00:00:03.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-empty-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'empty eventId child',
+      createdAt: new Date('2026-08-28T00:00:04.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: '',
+    });
+    await auth.createAccount({
+      id: 'payer-gift-watch',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-gift-watch@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-watch'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift-watch',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-gift-watch',
+      authorAccountId: 'acc-gift-watch-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-watch',
+      paymentHash: '55'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-watch',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-gift-watch'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+  });
+
   it('retries a pending gift reply on the next tick', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -3423,6 +3773,63 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('keep going');
     expect(replies[0]?.nostrPublishState).toBe('pending');
     expect(replies[0]?.sats).toBe(7);
+  });
+
+  it('skips retry insert when the pending receipt parent is a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-retry-reply-parent',
+      lightningAddress: 'zap-retry-reply-parent@example.com',
+      messageId: 'm-retry-reply-parent',
+    });
+    const replyId = 'm-retry-reply-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-retry-reply-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'cc'.repeat(32),
+    });
+    await auth.createAccount({
+      id: 'payer-retry-reply',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Cara',
+      lightningAddress: 'cara-retry-reply@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-retry-reply'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordZapReceipt('r-retry-reply', replyId, 7);
+    await store.updateZapReceiptGift('r-retry-reply', {
+      payerAccountId: 'payer-retry-reply',
+      comment: 'keep going',
+    });
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+    });
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+    expect((await store.getById(replyId))?.sats).toBe(7);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
   });
 
   it('does not create a reply when no payer can be resolved', async () => {
