@@ -91,7 +91,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(44);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(46);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -1244,6 +1244,50 @@ describe('InMemoryMessageStore', () => {
     expect((await store.findOkInvoiceByPr('lnbc21'))?.id).toBe('inv-newer');
     expect(await store.findOkInvoiceByPaymentHash('22'.repeat(32))).toBeUndefined();
     expect(await store.findOkInvoiceByPr('lnbc-miss')).toBeUndefined();
+  });
+
+  it('listOpenConversationZapEventIds reads e-tags from ok conversation invoices', async () => {
+    const store = new InMemoryMessageStore();
+    const base: MessageInvoiceAttempt = {
+      id: 'inv-pn',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { tags: [['e', 'ab'.repeat(32)]] },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc',
+      paymentHash: '11'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: 'c1',
+      conversationMessageId: 'cm1',
+    };
+    await store.recordInvoiceAttempt(base);
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-empty-tags',
+      zapRequest: { tags: [] },
+      conversationMessageId: 'cm2',
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-no-tags',
+      zapRequest: { kind: 9734 },
+      conversationMessageId: 'cm3',
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-forum',
+      conversationId: null,
+      conversationMessageId: null,
+    });
+    expect(await store.listOpenConversationZapEventIds()).toEqual(['ab'.repeat(32)]);
   });
 
   it('listPendingSigned and clearSignedEvent round-trip in memory', async () => {
@@ -3770,6 +3814,18 @@ describe('PostgresMessageStore', () => {
     expect(
       await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
     ).toBeUndefined();
+  });
+
+  it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { zap_request: { tags: [['e', 'ab'.repeat(32)]] } },
+      { zap_request: JSON.stringify({ tags: [['p', 'cc'.repeat(32)]] }) },
+      { zap_request: null },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.listOpenConversationZapEventIds()).toEqual(['ab'.repeat(32)]);
+    expect(sql.queries[0]?.text).toMatch(/conversation_id IS NOT NULL/);
   });
 
   it('findOkInvoiceByPr queries ok rows newest first', async () => {

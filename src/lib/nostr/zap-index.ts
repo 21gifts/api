@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
+import { unsignedConversationDefaults } from '@/lib/conversation';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
@@ -11,7 +13,7 @@ import {
   unsignedNostrDefaults,
   type MessageRow,
 } from '@/lib/message';
-import type { MessageStore, ZapIngestRow } from '@/lib/message-store';
+import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
@@ -286,24 +288,28 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query zap relays for kind:9735 receipts on recent forum notes, index
- * validated ones, then insert a payer gift-reply and fan out zap
- * in-app notifications to every account except skip (Web Push only to
- * bell subscribers). Retries receipts that have a payer and no gift-reply
- * id yet. The gift-reply insert does not call `notifyForumReply`.
+ * Query zap relays for kind:9735 receipts on recent forum notes and on
+ * open conversation-invoice e-tags, index validated ones, then insert a
+ * payer gift-reply (forum) or append the paid PN row (conversation invoice)
+ * and fan out zap in-app notifications to every account except skip (Web
+ * Push only to bell subscribers). Conversation invoices skip `addSats`,
+ * gift-reply, and `notifyZap`. Retries receipts that have a payer and no
+ * gift-reply id yet. The gift-reply insert does not call `notifyForumReply`.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
  * validation, and ingest persist. They still run `verifyReceipt` then
- * `tryEnsureGiftReply`. Every other rejection reason is re-validated on each
- * tick and writes again whenever the decision changes. The memory is
- * process-local, so the first tick after a restart may re-persist decisions it
- * has forgotten, bounded by the receipts that tick queries. Ticks are not
- * serialised (`setInterval` does not await the previous tick), so the ingest
- * skip is per tick, not a guarantee across concurrent ticks.
+ * `tryEnsureGiftReply` unless the receipt matches a conversation invoice.
+ * Every other rejection reason is re-validated on each tick and writes again
+ * whenever the decision changes. The memory is process-local, so the first
+ * tick after a restart may re-persist decisions it has forgotten, bounded by
+ * the receipts that tick queries. Ticks are not serialised (`setInterval`
+ * does not await the previous tick), so the ingest skip is per tick, not a
+ * guarantee across concurrent ticks.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
- *   optional `pushStore` and `notificationStore`.
+ *   optional `pushStore`, `notificationStore`, and `conversations` (PN
+ *   invoices append here; omitted → `rejected`/`conversation`).
  * @returns Resolves when the tick's ingest pass finishes.
  */
 export async function indexOpenZapReceipts(args: {
@@ -320,6 +326,8 @@ export async function indexOpenZapReceipts(args: {
   pushStore?: PushStore;
   /** Optional notification store; in-app rows via `auth` even without `pushStore`. */
   notificationStore?: NotificationStore;
+  /** Optional PN store; conversation invoices append here instead of forum sats. */
+  conversations?: ConversationStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
     await retryGiftReplies(args);
@@ -337,6 +345,13 @@ export async function indexOpenZapReceipts(args: {
     }
     seen.add(row.eventId);
     eventIds.push(row.eventId);
+  }
+  for (const eventId of await args.store.listOpenConversationZapEventIds()) {
+    if (eventId === '' || seen.has(eventId)) {
+      continue;
+    }
+    seen.add(eventId);
+    eventIds.push(eventId);
   }
   if (eventIds.length === 0) {
     await retryGiftReplies(args);
@@ -400,6 +415,7 @@ async function ingestOneReceipt(
     verifyReceipt: (event: NostrEventFrame) => boolean;
     pushStore?: PushStore;
     notificationStore?: NotificationStore;
+    conversations?: ConversationStore;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -414,6 +430,10 @@ async function ingestOneReceipt(
     remembered === decisionKey('rejected', 'duplicate')
   ) {
     if (!args.verifyReceipt(event)) {
+      return;
+    }
+    const rememberedInvoice = await conversationInvoiceFromReceipt(args.store, event);
+    if (rememberedInvoice !== undefined) {
       return;
     }
     await tryEnsureGiftReply(event, args);
@@ -450,6 +470,103 @@ async function ingestOneReceipt(
         outcome: 'rejected',
         reason: 'sig',
         amountSats: null,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return;
+  }
+
+  const conversationInvoice = await conversationInvoiceFromReceipt(args.store, event);
+  if (conversationInvoice !== undefined) {
+    if (args.conversations === undefined) {
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'conversation',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    const address = conversationInvoice.lightningAddress;
+    if (address === null || address.trim() === '') {
+      logEvent('nostr.zap.rejected', { reason: 'address' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'address',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    const providerPubkey = await resolveProviderPubkey({
+      address: address.trim().toLowerCase(),
+      fetchImpl: args.fetchImpl,
+      nowMs: args.now(),
+    });
+    if (providerPubkey === null) {
+      logEvent('nostr.zap.rejected', { reason: 'provider' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'provider',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    if (event.pubkey.toLowerCase() !== providerPubkey.toLowerCase()) {
+      logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'pubkey',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    await appendConversationGift({
+      conversations: args.conversations,
+      auth: args.auth,
+      now: args.now,
+      invoice: conversationInvoice,
+    });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId: null,
+        messageId: null,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: conversationInvoice.amountSats,
         receiptPubkey: event.pubkey,
         receipt,
       }),
@@ -908,6 +1025,89 @@ function giftReplyIdForReceipt(receiptEventId: string): string {
   const hex = createHash('sha256').update(`21gifts-gift-reply:${receiptEventId}`).digest('hex');
   const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Look up a conversation-scoped ok invoice from a receipt's bolt11 hash.
+ *
+ * A thrown payment-hash lookup is treated as "not a PN invoice" so forum
+ * ingest and gift-reply retry still run.
+ *
+ * @param store - Invoice attempts.
+ * @param event - Kind:9735 frame.
+ * @returns The invoice when it targets a PN, otherwise `undefined`.
+ */
+async function conversationInvoiceFromReceipt(
+  store: MessageStore,
+  event: NostrEventFrame,
+): Promise<MessageInvoiceAttempt | undefined> {
+  const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+  const pr = typeof taggedPr === 'string' ? taggedPr : '';
+  if (pr === '') {
+    return undefined;
+  }
+  const decoded = decodeBolt11(pr);
+  if (decoded === null) {
+    return undefined;
+  }
+  let invoice: MessageInvoiceAttempt | undefined;
+  try {
+    invoice = await store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+  } catch {
+    return undefined;
+  }
+  if (
+    invoice === undefined ||
+    invoice.conversationId === undefined ||
+    invoice.conversationId === null ||
+    invoice.conversationMessageId === undefined ||
+    invoice.conversationMessageId === null
+  ) {
+    return undefined;
+  }
+  return invoice;
+}
+
+/**
+ * Persist a paid PN gift. Duplicate ids are idempotent in the store.
+ *
+ * @param args - Conversation store, auth, clock, invoice.
+ */
+async function appendConversationGift(args: {
+  conversations: ConversationStore;
+  auth: AuthStore;
+  now: () => number;
+  invoice: MessageInvoiceAttempt;
+}): Promise<void> {
+  /* v8 ignore start -- conversationInvoiceFromReceipt already requires both ids */
+  const conversationId = args.invoice.conversationId;
+  const conversationMessageId = args.invoice.conversationMessageId;
+  if (
+    conversationId === undefined ||
+    conversationId === null ||
+    conversationMessageId === undefined ||
+    conversationMessageId === null
+  ) {
+    return;
+  }
+  /* v8 ignore stop */
+  const payer = await args.auth.getAccount(args.invoice.payerAccountId);
+  const pubkey = (await args.auth.getNostrPublicKey(args.invoice.payerAccountId)) ?? '';
+  const nameTrim = payer?.name?.trim() ?? '';
+  const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
+  const text = commentFromZapRequest(args.invoice.zapRequest);
+  await args.conversations.appendMessage({
+    id: conversationMessageId,
+    conversationId,
+    text,
+    createdAt: new Date(args.now()),
+    senderAccountId: args.invoice.payerAccountId,
+    senderPubkey: pubkey === '' ? null : pubkey,
+    name,
+    ...unsignedConversationDefaults(),
+    sats: args.invoice.amountSats,
+    nostrPublishState: text === '' ? 'skipped' : 'pending',
+  });
 }
 
 /**

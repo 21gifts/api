@@ -1364,6 +1364,15 @@ test('Function: fanoutToBellSubscribers — POST /messages without bearer is 401
 }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });
+test('Function: parseNotificationLevel — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
+test('Function: isStaffAccount — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
+test('Function: wantsNotification — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
 test('Function: migrateNotificationSchema — default boot has no DATABASE_URL', async ({
   request,
 }) => {

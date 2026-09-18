@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-15.
+**Status**: living document. Last revised 2026-09-16.
 
 ---
 
@@ -187,13 +187,20 @@ the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
 validated kind:9735 is indexed, the same payment appears as a forum reply from
 the payer. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies from `basis`/`verified` (not the parent author) are **403**. Do not invent `/events` or `/comments` paths.
+replies from `basis` (not the parent author) are **403**; `verified` /
+`moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs.
+with PNs. Lightning gifts in a Direct/Contact thread use
+`POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed
+when a matching zap receipt is ingested: the api appends a conversation
+message (`text` + `sats`, or empty `text` with `sats` only) and does **not**
+credit the counterpart's profile note or insert a forum gift-reply.
+`GET /conversations/:id?sinceMessageId=` long-polls until that predetermined
+row exists. Damus threads cannot be invoiced.
 
 ---
 
@@ -224,8 +231,9 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-The api writes one in-app row to every account except the actor, and
-enqueues (does not send inline) one Web Push to every bell subscriber
+The api writes one in-app row to every account except the actor, then
+filters recipients by each account's `notificationLevel`, and
+enqueues (does not send inline) one Web Push to every remaining bell subscriber
 (an account with at least one `push_subscription`) except the actor:
 
 - a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
@@ -242,9 +250,9 @@ separate from `/conversations` chat. Post, reply, and zap pushes open
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip
-a second banner (service worker). Do not invent preference HTTP in v1.
+a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = staff/platform actor or reply/zap on the recipient's own note). Filter applies to in-app and Web Push. GET /notifications lists stored rows unfiltered.
 
-HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/debug/push-ping`,
+HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
 `/notifications`, `/notifications/read-all`, `/notifications/:id/read`.
 
 ---

@@ -54,6 +54,7 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
+    expect(json).not.toHaveProperty('notificationLevel');
     expect(Object.keys(json)).toHaveLength(10);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
@@ -66,6 +67,7 @@ describe('serializeDebugAccount', () => {
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
+    expect(json).not.toHaveProperty('notificationLevel');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
   });
 });
@@ -90,6 +92,7 @@ describe('serializeOwnerAccount', () => {
       hasPosted: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
+      notificationLevel: 'all',
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -97,8 +100,19 @@ describe('serializeOwnerAccount', () => {
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.notificationLevel).toBe('all');
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('includes a stored notificationLevel on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      { ...account, notificationLevel: 'active' },
+      false,
+      null,
+      false,
+    );
+    expect(json.notificationLevel).toBe('active');
   });
 
   it('passes hasPosted and aboutMe through', () => {
@@ -310,6 +324,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
+    expect(json).not.toHaveProperty('notificationLevel');
     expect(Object.keys(json)).toHaveLength(8);
   });
 

@@ -181,6 +181,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listInvoiceAttemptsForPayer: boom,
     listIndexedZapIngests: boom,
     listAuthoredMessages: boom,
+    listOpenConversationZapEventIds: boom,
     ...overrides,
   };
 }
@@ -1762,6 +1763,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -1845,6 +1847,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
     };
     const app = new Hono().route(
       '/messages',
@@ -3079,6 +3082,7 @@ describe('POST /messages/:id/invoice', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);

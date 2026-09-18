@@ -168,6 +168,7 @@ describe('GET /me', () => {
       setup: 'name' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
+      notificationLevel: 'all' | 'active' | 'mentions';
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -180,6 +181,7 @@ describe('GET /me', () => {
     expect(body.setup).toBe('name');
     expect(body.missing).toEqual(['name', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
+    expect(body.notificationLevel).toBe('all');
   });
 
   it('returns hasPosted false when the only live row is the profile note', async () => {
@@ -363,6 +365,85 @@ describe('POST /me/forum-laws-dismissed', () => {
     expect(body.name).toBe('Ada');
     expect(body.forumLawsDismissed).toBe(true);
     expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+  });
+});
+
+describe('POST /me/notification-level', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/notification-level', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/notification-level', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a level of all, active, or mentions',
+    });
+  });
+
+  it('rejects an invalid level', async () => {
+    const res = await mount(await seededStore()).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'nope' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a level of all, active, or mentions',
+    });
+  });
+
+  it('sets notificationLevel on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'active' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notificationLevel: string };
+    expect(body.notificationLevel).toBe('active');
+    expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.notification_level.set' &&
+          e['accountId'] === 'acc' &&
+          e['level'] === 'active',
+      ),
+    ).toBe(true);
+  });
+
+  it('includes notificationLevel active on GET /me after POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'active' }),
+    });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
+  });
+
+  it('is idempotent on a second POST of the same level', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const body = JSON.stringify({ level: 'active' });
+    await app.request('/me/notification-level', { method: 'POST', headers, body });
+    const res = await app.request('/me/notification-level', { method: 'POST', headers, body });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
+    expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
   });
 });
 

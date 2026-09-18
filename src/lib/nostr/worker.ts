@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import type { ConversationThread } from '@/lib/conversation';
+import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -161,8 +161,10 @@ function reservedContent(
  * After a member reply is stored, `notifyForumReply` always runs with `auth`
  * (in-app every account except the actor; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
- * still calls `notifyZap` after a newly indexed receipt. It does not call
- * `notifyForumReply` for the gift-reply. When a conversation store is present, also
+ * still calls `notifyZap` after a newly indexed forum receipt. PN ingest
+ * appends a conversation gift (`appendConversationGift`) and does not call
+ * `notifyZap`. It does not call `notifyForumReply` for the gift-reply. When a
+ * conversation store is present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *
@@ -184,6 +186,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.verifyReceipt === undefined ? {} : { verifyReceipt: deps.verifyReceipt }),
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
+    ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
@@ -1087,6 +1090,7 @@ async function indexInboundDirectMessages(
             senderAccountId: sender?.id ?? null,
             senderPubkey,
             name: senderName,
+            ...unsignedConversationDefaults(),
             eventId: event.id,
             nostrPublishState: 'published',
             nostrEvent: {

@@ -45,6 +45,8 @@ export interface ConversationThread {
   lastText: string;
   /** Sender account of the newest message, or null when the thread has no messages / Damus inbound. */
   lastSenderAccountId: string | null;
+  /** Last message sats; `0` when the thread has no messages or the last row is unpaid text. */
+  lastSats: number;
 }
 
 /** Persisted conversation message row (store-internal). */
@@ -63,6 +65,8 @@ export interface ConversationMessageRow {
   senderPubkey: string | null;
   /** Sender display name snapshotted at send time. */
   name: string;
+  /** Credited sats on this row; `0` for unpaid text. Gift-only rows use `text: ''` and `sats >= 1`. */
+  sats: number;
   /** Signed/wrapped event id, or null until published. */
   eventId: string | null;
   /** Fan-out state. */
@@ -87,6 +91,8 @@ export interface PublicConversation {
   lastAt: string;
   /** True when the last message was sent by the viewer (or staff-as-platform). */
   lastFromMe: boolean;
+  /** Last message sats; `0` when none / unpaid text. */
+  lastSats: number;
   /** Counterpart 21.gifts account id. Omitted for Damus-only counterparts. */
   accountId?: string;
 }
@@ -103,6 +109,8 @@ export interface PublicConversationMessage {
   createdAt: string;
   /** True when this message was sent by the viewer (or staff-as-platform). */
   fromMe: boolean;
+  /** Credited sats; `0` for unpaid text. */
+  sats: number;
   /** Sender 21.gifts account id. Omitted when senderAccountId is null (Damus inbound). */
   accountId?: string;
 }
@@ -165,6 +173,7 @@ export function serializeConversation(
     lastText: thread.lastText,
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
+    lastSats: thread.lastSats,
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;
@@ -190,6 +199,7 @@ export function serializeConversationMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     fromMe,
+    sats: row.sats,
   };
   if (typeof row.senderAccountId === 'string' && row.senderAccountId !== '') {
     json.accountId = row.senderAccountId;
@@ -204,9 +214,10 @@ export function serializeConversationMessage(
  */
 export function unsignedConversationDefaults(): Pick<
   ConversationMessageRow,
-  'eventId' | 'nostrPublishState' | 'nostrEvent' | 'claimedUntil'
+  'sats' | 'eventId' | 'nostrPublishState' | 'nostrEvent' | 'claimedUntil'
 > {
   return {
+    sats: 0,
     eventId: null,
     nostrPublishState: 'pending',
     nostrEvent: null,

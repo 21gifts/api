@@ -228,6 +228,13 @@ test('POST /conversations/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /conversations/:id/invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/conversations/:id/invoice', {
+    data: { sats: 21 },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /messages with a photo without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: {
@@ -296,6 +303,11 @@ test('POST /me/location without bearer is 401', async ({ request }) => {
 
 test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/forum-laws-dismissed');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/notification-level without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/notification-level');
   expect(res.status()).toBe(401);
 });
 

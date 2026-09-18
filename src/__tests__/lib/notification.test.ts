@@ -4,11 +4,14 @@ import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import {
   fanoutToBellSubscribers,
+  isStaffAccount,
   notifyForumPost,
   notifyForumReply,
   notifyModeratorAppointed,
   notifyZap,
+  parseNotificationLevel,
   serializeNotification,
+  wantsNotification,
   type NotificationRow,
 } from '@/lib/notification';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -1038,5 +1041,312 @@ describe('notifyModeratorAppointed', () => {
         nowMs: NOW.getTime(),
       }),
     ).rejects.toThrow('push.fanout.failed');
+  });
+});
+
+describe('parseNotificationLevel', () => {
+  it('round-trips known levels and defaults unknown values to all', () => {
+    expect(parseNotificationLevel('all')).toBe('all');
+    expect(parseNotificationLevel('active')).toBe('active');
+    expect(parseNotificationLevel('mentions')).toBe('mentions');
+    expect(parseNotificationLevel('unknown')).toBe('all');
+    expect(parseNotificationLevel(1)).toBe('all');
+    expect(parseNotificationLevel(null)).toBe('all');
+    expect(parseNotificationLevel(undefined)).toBe('all');
+    expect(parseNotificationLevel({})).toBe('all');
+  });
+});
+
+describe('isStaffAccount', () => {
+  it('treats founder, moderator, and platform as staff; verified and basis are not', () => {
+    expect(isStaffAccount({ role: 'founder' })).toBe(true);
+    expect(isStaffAccount({ role: 'moderator' })).toBe(true);
+    expect(isStaffAccount({ role: 'basis', isPlatform: true })).toBe(true);
+    expect(isStaffAccount({ role: 'verified' })).toBe(false);
+    expect(isStaffAccount({ role: 'basis' })).toBe(false);
+  });
+});
+
+describe('wantsNotification', () => {
+  const recipientAccountId = 'me';
+  const cases: Array<{
+    name: string;
+    actorIsStaff: boolean;
+    isActive: boolean;
+    mentionedAccountId: string | null;
+    expected: { all: boolean; active: boolean; mentions: boolean };
+  }> = [
+    {
+      name: 'unpaid post',
+      actorIsStaff: false,
+      isActive: false,
+      mentionedAccountId: null,
+      expected: { all: true, active: false, mentions: false },
+    },
+    {
+      name: 'paid post',
+      actorIsStaff: false,
+      isActive: true,
+      mentionedAccountId: null,
+      expected: { all: true, active: true, mentions: false },
+    },
+    {
+      name: 'staff unpaid post',
+      actorIsStaff: true,
+      isActive: false,
+      mentionedAccountId: null,
+      expected: { all: true, active: false, mentions: true },
+    },
+    {
+      name: 'reply-to-me',
+      actorIsStaff: false,
+      isActive: false,
+      mentionedAccountId: recipientAccountId,
+      expected: { all: true, active: false, mentions: true },
+    },
+    {
+      name: 'reply-to-other',
+      actorIsStaff: false,
+      isActive: false,
+      mentionedAccountId: 'other',
+      expected: { all: true, active: false, mentions: false },
+    },
+    {
+      name: 'zap-to-me',
+      actorIsStaff: false,
+      isActive: true,
+      mentionedAccountId: recipientAccountId,
+      expected: { all: true, active: true, mentions: true },
+    },
+    {
+      name: 'zap-to-other',
+      actorIsStaff: false,
+      isActive: true,
+      mentionedAccountId: 'other',
+      expected: { all: true, active: true, mentions: false },
+    },
+  ];
+
+  for (const row of cases) {
+    it(`applies all/active/mentions to ${row.name}`, () => {
+      for (const level of ['all', 'active', 'mentions'] as const) {
+        expect(
+          wantsNotification({
+            level,
+            actorIsStaff: row.actorIsStaff,
+            isActive: row.isActive,
+            mentionedAccountId: row.mentionedAccountId,
+            recipientAccountId,
+          }),
+        ).toBe(row.expected[level]);
+      }
+    });
+  }
+});
+
+describe('notification level fan-out', () => {
+  it('notifies only all on an unpaid non-staff forum post when recipients are all vs active', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'all-user', role: 'basis', notificationLevel: 'all' },
+          { id: 'active-user', role: 'basis', notificationLevel: 'active' },
+          { id: 'actor', role: 'basis' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+  });
+
+  it('notifies all and mentions on a staff unpaid forum post; active is dropped', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'all-user', role: 'basis', notificationLevel: 'all' },
+          { id: 'active-user', role: 'basis', notificationLevel: 'active' },
+          { id: 'mentions-user', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'actor', role: 'founder' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+  });
+
+  it('treats an actor missing from listAccounts as non-staff', async () => {
+    const created = message({ id: 'post-1', accountId: 'ghost', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'all-user', role: 'basis', notificationLevel: 'all' },
+          { id: 'mentions-user', role: 'basis', notificationLevel: 'mentions' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      auth,
+      account: { id: 'ghost' },
+      created,
+    });
+    expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
+  });
+
+  it('notifies all and active on a paid non-staff forum post; mentions is dropped', async () => {
+    const created = message({
+      id: 'post-1',
+      accountId: 'actor',
+      name: 'Ada',
+      text: 'hello',
+      sats: 21,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'all-user', role: 'basis', notificationLevel: 'all' },
+          { id: 'active-user', role: 'basis', notificationLevel: 'active' },
+          { id: 'mentions-user', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'actor', role: 'basis' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('active-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+  });
+
+  it('notifies the parent author at mentions and drops a bystander at mentions', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages, 'parent-author');
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'parent-author', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'bystander', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'actor', role: 'basis' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumReply({
+      messages,
+      notifications,
+      auth,
+      account: { id: 'actor' },
+      created,
+      parentId: 'parent-note',
+    });
+    expect(await notifications.listByRecipient('parent-author', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+  });
+
+  it('notifies the note author at mentions and drops a bystander at mentions', async () => {
+    const note = message({ id: 'note-1', accountId: 'author', name: 'Pat', text: 'post' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'author', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'bystander', role: 'basis', notificationLevel: 'mentions' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyZap({
+      notifications,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      amountSats: 0,
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('author', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+  });
+
+  it('writes everyone except skip when match is set but auth is omitted', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await subscribe(pushStore, 'two');
+    await subscribe(pushStore, 'actor');
+    const template: Omit<NotificationRow, 'id' | 'recipientAccountId'> = {
+      actorAccountId: 'actor',
+      type: 'forum_reply',
+      parentId: 'parent-note',
+      replyId: 'reply-1',
+      name: 'Ada',
+      text: 'child',
+      createdAt: NOW,
+      readAt: null,
+    };
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      skipAccountId: 'actor',
+      match: { actorIsStaff: false, isActive: false, mentionedAccountId: null },
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('one', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('two', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime() + 1, 60_000);
+    expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
+  });
+
+  it('treats a push-only id missing from listAccounts as all', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'push-only');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'active-user', role: 'basis', notificationLevel: 'active' },
+          { id: 'actor', role: 'basis' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('push-only', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime() + 1, 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['push-only']);
   });
 });
