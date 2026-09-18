@@ -1636,25 +1636,23 @@ test('Function: debugTrustRoutes — DELETE /debug/trust-edges without bearer is
   expect(res.status()).toBe(401);
 });
 
-test('Function: verifiedExternalZapRequest — default boot has no external Nostr reply', async ({
+test('Function: verifiedExternalZapRequest — no direct default-boot HTTP trigger', async ({
   request,
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: externalDisplayName — default boot has no external Nostr reply', async ({
+test('Function: externalDisplayName — no direct default-boot HTTP trigger', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: resolveExternalProfileName — no direct default-boot HTTP trigger', async ({
   request,
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: resolveExternalProfileName — default boot has no external Nostr reply', async ({
-  request,
-}) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
-
-test('Function: ExternalIngestLimiter — default boot has no external Nostr reply', async ({
+test('Function: ExternalIngestLimiter — no direct default-boot HTTP trigger', async ({
   request,
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
@@ -1666,7 +1664,7 @@ test('Function: backfillExternalZappers — default boot has no DATABASE_URL', a
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: notifyExternalForumReply — default boot has no external Nostr reply', async ({
+test('Function: notifyExternalForumReply — no direct default-boot HTTP trigger', async ({
   request,
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);

@@ -5618,6 +5618,48 @@ describe('DELETE /messages/:id', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 without side effects when marking the note loses a race', async () => {
+    const { auth } = await staffStore('founder');
+    const targetId = '77777777-7777-4777-8777-777777777777';
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: targetId,
+      accountId: null,
+      name: 'External',
+      text: 'raced deletion',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey: '77'.repeat(32),
+    });
+    const markDeleted = vi.fn<MessageStore['markDeleted']>(async () => false);
+    const blockPubkey = vi.fn<MessageStore['blockPubkey']>(async () => undefined);
+    const markDeletedByExternalPubkey = vi.fn<MessageStore['markDeletedByExternalPubkey']>(
+      async () => 0,
+    );
+    const messages = throwingStore({
+      getById: (id) => base.getById(id),
+      markDeleted,
+      blockPubkey,
+      markDeletedByExternalPubkey,
+    });
+    warn.mockClear();
+
+    const res = await mount(auth, messages).request(`/messages/${targetId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(markDeleted).toHaveBeenCalledTimes(1);
+    expect(blockPubkey).toHaveBeenCalledTimes(0);
+    expect(markDeletedByExternalPubkey).toHaveBeenCalledTimes(0);
+    const events = parsedEvents(warn);
+    expect(events.some((event) => event['event'] === 'messages.external.blocked')).toBe(false);
+    expect(events.some((event) => event['event'] === 'messages.deleted')).toBe(false);
+  });
+
   it('returns 204 for founder and logs messages.deleted without text', async () => {
     const { auth, messages } = await staffStore('founder');
     warn.mockClear();

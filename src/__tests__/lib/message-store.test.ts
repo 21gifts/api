@@ -1390,18 +1390,31 @@ describe('InMemoryMessageStore', () => {
 
   it('lists an external payer receipt awaiting its gift reply', async () => {
     const store = new InMemoryMessageStore();
+    const receiptCreatedAtSeconds = 1_758_196_800;
     await store.create(EARLY);
     await store.recordZapReceipt('r-external-gift', 'a', 21);
-    await store.updateZapReceiptGift('r-external-gift', { payerPubkey: 'aa'.repeat(32) });
+    await store.updateZapReceiptGift('r-external-gift', { payerPubkey: '81'.repeat(32) });
+    await store.recordZapIngest({
+      id: 'ingest-external-gift',
+      createdAt: new Date('2026-09-18T10:00:00Z'),
+      receiptId: 'r-external-gift',
+      noteEventId: '82'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: '83'.repeat(32),
+      receipt: { id: 'r-external-gift', created_at: receiptCreatedAtSeconds },
+    });
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([
       {
         receiptEventId: 'r-external-gift',
         messageId: 'a',
         sats: 21,
         payerAccountId: null,
-        payerPubkey: 'aa'.repeat(32),
+        payerPubkey: '81'.repeat(32),
         zapRequestId: null,
-        receiptCreatedAt: null,
+        receiptCreatedAt: new Date(receiptCreatedAtSeconds * 1000),
         comment: '',
       },
     ]);
@@ -1463,7 +1476,34 @@ describe('InMemoryMessageStore', () => {
       receiptPubkey: 'ff'.repeat(32),
       receipt: { id: 'receipt-a' },
     });
-    expect(await store.listUnattributedIndexedReceipts(1)).toEqual([
+    await store.recordZapReceipt('receipt-attributed', 'a', 2);
+    await store.updateZapReceiptGift('receipt-attributed', { payerAccountId: 'payer' });
+    await store.recordZapIngest({
+      id: 'ingest-attributed',
+      createdAt: new Date('2026-09-18T10:01:00Z'),
+      receiptId: 'receipt-attributed',
+      noteEventId: '93'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 2,
+      receiptPubkey: '94'.repeat(32),
+      receipt: { id: 'receipt-attributed' },
+    });
+    await store.recordZapReceipt('receipt-rejected', 'a', 1);
+    await store.recordZapIngest({
+      id: 'ingest-rejected',
+      createdAt: new Date('2026-09-18T10:02:00Z'),
+      receiptId: 'receipt-rejected',
+      noteEventId: '95'.repeat(32),
+      messageId: 'a',
+      outcome: 'rejected',
+      reason: 'invalid',
+      amountSats: 1,
+      receiptPubkey: '96'.repeat(32),
+      receipt: { id: 'receipt-rejected' },
+    });
+    expect(await store.listUnattributedIndexedReceipts(10)).toEqual([
       {
         receiptEventId: 'receipt-a',
         messageId: 'a',
@@ -4457,6 +4497,12 @@ describe('PostgresMessageStore', () => {
       'UPDATE nostr_zap_receipt SET payer_account_id = $2, comment = $3 WHERE event_id = $1',
     );
     expect(sql.executes[1]?.params).toEqual(['r1', null, 'thanks']);
+    await store.updateZapReceiptGift('r1', { payerPubkey: '85'.repeat(32) });
+    expect(sql.executes).toHaveLength(3);
+    expect(sql.executes[2]?.text).toBe(
+      'UPDATE nostr_zap_receipt SET payer_pubkey = $2 WHERE event_id = $1',
+    );
+    expect(sql.executes[2]?.params).toEqual(['r1', '85'.repeat(32)]);
     const listed = await store.listZapReceiptsAwaitingGiftReply(10);
     expect(listed).toEqual([
       {
@@ -4554,6 +4600,36 @@ describe('PostgresMessageStore', () => {
     ]);
   });
 
+  it('maps string and Date receipt creation times for pending Postgres gift replies', async () => {
+    const sql = new MockSql();
+    const dateValue = new Date('2026-09-18T11:00:00Z');
+    sql.nextRows = [
+      {
+        event_id: 'r-created-string',
+        message_id: 'm1',
+        sats: '21',
+        payer_account_id: 'payer',
+        payer_pubkey: null,
+        zap_request_id: null,
+        receipt_created_at: '2026-09-18T10:00:00Z',
+        comment: '',
+      },
+      {
+        event_id: 'r-created-date',
+        message_id: 'm1',
+        sats: '1',
+        payer_account_id: null,
+        payer_pubkey: '84'.repeat(32),
+        zap_request_id: 'request-date',
+        receipt_created_at: dateValue,
+        comment: 'thanks',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listZapReceiptsAwaitingGiftReply(10);
+    expect(listed[0]?.receiptCreatedAt).toEqual(new Date('2026-09-18T10:00:00Z'));
+    expect(listed[1]?.receiptCreatedAt).toBe(dateValue);
+  });
+
   it('listInvoiceAttemptsForPayer filters payer_account_id without LIMIT', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
@@ -4590,7 +4666,7 @@ describe('PostgresMessageStore', () => {
       [{ pubkey: 'aa' }],
       [
         {
-          pubkey: 'aa',
+          pubkey: '86'.repeat(32),
           receipt_event_id: 'receipt-a',
           created_at: '2026-09-18T10:00:00Z',
         },
@@ -4599,7 +4675,7 @@ describe('PostgresMessageStore', () => {
       [{ pubkey: 'aa' }],
       [
         {
-          pubkey: 'aa',
+          pubkey: '87'.repeat(32),
           blocked_at: '2026-09-18T11:00:00Z',
           blocked_by: 'staff',
           message_id: 'm-external',
@@ -4651,6 +4727,45 @@ describe('PostgresMessageStore', () => {
     expect(
       sql.executes.some((entry) => entry.text.includes('INSERT INTO nostr_blocked_pubkey')),
     ).toBe(true);
+  });
+
+  it('preserves Postgres Date instances in external attribution rows', async () => {
+    const sql = new MockSql();
+    const receiptCreatedAt = new Date('2026-09-18T10:00:00Z');
+    const zapperCreatedAt = new Date('2026-09-18T11:00:00Z');
+    const blockedAt = new Date('2026-09-18T12:00:00Z');
+    sql.queryQueue = [
+      [
+        {
+          event_id: 'receipt-date',
+          message_id: 'm1',
+          sats: '21',
+          created_at: receiptCreatedAt,
+          receipt: 'invalid-json',
+        },
+      ],
+      [
+        {
+          pubkey: 'aa',
+          receipt_event_id: 'receipt-date',
+          created_at: zapperCreatedAt,
+        },
+      ],
+      [
+        {
+          pubkey: 'aa',
+          blocked_at: blockedAt,
+          blocked_by: 'staff',
+          message_id: 'm-external-date',
+        },
+      ],
+    ];
+    const store = new PostgresMessageStore(sql);
+    const receipts = await store.listUnattributedIndexedReceipts(1);
+    expect(receipts[0]?.createdAt).toBe(receiptCreatedAt);
+    expect(receipts[0]?.receipt).toEqual({});
+    expect((await store.listZappers(1))[0]?.createdAt).toBe(zapperCreatedAt);
+    expect((await store.listBlockedPubkeyRows(1))[0]?.blockedAt).toBe(blockedAt);
   });
 
   it('returns false without attributing when another receipt holds the request id', async () => {

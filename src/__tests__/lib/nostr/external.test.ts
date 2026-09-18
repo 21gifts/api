@@ -9,7 +9,7 @@ import {
   resolveExternalProfileName,
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
-import { RecordingQuerier } from '@/lib/nostr/query';
+import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 
 function signedRequest(noteEventId: string, amount = '21000', content = ' thanks '): string {
   return JSON.stringify(
@@ -30,6 +30,30 @@ function signedRequest(noteEventId: string, amount = '21000', content = ' thanks
 
 function descriptionHash(description: string): string {
   return createHash('sha256').update(description, 'utf8').digest('hex');
+}
+
+function handBuiltRequest(noteEventId: string, overrides: Record<string, unknown>): string {
+  return JSON.stringify({
+    kind: 9734,
+    id: '11'.repeat(32),
+    sig: '22'.repeat(64),
+    pubkey: '33'.repeat(32),
+    created_at: 1,
+    tags: [['e', noteEventId]],
+    content: 'hello',
+    ...overrides,
+  });
+}
+
+function profileEvent(pubkey: string, content: unknown): NostrEventFrame {
+  return {
+    id: 'profile',
+    pubkey,
+    kind: 0,
+    tags: [],
+    created_at: 1,
+    content,
+  } as unknown as NostrEventFrame;
 }
 
 describe('external constants', () => {
@@ -147,6 +171,74 @@ describe('verifiedExternalZapRequest', () => {
       }),
     ).toBeNull();
   });
+
+  it.each([
+    ['a null description hash', null],
+    ['a present non-hex description hash', 'g'.repeat(64)],
+  ])('rejects a description with %s', (_label, expectedHash) => {
+    const note = 'bc'.repeat(32);
+    const description = signedRequest(note);
+    expect(
+      verifiedExternalZapRequest({
+        tags: [['description', description]],
+        descriptionHash: expectedHash,
+        amountMsat: 21_000,
+        noteEventId: note,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['JSON null', 'null'],
+    ['a JSON primitive', '42'],
+    ['a JSON array', '[]'],
+  ])('rejects a description that parses to %s', (_label, description) => {
+    expect(
+      verifiedExternalZapRequest({
+        tags: [['description', description]],
+        descriptionHash: descriptionHash(description),
+        amountMsat: 1000,
+        noteEventId: 'bd'.repeat(32),
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['the wrong kind', { kind: 1 }],
+    ['a missing id', { id: undefined }],
+    ['an empty id', { id: '' }],
+    ['a missing signature', { sig: undefined }],
+    ['an empty signature', { sig: '' }],
+    ['a missing pubkey', { pubkey: undefined }],
+    ['an empty pubkey', { pubkey: '' }],
+    ['a missing created_at', { created_at: undefined }],
+    ['missing tags', { tags: undefined }],
+    ['missing content', { content: undefined }],
+  ])('rejects a hand-built request with %s', (_label, overrides) => {
+    const note = 'be'.repeat(32);
+    const description = handBuiltRequest(note, overrides);
+    expect(
+      verifiedExternalZapRequest({
+        tags: [['description', description]],
+        descriptionHash: descriptionHash(description),
+        amountMsat: 1000,
+        noteEventId: note,
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects a non-integer numeric invoice amount', () => {
+    const note = 'bf'.repeat(32);
+    const description = signedRequest(note, '1000');
+    expect(
+      verifiedExternalZapRequest({
+        tags: [['description', description]],
+        descriptionHash: descriptionHash(description),
+        amountMsat: 1.5,
+        noteEventId: note,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('externalDisplayName', () => {
@@ -208,6 +300,49 @@ describe('resolveExternalProfileName', () => {
     await expect(resolveExternalProfileName({ ...args, nowMs: 2000 })).resolves.toBeNull();
     expect(querier.query).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['non-string content', '03', 42, null],
+    ['JSON null', '04', 'null', null],
+    ['a JSON primitive', '05', '42', null],
+    ['a JSON array', '06', '[]', null],
+    ['a non-string display_name', '07', '{"display_name":42,"name":"Fallback"}', 'Fallback'],
+    ['a blank display_name', '08', '{"display_name":"  ","name":"Fallback"}', 'Fallback'],
+    ['a non-string fallback name', '09', '{"display_name":null,"name":42}', null],
+    ['a blank fallback name', '0a', '{"display_name":null,"name":"  "}', null],
+    ['invalid JSON', '0b', '{', null],
+  ])('resolves a profile with %s', async (_label, pubkeyByte, content, expected) => {
+    const querier = new RecordingQuerier();
+    const pubkey = pubkeyByte.repeat(32);
+    querier.events = [profileEvent(pubkey, content)];
+    await expect(
+      resolveExternalProfileName({
+        querier,
+        urls: ['wss://relay.example'],
+        pubkey,
+        nowMs: 1000,
+        timeoutMs: 50,
+      }),
+    ).resolves.toBe(expected);
+  });
+
+  it('orders profiles with absent created_at values as timestamp zero', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = '0c'.repeat(32);
+    querier.events = [
+      { id: 'first', pubkey, kind: 0, tags: [], content: '{"name":"First"}' },
+      { id: 'second', pubkey, kind: 0, tags: [], content: '{"name":"Second"}' },
+    ];
+    await expect(
+      resolveExternalProfileName({
+        querier,
+        urls: ['wss://relay.example'],
+        pubkey,
+        nowMs: 1000,
+        timeoutMs: 50,
+      }),
+    ).resolves.toBe('First');
+  });
 });
 
 describe('ExternalIngestLimiter', () => {
@@ -241,5 +376,17 @@ describe('ExternalIngestLimiter', () => {
     }
     expect(global.tryAcquire('overflow', 100 * 600_001)).toBe(false);
     expect(global.tryAcquire('overflow', 86_400_001)).toBe(true);
+  });
+
+  it('evicts a pubkey after the idle window', () => {
+    const limiter = new ExternalIngestLimiter();
+    expect(limiter.tryAcquire('idle', 0)).toBe(true);
+
+    const afterIdleWindow = 48 * 3_600_000 + 1;
+    expect(limiter.tryAcquire('other', afterIdleWindow)).toBe(true);
+    for (let i = 1; i <= 6; i += 1) {
+      expect(limiter.tryAcquire('idle', afterIdleWindow + i)).toBe(true);
+    }
+    expect(limiter.tryAcquire('idle', afterIdleWindow + 7)).toBe(false);
   });
 });

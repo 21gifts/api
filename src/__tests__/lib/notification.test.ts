@@ -854,6 +854,37 @@ describe('notifyExternalForumReply', () => {
     expect(claimed[0]?.payload).not.toContain('Robin');
   });
 
+  it('notifies the parent author when auth is omitted', async () => {
+    const parent = message({
+      id: 'parent-without-auth',
+      accountId: 'parent-without-auth',
+      name: 'Pat',
+      text: 'parent',
+      sats: 0,
+    });
+    const created = message({
+      id: 'external-reply-without-auth',
+      accountId: null,
+      parentId: parent.id,
+      name: 'Robin',
+      text: 'hello without auth',
+      authorPubkey: 'cd'.repeat(32),
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent-without-auth');
+    await subscribe(pushStore, 'bystander-without-auth');
+
+    await expect(
+      notifyExternalForumReply({ parent, created, notifications, pushStore }),
+    ).resolves.toBeUndefined();
+
+    expect(await notifications.listByRecipient('parent-without-auth', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander-without-auth', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['parent-without-auth']);
+  });
+
   it('does nothing when the parent has no account', async () => {
     const notifications = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
