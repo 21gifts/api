@@ -4942,7 +4942,7 @@ describe('runNostrWorkerTick', () => {
     expect(forParent).toHaveLength(1);
     expect(forParent[0]).toMatchObject({
       parentId: 'm1',
-      name: truncatePubkeyDisplay(recentPubkey),
+      name: 'Someone',
       text: 'recent external',
     });
     expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);

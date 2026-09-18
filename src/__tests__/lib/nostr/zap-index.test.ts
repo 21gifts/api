@@ -4099,6 +4099,9 @@ describe('indexOpenZapReceipts', () => {
         messageId: topAwaitId,
         sats: 7,
         payerAccountId: 'payer-queue-drop-top',
+        payerPubkey: null,
+        zapRequestId: null,
+        receiptCreatedAt: null,
         comment: '',
       },
     ]);
