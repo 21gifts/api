@@ -1309,7 +1309,19 @@ describe('InMemoryMessageStore', () => {
       conversationId: null,
       conversationMessageId: null,
     });
-    expect(await store.listOpenConversationZapEventIds()).toEqual(['ab'.repeat(32)]);
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-no-cm',
+      conversationMessageId: null,
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-dup-e',
+      conversationMessageId: 'cm-later',
+    });
+    expect(await store.listOpenConversationZapEventIds()).toEqual([
+      { eventId: 'ab'.repeat(32), conversationMessageId: 'cm1' },
+    ]);
   });
 
   it('listPendingSigned and clearSignedEvent round-trip in memory', async () => {
@@ -2886,6 +2898,34 @@ describe('PostgresMessageStore', () => {
     );
   });
 
+  it('create on Bun errno 23505 returns the row when getById finds the same id', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { errno: '23505' });
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const created = await new PostgresMessageStore(sql).create({
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(0),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    expect(created.id).toBe('m1');
+  });
+
   it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
@@ -4080,13 +4120,23 @@ describe('PostgresMessageStore', () => {
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
     const sql = new MockSql();
     sql.nextRows = [
-      { zap_request: { tags: [['e', 'ab'.repeat(32)]] } },
-      { zap_request: JSON.stringify({ tags: [['p', 'cc'.repeat(32)]] }) },
-      { zap_request: null },
+      { zap_request: { tags: [['e', 'ab'.repeat(32)]] }, conversation_message_id: 'cm1' },
+      {
+        zap_request: JSON.stringify({ tags: [['p', 'cc'.repeat(32)]] }),
+        conversation_message_id: 'cm2',
+      },
+      { zap_request: null, conversation_message_id: 'cm3' },
+      { zap_request: { tags: [['e', 'ab'.repeat(32)]] }, conversation_message_id: 'cm-dup' },
+      { zap_request: { tags: [['e', 'ef'.repeat(32)]] }, conversation_message_id: null },
     ];
     const store = new PostgresMessageStore(sql);
-    expect(await store.listOpenConversationZapEventIds()).toEqual(['ab'.repeat(32)]);
+    expect(await store.listOpenConversationZapEventIds()).toEqual([
+      { eventId: 'ab'.repeat(32), conversationMessageId: 'cm1' },
+    ]);
     expect(sql.queries[0]?.text).toMatch(/conversation_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/conversation_message_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/NOT EXISTS/);
+    expect(sql.queries[0]?.text).toMatch(/conversation_message/);
   });
 
   it('findOkInvoiceByPr queries ok rows newest first', async () => {

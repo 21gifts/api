@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { unsignedConversationDefaults } from '@/lib/conversation';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import {
@@ -5069,6 +5070,674 @@ describe('conversation zap ingest', () => {
     expect(rows[0]?.text).toBe('thanks');
     expect(rows[0]?.sats).toBe(21);
     expect(rows[0]?.nostrPublishState).toBe('pending');
+  });
+
+  it('indexes an already-inserted PN gift on a second tick without rejecting', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-recv2',
+      lightningAddress: 'recv2@example.com',
+      messageId: 'm-pn-profile-2',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-pay2',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat2@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-pay2'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-pay2',
+      'acc-pn-recv2',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-2',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-pay2',
+      authorAccountId: 'acc-pn-recv2',
+      amountSats: 21,
+      lightningAddress: 'recv2@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-2',
+      paymentHash: 'ac'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-2',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-2'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ac'.repeat(32), amountMsat: 21_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      warn.mockClear();
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const rows = await conversations.listMessages(thread.id, 10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(giftId);
+      expect(
+        (await store.listZapIngests(10)).some(
+          (row) => row.receiptId === 'r-pn-2' && row.outcome === 'indexed',
+        ),
+      ).toBe(true);
+      expect(loggedEvents(warn).some((event) => event['event'] === 'nostr.zap.rejected')).toBe(
+        false,
+      );
+      expect((await store.listLatest(10)).some((row) => row.eventId === NOTE_EVENT_ID)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('indexes a pre-existing PN gift on a cold ingest without claiming', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-recv-cold',
+      lightningAddress: 'recv-cold@example.com',
+      messageId: 'm-pn-profile-cold',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-pay-cold',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-cold@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-pay-cold'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-pay-cold',
+      'acc-pn-recv-cold',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = '99999999-9999-4999-8999-999999999999';
+    await conversations.appendMessage({
+      id: giftId,
+      conversationId: thread.id,
+      text: 'thanks',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      senderAccountId: 'acc-pn-pay-cold',
+      senderPubkey: null,
+      name: 'Pat',
+      ...unsignedConversationDefaults(),
+      sats: 21,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-cold',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-pay-cold',
+      authorAccountId: 'acc-pn-recv-cold',
+      amountSats: 21,
+      lightningAddress: 'recv-cold@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-cold',
+      paymentHash: 'b2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-cold',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-cold'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'b2'.repeat(32), amountMsat: 21_000 });
+    const claim = vi.spyOn(store, 'claimZapPayment');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const rows = await conversations.listMessages(thread.id, 10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(giftId);
+      expect(
+        (await store.listZapIngests(10)).some(
+          (row) => row.receiptId === 'r-pn-cold' && row.outcome === 'indexed',
+        ),
+      ).toBe(true);
+      expect(loggedEvents(warn).some((event) => event['event'] === 'nostr.zap.rejected')).toBe(
+        false,
+      );
+      expect(claim).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('does not query relays for a conversation e-tag whose PN gift already exists', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-recv3',
+      lightningAddress: 'recv3@example.com',
+      messageId: 'm-pn-profile-3',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-pay3',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat3@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-pay3'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-pay3',
+      'acc-pn-recv3',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const conversationEventId = 'cd'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-3',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-pay3',
+      authorAccountId: 'acc-pn-recv3',
+      amountSats: 21,
+      lightningAddress: 'recv3@example.com',
+      zapRequest: { tags: [['e', conversationEventId]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-3',
+      paymentHash: 'ad'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    await conversations.appendMessage({
+      id: giftId,
+      conversationId: thread.id,
+      text: 'thanks',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      senderAccountId: 'acc-pn-pay3',
+      senderPubkey: null,
+      name: 'Pat',
+      ...unsignedConversationDefaults(),
+      sats: 21,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-3',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', conversationEventId],
+          ['bolt11', 'lnbc-pn-3'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ad'.repeat(32), amountMsat: 21_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      expect(
+        querier.calls.some(
+          (call) =>
+            Array.isArray(call.filter['#e']) &&
+            (call.filter['#e'] as string[]).includes(conversationEventId),
+        ),
+      ).toBe(false);
+      expect(loggedEvents(warn).some((event) => event['event'] === 'nostr.zap.rejected')).toBe(
+        false,
+      );
+      expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs unique-violation code and errno on a throwing PN claim', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-catch-recv',
+      lightningAddress: 'catch-recv@example.com',
+      messageId: 'm-pn-catch-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-catch-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'catch-pay@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-catch-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-catch-pay',
+      'acc-pn-catch-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-catch-dup',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-catch-pay',
+      authorAccountId: 'acc-pn-catch-recv',
+      amountSats: 21,
+      lightningAddress: 'catch-recv@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-catch-dup',
+      paymentHash: 'ae'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-catch-dup',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-dup'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ae'.repeat(32), amountMsat: 21_000 });
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(
+      Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: 'ERR_POSTGRES_SERVER_ERROR',
+        errno: '23505',
+      }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
+      expect(event).toEqual(
+        expect.objectContaining({
+          event: 'nostr.zap.rejected',
+          reason: 'error',
+          code: 'ERR_POSTGRES_SERVER_ERROR',
+          errno: '23505',
+        }),
+      );
+      expect(String(event?.['error'])).toContain('duplicate key');
+    } finally {
+      warn.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('logs a non-Error catch as a string without code or errno', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-catch-recv2',
+      lightningAddress: 'catch-recv2@example.com',
+      messageId: 'm-pn-catch-profile-2',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-catch-pay2',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'catch-pay2@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-catch-pay2'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-catch-pay2',
+      'acc-pn-catch-recv2',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-catch-plain',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-catch-pay2',
+      authorAccountId: 'acc-pn-catch-recv2',
+      amountSats: 21,
+      lightningAddress: 'catch-recv2@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-catch-plain',
+      paymentHash: 'af'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-catch-plain',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-plain'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'af'.repeat(32), amountMsat: 21_000 });
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce('plain');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
+      expect(event?.['reason']).toBe('error');
+      expect(event?.['error']).toBe('plain');
+      expect(event).not.toHaveProperty('code');
+      expect(event).not.toHaveProperty('errno');
+    } finally {
+      warn.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('truncates a catch error message to 200 characters', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-catch-recv3',
+      lightningAddress: 'catch-recv3@example.com',
+      messageId: 'm-pn-catch-profile-3',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-catch-pay3',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'catch-pay3@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-catch-pay3'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-catch-pay3',
+      'acc-pn-catch-recv3',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-catch-trunc',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-catch-pay3',
+      authorAccountId: 'acc-pn-catch-recv3',
+      amountSats: 21,
+      lightningAddress: 'catch-recv3@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-catch-trunc',
+      paymentHash: 'b0'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-catch-trunc',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-trunc'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'b0'.repeat(32), amountMsat: 21_000 });
+    const claim = vi
+      .spyOn(store, 'claimZapPayment')
+      .mockRejectedValueOnce(new Error('x'.repeat(250)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
+      expect(event?.['reason']).toBe('error');
+      expect(typeof event?.['error']).toBe('string');
+      expect((event?.['error'] as string).length).toBe(200);
+    } finally {
+      warn.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('omits an empty catch error message', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-catch-recv4',
+      lightningAddress: 'catch-recv4@example.com',
+      messageId: 'm-pn-catch-profile-4',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-catch-pay4',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'catch-pay4@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-catch-pay4'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-catch-pay4',
+      'acc-pn-catch-recv4',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = '10101010-1010-4101-8101-101010101010';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-catch-empty',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-catch-pay4',
+      authorAccountId: 'acc-pn-catch-recv4',
+      amountSats: 21,
+      lightningAddress: 'catch-recv4@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-catch-empty',
+      paymentHash: 'b1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-catch-empty',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-empty'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'b1'.repeat(32), amountMsat: 21_000 });
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(new Error(''));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        conversations,
+      });
+      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
+      expect(event?.['reason']).toBe('error');
+      expect(event).not.toHaveProperty('error');
+    } finally {
+      warn.mockRestore();
+      claim.mockRestore();
+    }
   });
 
   it('appends a gift-only PN row for a nameless payer', async () => {

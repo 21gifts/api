@@ -10,7 +10,7 @@
  * select extra or photo bytea.
  */
 
-import type { SqlClient } from '@/lib/auth/sql';
+import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   forumContentFingerprint,
   unsignedNostrDefaults,
@@ -567,9 +567,13 @@ export interface MessageStore {
 
   /**
    * Distinct NIP-57 `e`-tag event ids from successful private-conversation
-   * invoices. Missing, malformed, and empty tags are omitted.
+   * invoices, each paired with the predetermined conversation message id.
+   * Missing, malformed, and empty tags are omitted. Only ok invoices with
+   * a non-null conversation id and a non-null conversation message id.
    */
-  listOpenConversationZapEventIds(): Promise<string[]>;
+  listOpenConversationZapEventIds(): Promise<
+    ReadonlyArray<{ eventId: string; conversationMessageId: string }>
+  >;
 
   /**
    * Patch payer / gift-reply id / comment on a stored zap receipt in one
@@ -1760,18 +1764,29 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(newestOkInvoice(this.#invoiceAttempts, (row) => row.pr === pr));
   }
 
-  listOpenConversationZapEventIds(): Promise<string[]> {
-    const eventIds = new Set<string>();
+  listOpenConversationZapEventIds(): Promise<
+    ReadonlyArray<{ eventId: string; conversationMessageId: string }>
+  > {
+    const seen = new Set<string>();
+    const listed: { eventId: string; conversationMessageId: string }[] = [];
     for (const row of this.#invoiceAttempts) {
-      if (row.result !== 'ok' || row.conversationId === null) {
+      if (
+        row.result !== 'ok' ||
+        row.conversationId === undefined ||
+        row.conversationId === null ||
+        row.conversationMessageId === undefined ||
+        row.conversationMessageId === null
+      ) {
         continue;
       }
       const eventId = zapRequestEventId(row.zapRequest);
-      if (eventId !== null) {
-        eventIds.add(eventId);
+      if (eventId === null || seen.has(eventId)) {
+        continue;
       }
+      seen.add(eventId);
+      listed.push({ eventId, conversationMessageId: row.conversationMessageId });
     }
-    return Promise.resolve([...eventIds]);
+    return Promise.resolve(listed);
   }
 
   updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {
@@ -2015,16 +2030,6 @@ function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
     return value.slice();
   }
   return Uint8Array.from(value);
-}
-
-/** True when `error` is a Postgres unique-violation (`code === '23505'`). */
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
 }
 
 /** Shared SELECT list: Nostr columns plus has_photo, never photo bytea. */
@@ -2974,20 +2979,32 @@ export class PostgresMessageStore implements MessageStore {
     return row === undefined ? undefined : mapInvoiceAttemptRow(row);
   }
 
-  async listOpenConversationZapEventIds(): Promise<string[]> {
-    const rows = await this.#sql.query<Pick<MessageInvoiceSqlRow, 'zap_request'>>(
-      `SELECT zap_request
+  async listOpenConversationZapEventIds(): Promise<
+    ReadonlyArray<{ eventId: string; conversationMessageId: string }>
+  > {
+    const rows = await this.#sql.query<
+      Pick<MessageInvoiceSqlRow, 'zap_request' | 'conversation_message_id'>
+    >(
+      `SELECT zap_request, conversation_message_id
        FROM message_invoice
-       WHERE result = 'ok' AND conversation_id IS NOT NULL`,
+       WHERE result = 'ok' AND conversation_id IS NOT NULL AND conversation_message_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM conversation_message m WHERE m.id = message_invoice.conversation_message_id)`,
     );
-    const eventIds = new Set<string>();
+    const seen = new Set<string>();
+    const listed: { eventId: string; conversationMessageId: string }[] = [];
     for (const row of rows) {
       const eventId = zapRequestEventId(parseJsonObject(row.zap_request));
-      if (eventId !== null) {
-        eventIds.add(eventId);
+      if (eventId === null || seen.has(eventId)) {
+        continue;
       }
+      const conversationMessageId = row.conversation_message_id;
+      if (conversationMessageId === undefined || conversationMessageId === null) {
+        continue;
+      }
+      seen.add(eventId);
+      listed.push({ eventId, conversationMessageId });
     }
-    return [...eventIds];
+    return listed;
   }
 
   async updateZapReceiptGift(receiptEventId: string, patch: ZapReceiptGiftPatch): Promise<void> {

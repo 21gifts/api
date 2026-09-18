@@ -315,6 +315,11 @@ test('Function: PostgresAuthStore — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
+test('Function: isUniqueViolation — GET /healthz is ok', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
