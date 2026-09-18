@@ -6,7 +6,11 @@ import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
-import { InMemoryMessageStore, type MessageInvoiceAttempt } from '@/lib/message-store';
+import {
+  InMemoryMessageStore,
+  type MessageInvoiceAttempt,
+  type ZapIngestRow,
+} from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
@@ -306,6 +310,7 @@ describe('manual invoice settlement', () => {
       receiptId: manualReceiptIdForPaymentHash(paymentHash),
       messageId,
       amountSats: 210_000,
+      resumed: false,
     });
     expect((await store.getById(messageId))?.sats).toBe(210_000);
     const ingestRow = (await store.listZapIngests(10))[0];
@@ -472,6 +477,127 @@ describe('manual invoice settlement', () => {
       ok: false,
       reason: 'duplicate',
     });
+
+    const claimedStore = new InMemoryMessageStore();
+    await claimedStore.create({
+      id: 'manual-message',
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'paid',
+      createdAt: new Date(1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await seedManualInvoice(claimedStore, hash);
+    await claimedStore.claimZapPayment(hash, 'foreign-receipt', new Date(1));
+    await expect(settleInvoiceManually({ ...args, store: claimedStore })).resolves.toEqual({
+      ok: false,
+      reason: 'duplicate',
+    });
+  });
+
+  it('propagates a failed ingest write and resumes without crediting twice', async () => {
+    const paymentHash = '39'.repeat(32);
+    class FailingIngestStore extends InMemoryMessageStore {
+      receiptCalls = 0;
+      failIngest = true;
+
+      override recordZapReceipt(
+        ...args: Parameters<InMemoryMessageStore['recordZapReceipt']>
+      ): ReturnType<InMemoryMessageStore['recordZapReceipt']> {
+        if (args[0] === manualReceiptIdForPaymentHash(paymentHash)) {
+          this.receiptCalls += 1;
+        }
+        return super.recordZapReceipt(...args);
+      }
+
+      override recordZapIngest(row: ZapIngestRow): Promise<void> {
+        if (this.failIngest) {
+          this.failIngest = false;
+          return Promise.reject(new Error('ingest persist boom'));
+        }
+        return super.recordZapIngest(row);
+      }
+    }
+    const store = new FailingIngestStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await seedManualInvoice(store, paymentHash);
+    const args = {
+      store,
+      auth,
+      now: () => 2_000,
+      paymentHash,
+      note: 'wallet evidence',
+    };
+
+    await expect(settleInvoiceManually(args)).rejects.toThrow('ingest persist boom');
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    expect(await store.listZapIngests(10)).toEqual([]);
+
+    await expect(settleInvoiceManually(args)).resolves.toEqual({
+      ok: true,
+      receiptId: manualReceiptIdForPaymentHash(paymentHash),
+      messageId: 'manual-message',
+      amountSats: 210_000,
+      resumed: true,
+    });
+    expect(store.receiptCalls).toBe(1);
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === manualReceiptIdForPaymentHash(paymentHash) && row.outcome === 'indexed',
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps settlement successful when payer lookup throws after crediting', async () => {
+    class ThrowingPayerAuthStore extends InMemoryAuthStore {
+      override getAccount(): Promise<never> {
+        return Promise.reject(new Error('payer lookup boom'));
+      }
+    }
+    const store = new InMemoryMessageStore();
+    const seedAuth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth: seedAuth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = '3a'.repeat(32);
+    const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+    await seedManualInvoice(store, paymentHash);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await settleInvoiceManually({
+      store,
+      auth: new ThrowingPayerAuthStore(),
+      now: () => 2_000,
+      paymentHash,
+      note: 'wallet evidence',
+    });
+    const events = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+    warn.mockRestore();
+
+    expect(result).toMatchObject({ ok: true, receiptId, resumed: false });
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    expect(await store.listReplies('manual-message')).toEqual([]);
+    expect(
+      events.some(
+        (event) =>
+          event['event'] === 'nostr.zap.gift_reply.failed' && event['receiptId'] === receiptId,
+      ),
+    ).toBe(true);
   });
 
   it('logs notification and gift-reply failures after crediting', async () => {
@@ -1471,6 +1597,148 @@ describe('indexOpenZapReceipts', () => {
     ).toBe(true);
   });
 
+  it('keeps a real-receipt claim after its indexed ingest write fails', async () => {
+    class FailingReceiptIngestStore extends InMemoryMessageStore {
+      failReceiptIngest = true;
+
+      override recordZapIngest(row: ZapIngestRow): Promise<void> {
+        if (row.receiptId === 'real-receipt-ingest-failure' && this.failReceiptIngest) {
+          this.failReceiptIngest = false;
+          return Promise.reject(new Error('ingest persist boom'));
+        }
+        return super.recordZapIngest(row);
+      }
+    }
+    const store = new FailingReceiptIngestStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'claim-failure-author',
+      messageId: 'manual-message',
+      lightningAddress: 'claim-failure@example.com',
+    });
+    const paymentHash = '2a'.repeat(32);
+    await seedManualInvoice(store, paymentHash, { amountSats: 21 });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'real-receipt-ingest-failure',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-claim-failure'],
+        ],
+      },
+    ];
+    const args = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest(args);
+    expect((await store.getById('manual-message'))?.sats).toBe(21);
+    expect(await store.listZapIngests(10)).toEqual([]);
+
+    await ingest(args);
+    warn.mockRestore();
+    expect((await store.getById('manual-message'))?.sats).toBe(21);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === 'real-receipt-ingest-failure' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'duplicate',
+      ),
+    ).toBe(true);
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 3,
+        paymentHash,
+        note: 'wallet evidence',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'duplicate' });
+    expect((await store.getById('manual-message'))?.sats).toBe(21);
+  });
+
+  it('keeps the payment claim after deleting and recreating a settled message', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'restored-author',
+      messageId: 'manual-message',
+      lightningAddress: 'restored@example.com',
+    });
+    const paymentHash = '2b'.repeat(32);
+    const manualReceiptId = manualReceiptIdForPaymentHash(paymentHash);
+    await seedManualInvoice(store, paymentHash);
+    expect(
+      (
+        await settleInvoiceManually({
+          store,
+          auth,
+          now: () => 1,
+          paymentHash,
+          note: 'wallet evidence',
+        })
+      ).ok,
+    ).toBe(true);
+    expect(await store.deleteById('manual-message')).toBe(true);
+    expect(await store.getZapReceiptGift(manualReceiptId)).toBeUndefined();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'restored-author',
+      messageId: 'manual-message',
+      lightningAddress: 'restored@example.com',
+    });
+
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 210_000_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'real-receipt-after-restore',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-after-restore'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect((await store.getById('manual-message'))?.sats).toBe(0);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === 'real-receipt-after-restore' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'settled',
+      ),
+    ).toBe(true);
+  });
+
   it('persists one rejected/duplicate for a known receipt then skips validation', async () => {
     const base = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -1533,6 +1801,8 @@ describe('indexOpenZapReceipts', () => {
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
         base.updatePublishState(...args),
       addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
+        base.claimZapPayment(...args),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
         base.recordZapReceipt(...args),
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -1717,6 +1987,8 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
+          base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -1854,7 +2126,11 @@ describe('indexOpenZapReceipts', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     };
-    mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 1000 });
+    // One payment hash per invoice: the payment claim dedupes receipts that share a hash.
+    mockedDecode.mockImplementation((pr) => ({
+      paymentHash: createHash('sha256').update(pr).digest('hex'),
+      amountMsat: 1000,
+    }));
     const t0 = 1_000_000;
     for (const [receiptId, nowMs] of [
       ['r-cache-1', t0],
@@ -1867,7 +2143,7 @@ describe('indexOpenZapReceipts', () => {
           kind: 9735,
           tags: [
             ['e', NOTE_EVENT_ID],
-            ['bolt11', 'lnbc-cache'],
+            ['bolt11', `lnbc-cache-${receiptId}`],
           ],
         },
       ];
@@ -1890,7 +2166,7 @@ describe('indexOpenZapReceipts', () => {
         kind: 9735,
         tags: [
           ['e', NOTE_EVENT_ID],
-          ['bolt11', 'lnbc-cache'],
+          ['bolt11', 'lnbc-cache-3'],
         ],
       },
     ];
@@ -1940,6 +2216,42 @@ describe('indexOpenZapReceipts', () => {
     expect(ingests[0]?.outcome).toBe('rejected');
     expect(ingests[0]?.reason).toBe('sig');
     expect(ingests[0]?.receiptId).toBe('r-sig');
+  });
+
+  it('rejects a foreign-provider receipt before claiming the payment hash', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({ store, auth, accountId: 'acc-foreign' });
+    const querier = new RecordingQuerier();
+    const paymentHash = '12'.repeat(32);
+    querier.events = [
+      {
+        id: 'r-foreign',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-foreign'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]?.outcome).toBe('rejected');
+    expect(ingests[0]?.reason).toBe('pubkey');
+    // The hash stays unclaimed, so the provider's real receipt can still take it.
+    expect(await store.claimZapPayment(paymentHash, 'r-real', new Date(2))).toBe(true);
   });
 
   it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
@@ -2001,6 +2313,8 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
+          base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -3081,7 +3395,11 @@ describe('indexOpenZapReceipts', () => {
         ],
       },
     ];
-    mockedDecode.mockReturnValue({ paymentHash: '99'.repeat(32), amountMsat: 21_000 });
+    // One payment hash per invoice: the payment claim dedupes receipts that share a hash.
+    mockedDecode.mockImplementation((pr) => ({
+      paymentHash: createHash('sha256').update(pr).digest('hex'),
+      amountMsat: 21_000,
+    }));
     await ingest({
       store,
       auth,
@@ -3171,7 +3489,11 @@ describe('indexOpenZapReceipts', () => {
         ],
       },
     ];
-    mockedDecode.mockReturnValue({ paymentHash: 'aa'.repeat(32), amountMsat: 21_000 });
+    // One payment hash per invoice: the payment claim dedupes receipts that share a hash.
+    mockedDecode.mockImplementation((pr) => ({
+      paymentHash: createHash('sha256').update(pr).digest('hex'),
+      amountMsat: 21_000,
+    }));
     await ingest({
       store,
       auth,
@@ -3649,7 +3971,9 @@ describe('indexOpenZapReceipts', () => {
       override getZapReceiptGift(
         ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
       ): ReturnType<InMemoryMessageStore['getZapReceiptGift']> {
-        giftLookups += 1;
+        if (args[0] === 'r-gift-unverified') {
+          giftLookups += 1;
+        }
         return super.getZapReceiptGift(...args);
       }
     }
@@ -4197,6 +4521,92 @@ describe('indexOpenZapReceipts', () => {
 });
 
 describe('conversation zap ingest', () => {
+  it('rejects a conversation receipt whose payment hash was manually settled', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+      lightningAddress: 'settled-pn@example.com',
+    });
+    const paymentHash = '2c'.repeat(32);
+    await seedManualInvoice(store, paymentHash);
+    expect(
+      (
+        await settleInvoiceManually({
+          store,
+          auth,
+          now: () => 1,
+          paymentHash,
+          note: 'wallet evidence',
+        })
+      ).ok,
+    ).toBe(true);
+
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'manual-payer',
+      'manual-author',
+      new Date('2026-09-18T12:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'settled-conversation-invoice',
+      createdAt: new Date('2026-09-18T12:00:00.000Z'),
+      messageId: 'manual-message',
+      payerAccountId: 'manual-payer',
+      authorAccountId: 'manual-author',
+      amountSats: 210_000,
+      lightningAddress: 'settled-pn@example.com',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-settled-pn',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: '29292929-2929-4929-8929-292929292929',
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 210_000_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'settled-conversation-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-settled-pn'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === 'settled-conversation-receipt' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'settled',
+      ),
+    ).toBe(true);
+  });
+
   it('appends a PN gift and does not credit the profile note', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

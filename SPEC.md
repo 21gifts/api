@@ -129,7 +129,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
-| POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`    | Operator manual settlement of a paid forum invoice (`DEBUG_TOKEN`)                                        |
+| POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
 | GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                             |
 | GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                  |
 | GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                          |
@@ -1512,17 +1512,27 @@ Success → **Response** `200` (never includes the note or preimage):
 {
   "receiptId": "<64-hex synthetic event id>",
   "messageId": "<uuid>",
-  "amountSats": 210000
+  "amountSats": 210000,
+  "resumed": false
 }
 ```
 
-The route credits the message once, persists an indexed synthetic kind:9735
-ingest with `manual=debug-settle` and the note (plus `preimage` only when it
-was supplied and verified), runs the normal zap notification fan-out, and
-inserts the payer gift-reply from the original zap request. A later real
-receipt for the payment hash is persisted as `rejected` / `settled` and does
-not add sats again. A payment hash already represented by any indexed ingest
-cannot be settled manually.
+The route claims the payment hash, credits the message once, and directly
+persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
+the note (plus `preimage` only when it was supplied and verified). It then runs
+the normal zap notification fan-out and inserts the payer gift-reply from the
+original zap request. If credit succeeded but the ingest write failed, that
+failure returns 503; a retry writes the missing ingest from the current
+request, runs the post-credit effects, returns `resumed: true`, and does not
+credit again. Fresh success returns `resumed: false`.
+
+The durable payment-hash claim prevents a later real receipt, an ingest-write
+failure, or message deletion from allowing another credit. A later real
+receipt is persisted as `rejected` / `settled`. A payment hash already owned by
+another receipt or represented by any indexed ingest cannot be settled
+manually. If payer lookup throws after credit, the route still succeeds: it
+logs the gift-reply failure, omits payer fields from the notification, and
+skips the gift-reply.
 
 Failures:
 
@@ -1534,12 +1544,12 @@ Failures:
 - conversation invoice → `409 { "error": "Conversation invoices cannot be settled" }`
 - missing/hidden target message → `404 { "error": "Message not found" }`
 - already indexed/settled payment → `409 { "error": "Already settled" }`
-- store failure → `503 { "error": "Messages are unavailable" }`
+- store failure, including the direct ingest write → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
-The duplicate lookup and receipt write are not one transaction, so a real
-receipt indexed at the exact same instant could still count twice. This is an
-accepted limit for an operator action taken long after the receipt window.
+The payment-hash claim and credit are not one transaction, but the claim
+table's primary key serialises competing receipt ids and remains as the
+payment's tombstone.
 
 ### `GET /debug/zap-ingests`
 

@@ -46,7 +46,7 @@ interface ProviderCacheRow {
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
 
 type SettleInvoiceResult =
-  | { ok: true; receiptId: string; messageId: string; amountSats: number }
+  | { ok: true; receiptId: string; messageId: string; amountSats: number; resumed: boolean }
   | {
       ok: false;
       reason: 'shape' | 'note' | 'preimage' | 'invoice' | 'conversation' | 'message' | 'duplicate';
@@ -218,12 +218,15 @@ function zapIngestRow(args: {
  * `DEBUG_TOKEN` is the authority for the route caller; the required note is
  * durable operator evidence. A supplied preimage is additionally verified
  * against the payment hash and stored only in the synthetic receipt tags.
- * The duplicate lookup and `recordZapReceipt` are not one transaction, so a
- * real receipt indexed at exactly the same instant could still count twice;
- * this debug action is intended long after the normal receipt window.
+ * The claim and credit are not one transaction, so the concurrent same-instant
+ * race is limited to the window between them; competing different receipt ids
+ * are serialised by the claim table's payment-hash primary key.
  *
  * @param args - Stores, clock, payment hash, operator note, and optional preimage.
- * @returns The credited receipt details, or the first validation/lookup failure.
+ * @returns The credited receipt details and resume status, or the first
+ *   validation/lookup failure.
+ * @throws Propagates store lookup, payment-claim, credit, and ingest-write
+ *   failures; payer-auth and notification failures are logged and suppressed.
  */
 export async function settleInvoiceManually(args: {
   store: MessageStore;
@@ -273,14 +276,18 @@ export async function settleInvoiceManually(args: {
   }
 
   const receiptId = manualReceiptIdForPaymentHash(paymentHash);
-  if ((await args.store.getZapReceiptGift(receiptId)) !== undefined) {
+  const resumed = (await args.store.getZapReceiptGift(receiptId)) !== undefined;
+  const indexed = await args.store.listIndexedZapIngests();
+  if (resumed && indexed.some((row) => row.receiptId === receiptId)) {
     return { ok: false, reason: 'duplicate' };
   }
-  const indexed = await args.store.listIndexedZapIngests();
   if (indexed.some((row) => paymentHashFromReceipt(row.receipt) === paymentHash)) {
     return { ok: false, reason: 'duplicate' };
   }
-  if (!(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats))) {
+  if (!(await args.store.claimZapPayment(paymentHash, receiptId, new Date(args.now())))) {
+    return { ok: false, reason: 'duplicate' };
+  }
+  if (!resumed && !(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats))) {
     return { ok: false, reason: 'duplicate' };
   }
 
@@ -305,22 +312,27 @@ export async function settleInvoiceManually(args: {
     sig: '',
     tags,
   } satisfies Record<string, unknown>;
-  await persistZapIngest(
-    args.store,
-    zapIngestRow({
-      receiptId,
-      noteEventId: message.eventId,
-      messageId: message.id,
-      outcome: 'indexed',
-      reason: null,
-      amountSats: invoice.amountSats,
-      receiptPubkey: null,
-      receipt,
-    }),
-  );
+  const ingest = zapIngestRow({
+    receiptId,
+    noteEventId: message.eventId,
+    messageId: message.id,
+    outcome: 'indexed',
+    reason: null,
+    amountSats: invoice.amountSats,
+    receiptPubkey: null,
+    receipt,
+  });
+  await args.store.recordZapIngest(ingest);
+  decisionsFor(args.store).set(receiptId, decisionKey(ingest.outcome, ingest.reason));
   logEvent('nostr.zap.settled_manually', { messageId: message.id, sats: invoice.amountSats });
 
-  const payer = await args.auth.getAccount(invoice.payerAccountId);
+  let payer: Account | undefined;
+  try {
+    payer = await args.auth.getAccount(invoice.payerAccountId);
+  } catch {
+    payer = undefined;
+    logEvent('nostr.zap.gift_reply.failed', { receiptId });
+  }
   if (message.accountId !== null) {
     try {
       await notifyZap({
@@ -355,7 +367,13 @@ export async function settleInvoiceManually(args: {
       logEvent('nostr.zap.gift_reply.failed', { receiptId });
     }
   }
-  return { ok: true, receiptId, messageId: message.id, amountSats: invoice.amountSats };
+  return {
+    ok: true,
+    receiptId,
+    messageId: message.id,
+    amountSats: invoice.amountSats,
+    resumed,
+  };
 }
 
 /**
@@ -496,6 +514,7 @@ export async function indexZapReceipt(args: {
  *   optional `pushStore`, `notificationStore`, and `conversations` (PN
  *   invoices append here; omitted → `rejected`/`conversation`).
  * @returns Resolves when the tick's ingest pass finishes.
+ * @throws Propagates relay-query and unguarded store failures.
  */
 export async function indexOpenZapReceipts(args: {
   store: MessageStore;
@@ -663,8 +682,9 @@ async function ingestOneReceipt(
     return;
   }
 
-  const conversationInvoice = await conversationInvoiceFromReceipt(args.store, event);
-  if (conversationInvoice !== undefined) {
+  const conversationMatch = await conversationInvoiceFromReceipt(args.store, event);
+  if (conversationMatch !== undefined) {
+    const { invoice: conversationInvoice, paymentHash } = conversationMatch;
     if (args.conversations === undefined) {
       await persistZapIngest(
         args.store,
@@ -731,6 +751,23 @@ async function ingestOneReceipt(
           messageId: null,
           outcome: 'rejected',
           reason: 'pubkey',
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
+    if (!(await args.store.claimZapPayment(paymentHash, event.id, new Date(args.now())))) {
+      logEvent('nostr.zap.rejected', { reason: 'settled' });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'settled',
           amountSats: conversationInvoice.amountSats,
           receiptPubkey: event.pubkey,
           receipt,
@@ -927,6 +964,40 @@ async function ingestOneReceipt(
         messageId: row.id,
         outcome: 'rejected',
         reason: 'provider',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return;
+  }
+  if (event.pubkey.toLowerCase() !== providerPubkey.toLowerCase()) {
+    logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'pubkey',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return;
+  }
+  if (!(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))) {
+    logEvent('nostr.zap.rejected', { reason: 'settled' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'settled',
         amountSats,
         receiptPubkey: event.pubkey,
         receipt,
@@ -1246,12 +1317,13 @@ function giftReplyIdForReceipt(receiptEventId: string): string {
  *
  * @param store - Invoice attempts.
  * @param event - Kind:9735 frame.
- * @returns The invoice when it targets a PN, otherwise `undefined`.
+ * @returns The invoice and decoded payment hash when it targets a PN,
+ *   otherwise `undefined`.
  */
 async function conversationInvoiceFromReceipt(
   store: MessageStore,
   event: NostrEventFrame,
-): Promise<MessageInvoiceAttempt | undefined> {
+): Promise<{ invoice: MessageInvoiceAttempt; paymentHash: string } | undefined> {
   const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
   const pr = typeof taggedPr === 'string' ? taggedPr : '';
   if (pr === '') {
@@ -1276,7 +1348,7 @@ async function conversationInvoiceFromReceipt(
   ) {
     return undefined;
   }
-  return invoice;
+  return { invoice, paymentHash: decoded.paymentHash };
 }
 
 /**

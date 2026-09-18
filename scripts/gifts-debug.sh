@@ -321,11 +321,7 @@ cmd_settle() {
   local payment_hash="${1:-}" note="${2:-}" preimage="${3:-}" payload tmp status body
   [ -n "$payment_hash" ] || die "usage: gifts-debug settle <payment-hash> <note> [preimage]"
   [ -n "$note" ] || die "usage: gifts-debug settle <payment-hash> <note> [preimage]"
-  if [ -n "$preimage" ]; then
-    payload="{\"paymentHash\":\"${payment_hash}\",\"note\":\"${note}\",\"preimage\":\"${preimage}\"}"
-  else
-    payload="{\"paymentHash\":\"${payment_hash}\",\"note\":\"${note}\"}"
-  fi
+  payload=$(python3 -c 'import json,sys; data={"paymentHash":sys.argv[1],"note":sys.argv[2]}; sys.argv[3] and data.update({"preimage":sys.argv[3]}); print(json.dumps(data))' "$payment_hash" "$note" "$preimage")
   tmp=$(mktemp)
   status=$(curl -sS -o "$tmp" -w '%{http_code}' \
     -X POST \
