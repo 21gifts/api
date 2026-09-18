@@ -191,6 +191,33 @@ reply and does not nest a gift-reply. Gift-only (empty text) replies are not pub
 replies from `basis` (not the parent author) are **403**; `verified` /
 `moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
+**External zap → gift reply.** A kind:9735 first credits the addressed member
+note under the existing receipt and payment-hash checks. If its embedded
+kind:9734 belongs to no account, the api additionally requires the exact
+BOLT11 description hash, matching `e` tag, matching optional msat `amount`,
+and a valid signature. At least 1 sat records permanent zapper entitlement.
+An unblocked, unreplayed request on a live top-level note then becomes a
+visible gift-reply with the external profile-name snapshot, comment, sats,
+`accountId: null`, `via: "nostr"`, and no platform Nostr publication. Zaps on
+replies or hidden notes keep the sats and entitlement but create no row.
+
+**External reply → visible after first zap.** The inbound reply REQ deliberately
+has no `since`. Before entitlement, a kind:1 reply from an unknown pubkey is
+silently skipped. On the first worker tick after that pubkey's first verified
+zap, the same older event is queried again and persists when unblocked and
+within the per-pubkey and global limits. It is listed and counted like a member
+reply, but public JSON exposes only `via: "nostr"`, never the pubkey. Only the
+parent's member author is notified, and only for an event no more than one hour
+old.
+
+**Staff hide → block.** Founder/moderator `DELETE /messages/:id` keeps the
+normal target-and-direct-reply soft-hide. When the target itself is external,
+it also writes the pubkey kill switch and soft-hides that pubkey's other live
+rows. Future external gift-replies and inbound replies are skipped while sats
+and zapper entitlement remain. Operator restore removes the block only when
+restoring its source message; rows hidden elsewhere by the author-wide cascade
+are restored individually.
+
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. Inbox threads have per-viewer unread
 via `GET /conversations` (`unread` / `unreadCount`) and
@@ -234,13 +261,15 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-The api writes one in-app row to every account except the actor, then
-filters recipients by each account's `notificationLevel`, and
-enqueues (does not send inline) one Web Push to every remaining bell subscriber
-(an account with at least one `push_subscription`) except the actor:
+For member-authored living-room events, the api writes one in-app row to every
+account except the actor, then filters recipients by each account's
+`notificationLevel`, and enqueues (does not send inline) one Web Push to every
+remaining bell subscriber (an account with at least one `push_subscription`)
+except the actor. External replies use the targeted exception below:
 
 - a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
 - a **reply** payload when someone replies (`title` New reply on 21.gifts, `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
+- an **external reply** payload only for the parent note's member author, never a broadcast, and only when the inbound event is at most one hour old. Its notification actor is the generic "Someone", not the reply's own name. The persisted row remains visible when older.
 - a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer.
 
 Missing `pushStore` still writes in-app rows. If persist or enqueue

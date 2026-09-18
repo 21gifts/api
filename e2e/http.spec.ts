@@ -696,3 +696,8 @@ test('DELETE /debug/trust-edges with the e2e token and a bad body is 400', async
   });
   expect(res.status()).toBe(400);
 });
+
+test('GET /debug/external-pubkeys without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/external-pubkeys');
+  expect(res.status()).toBe(401);
+});

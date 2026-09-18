@@ -11,6 +11,7 @@ import { PostgresContactStore } from '@/lib/contact-store';
 import { PostgresConversationStore } from '@/lib/conversation-store';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { PostgresNotificationStore } from '@/lib/notification-store';
+import { RecordingQuerier } from '@/lib/nostr/query';
 import { PostgresPushStore } from '@/lib/push-store';
 import { PostgresTrustStore } from '@/lib/trust-store';
 
@@ -73,6 +74,7 @@ describe('openBootStores', () => {
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zapper.backfill.done')).toBe(false);
   });
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when blank', async () => {
@@ -103,6 +105,7 @@ describe('openBootStores', () => {
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zapper.backfill.done')).toBe(false);
   });
 
   it('throws when a URL is set without a client factory', async () => {
@@ -161,6 +164,9 @@ describe('openBootStores', () => {
       candlesUrl: 'https://example.test/candles',
       frankfurterUrl: 'https://example.test/frankfurter',
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      nostrRelayTimeoutMs: 50,
     });
 
     expect(factory).toHaveBeenCalledTimes(1);
@@ -221,8 +227,24 @@ describe('openBootStores', () => {
       ),
     ).toBeLessThan(dbChangeAttachIdx);
     expect(backfillIdx).toBeGreaterThan(dbChangeAttachIdx);
+    const zapperBackfillIdx = operations.findIndex(
+      (operation) =>
+        operation.startsWith('query:') &&
+        operation.includes('nostr_zap_ingest') &&
+        operation.includes('JOIN LATERAL'),
+    );
+    expect(zapperBackfillIdx).toBeGreaterThan(backfillIdx);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 0, total: 0 }),
+    );
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'nostr.zapper.backfill.done',
+        scanned: 0,
+        verified: 0,
+        attributed: 0,
+        gifts: 0,
+      }),
     );
 
     if (giftStore === undefined) {

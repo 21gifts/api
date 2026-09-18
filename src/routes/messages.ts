@@ -625,10 +625,12 @@ const invoiceBody = z.object({
  * Photo, video, replies, DELETE, and `GET /hidden` register before the public
  * single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on reads; `getById` still returns them for workers. Public
- * `GET /:id` of a live Damus-only reply (`parentId` set, `accountId` null) is
- * 404; top-level Damus-only notes stay 200. Public `GET /:id/replies` lists
- * 21.gifts-author children only; Bearer is optional (`accountId` present only
- * when signed in).
+ * `GET /:id` of a live reply with `accountId` null and a recorded
+ * `authorPubkey` returns 200 with `via: 'nostr'`; only a reply with neither
+ * an account nor an author pubkey is 404. Top-level Damus-only notes stay
+ * 200. Public `GET /:id/replies` lists live children with either an account
+ * or a recorded external author pubkey; Bearer is optional (`accountId`
+ * present only when signed in).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
  * `notificationStore` / `conversationStore`, and
@@ -808,17 +810,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          if (row.accountId === null) {
-            continue;
-          }
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
             continue;
           }
           try {
-            const author = await deps.authStore.getAccount(row.accountId);
-            const role = author?.role ?? 'basis';
-            const payable = payableOf(kept, author);
+            const author =
+              row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+            const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+            const payable = row.accountId === null ? false : payableOf(kept, author);
             messages.push(serializeMessage(kept, payable, role, undefined, includeAccountId));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -844,9 +844,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       try {
-        const tagged = await deps.store.markDeleted(id, new Date(deps.now()), account.id);
+        const target = await deps.store.getById(id);
+        if (target === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const at = new Date(deps.now());
+        const tagged = await deps.store.markDeleted(id, at, account.id);
         if (!tagged) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (target.accountId === null && target.authorPubkey !== null) {
+          await deps.store.blockPubkey(target.authorPubkey, at, account.id, id);
+          const cascaded = await deps.store.markDeletedByExternalPubkey(
+            target.authorPubkey,
+            at,
+            account.id,
+          );
+          logEvent('messages.external.blocked', { messageId: id, hidden: cascaded + 1 });
         }
         logEvent('messages.deleted', {
           messageId: id,
@@ -913,7 +927,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (
             row === undefined ||
             row.deletedAt !== null ||
-            (row.parentId !== null && row.accountId === null)
+            (row.parentId !== null && row.accountId === null && row.authorPubkey === null)
           ) {
             return c.json({ error: 'Not found' }, 404);
           }
@@ -927,7 +941,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = payableOf(row, author);
+          const payable = row.accountId === null ? false : payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {

@@ -154,6 +154,8 @@ export interface PublicMessage {
    * authors.
    */
   role?: AccountRole;
+  /** Marks a visible external Nostr-authored row; the pubkey remains private. */
+  via?: 'nostr';
   /**
    * Number of direct replies (`parent_id` children). Present on top-level
    * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
@@ -294,6 +296,9 @@ export function serializeMessage(
   if (role !== undefined) {
     body.role = role;
   }
+  if (row.accountId === null && row.authorPubkey !== null) {
+    body.via = 'nostr';
+  }
   if (replyCount !== undefined) {
     body.replyCount = replyCount;
   }
@@ -346,22 +351,25 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
  *
  * JSON `name` is the stored `row.name` (no empty-name pubkey fallback).
  * Always includes `parentId` (JSON `null` on top-level notes) and
- * `deletedAt` (JSON `null` when live). Never includes `accountId`,
+ * `deletedAt` (JSON `null` when live). Optional `via: 'nostr'` is present
+ * exactly when `row.accountId === null && row.authorPubkey !== null`; the
+ * pubkey itself never appears in this JSON. Never includes `accountId`,
  * `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`,
  * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
  *
  * @param row - Persisted message (including hidden rows and replies).
  * @param deletedBy - Resolved deleter `{ id, name, role }` from the route.
- * @returns Hidden-log fields; `createdAt` / `deletedAt` ISO-8601
- *   (`deletedAt` null when live).
+ * @returns Hidden-log fields (`id`, `name`, `text`, `createdAt`, `sats`,
+ *   media flags, `parentId`, `deletedAt`, `deletedBy`, and optional `via`);
+ *   `createdAt` / `deletedAt` are ISO-8601 (`deletedAt` null when live).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
   row: MessageRow,
   deletedBy: { id: string | null; name: string | null; role: AccountRole | null },
-): Record<string, unknown> {
+): Record<string, unknown> & { via?: 'nostr' } {
   const deletedAt = row.deletedAt ?? null;
-  return {
+  const body: Record<string, unknown> & { via?: 'nostr' } = {
     id: row.id,
     name: row.name,
     text: row.text,
@@ -375,6 +383,10 @@ export function serializeHiddenMessage(
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy,
   };
+  if (row.accountId === null && row.authorPubkey !== null) {
+    body.via = 'nostr';
+  }
+  return body;
 }
 
 /**

@@ -18,6 +18,7 @@ import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
+import { ExternalIngestLimiter } from '@/lib/nostr/external';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { removeForumVideo } from '@/lib/video';
 
@@ -4599,7 +4600,7 @@ describe('runNostrWorkerTick', () => {
     querier.events = [
       {
         id: memberReplyId,
-        pubkey: accPubkey,
+        pubkey: accPubkey.toUpperCase(),
         kind: 1,
         tags: [['e', noteEventId, '', 'reply']],
         content: 'member reply',
@@ -4708,6 +4709,9 @@ describe('runNostrWorkerTick', () => {
     const replies = await messages.listReplies('m1');
     expect(replies.map((row) => row.text).sort()).toEqual(['member reply', 'nameless member']);
     expect(replies.find((row) => row.text === 'member reply')?.accountId).toBe('acc');
+    expect(replies.find((row) => row.text === 'member reply')?.authorPubkey).toBe(
+      accPubkey.toUpperCase(),
+    );
     expect(replies.find((row) => row.text === 'nameless member')?.accountId).toBe('nameless');
     expect(replies.find((row) => row.text === 'nameless member')?.name).toBe(
       truncatePubkeyDisplay(namelessPubkey),
@@ -4720,6 +4724,315 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.getByEventId('77'.repeat(32))).toBeUndefined();
     expect(await messages.getByEventId(memberReplyId)).toBeDefined();
     expect(await messages.getByEventId('66'.repeat(32))).toBeDefined();
+  });
+
+  it('keeps an account-owned zapper pubkey on the member inbound path', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a0'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob-zapper',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '8'.repeat(64),
+      createdAt: 8,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob-zapper', KEK);
+    const bobPubkey = (await auth.getNostrPublicKey('bob-zapper')) as string;
+    await messages.recordZapper(bobPubkey, 'receipt-bob-zapper', new Date(1_699_999_000_000));
+    expect(await messages.listZapperPubkeys()).toContain(bobPubkey);
+
+    const replyEventId = 'b0'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: bobPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'member zapper reply',
+        created_at: 1_700_000_000,
+        sig: 'c0'.repeat(32),
+      },
+    ];
+    const limiter = new ExternalIngestLimiter();
+    const tryAcquire = vi.spyOn(limiter, 'tryAcquire');
+    const notifications = new InMemoryNotificationStore();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        notificationStore: notifications,
+        verifyKind1: () => true,
+        externalLimiter: limiter,
+      }),
+    );
+
+    expect(await messages.getByEventId(replyEventId)).toMatchObject({
+      accountId: 'bob-zapper',
+      authorPubkey: bobPubkey,
+      name: 'Bob',
+      text: 'member zapper reply',
+    });
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.some((kind: unknown) => kind === 0);
+      }),
+    ).toBe(false);
+    expect(tryAcquire).toHaveBeenCalledTimes(0);
+    const forParent = await notifications.listByRecipient('acc', 10);
+    expect(forParent).toHaveLength(1);
+    expect(forParent[0]).toMatchObject({
+      type: 'forum_reply',
+      parentId: 'm1',
+      text: 'member zapper reply',
+      actorAccountId: 'bob-zapper',
+    });
+    expect(await notifications.listByRecipient('bob-zapper', 10)).toEqual([]);
+
+    tryAcquire.mockRestore();
+    for (let i = 0; i < 6; i += 1) {
+      expect(limiter.tryAcquire(bobPubkey, 1_700_000_000_000)).toBe(true);
+    }
+    expect(limiter.tryAcquire(bobPubkey, 1_700_000_000_000)).toBe(false);
+  });
+
+  it('persists entitled external replies, skips blocked and unknown pubkeys, and clamps future dates', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a1'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const externalPubkey = 'b1'.repeat(32);
+    const blockedPubkey = 'b2'.repeat(32);
+    const unknownPubkey = 'b3'.repeat(32);
+    await messages.recordZapper(externalPubkey, 'receipt-external', new Date(1_699_999_000_000));
+    await messages.recordZapper(blockedPubkey, 'receipt-blocked', new Date(1_699_999_000_000));
+    await messages.blockPubkey(
+      blockedPubkey,
+      new Date(1_699_999_500_000),
+      'acc',
+      'blocked-message',
+    );
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'c1'.repeat(32),
+        pubkey: externalPubkey.toUpperCase(),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'external reply',
+        created_at: 1_700_000_100,
+        sig: 'd1'.repeat(32),
+      },
+      {
+        id: 'c2'.repeat(32),
+        pubkey: blockedPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'blocked reply',
+        created_at: 1_700_000_000,
+        sig: 'd2'.repeat(32),
+      },
+      {
+        id: 'c3'.repeat(32),
+        pubkey: unknownPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'unknown reply',
+        created_at: 1_700_000_000,
+        sig: 'd3'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const replies = await messages.listReplies('m1');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      accountId: null,
+      authorPubkey: externalPubkey,
+      name: truncatePubkeyDisplay(externalPubkey),
+      text: 'external reply',
+      nostrPublishState: 'published',
+      sats: 0,
+    });
+    expect(replies[0]?.createdAt.toISOString()).toBe('2023-11-14T22:13:20.000Z');
+    expect(await messages.getByEventId('c2'.repeat(32))).toBeUndefined();
+    expect(await messages.getByEventId('c3'.repeat(32))).toBeUndefined();
+  });
+
+  it('clamps a future-dated member reply to worker time', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a2'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const memberPubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'c4'.repeat(32),
+        pubkey: memberPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'future member reply',
+        created_at: 1_700_000_100,
+        sig: 'd4'.repeat(32),
+      },
+    ];
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    expect((await messages.getByEventId('c4'.repeat(32)))?.createdAt.toISOString()).toBe(
+      '2023-11-14T22:13:20.000Z',
+    );
+  });
+
+  it('notifies only the parent author for a recent external reply and suppresses old reply notifications', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bystander',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '9'.repeat(64),
+      createdAt: 9,
+      rulesAgreedAt: null,
+    });
+    const noteEventId = 'a3'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const recentPubkey = 'b4'.repeat(32);
+    const oldPubkey = 'b5'.repeat(32);
+    await messages.recordZapper(recentPubkey, 'receipt-recent', new Date(1_699_999_000_000));
+    await messages.recordZapper(oldPubkey, 'receipt-old', new Date(1_699_999_000_000));
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'c5'.repeat(32),
+        pubkey: recentPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'recent external',
+        created_at: 1_699_999_999,
+        sig: 'd5'.repeat(32),
+      },
+      {
+        id: 'c6'.repeat(32),
+        pubkey: oldPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'old external',
+        created_at: 1_699_996_399,
+        sig: 'd6'.repeat(32),
+      },
+    ];
+    const notifications = new InMemoryNotificationStore();
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier, notifications);
+    const forParent = await notifications.listByRecipient('acc', 10);
+    expect(forParent).toHaveLength(1);
+    expect(forParent[0]).toMatchObject({
+      parentId: 'm1',
+      name: truncatePubkeyDisplay(recentPubkey),
+      text: 'recent external',
+    });
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    expect(await messages.getByEventId('c5'.repeat(32))).toBeDefined();
+    expect(await messages.getByEventId('c6'.repeat(32))).toBeDefined();
+  });
+
+  it('keeps an external reply and logs when its targeted notification fails', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a5'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'b7'.repeat(32);
+    const eventId = 'c8'.repeat(32);
+    await messages.recordZapper(pubkey, 'receipt-notify-failure', new Date(1_699_999_000_000));
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: eventId,
+        pubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'persist despite notify failure',
+        created_at: 1_699_999_999,
+        sig: 'd8'.repeat(32),
+      },
+    ];
+    const notifications = new InMemoryNotificationStore();
+    notifications.create = async () => {
+      throw new Error('boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await inboundTick(auth, messages, new InMemoryConversationStore(), querier, notifications);
+      expect(await messages.getByEventId(eventId)).toBeDefined();
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes('nostr.reply.notify.failed')),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps a rate-limited external event unstored and retries it after the hourly window', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a4'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'b6'.repeat(32);
+    await messages.recordZapper(pubkey, 'receipt-limited', new Date(1_699_999_000_000));
+    const limiter = new ExternalIngestLimiter();
+    let nowMs = 1_700_000_000_000;
+    for (let i = 0; i < 6; i += 1) {
+      expect(limiter.tryAcquire(pubkey, nowMs)).toBe(true);
+    }
+    const eventId = 'c7'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: eventId,
+        pubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'retry me',
+        created_at: 1_700_000_000,
+        sig: 'd7'.repeat(32),
+      },
+    ];
+    const run = async (): Promise<void> =>
+      runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          querier,
+          now: () => nowMs,
+          env: {},
+          conversations: new InMemoryConversationStore(),
+          verifyKind1: () => true,
+          externalLimiter: limiter,
+        }),
+      );
+    await run();
+    expect(await messages.getByEventId(eventId)).toBeUndefined();
+    nowMs += 60 * 60 * 1000 + 1;
+    await run();
+    expect(await messages.getByEventId(eventId)).toMatchObject({
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'retry me',
+    });
   });
 
   it('notifies the parent author when another member replies inbound', async () => {

@@ -46,9 +46,28 @@ CREATE TABLE IF NOT EXISTS nostr_zap_receipt (
   sats bigint NOT NULL
 );
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_account_id uuid;
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_pubkey text;
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS zap_request_id text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id);
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_request_uidx
+  ON nostr_zap_receipt (zap_request_id) WHERE zap_request_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;
+
+-- A verified zap permanently entitles an external pubkey to visible replies.
+CREATE TABLE IF NOT EXISTS nostr_zapper (
+  pubkey text PRIMARY KEY,
+  receipt_event_id text NOT NULL,
+  created_at timestamptz NOT NULL
+);
+
+-- Staff kill switch for external identities. No FK: audit rows outlive messages.
+CREATE TABLE IF NOT EXISTS nostr_blocked_pubkey (
+  pubkey text PRIMARY KEY,
+  blocked_at timestamptz NOT NULL,
+  blocked_by uuid NOT NULL,
+  message_id uuid NOT NULL
+);
 
 -- Payment-hash ownership tombstones intentionally outlive message deletion.
 -- No message foreign key: deleting and restoring a message must not reopen a payment.

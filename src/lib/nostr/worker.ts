@@ -15,7 +15,7 @@ import {
 } from '@/lib/message';
 import { locationHashtagName } from '@/lib/location';
 import type { MessageStore } from '@/lib/message-store';
-import { notifyForumReply } from '@/lib/notification';
+import { notifyExternalForumReply, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { errorLogFields, logEvent } from '@/lib/log';
 import { decryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
@@ -45,6 +45,12 @@ import {
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import {
+  EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
+  ExternalIngestLimiter,
+  externalDisplayName,
+  resolveExternalProfileName,
+} from '@/lib/nostr/external';
 
 /** Max rows claimed or keyed profile attempts per tick. */
 export const WORKER_BATCH = 20;
@@ -85,10 +91,28 @@ export interface NostrWorkerDeps {
   pushStore?: PushStore;
   /** Optional signature check for inbound kind:1 replies (tests inject). */
   verifyKind1?: (event: NostrEventFrame) => boolean;
+  /** Optional external-reply limiter; one instance is retained per worker/store by default. */
+  externalLimiter?: ExternalIngestLimiter;
   /** Optional private-message store (skip DMs when omitted). */
   conversations?: ConversationStore;
   /** Optional in-app store: inbound replies, notifyZap, profile-note notifyForumPost. */
   notificationStore?: NotificationStore;
+}
+
+const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
+
+/** Resolve the injected limiter or retain one default limiter per message store. */
+function externalLimiterFor(deps: NostrWorkerDeps): ExternalIngestLimiter {
+  if (deps.externalLimiter !== undefined) {
+    return deps.externalLimiter;
+  }
+  const existing = externalLimiters.get(deps.messages);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new ExternalIngestLimiter();
+  externalLimiters.set(deps.messages, created);
+  return created;
 }
 
 type Kind0Reservation = {
@@ -159,7 +183,8 @@ function reservedContent(
  * kind:9735 receipts and indexes validated ones onto `sats`, even when publish
  * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
  * note event ids) and persists inbound replies whose pubkey maps to a
- * 21.gifts account (even when publish is off). Unknown npubs are skipped.
+ * 21.gifts account or to an entitled, unblocked external zapper (even when
+ * publish is off). Other npubs are skipped.
  * After a member reply is stored, `notifyForumReply` always runs with `auth`
  * (in-app every account except the actor; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
@@ -290,12 +315,12 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
 
 /**
  * REQ kind:1 replies referencing our published top-level notes and persist
- * those whose pubkey maps to a 21.gifts account.
+ * those whose pubkey maps to a member or an entitled external zapper.
  *
  * Runs every tick (even when `NOSTR_PUBLISH` is off). Does not require
  * `t=21gifts`. Skips invalid signatures, already-stored event ids, empty /
- * over-long content, events that equal the parent note id, and unknown
- * npubs (same silent skip as an empty event id). Member replies posted
+ * over-long content, events that equal the parent note id, and unknown or
+ * blocked npubs (same silent skip as an empty event id). Member replies posted
  * from Damus with the custodial key still persist (named, or nameless via
  * {@link truncatePubkeyDisplay}). After a successful persist, fans out via
  * {@link notifyForumReply} (in-app every account except the actor; Web Push
@@ -328,6 +353,16 @@ async function indexInboundForumReplies(
     }
     pubkeyToAccount.set(pubkey.toLowerCase(), { id: account.id, name: account.name });
   }
+  const zappers = new Set(
+    (await deps.messages.listZapperPubkeys()).map((value) => value.toLowerCase()),
+  );
+  const blocked = new Set(
+    (await deps.messages.listBlockedPubkeys()).map((value) => value.toLowerCase()),
+  );
+  const limiter = externalLimiterFor(deps);
+  const accountNames = accounts
+    .map((account) => account.name)
+    .filter((value): value is string => value !== null);
 
   for (let i = 0; i < noteEventIds.length; i += REPLY_QUERY_CHUNK) {
     const chunk = noteEventIds.slice(i, i + REPLY_QUERY_CHUNK);
@@ -363,17 +398,36 @@ async function indexInboundForumReplies(
       if (text === null || text === '') {
         continue;
       }
-      const matched = pubkeyToAccount.get(event.pubkey.toLowerCase());
-      if (matched === undefined) {
-        continue;
+      const nowMs = deps.now();
+      const pubkey = event.pubkey.toLowerCase();
+      const matched = pubkeyToAccount.get(pubkey);
+      let accountId: string | null;
+      let name: string;
+      let authorPubkey: string;
+      let external = false;
+      if (matched !== undefined) {
+        accountId = matched.id;
+        const accountName = matched.name?.trim() ?? '';
+        name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
+        authorPubkey = event.pubkey;
+      } else {
+        if (!zappers.has(pubkey) || blocked.has(pubkey) || !limiter.tryAcquire(pubkey, nowMs)) {
+          continue;
+        }
+        external = true;
+        accountId = null;
+        authorPubkey = pubkey;
+        const profileName = await resolveExternalProfileName({
+          querier: deps.querier,
+          urls,
+          pubkey,
+          nowMs,
+          timeoutMs: RELAY_TIMEOUT_MS,
+        });
+        name = externalDisplayName({ profileName, pubkey, accountNames });
       }
-      const accountId = matched.id;
-      const accountName = matched.name?.trim() ?? '';
-      const name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
-      const createdAt =
-        typeof event.created_at === 'number'
-          ? new Date(event.created_at * 1000)
-          : new Date(deps.now());
+      const eventMs = typeof event.created_at === 'number' ? event.created_at * 1000 : nowMs;
+      const createdAt = new Date(Math.min(eventMs, nowMs));
       try {
         const created = await deps.messages.create({
           id: crypto.randomUUID(),
@@ -385,7 +439,7 @@ async function indexInboundForumReplies(
           hasVideo: false,
           videoContentType: null,
           parentId: parentNote.id,
-          authorPubkey: event.pubkey,
+          authorPubkey,
           eventId: event.id,
           nostrPublishState: 'published',
           sats: 0,
@@ -398,11 +452,7 @@ async function indexInboundForumReplies(
           deletedBy: null,
         });
         try {
-          await notifyForumReply({
-            messages: deps.messages,
-            account: { id: accountId },
-            created,
-            parentId: parentNote.id,
+          const notificationDeps = {
             auth: deps.auth,
             ...(deps.notificationStore === undefined
               ? {}
@@ -412,7 +462,26 @@ async function indexInboundForumReplies(
             ...(deps.conversations === undefined
               ? {}
               : { inboxUnreadCount: inboxUnreadCountFor(deps.conversations, deps.auth) }),
-          });
+          };
+          if (external) {
+            if (nowMs - eventMs <= EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS) {
+              await notifyExternalForumReply({
+                ...notificationDeps,
+                parent: parentNote,
+                created,
+              });
+            }
+          } else {
+            /* v8 ignore next -- the member branch always has an account id */
+            if (accountId === null) continue;
+            await notifyForumReply({
+              ...notificationDeps,
+              messages: deps.messages,
+              account: { id: accountId },
+              created,
+              parentId: parentNote.id,
+            });
+          }
         } catch {
           logEvent('nostr.reply.notify.failed', { eventId: event.id });
         }

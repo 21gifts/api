@@ -693,6 +693,8 @@ describe('debugMessagesRoutes', () => {
     await store.markDeleted(independentId, later, 'other-staff');
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
     await store.markDeleted(REPLY_ID, HIDDEN_AT, 'staff');
+    await store.blockPubkey('ab'.repeat(32), HIDDEN_AT, 'staff', HIDDEN_ID);
+    expect(await store.listBlockedPubkeys()).toEqual(['ab'.repeat(32)]);
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
@@ -713,6 +715,7 @@ describe('debugMessagesRoutes', () => {
     expect(grandchild?.deletedAt?.toISOString()).toBe(HIDDEN_AT.toISOString());
     expect(grandchild?.deletedBy).toBe('staff');
     expect(await store.getPhoto(HIDDEN_ID)).toEqual(JPEG);
+    expect(await store.listBlockedPubkeys()).toEqual([]);
     const restored = parsedEvents(warn).filter((e) => e['event'] === 'debug.messages.restored');
     expect(restored).toHaveLength(1);
     expect(restored[0]?.['messageId']).toBe(HIDDEN_ID);

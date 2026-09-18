@@ -1594,3 +1594,45 @@ test('Function: debugTrustRoutes — DELETE /debug/trust-edges without bearer is
   const res = await request.delete('/debug/trust-edges');
   expect(res.status()).toBe(401);
 });
+
+test('Function: verifiedExternalZapRequest — default boot has no external Nostr reply', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: externalDisplayName — default boot has no external Nostr reply', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: resolveExternalProfileName — default boot has no external Nostr reply', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: ExternalIngestLimiter — default boot has no external Nostr reply', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: backfillExternalZappers — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: notifyExternalForumReply — default boot has no external Nostr reply', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
+});

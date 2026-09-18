@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 #
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
-#               forum-note debug reads, forum-video restore, forum-note unhide,
+#               forum-note debug reads, external-pubkey inspection,
+#               forum-video restore, forum-note unhide,
 #               spend live roster, and trust-edge backfill for 21.gifts
 #               (GET /debug/accounts, PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
+#               GET /debug/external-pubkeys,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
@@ -21,6 +23,7 @@
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
+#   gifts-debug external-pubkeys [--raw]  # entitled/blocked pubkeys table or JSON
 #   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
 #   gifts-debug restore <id>         # POST unhide; print GET /debug/messages/:id JSON
@@ -40,6 +43,8 @@
 #   gifts-debug role <account-id> moderator
 #   gifts-debug unlink <account-id>
 #   gifts-debug messages
+#   gifts-debug external-pubkeys
+#   gifts-debug external-pubkeys --raw
 #   gifts-debug message <message-id>
 #   gifts-debug video-put <message-id> ./clip.mp4
 #   gifts-debug restore <message-id>
@@ -209,6 +214,49 @@ print("\t".join(keys))
 for row in rows:
     print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
 print("%s rows" % len(rows), file=sys.stderr)
+'
+}
+
+fetch_external_pubkeys() {
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_API_URL}/debug/external-pubkeys") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_external_pubkeys() {
+  local body
+  body=$(fetch_external_pubkeys)
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+print("zappers")
+keys = ["pubkey", "receiptEventId", "createdAt"]
+print("\t".join(keys))
+for row in data.get("zappers") or []:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("blocked")
+keys = ["pubkey", "blockedAt", "blockedBy", "messageId"]
+print("\t".join(keys))
+for row in data.get("blocked") or []:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("%s zappers, %s blocked" % (
+    len(data.get("zappers") or []), len(data.get("blocked") or [])
+), file=sys.stderr)
 '
 }
 
@@ -398,6 +446,7 @@ case "${1:-}" in
   role) shift; cmd_role "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
+  external-pubkeys) cmd_external_pubkeys ;;
   message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
   restore) shift; cmd_restore "$@" ;;
