@@ -248,6 +248,9 @@ function zapIngestRow(args: {
  * `DEBUG_TOKEN` is the authority for the route caller; the required note is
  * durable operator evidence. A supplied preimage is additionally verified
  * against the payment hash and stored only in the synthetic receipt tags.
+ * A retry after a failed ingest write resumes even when the note was hidden in
+ * the meantime; it then only completes the ingest row (no notification, no
+ * gift-reply). A fresh settle on a hidden or missing note is refused.
  * The claim and credit are not one transaction, so the concurrent same-instant
  * race is limited to the window between them; competing different receipt ids
  * are serialised by the claim table's payment-hash primary key.
@@ -300,13 +303,14 @@ export async function settleInvoiceManually(args: {
   if (invoice.conversationId !== undefined && invoice.conversationId !== null) {
     return { ok: false, reason: 'conversation' };
   }
-  const message = await args.store.getById(invoice.messageId);
-  if (message === undefined || message.deletedAt !== null) {
-    return { ok: false, reason: 'message' };
-  }
-
   const receiptId = manualReceiptIdForPaymentHash(paymentHash);
   const resumed = (await args.store.getZapReceiptGift(receiptId)) !== undefined;
+  const message = await args.store.getById(invoice.messageId);
+  // A resumed settle already credited the note: finish its ingest row even if staff hid the note since.
+  if (message === undefined || (!resumed && message.deletedAt !== null)) {
+    return { ok: false, reason: 'message' };
+  }
+  const hidden = message.deletedAt !== null;
   const indexed = await args.store.listIndexedZapIngests();
   if (resumed && indexed.some((row) => row.receiptId === receiptId)) {
     return { ok: false, reason: 'duplicate' };
@@ -363,7 +367,7 @@ export async function settleInvoiceManually(args: {
     payer = undefined;
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-  if (message.accountId !== null) {
+  if (!hidden && message.accountId !== null) {
     try {
       await notifyZap({
         note: message,
@@ -381,7 +385,7 @@ export async function settleInvoiceManually(args: {
       logEvent('push.enqueue.failed');
     }
   }
-  if (payer !== undefined) {
+  if (!hidden && payer !== undefined) {
     try {
       await insertGiftReply({
         store: args.store,

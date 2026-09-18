@@ -625,6 +625,54 @@ describe('manual invoice settlement', () => {
     });
   });
 
+  it('resumes a half-recorded settle on a note hidden in the meantime without notifying', async () => {
+    const paymentHash = '3a'.repeat(32);
+    class FailOnceIngestStore extends InMemoryMessageStore {
+      failIngest = true;
+
+      override recordZapIngest(row: ZapIngestRow): Promise<void> {
+        if (this.failIngest) {
+          this.failIngest = false;
+          return Promise.reject(new Error('ingest persist boom'));
+        }
+        return super.recordZapIngest(row);
+      }
+    }
+    const store = new FailOnceIngestStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await seedManualInvoice(store, paymentHash);
+    const notifications = new InMemoryNotificationStore();
+    const args = {
+      store,
+      auth,
+      now: () => 2_000,
+      paymentHash,
+      note: 'wallet evidence',
+      notificationStore: notifications,
+    };
+
+    await expect(settleInvoiceManually(args)).rejects.toThrow('ingest persist boom');
+    await store.markDeleted('manual-message', new Date(3_000), 'moderator');
+
+    await expect(settleInvoiceManually(args)).resolves.toMatchObject({ ok: true, resumed: true });
+    expect((await store.getById('manual-message'))?.sats).toBe(210_000);
+    expect(
+      (await store.listIndexedZapIngests()).filter(
+        (row) => row.receiptId === manualReceiptIdForPaymentHash(paymentHash),
+      ),
+    ).toHaveLength(1);
+    expect(await store.listReplies('manual-message')).toEqual([]);
+    for (const account of await auth.listAccounts()) {
+      expect(await notifications.listByRecipient(account.id, 10)).toEqual([]);
+    }
+  });
+
   it('propagates a failed ingest write and resumes without crediting twice', async () => {
     const paymentHash = '39'.repeat(32);
     class FailingIngestStore extends InMemoryMessageStore {
