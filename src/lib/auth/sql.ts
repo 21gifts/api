@@ -22,21 +22,41 @@ export interface SqlClient {
   execute(text: string, params?: readonly unknown[]): Promise<void>;
 }
 
+const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
+
+/**
+ * Read a five-character SQLSTATE from a caught driver error.
+ *
+ * A numeric `errno` marks a Node system error (`{ errno: -32, code: 'EPIPE' }`),
+ * never a Postgres one, and yields `null`.
+ *
+ * @param error - Caught driver error (Bun SQL `errno`, node-postgres `code`).
+ * @returns The SQLSTATE, preferring Bun SQL `errno`, or `null` when absent.
+ */
+export function sqlState(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) {
+    return null;
+  }
+  const candidate = error as { code?: unknown; errno?: unknown };
+  // Node system errors carry a numeric errno and a word-like code (`EPIPE`) that would fit the pattern.
+  if (typeof candidate.errno === 'number') {
+    return null;
+  }
+  if (typeof candidate.errno === 'string' && SQLSTATE_PATTERN.test(candidate.errno)) {
+    return candidate.errno;
+  }
+  if (typeof candidate.code === 'string' && SQLSTATE_PATTERN.test(candidate.code)) {
+    return candidate.code;
+  }
+  return null;
+}
+
 /**
  * True when `error` is a Postgres unique-violation (SQLSTATE 23505).
  *
- * @param error - Caught driver error (node-postgres `code`, Bun SQL `errno`).
+ * @param error - Caught driver error (Bun SQL `errno`, node-postgres `code`).
  * @returns Whether the error is SQLSTATE 23505.
  */
 export function isUniqueViolation(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) {
-    return false;
-  }
-  if ('code' in error && (error as { code: unknown }).code === '23505') {
-    return true;
-  }
-  if ('errno' in error && (error as { errno: unknown }).errno === '23505') {
-    return true;
-  }
-  return false;
+  return sqlState(error) === '23505';
 }

@@ -5,7 +5,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { logEvent, type LogFields } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -215,32 +215,13 @@ async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise
 }
 
 /**
- * Scalar fields for a thrown ingest: `reason` plus optional `error`/`code`/`errno`.
+ * Fields for a thrown ingest: `reason` plus the allowlisted error scalars.
  *
  * @param error - Caught value from `ingestOneReceipt`.
- * @returns Fields for `nostr.zap.rejected` (omit empty strings).
+ * @returns Fields for `nostr.zap.rejected` ({@link errorLogFields}; never message text).
  */
 function zapIngestCatchFields(error: unknown): LogFields {
-  const fields: { [key: string]: string } = { reason: 'error' };
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
-  if (message !== '') {
-    fields['error'] = message;
-  }
-  if (typeof error === 'object' && error !== null) {
-    if ('code' in error) {
-      const code = (error as { code: unknown }).code;
-      if (typeof code === 'string' && code !== '') {
-        fields['code'] = code;
-      }
-    }
-    if ('errno' in error) {
-      const errno = (error as { errno: unknown }).errno;
-      if (typeof errno === 'string' && errno !== '') {
-        fields['errno'] = errno;
-      }
-    }
-  }
-  return fields;
+  return { reason: 'error', ...errorLogFields(error) };
 }
 
 /**

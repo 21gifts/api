@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
+import { sqlState } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { buildTrustChain, isChainAccount, isProjectedTrustEdge, type TrustEdge } from '@/lib/trust';
@@ -81,14 +82,9 @@ export function trustChainRoutes(deps: TrustChainRouteDeps): Hono {
 /** Focus account is missing or not on the public chain. */
 class NeighborhoodNotFound extends Error {}
 
-/** Postgres `22P02` when `around` is not a uuid (memory stores do not throw). */
+/** Postgres `22P02` in Bun SQL `errno` or node-postgres `code`. */
 function isInvalidUuid(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '22P02'
-  );
+  return sqlState(error) === '22P02';
 }
 
 /**

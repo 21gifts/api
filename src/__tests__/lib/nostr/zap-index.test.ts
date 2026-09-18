@@ -5790,7 +5790,123 @@ describe('conversation zap ingest', () => {
     }
   });
 
-  it('logs unique-violation code and errno on a throwing PN claim', async () => {
+  it('queries a shared PN e-tag when only the first invoice gift exists', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-shared-recv',
+      eventId: null,
+      lightningAddress: 'shared-recv@example.com',
+      messageId: 'm-pn-shared-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-shared-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'shared-pay@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-shared-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-shared-pay',
+      'acc-pn-shared-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const firstGiftId = '12121212-1212-4121-8121-121212121212';
+    const secondGiftId = '34343434-3434-4343-8343-343434343434';
+    const sharedEventId = 'bc'.repeat(32);
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-pn-shared-first',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-shared-pay',
+      authorAccountId: 'acc-pn-shared-recv',
+      amountSats: 21,
+      lightningAddress: 'shared-recv@example.com',
+      zapRequest: { tags: [['e', sharedEventId]], content: 'first gift' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-shared-first',
+      paymentHash: 'c1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: firstGiftId,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    await store.recordInvoiceAttempt({
+      ...invoice,
+      id: 'inv-pn-shared-second',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      zapRequest: { tags: [['e', sharedEventId]], content: 'second gift' },
+      pr: 'lnbc-pn-shared-second',
+      paymentHash: 'c2'.repeat(32),
+      conversationMessageId: secondGiftId,
+    });
+    await conversations.appendMessage({
+      id: firstGiftId,
+      conversationId: thread.id,
+      text: 'first gift',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      senderAccountId: 'acc-pn-shared-pay',
+      senderPubkey: null,
+      name: 'Pat',
+      ...unsignedConversationDefaults(),
+      sats: 21,
+    });
+    const append = vi.spyOn(conversations, 'appendMessage');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-shared-second',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', sharedEventId],
+          ['bolt11', 'lnbc-pn-shared-second'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c2'.repeat(32), amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+
+    expect(
+      querier.calls.some(
+        (call) =>
+          Array.isArray(call.filter['#e']) &&
+          (call.filter['#e'] as string[]).includes(sharedEventId),
+      ),
+    ).toBe(true);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ id: secondGiftId }));
+    expect((await conversations.listMessages(thread.id, 10)).map((row) => row.id)).toEqual([
+      firstGiftId,
+      secondGiftId,
+    ]);
+    append.mockRestore();
+  });
+
+  it('logs allowlisted catch fields without the error message', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5854,7 +5970,7 @@ describe('conversation zap ingest', () => {
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'ae'.repeat(32), amountMsat: 21_000 });
     const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(
-      Object.assign(new Error('duplicate key value violates unique constraint'), {
+      Object.assign(new Error('invalid input syntax for type uuid: "secret-value"'), {
         code: 'ERR_POSTGRES_SERVER_ERROR',
         errno: '23505',
       }),
@@ -5876,18 +5992,20 @@ describe('conversation zap ingest', () => {
         expect.objectContaining({
           event: 'nostr.zap.rejected',
           reason: 'error',
+          name: 'Error',
           code: 'ERR_POSTGRES_SERVER_ERROR',
           errno: '23505',
         }),
       );
-      expect(String(event?.['error'])).toContain('duplicate key');
+      expect(event).not.toHaveProperty('error');
+      expect(warn.mock.calls.flat().join('\n')).not.toContain('secret-value');
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('logs a non-Error catch as a string without code or errno', async () => {
+  it('logs only the reason for primitive and null catches', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5948,9 +6066,21 @@ describe('conversation zap ingest', () => {
           ['bolt11', 'lnbc-pn-catch-plain'],
         ],
       },
+      {
+        id: 'r-pn-catch-null',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-plain'],
+        ],
+      },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'af'.repeat(32), amountMsat: 21_000 });
-    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce('plain');
+    const claim = vi
+      .spyOn(store, 'claimZapPayment')
+      .mockRejectedValueOnce('plain')
+      .mockRejectedValueOnce(null);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -5963,18 +6093,22 @@ describe('conversation zap ingest', () => {
         fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
         conversations,
       });
-      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
-      expect(event?.['reason']).toBe('error');
-      expect(event?.['error']).toBe('plain');
-      expect(event).not.toHaveProperty('code');
-      expect(event).not.toHaveProperty('errno');
+      const events = loggedEvents(warn).filter((row) => row['event'] === 'nostr.zap.rejected');
+      expect(events).toHaveLength(2);
+      for (const event of events) {
+        expect(event?.['reason']).toBe('error');
+        expect(event).not.toHaveProperty('name');
+        expect(event).not.toHaveProperty('error');
+        expect(event).not.toHaveProperty('code');
+        expect(event).not.toHaveProperty('errno');
+      }
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('truncates a catch error message to 200 characters', async () => {
+  it('omits catch fields outside the allowlist', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -6037,9 +6171,12 @@ describe('conversation zap ingest', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'b0'.repeat(32), amountMsat: 21_000 });
-    const claim = vi
-      .spyOn(store, 'claimZapPayment')
-      .mockRejectedValueOnce(new Error('x'.repeat(250)));
+    const rejected = Object.assign(new Error('do not log me'), {
+      name: 'Postgres-Error',
+      code: 'BAD CODE',
+      errno: 23505,
+    });
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(rejected);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -6054,15 +6191,17 @@ describe('conversation zap ingest', () => {
       });
       const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
       expect(event?.['reason']).toBe('error');
-      expect(typeof event?.['error']).toBe('string');
-      expect((event?.['error'] as string).length).toBe(200);
+      expect(event).not.toHaveProperty('name');
+      expect(event).not.toHaveProperty('error');
+      expect(event).not.toHaveProperty('code');
+      expect(event).not.toHaveProperty('errno');
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('omits an empty catch error message', async () => {
+  it('omits non-string code and disallowed errno while retaining a safe name', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -6125,7 +6264,13 @@ describe('conversation zap ingest', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'b1'.repeat(32), amountMsat: 21_000 });
-    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(new Error(''));
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(
+      Object.assign(new Error('do not log me either'), {
+        name: 'PostgresError',
+        code: 23505,
+        errno: 'BAD-ERRNO',
+      }),
+    );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -6140,7 +6285,10 @@ describe('conversation zap ingest', () => {
       });
       const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
       expect(event?.['reason']).toBe('error');
+      expect(event?.['name']).toBe('PostgresError');
       expect(event).not.toHaveProperty('error');
+      expect(event).not.toHaveProperty('code');
+      expect(event).not.toHaveProperty('errno');
     } finally {
       warn.mockRestore();
       claim.mockRestore();

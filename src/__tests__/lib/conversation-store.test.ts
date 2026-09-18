@@ -1196,9 +1196,12 @@ describe('PostgresConversationStore', () => {
     expect(existing.id).toBe('m-existing');
   });
 
-  it('appendMessage returns the existing row on Bun errno unique_violation', async () => {
+  it.each([
+    ['Bun errno', { errno: '23505' }],
+    ['measured Bun server-error shape', { code: 'ERR_POSTGRES_SERVER_ERROR', errno: '23505' }],
+  ])('appendMessage returns the existing row on %s unique_violation', async (_label, error) => {
     const sql = new MockSql();
-    sql.executeError = { errno: '23505' };
+    sql.executeError = error;
     sql.nextRows = [
       {
         id: 'm-existing',

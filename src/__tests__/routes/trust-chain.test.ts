@@ -225,6 +225,29 @@ describe('GET /trust-chain', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
+  it('returns 404 for the Bun SQL invalid-uuid error shape without logging', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
+    await signIn(authStore, 'b');
+    const original = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) => {
+      if (id === 'ghost') {
+        throw Object.assign(new Error('invalid input syntax for type uuid'), {
+          code: 'ERR_POSTGRES_SERVER_ERROR',
+          errno: '22P02',
+        });
+      }
+      return original(id);
+    });
+    const res = await mount(authStore, new InMemoryTrustStore()).request(
+      '/trust-chain?around=ghost',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'trust.chain.failed')).toBe(false);
+  });
+
   it('returns 503 when getAccount throws a non-uuid error', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
