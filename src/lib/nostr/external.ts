@@ -88,8 +88,8 @@ export function verifiedExternalZapRequest(args: {
     if (!verifyEvent(event as Parameters<typeof verifyEvent>[0])) {
       return null;
     }
+    /* v8 ignore next 3 -- nostr-tools verifyEvent returns boolean, does not throw */
   } catch {
-    /* v8 ignore next -- nostr-tools returns false for malformed verified-event input */
     return null;
   }
   const requestTags = event.tags as unknown[];
