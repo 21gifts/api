@@ -666,6 +666,27 @@ test('Function: buildZapPushPayload — POST /me/push-subscriptions without bear
 }) => {
   expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
 });
+
+test('Function: buildConversationPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
+test('Function: conversationPushRecipientIds — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: inboxUnreadCountFor — GET /conversations without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations')).status()).toBe(401);
+});
+test('Function: notifyConversationMessage — POST /conversations/:id without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/conversations/:id', { data: { text: 'hi' } })).status()).toBe(401);
+});
 test('Function: enqueueForumPushes — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });

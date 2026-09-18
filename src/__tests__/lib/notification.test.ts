@@ -261,6 +261,70 @@ describe('fanoutToBellSubscribers', () => {
     expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
   });
 
+  it('writes unreadCount from inbox only when notifications is omitted', async () => {
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await fanoutToBellSubscribers({
+      pushStore,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{"tag":"forum_reply:reply-1"}',
+      nowMs: NOW.getTime(),
+      inboxUnreadCount: async () => 4,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(4);
+  });
+
+  it('sums notification unread and inbox unread', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      skipAccountId: 'actor',
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{"tag":"forum_reply:reply-1"}',
+      nowMs: NOW.getTime(),
+      inboxUnreadCount: async () => 3,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(
+      (await notifications.unreadCount('one')) + 3,
+    );
+  });
+
+  it('continues fan-out when inbox unread rejects', async () => {
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'one');
+    await subscribe(pushStore, 'two');
+    await expect(
+      fanoutToBellSubscribers({
+        pushStore,
+        skipAccountId: 'actor',
+        template,
+        outboxType: 'forum',
+        outboxMessageId: 'reply-1',
+        payload: '{}',
+        nowMs: NOW.getTime(),
+        inboxUnreadCount: async (accountId) => {
+          if (accountId === 'one') {
+            throw new Error('boom');
+          }
+          return 2;
+        },
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['two']);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(2);
+  });
+
   it('enqueues { unreadCount } when the payload template is not a JSON object', async () => {
     for (const payload of ['not-json', '[]', 'null', '1']) {
       const notifications = new InMemoryNotificationStore();
@@ -429,6 +493,28 @@ describe('notifyForumReply', () => {
       tag: 'forum_reply:reply-1',
       unreadCount: 1,
     });
+  });
+
+  it('forwards inboxUnreadCount into the forum-reply payload', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages);
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent');
+    await notifyForumReply({
+      messages,
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      parentId: 'parent-note',
+      inboxUnreadCount: async () => 2,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(3);
   });
 
   it('does nothing when the parent is missing', async () => {
@@ -719,6 +805,22 @@ describe('notifyForumPost', () => {
     });
   });
 
+  it('forwards inboxUnreadCount into the forum-post payload', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'other');
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      inboxUnreadCount: async () => 5,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(6);
+  });
+
   it('skips the actor even when they have a subscription', async () => {
     const created = message({ id: 'post-1', accountId: 'actor' });
     const notifications = new InMemoryNotificationStore();
@@ -777,6 +879,24 @@ describe('notifyZap', () => {
       tag: `zap:${ZAP_REPLY_ID}`,
       unreadCount: 1,
     });
+  });
+
+  it('forwards inboxUnreadCount into the zap payload', async () => {
+    const note = message({ id: 'note-1', accountId: 'author', name: 'Pat', text: 'post' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    await notifyZap({
+      notifications,
+      pushStore,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      amountSats: 21,
+      nowMs: NOW.getTime(),
+      inboxUnreadCount: async () => 4,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(5);
   });
 
   it('derives replyId from the first 32 hex of a 64-hex receipt id', async () => {
@@ -942,6 +1062,42 @@ describe('notifyModeratorAppointed', () => {
     expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       ...buildModeratorAppointedPushPayload('subject'),
       unreadCount: 1,
+    });
+  });
+
+  it('writes inbox-only unreadCount when notifications is omitted', async () => {
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'subject');
+    await notifyModeratorAppointed({
+      pushStore,
+      inboxUnreadCount: async () => 3,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
+      ...buildModeratorAppointedPushPayload('subject'),
+      unreadCount: 3,
+    });
+  });
+
+  it('adds listed inbox unread into the appointed payload', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'subject');
+    await notifyModeratorAppointed({
+      notifications,
+      pushStore,
+      inboxUnreadCount: async () => 4,
+      subject: { id: 'subject' },
+      actor: { id: 'actor', name: 'Ada' },
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
+      ...buildModeratorAppointedPushPayload('subject'),
+      unreadCount: 1 + 4,
     });
   });
 

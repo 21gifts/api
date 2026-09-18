@@ -58,3 +58,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
 CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
   ON conversation_message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
+
+CREATE TABLE IF NOT EXISTS conversation_read (
+  account_id uuid NOT NULL REFERENCES account (id),
+  conversation_id uuid NOT NULL REFERENCES conversation (id),
+  last_read_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS conversation_read_conversation_id_idx
+  ON conversation_read (conversation_id);

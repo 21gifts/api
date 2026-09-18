@@ -93,6 +93,8 @@ export interface PublicConversation {
   lastFromMe: boolean;
   /** Last message sats; `0` when none / unpaid text. */
   lastSats: number;
+  /** True when the viewer has inbound messages newer than last-read. */
+  unread: boolean;
   /** Counterpart 21.gifts account id. Omitted for Damus-only counterparts. */
   accountId?: string;
 }
@@ -158,12 +160,14 @@ export function conversationIsInbound(args: {
  *
  * @param thread - Persisted thread with resolved `name` / `lastText`.
  * @param lastFromMe - Whether the last message was sent by the viewer.
+ * @param unread - Whether the viewer has unread inbound messages in this thread.
  * @param accountId - Counterpart 21.gifts account id; omitted when null/empty.
  * @returns Public fields only.
  */
 export function serializeConversation(
   thread: ConversationThread,
   lastFromMe: boolean,
+  unread: boolean,
   accountId?: string | null,
 ): PublicConversation {
   const json: PublicConversation = {
@@ -174,6 +178,7 @@ export function serializeConversation(
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
     lastSats: thread.lastSats,
+    unread,
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;
@@ -233,4 +238,49 @@ export function unsignedConversationDefaults(): Pick<
  */
 export function moderatorGroupDisplayName(kind: ConversationKind): string | null {
   return kind === 'moderator_group' ? 'Moderators' : null;
+}
+
+/**
+ * 21.gifts account ids that should receive a Web Push for this message.
+ * Unique, no null, never `senderAccountId`. Damus counterparts have no push.
+ * `moderator_group` uses `moderatorIds` (other moderators), not accountA/B.
+ *
+ * @param thread - Stored thread.
+ * @param senderAccountId - Message sender, or `null` for Damus inbound.
+ * @param moderatorIds - Moderator account ids; used only for `moderator_group`.
+ * @returns Recipient account ids.
+ */
+export function conversationPushRecipientIds(
+  thread: ConversationThread,
+  senderAccountId: string | null,
+  moderatorIds: readonly string[] = [],
+): string[] {
+  if (thread.kind === 'moderator_group') {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of moderatorIds) {
+      if (id === '' || id === senderAccountId || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+  if (thread.kind === 'member_damus') {
+    if (senderAccountId === null) {
+      return [thread.accountA];
+    }
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of [thread.accountA, thread.accountB]) {
+    if (typeof id !== 'string' || id === '' || id === senderAccountId || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
 }

@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-09-16.
+**Status**: draft, in active iteration. Last revised 2026-09-17.
 
 ---
 
@@ -831,6 +831,8 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-17 | Public Trust Chain picks one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a `moderator`. First contact wins; later appoint, confirm, or propose do not replace it. A pending propose (subject still `verified`) stays private. **Supersedes** the 2026-09-17 kind-priority projection (`moderator_propose` if moderator, else `verify`, else `moderator_appoint`).                                                    |
 | 2026-09-16 | confirm/appoint notify only the subject (`moderator_appointed`); Web Push `url` `/welcome`, tag `moderator_appointed:<subjectId>`; not a living-room fan-out; unique `(recipient, type, reply_id)` with `reply_id` = subject id; missing stores no-op; failure does not fail the trust POST.                                                                                                                                                                                                                                                       |
 | 2026-09-17 | Staff Bearer `GET /trust/proposals` lists pending `moderator_propose` (verified subject, no confirm/appoint). Session `GET /trust-chain` still omits a pending propose; once the subject is a `moderator`, that propose is eligible as the public incoming edge only when it is the oldest eligible sibling.                                                                                                                                                                                                                                       |
+| 2026-09-17 | Inbox last-read is per (account, conversation). `GET /conversations` adds per-row `unread` and list `unreadCount`; `POST /conversations/:id/read` stamps last-read. Does not copy DMs into Notifications.                                                                                                                                                                                                                                                                                                                                          |
+| 2026-09-17 | Inbound private messages enqueue Web Push (`type: conversation`, url `/messages?c=<id>`, tag `conversation:<id>`) to bell subscribers only. No in-app Notification rows for DMs. Every outbox `unreadCount` (forum, zap, conversation) is notification unread plus listed inbox unread. Push failure does not fail HTTP 200 or Nostr ingest.                                                                                                                                                                                                       |
 
 ## Next Steps
 

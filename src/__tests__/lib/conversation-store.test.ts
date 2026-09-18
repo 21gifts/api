@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  CONVERSATION_LIST_LIMIT,
   unsignedConversationDefaults,
   type ConversationMessageRow,
   type ConversationThread,
@@ -76,9 +77,11 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(14);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(16);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
+    expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_read/i);
+    expect(joined).toMatch(/conversation_read_conversation_id_idx/);
     expect(joined).toMatch(/conversation_member_member_uidx/);
     expect(joined).toMatch(/conversation_member_platform_uidx/);
     expect(joined).toMatch(/conversation_member_damus_uidx/);
@@ -407,6 +410,180 @@ describe('InMemoryConversationStore', () => {
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
     expect(await store.hasInboundMessage(opened.id, 'mem', false, 'plat')).toBe(true);
   });
+
+  it('hasUnread is true for inbound never-read', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(true);
+  });
+
+  it('hasUnread is false after markRead', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasUnread is true again for newer inbound after markRead', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    await store.markRead(opened.id, 'a', NOW);
+    await store.appendMessage(
+      message({
+        id: 'm-2',
+        conversationId: opened.id,
+        senderAccountId: 'b',
+        createdAt: new Date(NOW.getTime() + 1000),
+      }),
+    );
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(true);
+  });
+
+  it('hasUnread is false when inbound createdAt equals last_read_at', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ conversationId: opened.id, senderAccountId: 'b', createdAt: NOW }),
+    );
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasUnread is false for outbound-only', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'a' }));
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasUnread skips inbound messages that belong to another thread', async () => {
+    const store = new InMemoryConversationStore();
+    const keep = await store.openMemberMember('a', 'b', NOW);
+    const other = await store.openMemberMember('c', 'd', NOW);
+    await store.appendMessage(message({ conversationId: other.id, senderAccountId: 'd' }));
+    expect(await store.hasUnread(keep.id, 'a', false, null)).toBe(false);
+  });
+
+  it('hasUnread is true for Damus null sender inbound never-read', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: null }));
+    expect(await store.hasUnread(opened.id, 'acc', false, null)).toBe(true);
+  });
+
+  it('keeps last-read independent per account on the same thread', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ id: 'from-a', conversationId: opened.id, senderAccountId: 'a' }),
+    );
+    await store.appendMessage(
+      message({ id: 'from-b', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
+    expect(await store.hasUnread(opened.id, 'b', false, null)).toBe(true);
+  });
+
+  it('hasUnread treats staff platform send as not inbound and member send as inbound', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(false);
+    await store.appendMessage(
+      message({ id: 'from-mem', conversationId: opened.id, senderAccountId: 'mem' }),
+    );
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('copies last-read seed Dates so callers cannot mutate the stamp', async () => {
+    const stamp = new Date(NOW.getTime());
+    const store = new InMemoryConversationStore(
+      [],
+      [message({ conversationId: 'c-1', senderAccountId: 'b' })],
+      [{ accountId: 'a', conversationId: 'c-1', lastReadAt: stamp }],
+    );
+    stamp.setTime(0);
+    expect(await store.hasUnread('c-1', 'a', false, null)).toBe(false);
+  });
+
+  it('markRead overwrites a previous stamp', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'b',
+        createdAt: new Date(NOW.getTime() + 1000),
+      }),
+    );
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(true);
+    await store.markRead(opened.id, 'a', new Date(NOW.getTime() + 1000));
+    expect(await store.hasUnread(opened.id, 'a', false, null)).toBe(false);
+  });
+
+  it('unreadCount matches listed GET unread (inbound yes, outbound-only member omitted)', async () => {
+    const store = new InMemoryConversationStore();
+    const inbound = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: inbound.id, senderAccountId: 'b' }));
+    const outbound = await store.openMemberMember('a', 'c', NOW);
+    await store.appendMessage(message({ conversationId: outbound.id, senderAccountId: 'a' }));
+    expect(await store.unreadCount('a', false, null)).toBe(1);
+    await store.markRead(inbound.id, 'a', NOW);
+    expect(await store.unreadCount('a', false, null)).toBe(0);
+  });
+
+  it('unreadCount lists outbound-only own platform tickets as unread false', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'mem' }));
+    expect(await store.unreadCount('mem', false, 'plat')).toBe(0);
+    await store.appendMessage(
+      message({ id: 'from-plat', conversationId: opened.id, senderAccountId: 'plat' }),
+    );
+    expect(await store.unreadCount('mem', false, 'plat')).toBe(1);
+  });
+
+  it('unreadCount includes moderator_group only when moderator is true', async () => {
+    const store = new InMemoryConversationStore();
+    const group = await store.ensureModeratorGroup('plat', NOW);
+    await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-b' }));
+    expect(await store.unreadCount('mod-a', true, 'plat')).toBe(0);
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(1);
+  });
+
+  it('unreadCount inspects outbound-only moderator_group without counting it unread', async () => {
+    const store = new InMemoryConversationStore();
+    const group = await store.ensureModeratorGroup('plat', NOW);
+    await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-a' }));
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(0);
+  });
+
+  it('unreadCount pins an existing empty moderator_group ahead of the list cap', async () => {
+    const store = new InMemoryConversationStore();
+    const older = new Date(NOW.getTime() - 60_000);
+    await store.ensureModeratorGroup('plat', older);
+    for (let i = 0; i < CONVERSATION_LIST_LIMIT; i += 1) {
+      const opened = await store.openMemberMember('mod-a', `o${i}`, NOW);
+      await store.appendMessage(
+        message({
+          id: `m-${i}`,
+          conversationId: opened.id,
+          senderAccountId: `o${i}`,
+          createdAt: NOW,
+        }),
+      );
+    }
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(CONVERSATION_LIST_LIMIT - 1);
+  });
+
+  it('getModeratorGroup returns undefined when no singleton exists', async () => {
+    expect(await new InMemoryConversationStore().getModeratorGroup()).toBeUndefined();
+  });
 });
 
 describe('PostgresConversationStore', () => {
@@ -431,6 +608,33 @@ describe('PostgresConversationStore', () => {
     expect(got?.lastSenderAccountId).toBeNull();
     expect(got?.lastMessageAt.toISOString()).toBe('2026-08-29T13:00:00.000Z');
     expect(sql.queries[0]?.params).toEqual(['c1']);
+  });
+
+  it('getModeratorGroup selects the singleton kind', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).getModeratorGroup()).toBeUndefined();
+    expect(sql.queries[0]?.text).toMatch(/kind = 'moderator_group'/);
+    expect(sql.queries[0]?.params).toEqual([]);
+  });
+
+  it('getModeratorGroup maps a singleton row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'g1',
+        kind: 'moderator_group',
+        account_a: 'plat',
+        account_b: null,
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: '',
+      },
+    ];
+    const got = await new PostgresConversationStore(sql).getModeratorGroup();
+    expect(got?.id).toBe('g1');
+    expect(got?.kind).toBe('moderator_group');
   });
 
   it('getById returns undefined when no row matches', async () => {
@@ -600,6 +804,99 @@ describe('PostgresConversationStore', () => {
     expect(
       await new PostgresConversationStore(sql).hasInboundMessage('c1', 'mem', false, 'plat'),
     ).toBe(false);
+  });
+
+  it('hasUnread query text includes conversation_read and created_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: true }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.hasUnread('c1', 'acc', true, 'plat')).toBe(true);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
+    expect(sql.queries[0]?.text).toContain('EXISTS');
+    expect(sql.queries[0]?.text).toContain('conversation_read');
+    expect(sql.queries[0]?.text).toContain('created_at');
+  });
+
+  it('hasUnread is false when EXISTS is false', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: false }];
+    expect(await new PostgresConversationStore(sql).hasUnread('c1', 'a', false, null)).toBe(false);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'a', false, null]);
+  });
+
+  it('hasUnread is false when the EXISTS row is missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).hasUnread('c1', 'staff', true, 'plat')).toBe(
+      false,
+    );
+  });
+
+  it('hasUnread is false when exists is not boolean true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(await new PostgresConversationStore(sql).hasUnread('c1', 'mem', false, 'plat')).toBe(
+      false,
+    );
+  });
+
+  it('unreadCount uses listVisible then inbound/unread EXISTS', async () => {
+    const sql = new MockSql();
+    let calls = 0;
+    sql.queryImpl = (sqlText: string) => {
+      calls += 1;
+      if (sqlText.includes('last_message_at')) {
+        return [
+          {
+            id: 'c1',
+            kind: 'member_member',
+            account_a: 'a',
+            account_b: 'b',
+            counterpart_pubkey: null,
+            created_at: NOW,
+            last_message_at: NOW,
+            last_text: 'hi',
+            last_sender_account_id: 'b',
+          },
+        ];
+      }
+      return [{ exists: true }];
+    };
+    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(1);
+    expect(calls).toBe(3);
+  });
+
+  it('unreadCount omits empty member threads (no inbound, not own ticket)', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (sqlText: string) => {
+      if (sqlText.includes('last_message_at')) {
+        return [
+          {
+            id: 'c1',
+            kind: 'member_member',
+            account_a: 'a',
+            account_b: 'b',
+            counterpart_pubkey: null,
+            created_at: NOW,
+            last_message_at: NOW,
+            last_text: '',
+            last_sender_account_id: null,
+          },
+        ];
+      }
+      return [{ exists: false }];
+    };
+    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(0);
+  });
+
+  it('markRead is INSERT ON CONFLICT DO UPDATE', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await store.markRead('c1', 'acc', NOW);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation_read/);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
+    expect(sql.executes[0]?.text).toMatch(/DO UPDATE/);
+    expect(sql.executes[0]?.params).toEqual(['acc', 'c1', NOW]);
   });
 
   it('openMemberMember returns an existing row without inserting', async () => {

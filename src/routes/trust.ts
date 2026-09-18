@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -34,6 +36,8 @@ export interface TrustRouteDeps {
   notificationStore?: NotificationStore;
   /** Optional Web Push outbox. */
   pushStore?: PushStore;
+  /** Optional conversation store so appointed push unreadCount includes inbox. */
+  conversationStore?: ConversationStore;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -92,7 +96,7 @@ async function loadTargetAccount(
  * `POST /trust/verify`, `POST /trust/propose-moderator`,
  * `POST /trust/confirm-moderator`, and `POST /trust/appoint-moderator`.
  *
- * @param deps - Auth store, trust-edge store, clock, and optional notification/push stores.
+ * @param deps - Auth store, trust-edge store, clock, optional notification/push stores, and optional conversation store.
  * @returns A Hono app with the staff GET and four staff POSTs.
  */
 export function trustRoutes(deps: TrustRouteDeps): Hono {
@@ -402,6 +406,10 @@ async function notifySubjectAppointed(
       nowMs: deps.now(),
       ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
       ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+      /* v8 ignore next 4 -- createApp always injects conversationStore */
+      ...(deps.conversationStore === undefined
+        ? {}
+        : { inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore) }),
     });
   } catch {
     logEvent('push.enqueue.failed');

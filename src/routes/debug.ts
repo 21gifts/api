@@ -70,6 +70,8 @@ function profileEnsureArgs(
     now,
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+    /* v8 ignore next -- createApp always injects conversationStore */
+    ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
   };
 }
 

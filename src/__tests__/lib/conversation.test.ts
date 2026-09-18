@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   conversationFromMe,
   conversationIsInbound,
+  conversationPushRecipientIds,
   moderatorGroupDisplayName,
   serializeConversation,
   serializeConversationMessage,
@@ -155,7 +156,7 @@ describe('conversationIsInbound', () => {
 
 describe('serializeConversation', () => {
   it('emits public list fields without account or event ids', () => {
-    const json = serializeConversation(THREAD, false);
+    const json = serializeConversation(THREAD, false, false);
     expect(json).toEqual({
       id: 'c-1',
       kind: 'member_member',
@@ -164,6 +165,7 @@ describe('serializeConversation', () => {
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: false,
       lastSats: 0,
+      unread: false,
     });
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('accountId');
@@ -173,7 +175,7 @@ describe('serializeConversation', () => {
   });
 
   it('includes accountId when given a non-empty counterpart id', () => {
-    const json = serializeConversation(THREAD, false, 'acc-b');
+    const json = serializeConversation(THREAD, false, false, 'acc-b');
     expect(json.accountId).toBe('acc-b');
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('eventId');
@@ -181,15 +183,15 @@ describe('serializeConversation', () => {
   });
 
   it('omits accountId when the counterpart id is null', () => {
-    expect(serializeConversation(THREAD, false, null)).not.toHaveProperty('accountId');
+    expect(serializeConversation(THREAD, false, false, null)).not.toHaveProperty('accountId');
   });
 
   it('omits accountId when the counterpart id is empty', () => {
-    expect(serializeConversation(THREAD, false, '')).not.toHaveProperty('accountId');
+    expect(serializeConversation(THREAD, false, false, '')).not.toHaveProperty('accountId');
   });
 
   it('copies counterpart kind for a platform thread', () => {
-    const json = serializeConversation({ ...THREAD, kind: 'member_platform' }, true);
+    const json = serializeConversation({ ...THREAD, kind: 'member_platform' }, true, false);
     expect(json).toEqual({
       id: 'c-1',
       kind: 'member_platform',
@@ -198,6 +200,7 @@ describe('serializeConversation', () => {
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: true,
       lastSats: 0,
+      unread: false,
     });
   });
 });
@@ -254,5 +257,22 @@ describe('moderatorGroupDisplayName', () => {
     expect(moderatorGroupDisplayName('member_member')).toBeNull();
     expect(moderatorGroupDisplayName('member_platform')).toBeNull();
     expect(moderatorGroupDisplayName('member_damus')).toBeNull();
+  });
+});
+
+describe('conversationPushRecipientIds', () => {
+  it('returns the counterpart on member_member', () => {
+    expect(conversationPushRecipientIds(THREAD, 'acc-a')).toEqual(['acc-b']);
+  });
+
+  it('notifies other moderators on moderator_group, not the platform account', () => {
+    const group: ConversationThread = {
+      ...THREAD,
+      kind: 'moderator_group',
+      accountA: 'plat',
+      accountB: null,
+    };
+    expect(conversationPushRecipientIds(group, 'mod-a', ['mod-a', 'mod-b'])).toEqual(['mod-b']);
+    expect(conversationPushRecipientIds(group, 'mod-a')).toEqual([]);
   });
 });

@@ -14,8 +14,8 @@ export interface ParsedPushSubscription {
 
 /** Compact JSON payload delivered to browsers. */
 export interface PushPayload {
-  /** Discriminator (`forum` or `zap`). */
-  type: 'forum' | 'zap';
+  /** Discriminator (`forum`, `zap`, or `conversation`). */
+  type: 'forum' | 'zap' | 'conversation';
   /** Notification title. */
   title: string;
   /** Notification body. */
@@ -25,8 +25,9 @@ export interface PushPayload {
   /** Collapse / topic tag. */
   tag: string;
   /**
-   * Recipient's current unread in-app notification count, for the home-screen
-   * badge. Omit from shared templates; fan-out adds it per recipient.
+   * Recipient's current home-screen badge: in-app notification unread plus
+   * listed inbox unread (a missing source contributes 0). Omit from shared
+   * templates; fan-out adds it per recipient.
    */
   unreadCount?: number;
 }
@@ -138,5 +139,25 @@ export function buildModeratorAppointedPushPayload(subjectId: string): PushPaylo
     body: 'You were appointed a moderator in the living room.',
     url: '/welcome',
     tag: `moderator_appointed:${subjectId}`,
+  };
+}
+
+/**
+ * Private-message payload for one 21.gifts recipient with a bell subscription.
+ *
+ * @param args - Conversation id, sender display name, message body.
+ * @returns Payload object; callers `JSON.stringify` and add `unreadCount`.
+ */
+export function buildConversationPushPayload(args: {
+  conversationId: string;
+  name: string;
+  text: string;
+}): PushPayload {
+  return {
+    type: 'conversation',
+    title: args.name !== '' ? args.name : '21.gifts',
+    body: args.text,
+    url: `/messages?c=${args.conversationId}`,
+    tag: `conversation:${args.conversationId}`,
   };
 }
