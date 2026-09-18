@@ -158,6 +158,8 @@ function externalZapFixture(args: {
   content?: string;
   createdAt?: number;
   secret?: Uint8Array;
+  /** Signed 9734 JSON to embed verbatim — a replay copies the request byte for byte. */
+  description?: string;
 }): {
   pubkey: string;
   requestId: string;
@@ -178,10 +180,14 @@ function externalZapFixture(args: {
     },
     secret,
   );
-  const description = JSON.stringify(request);
+  const copied =
+    args.description === undefined
+      ? undefined
+      : (JSON.parse(args.description) as { id: string; pubkey: string });
+  const description = args.description ?? JSON.stringify(request);
   return {
-    pubkey: request.pubkey,
-    requestId: request.id,
+    pubkey: copied?.pubkey ?? request.pubkey,
+    requestId: copied?.id ?? request.id,
     description,
     descriptionHash: createHash('sha256').update(description).digest('hex'),
     receipt: {
@@ -1617,6 +1623,7 @@ describe('indexOpenZapReceipts', () => {
       bolt11: 'lnbc-external-two',
       createdAt: 1_800_000_100,
       secret,
+      description: first.description,
     });
     expect(replay.requestId).toBe(first.requestId);
     const paymentHashes = new Map([
@@ -1690,6 +1697,7 @@ describe('indexOpenZapReceipts', () => {
       bolt11: 'lnbc-external-replay-later-two',
       createdAt: 1_800_000_300,
       secret,
+      description: first.description,
     });
     expect(replay.requestId).toBe(first.requestId);
     const paymentHashes = new Map([
