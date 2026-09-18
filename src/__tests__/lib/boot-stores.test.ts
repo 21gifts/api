@@ -200,8 +200,11 @@ describe('openBootStores', () => {
     );
     expect(zapPaymentIdx).toBeGreaterThanOrEqual(0);
     expect(dbChangeIdx).toBeGreaterThan(zapPaymentIdx);
+    // Match the attach statement itself: the message migration's unwrap block also names the trigger.
     const dbChangeAttachIdx = operations.findIndex(
-      (operation) => operation.startsWith('execute:') && operation.includes('trg_db_change'),
+      (operation) =>
+        operation.startsWith('execute:') &&
+        operation.includes('CREATE TRIGGER trg_db_change AFTER INSERT OR UPDATE OR DELETE'),
     );
     const backfillIdx = operations.findIndex(
       (operation) =>
@@ -210,6 +213,13 @@ describe('openBootStores', () => {
         operation.includes("outcome = 'indexed'"),
     );
     expect(dbChangeAttachIdx).toBeGreaterThanOrEqual(0);
+    expect(
+      operations.findIndex(
+        (operation) =>
+          operation.startsWith('execute:') &&
+          /CREATE TABLE IF NOT EXISTS db_change/i.test(operation),
+      ),
+    ).toBeLessThan(dbChangeAttachIdx);
     expect(backfillIdx).toBeGreaterThan(dbChangeAttachIdx);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 0, total: 0 }),
