@@ -3,6 +3,7 @@ import {
   buildForumPushPayload,
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
+  buildConversationPushPayload,
   buildZapPushPayload,
   parsePushSubscription,
 } from '@/lib/push';
@@ -121,5 +122,29 @@ describe('buildModeratorAppointedPushPayload', () => {
       url: '/welcome',
       tag: 'moderator_appointed:subject-1',
     });
+  });
+});
+
+describe('buildConversationPushPayload', () => {
+  it('points at /messages?c= with the sender name as title', () => {
+    expect(
+      buildConversationPushPayload({
+        conversationId: 'c-1',
+        name: 'Ada',
+        text: 'hello',
+      }),
+    ).toEqual({
+      type: 'conversation',
+      title: 'Ada',
+      body: 'hello',
+      url: '/messages?c=c-1',
+      tag: 'conversation:c-1',
+    });
+  });
+
+  it('uses 21.gifts when the name is empty', () => {
+    expect(
+      buildConversationPushPayload({ conversationId: 'c-1', name: '', text: 'hi' }).title,
+    ).toBe('21.gifts');
   });
 });

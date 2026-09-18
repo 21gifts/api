@@ -8,6 +8,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  CONVERSATION_LIST_LIMIT,
   conversationIsInbound,
   type ConversationKind,
   type ConversationMessageRow,
@@ -22,6 +23,13 @@ import { normalizeSignedEvent } from '@/lib/nostr/publish';
 export interface ConversationStore {
   /** One thread by id, or `undefined`. */
   getById(id: string): Promise<ConversationThread | undefined>;
+
+  /**
+   * Existing closed `moderator_group` singleton, if any. Does not insert.
+   *
+   * @returns The thread, or `undefined` when none exists.
+   */
+  getModeratorGroup(): Promise<ConversationThread | undefined>;
 
   /**
    * Threads the viewer may see: own participation, plus every platform
@@ -61,6 +69,55 @@ export interface ConversationStore {
     staff: boolean,
     platformId: string | null,
   ): Promise<boolean>;
+
+  /**
+   * True when the thread has at least one inbound message whose `createdAt`
+   * is strictly greater than this viewer's last-read stamp. Missing last-read
+   * means never read (any inbound is unread). Outbound-only and empty are
+   * false.
+   *
+   * @param conversationId - Thread to inspect.
+   * @param viewerId - Session account.
+   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @returns Whether the viewer has unread inbound messages in that thread.
+   */
+  hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean>;
+
+  /**
+   * Count of listed inbox threads with unread inbound for this viewer.
+   * Same visibility as GET `/conversations` `unreadCount`: listed threads
+   * with `hasUnread`. Outbound-only own platform tickets are listed but
+   * unread false. Empty/outbound-only member threads omitted. Scan capped
+   * at `CONVERSATION_LIST_LIMIT`.
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator (sees all platform threads).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @returns Number of listed unread threads.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator?: boolean,
+  ): Promise<number>;
+
+  /**
+   * Upsert last-read for `(accountId, conversationId)` to `readAt`. Always
+   * overwrites an existing stamp.
+   *
+   * @param conversationId - Thread to stamp.
+   * @param accountId - Session account.
+   * @param readAt - Stamp instant.
+   */
+  markRead(conversationId: string, accountId: string, readAt: Date): Promise<void>;
 
   /**
    * Open or return the member↔member thread (`account_a`/`account_b`
@@ -148,6 +205,50 @@ export interface ConversationStore {
   updatePublishState(id: string, state: NostrPublishState): Promise<void>;
 }
 
+/**
+ * Listed GET `/conversations` unread count (same filter/cap as the list).
+ */
+async function listedUnreadCount(
+  store: Pick<
+    ConversationStore,
+    'listVisible' | 'hasInboundMessage' | 'hasUnread' | 'getModeratorGroup'
+  >,
+  accountId: string,
+  staff: boolean,
+  platformId: string | null,
+  moderator = false,
+): Promise<number> {
+  let threads = await store.listVisible(
+    accountId,
+    staff,
+    platformId,
+    CONVERSATION_LIST_LIMIT,
+    moderator,
+  );
+  if (moderator) {
+    const group = await store.getModeratorGroup();
+    if (group !== undefined) {
+      threads = [group, ...threads.filter((thread) => thread.id !== group.id)].slice(
+        0,
+        CONVERSATION_LIST_LIMIT,
+      );
+    }
+  }
+  let count = 0;
+  for (const thread of threads) {
+    const inbound = await store.hasInboundMessage(thread.id, accountId, staff, platformId);
+    const ownContactTicket =
+      thread.kind === 'member_platform' && thread.accountA === accountId && thread.lastText !== '';
+    if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
+      continue;
+    }
+    if (await store.hasUnread(thread.id, accountId, staff, platformId)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment, the `DO $unwrap$` block lives only in this array). */
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
@@ -197,6 +298,14 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
   ON conversation_message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
+  `CREATE TABLE IF NOT EXISTS conversation_read (
+  account_id uuid NOT NULL REFERENCES account (id),
+  conversation_id uuid NOT NULL REFERENCES conversation (id),
+  last_read_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, conversation_id)
+)`,
+  `CREATE INDEX IF NOT EXISTS conversation_read_conversation_id_idx
+  ON conversation_read (conversation_id)`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -277,21 +386,39 @@ export async function migrateConversationSchema(sql: SqlClient): Promise<void> {
 export class InMemoryConversationStore implements ConversationStore {
   readonly #threads: ConversationThread[];
   readonly #messages: ConversationMessageRow[];
+  readonly #lastRead: Map<string, Date>;
 
   /**
    * @param seedThreads - Optional seed threads; copied into private storage.
    * @param seedMessages - Optional seed messages; copied into private storage.
+   * @param seedLastRead - Optional last-read stamps; Dates copied into a private map.
    */
   constructor(
     seedThreads: readonly ConversationThread[] = [],
     seedMessages: readonly ConversationMessageRow[] = [],
+    seedLastRead: readonly {
+      accountId: string;
+      conversationId: string;
+      lastReadAt: Date;
+    }[] = [],
   ) {
     this.#threads = seedThreads.map((thread) => copyThread(thread));
     this.#messages = seedMessages.map((row) => copyMessage(row));
+    this.#lastRead = new Map(
+      seedLastRead.map((row) => [
+        lastReadKey(row.accountId, row.conversationId),
+        new Date(row.lastReadAt.getTime()),
+      ]),
+    );
   }
 
   getById(id: string): Promise<ConversationThread | undefined> {
     const thread = this.#threads.find((item) => item.id === id);
+    return Promise.resolve(thread === undefined ? undefined : this.#hydrate(thread));
+  }
+
+  getModeratorGroup(): Promise<ConversationThread | undefined> {
+    const thread = this.#threads.find((item) => item.kind === 'moderator_group');
     return Promise.resolve(thread === undefined ? undefined : this.#hydrate(thread));
   }
 
@@ -328,6 +455,59 @@ export class InMemoryConversationStore implements ConversationStore {
           }),
       ),
     );
+  }
+
+  hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const stamp = this.#lastRead.get(lastReadKey(viewerId, conversationId));
+    return Promise.resolve(
+      this.#messages.some((row) => {
+        if (row.conversationId !== conversationId) {
+          return false;
+        }
+        if (
+          !conversationIsInbound({
+            senderAccountId: row.senderAccountId,
+            viewerId,
+            staff,
+            platformId,
+          })
+        ) {
+          return false;
+        }
+        if (stamp === undefined) {
+          return true;
+        }
+        return row.createdAt.getTime() > stamp.getTime();
+      }),
+    );
+  }
+
+  /**
+   * Count listed unread threads for this viewer (GET list rules).
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator.
+   * @param platformId - Official platform account id, or `null`.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @returns Listed unread count.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator = false,
+  ): Promise<number> {
+    return listedUnreadCount(this, accountId, staff, platformId, moderator);
+  }
+
+  markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
+    this.#lastRead.set(lastReadKey(accountId, conversationId), new Date(readAt.getTime()));
+    return Promise.resolve();
   }
 
   openMemberMember(accountA: string, accountB: string, now: Date): Promise<ConversationThread> {
@@ -641,6 +821,15 @@ export class PostgresConversationStore implements ConversationStore {
     return row === undefined ? undefined : mapThread(row);
   }
 
+  async getModeratorGroup(): Promise<ConversationThread | undefined> {
+    const rows = await this.#sql.query<ConversationSqlRow>(
+      `SELECT ${THREAD_SELECT} FROM conversation c WHERE c.kind = 'moderator_group' LIMIT 1`,
+      [],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapThread(row);
+  }
+
   async listVisible(
     accountId: string,
     staff: boolean,
@@ -688,6 +877,65 @@ export class PostgresConversationStore implements ConversationStore {
       [conversationId, viewerId, staff, platformId],
     );
     return rows[0]?.exists === true;
+  }
+
+  async hasUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM conversation_message
+         LEFT JOIN conversation_read
+           ON conversation_read.account_id = $2
+          AND conversation_read.conversation_id = conversation_message.conversation_id
+         WHERE conversation_message.conversation_id = $1
+           AND (
+             sender_account_id IS NULL
+             OR (
+               sender_account_id IS DISTINCT FROM $2
+               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
+             )
+           )
+           AND (
+             conversation_read.last_read_at IS NULL
+             OR conversation_message.created_at > conversation_read.last_read_at
+           )
+       ) AS exists`,
+      [conversationId, viewerId, staff, platformId],
+    );
+    return rows[0]?.exists === true;
+  }
+
+  /**
+   * Count listed unread threads for this viewer (GET list rules).
+   *
+   * @param accountId - Session account.
+   * @param staff - Founder/moderator.
+   * @param platformId - Official platform account id, or `null`.
+   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @returns Listed unread count.
+   */
+  unreadCount(
+    accountId: string,
+    staff: boolean,
+    platformId: string | null,
+    moderator = false,
+  ): Promise<number> {
+    return listedUnreadCount(this, accountId, staff, platformId, moderator);
+  }
+
+  async markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO conversation_read (account_id, conversation_id, last_read_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (account_id, conversation_id)
+       DO UPDATE SET last_read_at = EXCLUDED.last_read_at`,
+      [accountId, conversationId, readAt],
+    );
   }
 
   async openMemberMember(
@@ -1003,6 +1251,10 @@ export class PostgresConversationStore implements ConversationStore {
       [platformId],
     );
   }
+}
+
+function lastReadKey(accountId: string, conversationId: string): string {
+  return `${accountId}\0${conversationId}`;
 }
 
 function orderedPair(a: string, b: string): [string, string] {

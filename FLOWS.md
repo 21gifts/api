@@ -191,7 +191,9 @@ replies from `basis` (not the parent author) are **403**; `verified` /
 `moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
-member→platform via `POST /contact`. NIP-17 gift wraps and legacy kind:4
+member→platform via `POST /contact`. Inbox threads have per-viewer unread
+via `GET /conversations` (`unread` / `unreadCount`) and
+`POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
 with PNs. Lightning gifts in a Direct/Contact thread use
@@ -246,7 +248,9 @@ worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. Post, reply, and zap pushes open
-`/notifications`.
+`/notifications`. A new inbound private message enqueues Web Push
+`/messages?c=` (bell subscribers only); badge `unreadCount` is
+notification unread plus listed inbox unread.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip

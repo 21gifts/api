@@ -31,6 +31,8 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
@@ -190,6 +192,8 @@ export interface MessagesRouteDeps {
    * account except the actor; Web Push still uses `pushStore` subscriptions.
    */
   notificationStore?: NotificationStore;
+  /** Optional inbox store; forum/zap payloads include listed unread when set. */
+  conversationStore?: ConversationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
   waitSatsSleep?: (ms: number) => Promise<void>;
   /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
@@ -421,6 +425,12 @@ async function persistForumPost(
             ? {}
             : { notifications: deps.notificationStore }),
           ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          /* v8 ignore next 5 -- createApp always injects conversationStore */
+          ...(deps.conversationStore === undefined
+            ? {}
+            : {
+                inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
+              }),
         });
       } catch {
         logEvent('push.enqueue.failed');
@@ -450,6 +460,12 @@ async function persistForumPost(
             ? {}
             : { notifications: deps.notificationStore }),
           ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          /* v8 ignore next 5 -- createApp always injects conversationStore */
+          ...(deps.conversationStore === undefined
+            ? {}
+            : {
+                inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
+              }),
         });
       } catch {
         logEvent('messages.reply.notify.failed');
@@ -563,7 +579,7 @@ const invoiceBody = z.object({
  * when signed in).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
- * `notificationStore`, and
+ * `notificationStore` / `conversationStore`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).

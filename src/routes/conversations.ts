@@ -14,6 +14,7 @@ import {
   type ConversationThread,
   type PublicConversation,
 } from '@/lib/conversation';
+import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -29,6 +30,8 @@ import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
+import type { NotificationStore } from '@/lib/notification-store';
+import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
@@ -63,6 +66,10 @@ export interface ConversationRouteDeps {
   waitTimeoutMs?: number;
   /** Poll interval for `sinceMessageId` (tests inject). */
   waitPollMs?: number;
+  /** Optional push outbox; omitted skips conversation Web Push. */
+  pushStore?: PushStore;
+  /** Optional in-app unread source for push badge counts. */
+  notificationStore?: NotificationStore;
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -314,6 +321,7 @@ async function publicThread(
   account: Account,
   authStore: AuthStore,
   platformId: string | null,
+  unread: boolean,
 ): Promise<PublicConversation> {
   return serializeConversation(
     {
@@ -326,6 +334,7 @@ async function publicThread(
       staff: isStaffRole(account.role),
       platformId,
     }),
+    unread,
     counterpartAccountId(thread, account.id, platformId),
   );
 }
@@ -333,7 +342,7 @@ async function publicThread(
 /**
  * Build the `/conversations` route group.
  *
- * @param deps - Stores, clock, optional spend ping, invoice collaborators, and wait injects.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
  * @returns A Hono app with list/open/read/reply/invoice routes.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
@@ -379,9 +388,18 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
             continue;
           }
-          conversations.push(await publicThread(thread, account, deps.authStore, platformId));
+          const unread = await deps.store.hasUnread(thread.id, account.id, staff, platformId);
+          conversations.push(
+            await publicThread(thread, account, deps.authStore, platformId, unread),
+          );
         }
-        return c.json({ conversations }, 200);
+        return c.json(
+          {
+            conversations,
+            unreadCount: conversations.filter((row) => row.unread).length,
+          },
+          200,
+        );
       } catch {
         logEvent('conversations.list.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -428,10 +446,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const platform = await platformAccount(deps.authStore);
-        return c.json(
-          await publicThread(thread, account, deps.authStore, platform?.id ?? null),
-          200,
+        const platformId = platform?.id ?? null;
+        const unread = await deps.store.hasUnread(
+          thread.id,
+          account.id,
+          isStaffRole(account.role),
+          platformId,
         );
+        return c.json(await publicThread(thread, account, deps.authStore, platformId, unread), 200);
       } catch {
         logEvent('conversations.open.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -487,6 +509,28 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
       } catch {
         logEvent('conversations.get.failed');
+        return c.json({ error: 'Conversations are unavailable' }, 503);
+      }
+    })
+    .post('/:id/read', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!CONVERSATION_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const thread = await deps.store.getById(id);
+        const platform = await platformAccount(deps.authStore);
+        if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        await deps.store.markRead(id, account.id, new Date(deps.now()));
+        return c.json({ ok: true }, 200);
+      } catch {
+        logEvent('conversations.read.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
       }
     })
@@ -568,6 +612,21 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             logEvent('spend.ping.skipped', { reason: 'posted_unreachable' });
           }
         }
+        void notifyConversationMessage({
+          conversations: deps.store,
+          authStore: deps.authStore,
+          thread,
+          message: created,
+          nowMs: deps.now(),
+          /* v8 ignore next 6 -- createApp always injects pushStore and notificationStore */
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notifications: deps.notificationStore }),
+        }).catch(() => {
+          /* v8 ignore next -- fire-and-forget enqueue */
+          logEvent('conversations.push.failed');
+        });
         return c.json(
           serializeConversationMessage(
             created,

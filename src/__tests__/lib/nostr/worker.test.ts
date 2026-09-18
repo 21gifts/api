@@ -3134,6 +3134,72 @@ describe('runNostrWorkerTick', () => {
     expect(rows[0]?.senderAccountId).toBe('bob');
   });
 
+  it('enqueues a conversation push after inbound kind:4 persist', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob', KEK);
+    const conversations = new InMemoryConversationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(0),
+    });
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const senderCipher = (await auth.getNostrSecret('bob')) as Uint8Array;
+    const senderSecret = await decryptNostrSecret(senderCipher, KEK, 'bob');
+    const cipher = encryptKind4(senderSecret, recipient, 'legacy hi');
+    const signed = finalizeEvent(
+      { kind: 4, created_at: 1_700_000_000, tags: [['p', recipient]], content: cipher },
+      senderSecret,
+    );
+    zeroizeSecret(senderSecret);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: signed.id,
+        pubkey: signed.pubkey,
+        kind: signed.kind,
+        tags: signed.tags as string[][],
+        content: signed.content,
+        created_at: signed.created_at,
+        sig: signed.sig,
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations,
+        pushStore,
+        verifyKind1: () => true,
+      }),
+    );
+    const claimed = await pushStore.claimPending(10, 1_700_000_000_000, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('acc');
+    expect(claimed[0]?.type).toBe('conversation');
+  });
+
   it('does not re-ingest a conversation event id', async () => {
     const { auth, messages } = await seed();
     const conversations = new InMemoryConversationStore();

@@ -8,6 +8,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { InMemoryPushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
 
@@ -29,6 +30,13 @@ afterEach(() => {
 });
 
 const now = (): number => 1_700_000_000_000;
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 30; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 const AUTH = { authorization: 'Bearer tok' };
 const NOTE_ID = '00000000-0000-4000-8000-000000000001';
 const LIVING_ROOM_POST_ID = '00000000-0000-4000-8000-0000000000aa';
@@ -51,7 +59,7 @@ function mount(
   authStore: InMemoryAuthStore,
   conversations = new InMemoryConversationStore(),
   messages = new InMemoryMessageStore(),
-  spendPing?: SpendPing,
+  extra: { spendPing?: SpendPing; pushStore?: InMemoryPushStore } = {},
 ): Hono {
   return new Hono().route(
     '/conversations',
@@ -60,7 +68,8 @@ function mount(
       authStore,
       messageStore: messages,
       now,
-      ...(spendPing === undefined ? {} : { spendPing }),
+      ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
+      ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
     }),
   );
 }
@@ -829,6 +838,95 @@ describe('GET /conversations', () => {
     expect(res.status).toBe(503);
     expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.list.failed')).toBe(true);
   });
+
+  it('includes unread and unreadCount for an inbound never-read thread', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in',
+      conversationId: thread.id,
+      text: 'yo',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ unread: boolean }>;
+      unreadCount: number;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.unread).toBe(true);
+    expect(body.unreadCount).toBe(1);
+  });
+
+  it('omits an outbound-only member thread and reports unreadCount 0', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-out',
+      conversationId: thread.id,
+      text: 'hi',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: unknown[];
+      unreadCount: number;
+    };
+    expect(body.conversations).toHaveLength(0);
+    expect(body.unreadCount).toBe(0);
+  });
+
+  it('lists own outbound-only platform contact with unread false', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-out',
+      conversationId: thread.id,
+      text: 'help',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ unread: boolean }>;
+      unreadCount: number;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.unread).toBe(false);
+    expect(body.unreadCount).toBe(0);
+  });
 });
 
 describe('POST /conversations', () => {
@@ -1216,6 +1314,100 @@ describe('GET /conversations/:id', () => {
   });
 });
 
+describe('POST /conversations/:id/read', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(`/conversations/${NOTE_ID}/read`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 404 for a non-uuid id', async () => {
+    const res = await mount(await seeded()).request('/conversations/nope/read', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the session cannot see the thread', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('x', 'y', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the thread is missing', async () => {
+    const res = await mount(await seeded()).request(`/conversations/${NOTE_ID}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 200 then GET lists the thread as read', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in',
+      conversationId: thread.id,
+      text: 'yo',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const read = await mount(auth, conversations).request(`/conversations/${thread.id}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ ok: true });
+    const listed = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as {
+      conversations: Array<{ unread: boolean }>;
+      unreadCount: number;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.unread).toBe(false);
+    expect(body.unreadCount).toBe(0);
+  });
+
+  it('returns 503 when markRead throws', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    conversations.markRead = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.read.failed')).toBe(true);
+  });
+});
+
 describe('POST /conversations/:id', () => {
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request(`/conversations/${NOTE_ID}`, {
@@ -1299,6 +1491,67 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: 'hi' }),
     });
     expect(res.status).toBe(404);
+  });
+
+  it('enqueues a conversation push for the counterpart after append', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { pushStore }).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'ping' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    await flushMicrotasks();
+    const claimed = await pushStore.claimPending(10, now(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.type).toBe('conversation');
+    expect(claimed[0]?.accountId).toBe('other');
+    const payload = JSON.parse(claimed[0]?.payload ?? '{}') as Record<string, unknown>;
+    expect(payload['url']).toBe(`/messages?c=${thread.id}`);
+    expect(payload['unreadCount']).toBe(1);
+  });
+
+  it('still 200 when conversation push enqueue fails', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    pushStore.enqueue = async () => {
+      throw new Error('enqueue boom');
+    };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { pushStore }).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'ping' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    await flushMicrotasks();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.push.failed')).toBe(true);
   });
 
   it('appends a member reply', async () => {
@@ -1628,7 +1881,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1657,7 +1910,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1690,7 +1943,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1723,7 +1976,7 @@ describe('moderator_group', () => {
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
     const yesterday = new Date(now() - 86_400_000);
-    const res = await mount(auth, conversations, livingRoomStore(yesterday), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(yesterday), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1754,7 +2007,7 @@ describe('moderator_group', () => {
         throw new Error('ping boom');
       }),
     };
-    const res = await mount(auth, conversations, livingRoomStore(), spendPing).request(
+    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1783,7 +2036,7 @@ describe('moderator_group', () => {
     const spendPing = { ping: vi.fn(async () => undefined) };
     const messages = livingRoomStore();
     vi.spyOn(messages, 'listPostsByAccount').mockRejectedValue(new Error('boom'));
-    const res = await mount(auth, conversations, messages, spendPing).request(
+    const res = await mount(auth, conversations, messages, { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1807,7 +2060,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',
@@ -1834,7 +2087,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, new InMemoryMessageStore(), spendPing).request(
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
         method: 'POST',

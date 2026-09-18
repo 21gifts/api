@@ -2,6 +2,8 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
@@ -25,7 +27,7 @@ import type { PushStore } from '@/lib/push-store';
  * backfill creates the missing note once LN is linked).
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
- *   push and notification stores.
+ *   push, notification, and conversation stores.
  * @returns The account (unchanged, or with `profileMessageId` set after insert).
  */
 export async function ensureProfileMessage(args: {
@@ -35,6 +37,7 @@ export async function ensureProfileMessage(args: {
   now: () => number;
   pushStore?: PushStore;
   notifications?: NotificationStore;
+  conversations?: ConversationStore;
 }): Promise<Account> {
   const trimmed = args.account.name === null ? '' : args.account.name.trim();
   if (trimmed === '') {
@@ -126,6 +129,10 @@ export async function ensureProfileMessage(args: {
       auth: args.auth,
       ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
       ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      /* v8 ignore next 3 -- createApp always injects conversationStore */
+      ...(args.conversations === undefined
+        ? {}
+        : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
     });
   } catch {
     logEvent('push.enqueue.failed');

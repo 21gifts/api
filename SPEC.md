@@ -118,6 +118,7 @@ Public base URLs used in examples:
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
 | POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
+| POST   | `/conversations/:id/read`                    | Bearer                     | Stamp last-read for the viewer                                                                            |
 | GET    | `/notifications`                             | Bearer                     | List recipient notifications + unreadCount                                                                |
 | POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                                               |
 | POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                                                |
@@ -2766,7 +2767,11 @@ publicly — operators still read the mailbox via `GET /debug/contacts`
 (`DEBUG_TOKEN` must not read member PNs). After the platform account exists,
 the contact row is persisted first, then the same text is appended to the
 member→platform conversation thread so it is readable via
-`GET /conversations`. Conversation append failure logs
+`GET /conversations`. A successful conversation append enqueues
+`type: conversation` Web Push to bell-subscribed counterparts
+(`url` `/messages?c=<id>`). DMs are not copied into Notification rows.
+Push failure is logged (`conversations.push.failed`) and does not change
+**200**. Conversation append failure logs
 `conversations.contact_sync.failed` and still returns **200** (contact is
 the product surface). When no platform account (`isPlatform`) exists
 (neither contact nor thread is written) →
@@ -2866,14 +2871,19 @@ Success → **Response** `200`:
       "lastAt": "2026-08-29T12:00:00.000Z",
       "lastFromMe": false,
       "lastSats": 0,
+      "unread": true,
       "accountId": "<uuid>"
     }
-  ]
+  ],
+  "unreadCount": 1
 }
 ```
 
-`accountId` is the counterpart 21.gifts account. It is omitted for
-Damus-only counterparts (never JSON `null`).
+`unreadCount` is the number of listed rows with `unread: true` (same
+cap/filter, not a second uncapped query). Per-row `unread` is `hasUnread`
+(outbound-only listed contact tickets are `false`). List GET does not stamp
+last-read. `accountId` is the counterpart 21.gifts account. It is omitted
+for Damus-only counterparts (never JSON `null`).
 
 ### `POST /conversations`
 
@@ -2888,7 +2898,8 @@ Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
 the session account → **400** `{ "error": "Cannot message yourself" }`.
 
 Success → **Response** `200` (same public conversation object as list
-rows, including optional counterpart `accountId`).
+rows, including `unread` and optional counterpart `accountId`; empty new
+thread is `unread: false`).
 
 ### `GET /conversations/:id`
 
@@ -2951,7 +2962,12 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message, including
-optional sender `accountId`).
+optional sender `accountId`). After persist, the api enqueues one Web Push
+(`type: conversation`, url `/messages?c=<conversationId>`) to each
+bell-subscribed counterpart. `unreadCount` on that payload (and on forum
+and zap payloads) is in-app notification unread plus listed inbox unread.
+Push failure is logged and does not change the 200. DMs are not copied
+into Notification rows.
 
 ### `POST /conversations/:id/invoice`
 
@@ -2979,6 +2995,23 @@ when LNURL is unreachable or another transport failure. **400**
 `{ "error": "Conversations are unavailable" }` when the ok-path
 `recordInvoiceAttempt` throws after a successful LNURL mint (no `pr` in the
 response).
+
+### `POST /conversations/:id/read`
+
+Bearer session required. `:id` is a UUID. Stamps last-read for the session
+account via `markRead`. Does not copy DMs into Notifications.
+`GET /conversations/:id` does not mark read.
+
+Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
+Non-uuid `:id`, missing thread, or session may not see it → **404**
+`{ "error": "Not found" }`.
+Store failure → **503** `{ "error": "Conversations are unavailable" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true }
+```
 
 ### `GET /notifications`
 
