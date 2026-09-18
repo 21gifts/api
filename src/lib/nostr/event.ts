@@ -88,6 +88,27 @@ export function forumPhotoUrl(
 }
 
 /**
+ * Absolute extra-still URL for a forum message (indices 1–9).
+ *
+ * Damus only embeds URLs that look like image files, so the path ends in
+ * `.jpg` / `.png` / `.webp` rather than a bare `/photo/:index`.
+ *
+ * @param apiBase - Public API origin (no trailing slash).
+ * @param messageId - Message id.
+ * @param index - Extra still index (1–9).
+ * @param mime - Stored type (defaults to JPEG).
+ * @returns `GET /messages/:id/photo/:index.jpg` (or `.png` / `.webp`) URL.
+ */
+export function forumExtraPhotoUrl(
+  apiBase: string,
+  messageId: string,
+  index: number,
+  mime: Kind1Photo['mime'] = 'image/jpeg',
+): string {
+  return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo/${index}.${forumPhotoExt(mime)}`;
+}
+
+/**
  * Mutable tag arrays for `finalizeEvent` (copy of {@link KIND1_TAGS}).
  *
  * Extra `t` names (already lowercased) are inserted after `t=21gifts` and
@@ -207,6 +228,7 @@ export interface UnsignedKind1 {
  * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
+ * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
@@ -215,6 +237,7 @@ export function buildKind1Event(
   photo?: Kind1Photo,
   replyTo?: Kind1ReplyTo,
   location?: string | null,
+  extraPhotos?: readonly Kind1Photo[],
 ): UnsignedKind1 {
   const name = locationHashtagName(location ?? null);
   const extras = name === null ? [] : [name];
@@ -233,6 +256,19 @@ export function buildKind1Event(
       imeta.push(`image ${photo.posterUrl}`);
     }
     tags.push(imeta);
+  }
+  if (extraPhotos !== undefined && extraPhotos.length > 0) {
+    for (const extra of extraPhotos) {
+      body = body === '' ? extra.url : `${body}\n${extra.url}`;
+      const imeta = ['imeta', `url ${extra.url}`, `m ${extra.mime}`];
+      if (extra.dim !== undefined) {
+        imeta.push(`dim ${extra.dim}`);
+      }
+      if (extra.size !== undefined) {
+        imeta.push(`size ${extra.size}`);
+      }
+      tags.push(imeta);
+    }
   }
   if (replyTo !== undefined) {
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'root']);

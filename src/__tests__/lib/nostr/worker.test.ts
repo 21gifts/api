@@ -958,6 +958,66 @@ describe('runNostrWorkerTick', () => {
     ]);
   });
 
+  it('embeds extra still URLs and imeta on kind:1', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-pics',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'pics',
+        createdAt: new Date('2026-08-28T00:02:05.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      undefined,
+      [{ contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]) }],
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const notes = publisher.calls
+      .filter((call) => call.event['kind'] === 1)
+      .map((call) => String(call.event['content']));
+    expect(notes.some((content) => content.includes('m-pics/photo.jpg'))).toBe(true);
+    expect(notes.some((content) => content.includes('m-pics/photo/1.jpg'))).toBe(true);
+    const note = publisher.calls.find(
+      (call) =>
+        call.event['kind'] === 1 && String(call.event['content']).includes('m-pics/photo/1.jpg'),
+    );
+    expect(note?.event['tags']).toEqual([
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+      ['imeta', 'url https://dev-api.21.gifts/messages/m-pics/photo.jpg', 'm image/jpeg'],
+      ['imeta', 'url https://dev-api.21.gifts/messages/m-pics/photo/1.jpg', 'm image/jpeg'],
+    ]);
+  });
+
   it('embeds a public video URL and poster imeta on kind:1', async () => {
     const { auth, messages } = await seed();
     const mp4 = new Uint8Array(32);
@@ -1017,6 +1077,63 @@ describe('runNostrWorkerTick', () => {
           'm video/mp4',
           'image https://dev-api.21.gifts/messages/m-vid/photo.jpg',
         ],
+      ]),
+    );
+  });
+
+  it('does not embed extra still URLs on a video kind:1', async () => {
+    const { auth, messages } = await seed();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create(
+      {
+        id: 'm-vid-x',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip-x',
+        createdAt: new Date('2026-08-28T00:02:32.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      { contentType: 'video/mp4', bytes: mp4 },
+      [{ contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]) }],
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://dev.21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('m-vid-x/video'),
+    );
+    expect(String(note?.event['content'])).not.toContain('/photo/1.');
+    expect(note?.event['tags']).not.toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['imeta', expect.stringContaining('/photo/1.')]),
       ]),
     );
   });

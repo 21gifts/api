@@ -70,6 +70,46 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
+    .get('/:id/photo/:file', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      const id = c.req.param('id');
+      const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));
+      if (!MESSAGE_ID_RE.test(id) || match === null) {
+        return c.json({ error: 'Photo not found' }, 404);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const photo = await deps.store.getExtraPhoto(id, Number(match[1]));
+        if (photo === null) {
+          return c.json({ error: 'Photo not found' }, 404);
+        }
+        const ext =
+          photo.contentType === 'image/png'
+            ? 'png'
+            : photo.contentType === 'image/webp'
+              ? 'webp'
+              : 'jpg';
+        logEvent('debug.messages.photo.get', { messageId: row.id });
+        return new Response(photo.bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': photo.contentType,
+            'Cache-Control': 'public, max-age=86400',
+            'Access-Control-Allow-Origin': '*',
+            'Content-Disposition': `inline; filename="photo.${ext}"`,
+          },
+        });
+      } catch {
+        logEvent('debug.messages.photo.get_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .get('/:id', async (c) => {
       const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
       if (!gate.ok) {

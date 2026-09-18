@@ -112,6 +112,23 @@ describe('forumContentFingerprint', () => {
       forumContentFingerprint('hello', other),
     );
   });
+
+  it('matches two-arg when extras are omitted or empty', () => {
+    const twoArg = forumContentFingerprint('hello', bytes);
+    expect(forumContentFingerprint('hello', bytes, [])).toBe(twoArg);
+    expect(forumContentFingerprint('hello', bytes)).toBe(twoArg);
+  });
+
+  it('differs when extra stills differ in count or order', () => {
+    const extraA = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+    const extraB = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+    const oneExtra = forumContentFingerprint('hello', bytes, [extraA]);
+    const twoExtras = forumContentFingerprint('hello', bytes, [extraA, extraB]);
+    expect(twoExtras).not.toBe(oneExtra);
+    expect(forumContentFingerprint('hello', bytes, [extraA, extraB])).not.toBe(
+      forumContentFingerprint('hello', bytes, [extraB, extraA]),
+    );
+  });
 });
 
 describe('serializeMessage', () => {
@@ -133,6 +150,7 @@ describe('serializeMessage', () => {
       sats: 0,
       payable: true,
       hasPhoto: false,
+      photoCount: 0,
       hasVideo: false,
       videoContentType: null,
       role: 'moderator',
@@ -290,6 +308,46 @@ describe('serializeMessage', () => {
     };
     expect(serializeMessage(reply, false, 'basis').parentId).toBe('msg-top');
   });
+
+  it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {
+    const row: MessageRow = {
+      id: 'msg-pc-0',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis').photoCount).toBe(0);
+  });
+
+  it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-pc-1',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis').photoCount).toBe(1);
+  });
+
+  it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-pc-3',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: '',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      photoCount: 3,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis').photoCount).toBe(3);
+  });
 });
 
 describe('serializeDebugMessage', () => {
@@ -323,6 +381,7 @@ describe('serializeDebugMessage', () => {
       createdAt: '2026-08-28T12:00:00.000Z',
       sats: 21,
       hasPhoto: true,
+      photoCount: 1,
       hasVideo: true,
       videoContentType: 'video/mp4',
       parentId: 'parent-1',
@@ -355,6 +414,46 @@ describe('serializeDebugMessage', () => {
     expect(body['deletedBy']).toBeNull();
     expect(body['hasVideo']).toBe(false);
     expect(body['parentId']).toBeNull();
+  });
+
+  it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-pc-0',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['photoCount']).toBe(0);
+  });
+
+  it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-pc-1',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'pic',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['photoCount']).toBe(1);
+  });
+
+  it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-pc-3',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'pic',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      photoCount: 3,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['photoCount']).toBe(3);
   });
 });
 
@@ -389,6 +488,7 @@ describe('serializeHiddenMessage', () => {
       createdAt: '2026-08-28T12:00:00.000Z',
       sats: 21,
       hasPhoto: true,
+      photoCount: 1,
       hasVideo: true,
       videoContentType: 'video/mp4',
       parentId: 'parent-1',
@@ -445,6 +545,50 @@ describe('serializeHiddenMessage', () => {
     expect(body).not.toHaveProperty('contentFp');
     expect(body).not.toHaveProperty('authorPubkey');
     expect(body).not.toHaveProperty('nsec');
+  });
+
+  it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-pc-0',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeHiddenMessage(row, { id: null, name: null, role: null })['photoCount']).toBe(0);
+  });
+
+  it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-pc-1',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'pic',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    };
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['photoCount'],
+    ).toBe(1);
+  });
+
+  it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-pc-3',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'pic',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: true,
+      photoCount: 3,
+      ...unsignedNostrDefaults(),
+    };
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['photoCount'],
+    ).toBe(3);
   });
 });
 
