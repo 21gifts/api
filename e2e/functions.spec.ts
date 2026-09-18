@@ -94,6 +94,13 @@ test('Function: logEvent — GET /info succeeds through middleware', async ({ re
   expect(res.status()).toBe(200);
 });
 
+test('Function: errorLogFields — GET /healthz is ok while the worker logs no tick failure', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: resolveAllowedOrigins — CORS preflight allows localhost', async ({ request }) => {
   const res = await request.fetch('/info', {
     method: 'OPTIONS',

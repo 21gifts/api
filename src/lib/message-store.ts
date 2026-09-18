@@ -571,7 +571,8 @@ export interface MessageStore {
    * malformed, and empty tags are omitted. Only ok invoices with a non-null
    * conversation id and a non-null conversation message id. Adapters may
    * pre-filter invoices whose conversation message already exists; callers
-   * must still re-check.
+   * must still re-check. Event ids may repeat (the `e` tag is the recipient's
+   * profile note, shared by every invoice to that recipient): callers dedupe.
    *
    * @returns `{ eventId, conversationMessageId }` pairs for open PN invoices.
    */

@@ -5,7 +5,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { logEvent, type LogFields } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -214,34 +214,14 @@ async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise
   }
 }
 
-const SAFE_ERROR_NAME_PATTERN = /^[A-Za-z]{1,40}$/;
-const SAFE_DRIVER_FIELD_PATTERN = /^[A-Za-z0-9_]{1,40}$/;
-
 /**
- * Build allowlisted scalar fields for a thrown ingest without logging free text.
- *
- * Error names are limited to ASCII letters; driver `code` and `errno` values
- * are limited to ASCII alphanumerics and underscores. Messages are never logged
- * because database and fetch errors can embed values or callback URLs.
+ * Fields for a thrown ingest: `reason` plus the allowlisted error scalars.
  *
  * @param error - Caught value from `ingestOneReceipt`.
- * @returns Fields for `nostr.zap.rejected`, omitting values outside the allowlist.
+ * @returns Fields for `nostr.zap.rejected` ({@link errorLogFields}; never message text).
  */
 function zapIngestCatchFields(error: unknown): LogFields {
-  const fields: { [key: string]: string } = { reason: 'error' };
-  if (error instanceof Error && SAFE_ERROR_NAME_PATTERN.test(error.name)) {
-    fields['name'] = error.name;
-  }
-  if (typeof error === 'object' && error !== null) {
-    const candidate = error as { code?: unknown; errno?: unknown };
-    if (typeof candidate.code === 'string' && SAFE_DRIVER_FIELD_PATTERN.test(candidate.code)) {
-      fields['code'] = candidate.code;
-    }
-    if (typeof candidate.errno === 'string' && SAFE_DRIVER_FIELD_PATTERN.test(candidate.errno)) {
-      fields['errno'] = candidate.errno;
-    }
-  }
-  return fields;
+  return { reason: 'error', ...errorLogFields(error) };
 }
 
 /**

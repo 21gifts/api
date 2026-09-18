@@ -17,7 +17,7 @@ import { locationHashtagName } from '@/lib/location';
 import type { MessageStore } from '@/lib/message-store';
 import { notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
-import { logEvent } from '@/lib/log';
+import { errorLogFields, logEvent } from '@/lib/log';
 import { decryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import {
   buildKind0Event,
@@ -1161,7 +1161,7 @@ export function startNostrWorker(
   /* v8 ignore next 5 -- interval callback */
   const timer = setInterval(() => {
     void runNostrWorkerTick(deps).catch((error: unknown) => {
-      logEvent('nostr.worker.tick.failed', { error: String(error) });
+      logEvent('nostr.worker.tick.failed', errorLogFields(error));
     });
   }, intervalMs);
   return {

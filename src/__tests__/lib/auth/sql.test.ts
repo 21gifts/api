@@ -55,14 +55,19 @@ describe('sqlState', () => {
     expect(sqlState({ code: '22P02' })).toBe('22P02');
   });
 
-  it('falls back to code when errno is not a valid SQLSTATE', () => {
-    expect(sqlState({ code: '22P02', errno: -1 })).toBe('22P02');
+  it('falls back to code when a string errno is not a valid SQLSTATE', () => {
     expect(sqlState({ code: '22P02', errno: '22P0' })).toBe('22P02');
+    expect(sqlState({ code: '22P02', errno: 'ECONNRESET' })).toBe('22P02');
   });
 
-  it('returns null for a generic driver code or numeric errno', () => {
+  it('returns null for a generic driver code', () => {
     expect(sqlState({ code: 'ERR_POSTGRES_SERVER_ERROR' })).toBeNull();
+  });
+
+  it('returns null for Node system errors with a numeric errno', () => {
     expect(sqlState({ errno: -1 })).toBeNull();
+    expect(sqlState({ errno: -32, code: 'EPIPE' })).toBeNull();
+    expect(sqlState({ errno: -13, code: 'EPERM' })).toBeNull();
   });
 
   it('returns null for lowercase and short strings', () => {

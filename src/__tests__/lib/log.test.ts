@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { logEvent, requestLog, requestLogPath } from '@/lib/log';
+import { errorLogFields, logEvent, requestLog, requestLogPath } from '@/lib/log';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -40,6 +40,46 @@ describe('logEvent', () => {
     expect(events[0]?.['event']).toBe('auth.login.ok');
     expect(events[0]?.['accountId']).toBe('acc');
     expect(events[0]?.['firstLogin']).toBe(true);
+  });
+});
+
+describe('errorLogFields', () => {
+  it('keeps the measured Bun SQL error scalars and drops the message', () => {
+    const error = Object.assign(new Error('invalid input syntax for type uuid: "secret-value"'), {
+      name: 'PostgresError',
+      code: 'ERR_POSTGRES_SERVER_ERROR',
+      errno: '22P02',
+    });
+    const fields = errorLogFields(error);
+    expect(fields).toEqual({
+      name: 'PostgresError',
+      code: 'ERR_POSTGRES_SERVER_ERROR',
+      errno: '22P02',
+    });
+    expect(JSON.stringify(fields)).not.toContain('secret-value');
+  });
+
+  it('keeps code and errno from a plain object', () => {
+    expect(errorLogFields({ code: 'ECONNRESET', errno: '08006' })).toEqual({
+      code: 'ECONNRESET',
+      errno: '08006',
+    });
+  });
+
+  it('drops names, codes, and errnos outside the allowlist', () => {
+    const error = Object.assign(new Error('boom'), {
+      name: 'Bad Name: https://pay.example/cb?k=1',
+      code: 'has space',
+      errno: -61,
+    });
+    expect(errorLogFields(error)).toEqual({});
+    expect(errorLogFields({ code: 'x'.repeat(41), errno: 'y'.repeat(41) })).toEqual({});
+  });
+
+  it('returns no fields for primitives and null', () => {
+    expect(errorLogFields('invalid input syntax for type uuid: "secret-value"')).toEqual({});
+    expect(errorLogFields(null)).toEqual({});
+    expect(errorLogFields(undefined)).toEqual({});
   });
 });
 
