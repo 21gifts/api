@@ -334,7 +334,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `InvoicePayer`; `PostgresAuthStore`, `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`,
-`PostgresMessageStore`, `migrateMessageSchema`,
+`PostgresMessageStore`, `backfillZapPayments`, `migrateMessageSchema`,
 `PostgresContactStore`, `migrateContactSchema`,
 `PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresConversationStore`, `migrateConversationSchema`,

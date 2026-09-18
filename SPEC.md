@@ -2284,8 +2284,14 @@ The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
 receipts whose `e` tag matches a recent note `event_id`. A receipt is
 indexed when the signer pubkey matches the author's LNURL-pay
-`nostrPubkey`, the bolt11 amount is at least 1 sat, and the receipt id
-is new. Indexed receipts increment that row's `sats` (GET /messages then
+`nostrPubkey`, the bolt11 amount is at least 1 sat, the receipt id is
+new, and the bolt11 payment hash is not already claimed by another
+receipt id in `nostr_zap_payment` (a second receipt event for the same
+payment, or an operator settle, is recorded as `rejected` / `settled`).
+The claim has no foreign key to `message` and survives `deleteById`.
+At Postgres boot, receipts credited before the claim table existed are
+backfilled so a second real receipt for the same payment cannot double-credit.
+Indexed receipts increment that row's `sats` (GET /messages then
 returns the new total). Kind:1 EVENT frames published to relays are JSON
 objects, not JSON strings. Inbound kind:1 `#e` replies are persisted only
 when the pubkey maps to a 21.gifts account; unknown npubs are skipped

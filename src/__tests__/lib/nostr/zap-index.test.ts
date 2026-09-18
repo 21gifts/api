@@ -16,6 +16,7 @@ import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import {
+  backfillZapPayments,
   indexOpenZapReceipts,
   indexZapReceipt,
   manualReceiptIdForPaymentHash,
@@ -109,6 +110,38 @@ async function ingest(
   });
 }
 
+/** Build one historical indexed-ingest fixture. */
+function indexedZapIngest(args: {
+  id: string;
+  receiptId: string;
+  createdAt: string;
+  bolt11?: string;
+}): ZapIngestRow {
+  return {
+    id: args.id,
+    createdAt: new Date(args.createdAt),
+    receiptId: args.receiptId,
+    noteEventId: NOTE_EVENT_ID,
+    messageId: 'legacy-message',
+    outcome: 'indexed',
+    reason: null,
+    amountSats: 21,
+    receiptPubkey: PROVIDER_PUBKEY,
+    receipt: {
+      id: args.receiptId,
+      tags: args.bolt11 === undefined ? [] : [['bolt11', args.bolt11]],
+    },
+  };
+}
+
+/** Parse structured operator events emitted through console.warn. */
+function loggedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((value): value is string => typeof value === 'string' && value.startsWith('{'))
+    .map((value) => JSON.parse(value) as Record<string, unknown>);
+}
+
 /** Seed one successful forum invoice for manual-settle tests. */
 async function seedManualInvoice(
   store: InMemoryMessageStore,
@@ -135,6 +168,102 @@ async function seedManualInvoice(
     ...overrides,
   });
 }
+
+describe('backfillZapPayments', () => {
+  it('logs an empty completed pass', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(backfillZapPayments(new InMemoryMessageStore())).resolves.toBe(0);
+    expect(loggedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 0, total: 0 }),
+    ]);
+    warn.mockRestore();
+  });
+
+  it('skips an indexed ingest without a payment hash', async () => {
+    const store = new InMemoryMessageStore();
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'hashless-ingest',
+        receiptId: 'hashless-receipt',
+        createdAt: '2026-09-18T10:00:00.000Z',
+      }),
+    );
+    const claim = vi.spyOn(store, 'claimZapPayment');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(backfillZapPayments(store)).resolves.toBe(0);
+    expect(claim).not.toHaveBeenCalled();
+    expect(loggedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 0, total: 1 }),
+    ]);
+    warn.mockRestore();
+  });
+
+  it('gives a shared hash to the oldest indexed receipt and logs the newer conflict', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = '21'.repeat(32);
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'older-ingest',
+        receiptId: 'older-receipt',
+        createdAt: '2026-09-18T10:00:00.000Z',
+        bolt11: 'lnbc-shared-old',
+      }),
+    );
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'newer-ingest',
+        receiptId: 'newer-receipt',
+        createdAt: '2026-09-18T11:00:00.000Z',
+        bolt11: 'lnbc-shared-new',
+      }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(backfillZapPayments(store)).resolves.toBe(1);
+    expect(await store.claimZapPayment(paymentHash, 'older-receipt', new Date())).toBe(true);
+    expect(await store.claimZapPayment(paymentHash, 'newer-receipt', new Date())).toBe(false);
+    expect(loggedEvents(warn)).toEqual([
+      expect.objectContaining({
+        event: 'nostr.zap.backfill.conflict',
+        receiptId: 'newer-receipt',
+      }),
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 1, total: 2 }),
+    ]);
+    warn.mockRestore();
+  });
+
+  it('accepts the same owner again on an idempotent second pass', async () => {
+    const store = new InMemoryMessageStore();
+    mockedDecode.mockReturnValue({ paymentHash: '22'.repeat(32), amountMsat: 21_000 });
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'repeat-ingest',
+        receiptId: 'repeat-receipt',
+        createdAt: '2026-09-18T10:00:00.000Z',
+        bolt11: 'lnbc-repeat',
+      }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(backfillZapPayments(store)).resolves.toBe(1);
+    await expect(backfillZapPayments(store)).resolves.toBe(1);
+    expect(loggedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 1, total: 1 }),
+      expect.objectContaining({ event: 'nostr.zap.backfill.done', claimed: 1, total: 1 }),
+    ]);
+    warn.mockRestore();
+  });
+
+  it('propagates store failures', async () => {
+    class FailingBackfillStore extends InMemoryMessageStore {
+      override listIndexedZapIngests(): Promise<ZapIngestRow[]> {
+        return Promise.reject(new Error('backfill read failed'));
+      }
+    }
+    await expect(backfillZapPayments(new FailingBackfillStore())).rejects.toThrow(
+      'backfill read failed',
+    );
+  });
+});
 
 describe('manual invoice settlement', () => {
   it('derives a lowercase deterministic 64-hex receipt id', () => {
@@ -1540,6 +1669,114 @@ describe('indexOpenZapReceipts', () => {
     expect(ingests[0]?.reason).toBeNull();
   });
 
+  it('credits a second receipt for a legacy indexed payment when the backfill is omitted', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'legacy-control-author',
+      messageId: 'legacy-message',
+      lightningAddress: 'legacy-control@example.com',
+    });
+    const paymentHash = '27'.repeat(32);
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await store.recordZapReceipt('legacy-receipt-control', messageId, 21);
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'legacy-ingest-control',
+        receiptId: 'legacy-receipt-control',
+        createdAt: '2026-09-18T10:00:00.000Z',
+        bolt11: 'lnbc-legacy-control',
+      }),
+    );
+
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'later-receipt-control',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-later-control'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect((await store.getById(messageId))?.sats).toBe(42);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) => row.receiptId === 'later-receipt-control' && row.outcome === 'indexed',
+      ),
+    ).toBe(true);
+  });
+
+  it('backfills a legacy credit so a second receipt for its payment is settled', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'legacy-backfill-author',
+      messageId: 'legacy-message',
+      lightningAddress: 'legacy-backfill@example.com',
+    });
+    const paymentHash = '28'.repeat(32);
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await store.recordZapReceipt('legacy-receipt-backfill', messageId, 21);
+    await store.recordZapIngest(
+      indexedZapIngest({
+        id: 'legacy-ingest-backfill',
+        receiptId: 'legacy-receipt-backfill',
+        createdAt: '2026-09-18T10:00:00.000Z',
+        bolt11: 'lnbc-legacy-backfill',
+      }),
+    );
+    await backfillZapPayments(store);
+
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'later-receipt-backfill',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-later-backfill'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === 'later-receipt-backfill' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'settled',
+      ),
+    ).toBe(true);
+  });
+
   it('rejects a later real receipt when its payment hash was manually settled', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -1669,6 +1906,76 @@ describe('indexOpenZapReceipts', () => {
       }),
     ).resolves.toEqual({ ok: false, reason: 'duplicate' });
     expect((await store.getById('manual-message'))?.sats).toBe(21);
+  });
+
+  it('retries the same payment claim after the first receipt credit throws', async () => {
+    class FailingReceiptCreditStore extends InMemoryMessageStore {
+      recordZapReceiptCalls = 0;
+
+      override recordZapReceipt(
+        ...args: Parameters<InMemoryMessageStore['recordZapReceipt']>
+      ): ReturnType<InMemoryMessageStore['recordZapReceipt']> {
+        this.recordZapReceiptCalls += 1;
+        if (this.recordZapReceiptCalls === 1) {
+          return Promise.reject(new Error('receipt credit failed'));
+        }
+        return super.recordZapReceipt(...args);
+      }
+    }
+    const store = new FailingReceiptCreditStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'credit-retry-author',
+      messageId: 'credit-retry-message',
+      lightningAddress: 'credit-retry@example.com',
+    });
+    const paymentHash = '2c'.repeat(32);
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'credit-retry-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-credit-retry'],
+        ],
+      },
+    ];
+    const args = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 2,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await ingest(args);
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) =>
+          row.receiptId === 'credit-retry-receipt' &&
+          row.outcome === 'rejected' &&
+          row.reason === 'error',
+      ),
+    ).toBe(true);
+
+    await ingest(args);
+    warn.mockRestore();
+    expect(store.recordZapReceiptCalls).toBe(2);
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    expect(
+      (await store.listZapIngests(10)).some(
+        (row) => row.receiptId === 'credit-retry-receipt' && row.outcome === 'indexed',
+      ),
+    ).toBe(true);
   });
 
   it('keeps the payment claim after deleting and recreating a settled message', async () => {

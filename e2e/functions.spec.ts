@@ -515,6 +515,11 @@ test('Function: PostgresMessageStore — default boot has no DATABASE_URL', asyn
   expect(res.status()).toBe(200);
 });
 
+test('Function: backfillZapPayments — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: migrateMessageSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

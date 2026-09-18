@@ -80,6 +80,36 @@ export function manualReceiptIdForPaymentHash(paymentHash: string): string {
 }
 
 /**
+ * Backfill durable payment-hash claims for previously indexed zap receipts.
+ *
+ * Indexed ingests are returned newest-first, so this walks them oldest-first
+ * to preserve the earliest credited receipt as owner. The operation is
+ * idempotent because same-owner claims succeed. Its boot cost is one
+ * insert-or-skip per indexed ingest with a decodable BOLT11 payment hash.
+ *
+ * @param store - Message store containing indexed ingests and payment claims.
+ * @returns The number of new or same-owner claims accepted by the store.
+ * @throws Propagates ingest-list and payment-claim store failures.
+ */
+export async function backfillZapPayments(store: MessageStore): Promise<number> {
+  const indexed = await store.listIndexedZapIngests();
+  let claimed = 0;
+  for (const row of [...indexed].reverse()) {
+    const hash = paymentHashFromReceipt(row.receipt);
+    if (hash === null) {
+      continue;
+    }
+    if (await store.claimZapPayment(hash, row.receiptId, row.createdAt)) {
+      claimed += 1;
+    } else {
+      logEvent('nostr.zap.backfill.conflict', { receiptId: row.receiptId });
+    }
+  }
+  logEvent('nostr.zap.backfill.done', { claimed, total: indexed.length });
+  return claimed;
+}
+
+/**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
  * Empty after process restart; the first tick may then re-persist a forgotten
  * decision, but only for the receipts that tick still queries. A receipt is
