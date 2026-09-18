@@ -91,7 +91,7 @@ const JPEG: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(46);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(47);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -111,6 +111,13 @@ describe('MESSAGE_SCHEMA_SQL', () => {
       /ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt_gift_reply_id_uidx/);
+    const zapPaymentDdl = MESSAGE_SCHEMA_SQL.find((statement) =>
+      statement.includes('CREATE TABLE IF NOT EXISTS nostr_zap_payment'),
+    );
+    expect(zapPaymentDdl).toMatch(/payment_hash text PRIMARY KEY/);
+    expect(zapPaymentDdl).toMatch(/receipt_event_id text NOT NULL/);
+    expect(zapPaymentDdl).toMatch(/created_at timestamptz NOT NULL/);
+    expect(zapPaymentDdl).not.toMatch(/REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
@@ -615,6 +622,7 @@ describe('InMemoryMessageStore', () => {
     await store.recordInvoiceAttempt(invoice);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(true);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(false);
+    expect(await store.claimZapPayment('AB'.repeat(32), 'receipt-del', new Date(0))).toBe(true);
     await store.create({ ...LATE });
     expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1)).toBe(true);
     const videoPath = videoFilePath(resolveMediaDir(), 'p-del', 'video/mp4');
@@ -627,6 +635,7 @@ describe('InMemoryMessageStore', () => {
     ).toEqual([]);
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 7)).toBe(true);
     expect(await store.recordZapReceipt('receipt-keep', 'b', 1)).toBe(false);
+    expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-other', new Date(1))).toBe(false);
     expect(await store.getPhoto('p-del')).toBeNull();
     await expect(readFile(videoPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -1177,6 +1186,15 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.sats).toBe(21);
     expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(false);
     expect((await store.getById('a'))?.sats).toBe(21);
+  });
+
+  it('claimZapPayment allows idempotent re-claims and rejects another receipt id', async () => {
+    const store = new InMemoryMessageStore();
+    const at = new Date('2026-09-18T12:00:00.000Z');
+    const paymentHash = 'AB'.repeat(32);
+    expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
+    expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
+    expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-b', at)).toBe(false);
   });
 
   it('tracks gift-reply receipts and finds ok invoices', async () => {
@@ -3028,6 +3046,7 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/DELETE FROM nostr_zap_receipt/);
     expect(text).toMatch(/DELETE FROM message_invoice/);
     expect(text).toMatch(/DELETE FROM message/);
+    expect(text).not.toMatch(/nostr_zap_payment/);
     expect(text).toMatch(/parent_id = \$1/);
     expect(sql.queries[0]?.params).toEqual(['m1']);
   });
@@ -3180,6 +3199,37 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
     expect(sql.executes).toEqual([]);
+  });
+
+  it('claimZapPayment lowercases the hash and accepts the stored receipt owner', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    const at = new Date('2026-09-18T12:00:00.000Z');
+    const paymentHash = 'AB'.repeat(32);
+    const store = new PostgresMessageStore(sql);
+    expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
+    expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-a', at)).toBe(true);
+    expect(sql.executes).toHaveLength(2);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO nostr_zap_payment/);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
+    expect(sql.executes[0]?.params).toEqual([paymentHash.toLowerCase(), 'receipt-a', at]);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[0]?.text).toMatch(/SELECT receipt_event_id/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE payment_hash = \$1/);
+    expect(sql.queries[0]?.params).toEqual([paymentHash.toLowerCase()]);
+  });
+
+  it('claimZapPayment rejects a receipt id that does not own the hash', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-b', new Date(0))).toBe(false);
+  });
+
+  it('claimZapPayment returns false when the ownership row is unavailable', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-a', new Date(0))).toBe(false);
   });
 
   it('recordZapReceipt conflict returns false without sats update', async () => {

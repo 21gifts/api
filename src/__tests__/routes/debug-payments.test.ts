@@ -317,6 +317,7 @@ describe('debugPaymentsRoutes', () => {
     expect(await settled.json()).toMatchObject({
       messageId: 'settle-message',
       amountSats: 210_000,
+      resumed: false,
     });
     expect((await store.getById('settle-message'))?.sats).toBe(210_000);
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.invoices.settled')).toBe(true);
@@ -324,6 +325,44 @@ describe('debugPaymentsRoutes', () => {
     const duplicate = await app.request('/debug/invoices/settle', request);
     expect(duplicate.status).toBe(409);
     expect(await duplicate.json()).toEqual({ error: 'Already settled' });
+  });
+
+  it('returns resumed true when a failed ingest write is retried', async () => {
+    class FailingIngestStore extends InMemoryMessageStore {
+      failIngest = true;
+
+      override recordZapIngest(row: ZapIngestRow): Promise<void> {
+        if (this.failIngest) {
+          this.failIngest = false;
+          return Promise.reject(new Error('ingest persist boom'));
+        }
+        return super.recordZapIngest(row);
+      }
+    }
+    const store = new FailingIngestStore();
+    const paymentHash = 'ac'.repeat(32);
+    await seedSettleInvoice(store, paymentHash);
+    const app = mount(store, 'secret');
+    const request = {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
+    };
+
+    const failed = await app.request('/debug/invoices/settle', request);
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toEqual({ error: 'Messages are unavailable' });
+    expect((await store.getById('settle-message'))?.sats).toBe(210_000);
+
+    const resumed = await app.request('/debug/invoices/settle', request);
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({
+      messageId: 'settle-message',
+      amountSats: 210_000,
+      resumed: true,
+    });
+    expect((await store.getById('settle-message'))?.sats).toBe(210_000);
+    expect(await store.listZapIngests(10)).toHaveLength(1);
   });
 
   it('passes the optional push and notification stores to manual settle', async () => {

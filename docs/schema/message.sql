@@ -50,6 +50,14 @@ ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERE
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;
 
+-- Payment-hash ownership tombstones intentionally outlive message deletion.
+-- No message foreign key: deleting and restoring a message must not reopen a payment.
+CREATE TABLE IF NOT EXISTS nostr_zap_payment (
+  payment_hash text PRIMARY KEY,
+  receipt_event_id text NOT NULL,
+  created_at timestamptz NOT NULL
+);
+
 -- Invoice attempts from POST /messages/:id/invoice (success and failure).
 -- No FK on message_id so not_found attempts still persist.
 CREATE TABLE IF NOT EXISTS message_invoice (
