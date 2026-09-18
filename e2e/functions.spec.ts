@@ -315,6 +315,11 @@ test('Function: PostgresAuthStore — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
+test('Function: isUniqueViolation — GET /healthz is ok', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
@@ -1155,6 +1160,9 @@ test('Function: buildKind1Event — default boot has no DATABASE_URL', async ({ 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: forumPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: forumExtraPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: buildKind0Content — default boot has no DATABASE_URL', async ({ request }) => {

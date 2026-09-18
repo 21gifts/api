@@ -173,3 +173,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS message_live_reply_content_fp_uidx
   ON message (account_id, parent_id, content_fp)
   WHERE deleted_at IS NULL AND parent_id IS NOT NULL
     AND account_id IS NOT NULL AND content_fp IS NOT NULL;
+
+-- Extra stills only (indices 1–9). Photo 0 stays on message.photo.
+-- List queries never SELECT extra bytes.
+CREATE TABLE IF NOT EXISTS message_extra_photo (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  idx smallint NOT NULL,
+  photo bytea NOT NULL,
+  photo_content_type text NOT NULL,
+  PRIMARY KEY (message_id, idx),
+  CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
+);

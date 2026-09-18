@@ -1196,6 +1196,30 @@ describe('PostgresConversationStore', () => {
     expect(existing.id).toBe('m-existing');
   });
 
+  it('appendMessage returns the existing row on Bun errno unique_violation', async () => {
+    const sql = new MockSql();
+    sql.executeError = { errno: '23505' };
+    sql.nextRows = [
+      {
+        id: 'm-existing',
+        conversation_id: 'c-1',
+        text: 'hello',
+        created_at: NOW,
+        sender_account_id: 'acc-a',
+        sender_pubkey: null,
+        name: 'Ada',
+        event_id: 'ab'.repeat(32),
+        nostr_publish_state: 'published',
+        nostr_event: null,
+        claimed_until: null,
+      },
+    ];
+    const existing = await new PostgresConversationStore(sql).appendMessage(
+      message({ eventId: 'ab'.repeat(32) }),
+    );
+    expect(existing.id).toBe('m-existing');
+  });
+
   it('appendMessage returns the event_id row when the id lookup is empty', async () => {
     const sql = new MockSql();
     sql.executeError = { code: '23505' };

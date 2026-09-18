@@ -244,13 +244,19 @@ async function defaultWaitSatsSleep(ms: number): Promise<void> {
 
 /**
  * Public photo bytes for Nostr clients. Same handler for `/photo` and
- * `/photo.jpg` (Damus only embeds URLs with an image extension).
+ * `/photo.jpg` (Damus only embeds URLs with an image extension). Extra stills
+ * (indices 1–9) use `/photo/1.jpg` … `/photo/9.webp`.
  *
  * @param deps - Message store.
  * @param id - Path id.
+ * @param index - Extra still index (1–9). Omitted = photo 0 (`getPhoto`).
  * @returns 200 bytes, 404, or 503.
  */
-async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Response> {
+async function serveForumPhoto(
+  deps: MessagesRouteDeps,
+  id: string,
+  index?: number,
+): Promise<Response> {
   if (!MESSAGE_ID_RE.test(id)) {
     return Response.json({ error: 'Photo not found' }, { status: 404 });
   }
@@ -259,7 +265,10 @@ async function serveForumPhoto(deps: MessagesRouteDeps, id: string): Promise<Res
     if (row === undefined || row.deletedAt !== null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
-    const photo = await deps.store.getPhoto(id);
+    const photo =
+      index === undefined
+        ? await deps.store.getPhoto(id)
+        : await deps.store.getExtraPhoto(id, index);
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
@@ -360,6 +369,7 @@ async function serveForumVideo(
  * @param parentId - Reply parent, or `null` for top-level (multipart is always null).
  * @param photo - Optional decoded photo / poster.
  * @param video - Optional decoded video.
+ * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @returns 200 / 429 / 503.
  */
 async function persistForumPost(
@@ -372,12 +382,22 @@ async function persistForumPost(
   parentId: string | null,
   photo?: ForumPhoto,
   video?: ForumVideo,
+  extraPhotos?: readonly ForumPhoto[],
 ): Promise<Response> {
   const payableOf = (row: MessageRow): boolean =>
     (row.parentId ?? null) === null && row.eventId !== null && account.lightningAddress !== null;
+  const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
-    const mediaBytes = video?.bytes ?? photo!.bytes;
-    const fp = forumContentFingerprint(text, mediaBytes);
+    const fp =
+      video !== undefined
+        ? forumContentFingerprint(text, video.bytes)
+        : extras.length > 0
+          ? forumContentFingerprint(
+              text,
+              photo!.bytes,
+              extras.map((item) => item.bytes),
+            )
+          : forumContentFingerprint(text, photo!.bytes);
     try {
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
@@ -411,9 +431,11 @@ async function persistForumPost(
   };
   try {
     const created =
-      photo === undefined && video === undefined
-        ? await deps.store.create(row)
-        : await deps.store.create(row, photo, video);
+      extras.length > 0
+        ? await deps.store.create(row, photo, video, extras)
+        : photo === undefined && video === undefined
+          ? await deps.store.create(row)
+          : await deps.store.create(row, photo, video);
     const isReplay = created.id !== id;
     if (!isReplay && parentId === null) {
       try {
@@ -549,8 +571,22 @@ const postBody = z
         data: z.string(),
       })
       .optional(),
+    photos: z
+      .array(
+        z.object({
+          contentType: z.string(),
+          data: z.string(),
+        }),
+      )
+      .max(10)
+      .optional(),
   })
-  .refine((body) => body.text !== undefined || body.photo !== undefined);
+  .refine(
+    (body) =>
+      body.text !== undefined ||
+      body.photo !== undefined ||
+      (Array.isArray(body.photos) && body.photos.length > 0),
+  );
 
 /** Body schema for a note invoice. Optional `text` is the NIP-57 comment. */
 const invoiceBody = z.object({
@@ -651,7 +687,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (requestType.toLowerCase().includes('multipart/form-data')) {
         return postMultipartMessage(deps, postLimiter, c, account, authorName);
       }
-      const parsed = postBody.safeParse(await c.req.json().catch(() => null));
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw !== null &&
+        typeof raw === 'object' &&
+        Array.isArray((raw as { photos?: unknown }).photos) &&
+        (raw as { photos: unknown[] }).photos.length > 10
+      ) {
+        return c.json({ error: 'At most 10 photos' }, 400);
+      }
+      const parsed = postBody.safeParse(raw);
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
       }
@@ -661,7 +706,20 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Text must be 1–500 characters' }, 400);
       }
       let photo: ForumPhoto | undefined;
-      if (parsed.data.photo !== undefined) {
+      let extraPhotos: ForumPhoto[] = [];
+      const gallery = parsed.data.photos;
+      if (gallery !== undefined && gallery.length > 0) {
+        const decodedGallery: ForumPhoto[] = [];
+        for (const item of gallery) {
+          const decoded = decodeForumPhoto(item.contentType, item.data);
+          if (decoded === null) {
+            return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+          }
+          decodedGallery.push(decoded);
+        }
+        photo = decodedGallery[0];
+        extraPhotos = decodedGallery.slice(1);
+      } else if (parsed.data.photo !== undefined) {
         const decoded = decodeForumPhoto(parsed.data.photo.contentType, parsed.data.photo.data);
         if (decoded === null) {
           return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
@@ -690,7 +748,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         parentId = parent.id;
       }
-      return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
+      return extraPhotos.length > 0
+        ? persistForumPost(
+            deps,
+            postLimiter,
+            c,
+            account,
+            authorName,
+            text,
+            parentId,
+            photo,
+            undefined,
+            extraPhotos,
+          )
+        : persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
+    })
+    .get('/:id/photo/:file', (c) => {
+      const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));
+      if (match === null) {
+        return c.json({ error: 'Photo not found' }, 404);
+      }
+      return serveForumPhoto(deps, c.req.param('id'), Number(match[1]));
     })
     .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c.req.param('id')))
     .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c.req.param('id')))

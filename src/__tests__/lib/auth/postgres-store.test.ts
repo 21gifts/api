@@ -458,6 +458,26 @@ describe('PostgresAuthStore', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('createAccount treats a Bun errno unique_violation as a no-op', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { errno: '23505' });
+    await expect(
+      new PostgresAuthStore(sql).createAccount({
+        id: 'acc',
+        linkingKey: ACCOUNT_ROW.linking_key,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: VIEW_KEY,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('createAccount rethrows errors that are not unique_violation', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('canceled'), { code: '57014' });

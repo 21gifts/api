@@ -32,6 +32,9 @@ export type NostrPublishState = 'pending' | 'published' | 'failed' | 'skipped';
 /** Maximum decoded photo size in bytes (1 MiB). */
 export const MESSAGE_PHOTO_MAX_BYTES = 1_048_576;
 
+/** Maximum still photos on one forum note (index 0 plus extras 1–9). */
+export const MESSAGE_PHOTO_MAX_COUNT = 10;
+
 /** Maximum `data` string length accepted by `decodeForumPhoto`. */
 export const MESSAGE_PHOTO_MAX_BASE64_LENGTH = Math.ceil(MESSAGE_PHOTO_MAX_BYTES / 3) * 4 + 4;
 
@@ -63,6 +66,11 @@ export interface MessageRow {
   createdAt: Date;
   /** Whether a photo is stored for this message (bytes never on the row). */
   hasPhoto: boolean;
+  /**
+   * Still-photo count 0–10 when known (`hasPhoto` plus extra stills).
+   * Omitted on older fixtures; serializers default `hasPhoto ? 1 : 0`.
+   */
+  photoCount?: number;
   /** Whether a video file is stored for this message. */
   hasVideo?: boolean;
   /** Stored video MIME, or `null`. */
@@ -131,6 +139,11 @@ export interface PublicMessage {
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
+  /**
+   * Still-photo count (0–10). `0` when there are no stills; otherwise
+   * 1 + extra count. A video poster is photo 0 (`hasPhoto` true, `photoCount` 1).
+   */
+  photoCount: number;
   /** True when a video can be fetched via GET `/messages/:id/video.mp4|.webm|.mov`. */
   hasVideo: boolean;
   /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
@@ -156,19 +169,35 @@ export interface PublicMessage {
  * SHA-256 hex of utf8(text) + 0x00 + SHA-256(mediaBytes). Media required.
  *
  * Matches the SQL photo backfill (`digest(photo, 'sha256')` with a 0x00
- * separator after the UTF-8 text).
+ * separator after the UTF-8 text). When `extraMedia` is omitted or empty the
+ * two-arg formula is unchanged. When extras are present, each extra's
+ * SHA-256 digest is appended onto the outer hasher in index order (1..n).
  *
  * @param text - Already-normalised forum text (may be empty).
  * @param mediaBytes - Photo or video bytes (video wins when both exist).
+ * @param extraMedia - Optional extra still-photo bytes (indices 1..n). Omit
+ *   or pass empty for the N=1 fingerprint. Video paths must not pass extras.
  * @returns Lowercase hex SHA-256 (64 characters).
  */
-export function forumContentFingerprint(text: string, mediaBytes: Uint8Array): string {
+export function forumContentFingerprint(
+  text: string,
+  mediaBytes: Uint8Array,
+  extraMedia?: readonly Uint8Array[],
+): string {
   const mediaDigest = createHash('sha256').update(mediaBytes).digest();
-  return createHash('sha256')
+  const hasher = createHash('sha256')
     .update(Buffer.from(text, 'utf8'))
     .update(Buffer.from([0x00]))
-    .update(mediaDigest)
-    .digest('hex');
+    .update(mediaDigest);
+  for (const extra of extraMedia ?? []) {
+    hasher.update(createHash('sha256').update(extra).digest());
+  }
+  return hasher.digest('hex');
+}
+
+/** Public/debug/hidden JSON `photoCount` (0–10). */
+function photoCountOf(row: MessageRow): number {
+  return typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto ? 1 : 0;
 }
 
 /**
@@ -236,9 +265,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
  *
- * @returns Public fields (`sats`, `payable`, `hasPhoto`, `hasVideo`,
- * `videoContentType`; live `role` for 21gifts authors; optional `accountId`
- * when requested; optional `parentId` when `row.parentId !== null`);
+ * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
+ * `hasVideo`, `videoContentType`; live `role` for 21gifts authors; optional
+ * `accountId` when requested; optional `parentId` when `row.parentId !== null`);
  * `createdAt` ISO-8601. Never includes photo or video bytes, and never
  * includes `contentFp`. Omits the `parentId` key on top-level notes.
  * @throws RangeError (or Error) when createdAt is invalid.
@@ -258,6 +287,7 @@ export function serializeMessage(
     sats: row.sats,
     payable,
     hasPhoto: row.hasPhoto,
+    photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
   };
@@ -297,6 +327,7 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
     hasPhoto: row.hasPhoto === true,
+    photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
     parentId: row.parentId ?? null,
@@ -337,6 +368,7 @@ export function serializeHiddenMessage(
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
     hasPhoto: row.hasPhoto === true,
+    photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
     parentId: row.parentId ?? null,

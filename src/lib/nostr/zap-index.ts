@@ -5,7 +5,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { logEvent } from '@/lib/log';
+import { logEvent, type LogFields } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -211,6 +211,35 @@ async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise
   } catch {
     logEvent('nostr.zap.ingest.record_failed');
   }
+}
+
+/**
+ * Scalar fields for a thrown ingest: `reason` plus optional `error`/`code`/`errno`.
+ *
+ * @param error - Caught value from `ingestOneReceipt`.
+ * @returns Fields for `nostr.zap.rejected` (omit empty strings).
+ */
+function zapIngestCatchFields(error: unknown): LogFields {
+  const fields: { [key: string]: string } = { reason: 'error' };
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+  if (message !== '') {
+    fields['error'] = message;
+  }
+  if (typeof error === 'object' && error !== null) {
+    if ('code' in error) {
+      const code = (error as { code: unknown }).code;
+      if (typeof code === 'string' && code !== '') {
+        fields['code'] = code;
+      }
+    }
+    if ('errno' in error) {
+      const errno = (error as { errno: unknown }).errno;
+      if (typeof errno === 'string' && errno !== '') {
+        fields['errno'] = errno;
+      }
+    }
+  }
+  return fields;
 }
 
 /**
@@ -584,12 +613,18 @@ export async function indexOpenZapReceipts(args: {
     seen.add(row.eventId);
     eventIds.push(row.eventId);
   }
-  for (const eventId of await args.store.listOpenConversationZapEventIds()) {
-    if (eventId === '' || seen.has(eventId)) {
+  for (const row of await args.store.listOpenConversationZapEventIds()) {
+    if (row.eventId === '' || seen.has(row.eventId)) {
       continue;
     }
-    seen.add(eventId);
-    eventIds.push(eventId);
+    if (args.conversations !== undefined) {
+      const existingGift = await args.conversations.getMessageById(row.conversationMessageId);
+      if (existingGift !== undefined) {
+        continue;
+      }
+    }
+    seen.add(row.eventId);
+    eventIds.push(row.eventId);
   }
   if (eventIds.length === 0) {
     await retryGiftReplies(args);
@@ -607,8 +642,8 @@ export async function indexOpenZapReceipts(args: {
     for (const event of events) {
       try {
         await ingestOneReceipt(event, { ...args, verifyReceipt });
-      } catch {
-        logEvent('nostr.zap.rejected', { reason: 'error' });
+      } catch (error: unknown) {
+        logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
         if (typeof event.id === 'string' && event.id !== '') {
           await persistZapIngest(
             args.store,
@@ -639,7 +674,9 @@ export async function indexOpenZapReceipts(args: {
  * with reason `duplicate`): still runs `verifyReceipt` then `tryEnsureGiftReply`,
  * and does not persist ingest again. A payment hash already represented by a
  * synthetic manual receipt is rejected as `settled` before provider lookup.
- * Every other rejection reason is re-validated on each call.
+ * After address/provider/pubkey checks, an existing PN gift row is persisted
+ * as `indexed` without claim or append. Every other rejection reason is
+ * re-validated on each call.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.
@@ -791,6 +828,26 @@ async function ingestOneReceipt(
         }),
       );
       return;
+    }
+    const conversationMessageId = conversationInvoice.conversationMessageId;
+    if (conversationMessageId !== undefined && conversationMessageId !== null) {
+      const existingGift = await args.conversations.getMessageById(conversationMessageId);
+      if (existingGift !== undefined) {
+        await persistZapIngest(
+          args.store,
+          zapIngestRow({
+            receiptId: event.id,
+            noteEventId: null,
+            messageId: null,
+            outcome: 'indexed',
+            reason: null,
+            amountSats: conversationInvoice.amountSats,
+            receiptPubkey: event.pubkey,
+            receipt,
+          }),
+        );
+        return;
+      }
     }
     if (!(await args.store.claimZapPayment(paymentHash, event.id, new Date(args.now())))) {
       logEvent('nostr.zap.rejected', { reason: 'settled' });

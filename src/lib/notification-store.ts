@@ -5,7 +5,7 @@
  * `DATABASE_URL` is set. New public tables are covered by `db_change` attach.
  */
 
-import type { SqlClient } from '@/lib/auth/sql';
+import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type { NotificationRow, NotificationType } from '@/lib/notification';
 
 /**
@@ -418,13 +418,4 @@ function mapCount(value: number | string | bigint | undefined): number {
     return Number(value);
   }
   return 0;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
 }
