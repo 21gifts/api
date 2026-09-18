@@ -120,7 +120,7 @@ export function parseNotificationLevel(raw: unknown): NotificationLevel {
 }
 
 /**
- * Whether this account is a staff/admin actor for `mentions` fan-out.
+ * Whether this account is a staff/admin actor.
  * `verified` is not staff. `isPlatform === true` is staff even when `role` is `basis`.
  *
  * @param account - Role plus optional platform flag.
