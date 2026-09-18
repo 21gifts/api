@@ -231,6 +231,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         if (!restored) {
           return c.json({ error: 'Not found' }, 404);
         }
+        await deps.store.unblockPubkeyByMessage(id);
         logEvent('debug.messages.restored', { messageId: id });
         return c.body(null, 204);
       } catch {
