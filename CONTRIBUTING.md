@@ -331,7 +331,7 @@ booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
-`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `migrateAuthSchema`, `QueryGiftStore`,
+`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`,
 `PostgresMessageStore`, `backfillZapPayments`, `migrateMessageSchema`,
