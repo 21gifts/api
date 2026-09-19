@@ -2375,7 +2375,7 @@ Resolved profile names use the same fallback when they contain control character
 no letter or digit at all, mix more than one of the Latin, Cyrillic and Greek scripts,
 equal a member name, or collide with a member name or reserved project/staff identity
 after diacritic and common Cyrillic/Greek look-alike folding or after a by-sound
-transliteration of Cyrillic letters. Names written entirely in one non-Latin script remain eligible when neither the plain comparison nor the fold collides with a reserved word or an account name.
+transliteration of Cyrillic letters. Names written entirely in one non-Latin script remain eligible when none of these comparisons (plain, look-alike fold, by-sound transliteration) collides with a reserved word or an account name.
 
 Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
