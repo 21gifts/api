@@ -5,7 +5,8 @@
  * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
  * by `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not create rows.
  * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
- * only.
+ * and removes the pubkey block tied to that message via
+ * `unblockPubkeyByMessage`.
  */
 
 import { Hono } from 'hono';
@@ -231,6 +232,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         if (!restored) {
           return c.json({ error: 'Not found' }, 404);
         }
+        await deps.store.unblockPubkeyByMessage(id);
         logEvent('debug.messages.restored', { messageId: id });
         return c.body(null, 204);
       } catch {

@@ -12,7 +12,9 @@ import { openBootStores } from './lib/boot-stores';
 import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
-import { startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import { resolveZapRelays } from './lib/nostr/relays';
+import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
@@ -42,7 +44,13 @@ if (import.meta.main) {
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
-  const boot = await openBootStores(databaseUrl, createBunSqlClient);
+  const querier = new WebsocketNostrQuerier();
+  const boot = await openBootStores(databaseUrl, createBunSqlClient, {
+    nostrQuerier: querier,
+    zapRelayUrls: resolveZapRelays(process.env),
+    nostrRelayTimeoutMs: RELAY_TIMEOUT_MS,
+    now: Date.now,
+  });
   const {
     authStore,
     giftStore,
@@ -96,7 +104,8 @@ if (import.meta.main) {
         auth: authStore,
         kek: nostrKek,
         publisher,
-        querier: new WebsocketNostrQuerier(),
+        querier,
+        externalLimiter: new ExternalIngestLimiter(),
         fetchImpl: globalThis.fetch,
         now: Date.now,
         env: process.env,

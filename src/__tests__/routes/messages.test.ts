@@ -189,6 +189,18 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listIndexedZapIngests: boom,
     listAuthoredMessages: boom,
     listOpenConversationZapEventIds: boom,
+    attributeZapReceipt: boom,
+    recordZapper: boom,
+    listZapperPubkeys: boom,
+    listZappers: boom,
+    blockPubkey: boom,
+    blockPubkeyAndHideRows: boom,
+    unblockPubkeyByMessage: boom,
+    isPubkeyBlocked: boom,
+    listBlockedPubkeys: boom,
+    listBlockedPubkeyRows: boom,
+    markDeletedByExternalPubkey: boom,
+    listUnattributedIndexedReceipts: (_limit, _before) => boom(),
     ...overrides,
   };
 }
@@ -499,7 +511,7 @@ describe('GET /messages', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.list.failed')).toBe(true);
   });
 
-  it('lists a Damus-only note as not payable with role omitted', async () => {
+  it('lists external and member notes with via only on the external note', async () => {
     const authStore = await rulesStore();
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -512,16 +524,38 @@ describe('GET /messages', () => {
       hasVideo: false,
       videoContentType: null,
       ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+    });
+    await messageStore.create({
+      id: 'member-list',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'member note',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'cd'.repeat(32),
     });
     const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      messages: Array<{ payable: boolean; role?: string; hasVideo: boolean }>;
+      messages: Array<{
+        text: string;
+        payable: boolean;
+        role?: string;
+        hasVideo: boolean;
+        via?: string;
+      }>;
     };
-    expect(body.messages[0]?.payable).toBe(false);
-    expect(body.messages[0]).not.toHaveProperty('role');
-    expect(body.messages[0]).not.toHaveProperty('accountId');
-    expect(body.messages[0]?.hasVideo).toBe(false);
+    const external = body.messages.find((row) => row.text === 'hi');
+    expect(external).toMatchObject({ payable: false, hasVideo: false, via: 'nostr' });
+    expect(external).not.toHaveProperty('role');
+    expect(external).not.toHaveProperty('accountId');
+    const member = body.messages.find((row) => row.text === 'member note');
+    expect(member).toMatchObject({ payable: false, hasVideo: false, role: 'basis' });
+    expect(member).not.toHaveProperty('via');
   });
 });
 
@@ -618,12 +652,14 @@ describe('POST /messages', () => {
     expect(created.role).toBe('basis');
     expect(created.accountId).toBe('acc');
     expect(created.id.length).toBeGreaterThan(8);
+    expect(created).not.toHaveProperty('via');
 
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
     const body = (await list.json()) as { messages: (typeof created & { replyCount: number })[] };
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]).toEqual({ ...created, replyCount: 0 });
+    expect(body.messages[0]).not.toHaveProperty('via');
   });
 
   it('enqueues a forum push for other subscribed accounts, not the author', async () => {
@@ -1835,6 +1871,23 @@ describe('POST /messages', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      attributeZapReceipt: (receiptEventId, attribution) =>
+        base.attributeZapReceipt(receiptEventId, attribution),
+      recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
+      listZapperPubkeys: () => base.listZapperPubkeys(),
+      listZappers: (limit) => base.listZappers(limit),
+      blockPubkey: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
+      unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      listBlockedPubkeys: () => base.listBlockedPubkeys(),
+      listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
+      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
+        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -1922,6 +1975,23 @@ describe('POST /messages', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      attributeZapReceipt: (receiptEventId, attribution) =>
+        base.attributeZapReceipt(receiptEventId, attribution),
+      recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
+      listZapperPubkeys: () => base.listZapperPubkeys(),
+      listZappers: (limit) => base.listZappers(limit),
+      blockPubkey: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
+      unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      listBlockedPubkeys: () => base.listBlockedPubkeys(),
+      listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
+      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
+        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const app = new Hono().route(
       '/messages',
@@ -3459,6 +3529,23 @@ describe('POST /messages/:id/invoice', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      attributeZapReceipt: (receiptEventId, attribution) =>
+        base.attributeZapReceipt(receiptEventId, attribution),
+      recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
+      listZapperPubkeys: () => base.listZapperPubkeys(),
+      listZappers: (limit) => base.listZappers(limit),
+      blockPubkey: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
+      unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      listBlockedPubkeys: () => base.listBlockedPubkeys(),
+      listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
+      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
+        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);
@@ -3660,7 +3747,7 @@ describe('GET /messages/:id', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
   });
 
-  it('returns 404 for a Damus-only reply', async () => {
+  it('returns 200 with via nostr for a live external reply', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '15151515-1515-4151-8151-151515151515',
@@ -3686,6 +3773,45 @@ describe('GET /messages/:id', () => {
       parentId: '15151515-1515-4151-8151-151515151515',
       authorPubkey: 'ab'.repeat(32),
       eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(new InMemoryAuthStore(), messageStore).request(
+      '/messages/14141414-1414-4141-8141-141414141414',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: '14141414-1414-4141-8141-141414141414',
+      parentId: '15151515-1515-4151-8151-151515151515',
+      text: 'from damus',
+      payable: false,
+      via: 'nostr',
+    });
+    expect(body).not.toHaveProperty('role');
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('authorPubkey');
+  });
+
+  it('returns 404 for a null-account reply without an author pubkey', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '14141414-1414-4141-8141-141414141414',
+      accountId: null,
+      name: 'Legacy',
+      text: 'hidden legacy row',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+      authorPubkey: null,
     });
     const res = await mount(new InMemoryAuthStore(), messageStore).request(
       '/messages/14141414-1414-4141-8141-141414141414',
@@ -3725,6 +3851,7 @@ describe('GET /messages/:id', () => {
       photoCount: 0,
       hasVideo: false,
       videoContentType: null,
+      via: 'nostr',
     });
     expect(body).not.toHaveProperty('role');
     expect(body).not.toHaveProperty('accountId');
@@ -3767,6 +3894,7 @@ describe('GET /messages/:id', () => {
       hasVideo: false,
       videoContentType: null,
       ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
       eventId: 'ee'.repeat(32),
     });
     const res = await mount(authStore, messageStore).request(
@@ -3778,6 +3906,7 @@ describe('GET /messages/:id', () => {
     expect(body.payable).toBe(false);
     expect(body.hasVideo).toBe(false);
     expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('via');
   });
 
   it('marks a signed note with a Lightning Address as payable', async () => {
@@ -4235,7 +4364,7 @@ describe('GET /messages/:id/replies', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
   });
 
-  it('omits Damus-only replies and includes roles for member replies', async () => {
+  it('includes external replies with via nostr and roles only for member replies', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4273,6 +4402,22 @@ describe('GET /messages/:id/replies', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
       parentId: '15151515-1515-4151-8151-151515151515',
+      authorPubkey: 'cd'.repeat(32),
+    });
+    await messageStore.create({
+      id: '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'member gift reply',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: '15151515-1515-4151-8151-151515151515',
+      authorPubkey: 'ef'.repeat(32),
+      sats: 21,
+      nostrPublishState: 'skipped',
     });
     await messageStore.create({
       id: '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b',
@@ -4292,15 +4437,32 @@ describe('GET /messages/:id/replies', () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      messages: Array<{ text: string; role?: string; accountId?: string; hasVideo: boolean }>;
+      messages: Array<{
+        text: string;
+        role?: string;
+        accountId?: string;
+        hasVideo: boolean;
+        payable: boolean;
+        via?: string;
+      }>;
     };
-    expect(body.messages).toHaveLength(2);
-    expect(body.messages[0]?.text).toBe('member reply');
-    expect(body.messages[0]?.role).toBe('basis');
-    expect(body.messages[0]?.accountId).toBe('acc');
-    expect(body.messages[1]?.text).toBe('orphan reply');
-    expect(body.messages[1]?.role).toBe('basis');
-    expect(body.messages[1]?.accountId).toBe('gone');
+    expect(body.messages).toHaveLength(4);
+    const external = body.messages.find((row) => row.text === 'from damus');
+    expect(external).toMatchObject({ payable: false, via: 'nostr' });
+    expect(external).not.toHaveProperty('role');
+    expect(external).not.toHaveProperty('accountId');
+    const member = body.messages.find((row) => row.text === 'member reply');
+    expect(member?.role).toBe('basis');
+    expect(member?.accountId).toBe('acc');
+    expect(member).not.toHaveProperty('via');
+    const giftReply = body.messages.find((row) => row.text === 'member gift reply');
+    expect(giftReply?.role).toBe('basis');
+    expect(giftReply?.accountId).toBe('acc');
+    expect(giftReply).not.toHaveProperty('via');
+    const orphan = body.messages.find((row) => row.text === 'orphan reply');
+    expect(orphan?.role).toBe('basis');
+    expect(orphan?.accountId).toBe('gone');
+    expect(orphan).not.toHaveProperty('via');
   });
 
   it('returns 200 with an empty-name member reply coerced to a display name', async () => {
@@ -4487,7 +4649,7 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.text).toBe('good sibling');
   });
 
-  it('skips a listed reply whose accountId is null', async () => {
+  it('serializes a listed external reply with via and leaves it absent on the member', async () => {
     const parentId = '20202020-2020-4202-8202-202020202020';
     const memberId = '21212121-2121-4212-8212-212121212121';
     const auth = await namedStore('Ada');
@@ -4537,10 +4699,17 @@ describe('GET /messages/:id/replies', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ id: string; text: string }> };
-    expect(body.messages).toHaveLength(1);
-    expect(body.messages[0]?.id).toBe(memberId);
-    expect(body.messages[0]?.text).toBe('member reply');
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; text: string; via?: string }>;
+    };
+    expect(body.messages).toHaveLength(2);
+    const listedMember = body.messages.find((row) => row.id === memberId);
+    expect(listedMember?.text).toBe('member reply');
+    expect(listedMember).not.toHaveProperty('via');
+    expect(body.messages.find((row) => row.id === damusOnly.id)).toMatchObject({
+      text: 'from damus',
+      via: 'nostr',
+    });
   });
 
   it('returns 503 when deleting a missing-video reply throws', async () => {
@@ -5415,6 +5584,43 @@ describe('DELETE /messages/:id', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 without side effects when marking the note loses a race', async () => {
+    const { auth } = await staffStore('founder');
+    const targetId = '77777777-7777-4777-8777-777777777777';
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: targetId,
+      accountId: null,
+      name: 'External',
+      text: 'raced deletion',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey: '77'.repeat(32),
+    });
+    const markDeleted = vi.fn<MessageStore['markDeleted']>(async () => false);
+    const blockPubkeyAndHideRows = vi.fn<MessageStore['blockPubkeyAndHideRows']>(async () => 0);
+    const messages = throwingStore({
+      getById: (id) => base.getById(id),
+      markDeleted,
+      blockPubkeyAndHideRows,
+    });
+    warn.mockClear();
+
+    const res = await mount(auth, messages).request(`/messages/${targetId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(markDeleted).toHaveBeenCalledTimes(1);
+    expect(blockPubkeyAndHideRows).toHaveBeenCalledTimes(0);
+    const events = parsedEvents(warn);
+    expect(events.some((event) => event['event'] === 'messages.external.blocked')).toBe(false);
+    expect(events.some((event) => event['event'] === 'messages.deleted')).toBe(false);
+  });
+
   it('returns 204 for founder and logs messages.deleted without text', async () => {
     const { auth, messages } = await staffStore('founder');
     warn.mockClear();
@@ -5457,6 +5663,66 @@ describe('DELETE /messages/:id', () => {
     expect(res.status).toBe(204);
     const again = await messages.getById(NOTE_ID);
     expect(again?.deletedAt?.getTime()).toBe(first?.deletedAt?.getTime());
+  });
+
+  it('blocks an external author and hides every live row by that pubkey', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const pubkey = 'ab'.repeat(32);
+    const targetId = '33333333-3333-4333-8333-333333333333';
+    const siblingId = '44444444-4444-4444-8444-444444444444';
+    const otherId = '55555555-5555-4555-8555-555555555555';
+    for (const [id, authorPubkey] of [
+      [targetId, pubkey],
+      [siblingId, pubkey],
+      [otherId, 'cd'.repeat(32)],
+    ] as const) {
+      await messages.create({
+        id,
+        accountId: null,
+        name: 'External',
+        text: id,
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        authorPubkey,
+      });
+    }
+    warn.mockClear();
+    const res = await mount(auth, messages).request(`/messages/${targetId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    expect(await messages.listBlockedPubkeys()).toEqual([pubkey]);
+    expect((await messages.getById(targetId))?.deletedAt).not.toBeNull();
+    expect((await messages.getById(siblingId))?.deletedAt).not.toBeNull();
+    expect((await messages.getById(otherId))?.deletedAt).toBeNull();
+    const blocked = parsedEvents(warn).find(
+      (event) => event['event'] === 'messages.external.blocked',
+    );
+    expect(blocked).toMatchObject({ messageId: targetId, hidden: 2 });
+    expect(blocked).not.toHaveProperty('pubkey');
+  });
+
+  it('does not block an external child when staff hide its member parent', async () => {
+    const { auth, messages } = await staffStore('founder');
+    await messages.create({
+      id: '66666666-6666-4666-8666-666666666666',
+      accountId: null,
+      name: 'External',
+      text: 'child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: NOTE_ID,
+      authorPubkey: 'ef'.repeat(32),
+    });
+    const res = await mount(auth, messages).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    expect(await messages.listBlockedPubkeys()).toEqual([]);
   });
 
   it('returns 503 and logs messages.delete.failed when markDeleted throws', async () => {
@@ -5627,6 +5893,48 @@ describe('GET /messages/hidden', () => {
         },
       ],
     });
+  });
+
+  it('marks hidden external Nostr rows and omits via from member rows', async () => {
+    const auth = await staffAuth('founder');
+    const messages = new InMemoryMessageStore([
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hidden member',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        authorPubkey: 'ab'.repeat(32),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+      {
+        id: OTHER_ID,
+        accountId: null,
+        name: 'External',
+        text: 'hidden external',
+        createdAt: new Date(now() - 1),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        authorPubkey: 'cd'.repeat(32),
+        deletedAt: HIDDEN_AT,
+        deletedBy: 'acc',
+      },
+    ]);
+    const res = await mount(auth, messages).request('/messages/hidden', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ text: string; via?: 'nostr' }>;
+    };
+    expect(body.messages).toHaveLength(2);
+    const member = body.messages.find((row) => row.text === 'hidden member');
+    const external = body.messages.find((row) => row.text === 'hidden external');
+    expect(member).toBeDefined();
+    expect(member).not.toHaveProperty('via');
+    expect(external).toHaveProperty('via', 'nostr');
+    expect(external).not.toHaveProperty('authorPubkey');
   });
 
   it('returns 200 for moderator', async () => {

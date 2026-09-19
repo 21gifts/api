@@ -693,6 +693,8 @@ describe('debugMessagesRoutes', () => {
     await store.markDeleted(independentId, later, 'other-staff');
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
     await store.markDeleted(REPLY_ID, HIDDEN_AT, 'staff');
+    await store.blockPubkey('ab'.repeat(32), HIDDEN_AT, 'staff', HIDDEN_ID);
+    expect(await store.listBlockedPubkeys()).toEqual(['ab'.repeat(32)]);
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
@@ -713,11 +715,84 @@ describe('debugMessagesRoutes', () => {
     expect(grandchild?.deletedAt?.toISOString()).toBe(HIDDEN_AT.toISOString());
     expect(grandchild?.deletedBy).toBe('staff');
     expect(await store.getPhoto(HIDDEN_ID)).toEqual(JPEG);
+    expect(await store.listBlockedPubkeys()).toEqual([]);
     const restored = parsedEvents(warn).filter((e) => e['event'] === 'debug.messages.restored');
     expect(restored).toHaveLength(1);
     expect(restored[0]?.['messageId']).toBe(HIDDEN_ID);
     expect(restored[0]).not.toHaveProperty('text');
     expect(restored[0]).not.toHaveProperty('deletedBy');
+  });
+
+  it('restoring a cascaded external row leaves the source hidden and pubkey blocked', async () => {
+    const pubkey = 'cd'.repeat(32);
+    const cascadedId = HIDDEN_EXTRA_ID;
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ accountId: null, authorPubkey: pubkey }));
+    await store.create(
+      forumRow({
+        id: cascadedId,
+        accountId: null,
+        authorPubkey: pubkey,
+        text: 'cascaded row',
+      }),
+    );
+    expect(await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff')).toBe(true);
+    expect(await store.blockPubkeyAndHideRows(pubkey, HIDDEN_AT, 'staff', HIDDEN_ID)).toBe(1);
+
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${cascadedId}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect((await store.getById(cascadedId))?.deletedAt).toBeNull();
+    expect((await store.getById(HIDDEN_ID))?.deletedAt?.toISOString()).toBe(
+      HIDDEN_AT.toISOString(),
+    );
+    expect(await store.listBlockedPubkeys()).toEqual([pubkey]);
+    expect(await store.isPubkeyBlocked(pubkey)).toBe(true);
+    const restored = parsedEvents(warn).filter((e) => e['event'] === 'debug.messages.restored');
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.['messageId']).toBe(cascadedId);
+    expect(Object.keys(restored[0] ?? {}).sort()).toEqual(['event', 'messageId', 'ts']);
+  });
+
+  it('restoring the external source unblocks without restoring cascaded rows', async () => {
+    const pubkey = 'ef'.repeat(32);
+    const cascadedId = HIDDEN_EXTRA_ID;
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ accountId: null, authorPubkey: pubkey }));
+    await store.create(
+      forumRow({
+        id: cascadedId,
+        accountId: null,
+        authorPubkey: pubkey,
+        text: 'cascaded row',
+      }),
+    );
+    expect(await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff')).toBe(true);
+    expect(await store.blockPubkeyAndHideRows(pubkey, HIDDEN_AT, 'staff', HIDDEN_ID)).toBe(1);
+
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect((await store.getById(HIDDEN_ID))?.deletedAt).toBeNull();
+    expect((await store.getById(cascadedId))?.deletedAt?.toISOString()).toBe(
+      HIDDEN_AT.toISOString(),
+    );
+    expect(await store.listBlockedPubkeys()).toEqual([]);
+    expect(await store.isPubkeyBlocked(pubkey)).toBe(false);
+    const restored = parsedEvents(warn).filter((e) => e['event'] === 'debug.messages.restored');
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.['messageId']).toBe(HIDDEN_ID);
+    expect(Object.keys(restored[0] ?? {}).sort()).toEqual(['event', 'messageId', 'ts']);
   });
 
   it('returns 204 without mutating children when the row is already live', async () => {

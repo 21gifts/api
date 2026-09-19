@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { decodeBolt11 } from '@/lib/bolt11';
+import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
@@ -10,14 +10,18 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import {
   InMemoryMessageStore,
   type MessageInvoiceAttempt,
+  type UnattributedIndexedReceipt,
   type ZapIngestRow,
+  type ZapReceiptGiftRow,
 } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
+import { verifiedExternalZapRequest } from '@/lib/nostr/external';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import {
   backfillZapPayments,
+  backfillExternalZappers,
   indexOpenZapReceipts,
   indexZapReceipt,
   manualReceiptIdForPaymentHash,
@@ -27,9 +31,20 @@ import { InMemoryPushStore } from '@/lib/push-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
+  inspectBolt11: vi.fn(),
 }));
 
+vi.mock('@/lib/nostr/external', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nostr/external')>();
+  return {
+    ...actual,
+    verifiedExternalZapRequest: vi.fn(actual.verifiedExternalZapRequest),
+  };
+});
+
 const mockedDecode = vi.mocked(decodeBolt11);
+const mockedInspect = vi.mocked(inspectBolt11);
+const mockedVerifiedExternalZapRequest = vi.mocked(verifiedExternalZapRequest);
 
 const NOTE_EVENT_ID = 'ee'.repeat(32);
 const PROVIDER_PUBKEY = 'aa'.repeat(32);
@@ -141,6 +156,269 @@ function loggedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .map((call) => call[0])
     .filter((value): value is string => typeof value === 'string' && value.startsWith('{'))
     .map((value) => JSON.parse(value) as Record<string, unknown>);
+}
+
+/** Build a signed external zap request and its receipt frame. */
+function externalZapFixture(args: {
+  receiptId: string;
+  bolt11: string;
+  noteEventId?: string;
+  requestNoteEventId?: string;
+  amount?: string;
+  content?: string;
+  createdAt?: number;
+  secret?: Uint8Array;
+  /** Signed 9734 JSON to embed verbatim — a replay copies the request byte for byte. */
+  description?: string;
+}): {
+  pubkey: string;
+  requestId: string;
+  description: string;
+  descriptionHash: string;
+  receipt: NostrEventFrame;
+} {
+  const secret = args.secret ?? generateSecretKey();
+  const request = finalizeEvent(
+    {
+      kind: 9734,
+      created_at: 1_700_000_000,
+      tags: [
+        ['e', args.requestNoteEventId ?? args.noteEventId ?? NOTE_EVENT_ID],
+        ['amount', args.amount ?? '21000'],
+      ],
+      content: args.content ?? 'external gift',
+    },
+    secret,
+  );
+  const copied =
+    args.description === undefined
+      ? undefined
+      : (JSON.parse(args.description) as { id: string; pubkey: string });
+  const description = args.description ?? JSON.stringify(request);
+  return {
+    pubkey: copied?.pubkey ?? request.pubkey,
+    requestId: copied?.id ?? request.id,
+    description,
+    descriptionHash: createHash('sha256').update(description).digest('hex'),
+    receipt: {
+      id: args.receiptId,
+      pubkey: PROVIDER_PUBKEY,
+      kind: 9735,
+      tags: [
+        ['e', args.noteEventId ?? NOTE_EVENT_ID],
+        ['bolt11', args.bolt11],
+        ['description', description],
+      ],
+      created_at: args.createdAt ?? 1_700_000_100,
+      content: '',
+      sig: 'ff'.repeat(32),
+    },
+  };
+}
+
+/** Store override for focused historical-frame backfill cases. */
+class BackfillRowsStore extends InMemoryMessageStore {
+  readonly backfillCalls: Array<{
+    limit: number;
+    before: { createdAt: Date; eventId: string } | undefined;
+  }> = [];
+  readonly returnedReceiptIds: string[] = [];
+
+  constructor(readonly backfillRows: UnattributedIndexedReceipt[]) {
+    super();
+  }
+
+  override listUnattributedIndexedReceipts(
+    limit: number,
+    before?: { createdAt: Date; eventId: string },
+  ): ReturnType<InMemoryMessageStore['listUnattributedIndexedReceipts']> {
+    this.backfillCalls.push({
+      limit,
+      before:
+        before === undefined
+          ? undefined
+          : { createdAt: new Date(before.createdAt.getTime()), eventId: before.eventId },
+    });
+    const sorted = [...this.backfillRows].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.receiptEventId.localeCompare(a.receiptEventId);
+    });
+    const candidates =
+      before === undefined
+        ? sorted
+        : sorted.filter((row) => {
+            const byTime = row.createdAt.getTime() - before.createdAt.getTime();
+            return (
+              byTime < 0 || (byTime === 0 && row.receiptEventId.localeCompare(before.eventId) < 0)
+            );
+          });
+    const page = candidates.slice(0, limit);
+    this.returnedReceiptIds.push(...page.map((row) => row.receiptEventId));
+    return Promise.resolve(page);
+  }
+}
+
+/** Paging store that simulates another worker attributing a seen receipt between pages. */
+class BetweenPagesAttributionStore extends BackfillRowsStore {
+  #attributed = false;
+
+  override listUnattributedIndexedReceipts(
+    limit: number,
+    before?: { createdAt: Date; eventId: string },
+  ): ReturnType<InMemoryMessageStore['listUnattributedIndexedReceipts']> {
+    if (before !== undefined && !this.#attributed) {
+      const index = this.backfillRows.findIndex(
+        (row) => row.receiptEventId === 'zz-attributed-between-pages',
+      );
+      if (index >= 0) {
+        this.backfillRows.splice(index, 1);
+      }
+      this.#attributed = true;
+    }
+    return super.listUnattributedIndexedReceipts(limit, before);
+  }
+}
+
+/** Historical indexed receipt row with deterministic defaults. */
+function backfillRow(
+  receiptEventId: string,
+  receipt: Record<string, unknown>,
+  messageId = 'backfill-skip-parent',
+): UnattributedIndexedReceipt {
+  return {
+    receiptEventId,
+    messageId,
+    sats: 21,
+    createdAt: new Date('2026-09-18T10:00:00.000Z'),
+    receipt,
+  };
+}
+
+/** Store whose final receipt-to-gift link can fail after attribution. */
+class GiftLinkFailureStore extends InMemoryMessageStore {
+  failGiftLinks = true;
+
+  override updateZapReceiptGift(
+    ...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>
+  ): ReturnType<InMemoryMessageStore['updateZapReceiptGift']> {
+    if (this.failGiftLinks && args[1].giftReplyId !== undefined) {
+      return Promise.reject(new Error('link failed'));
+    }
+    return super.updateZapReceiptGift(...args);
+  }
+}
+
+/** Prepare a member zap whose deterministic reply link remains pending. */
+async function memberGiftRetryFixture(
+  slug: string,
+  paymentHash: string,
+): Promise<{
+  store: GiftLinkFailureStore;
+  auth: InMemoryAuthStore;
+  parentId: string;
+  payerId: string;
+  receiptId: string;
+  querier: RecordingQuerier;
+}> {
+  const store = new GiftLinkFailureStore();
+  const auth = new InMemoryAuthStore();
+  const authorId = `${slug}-author`;
+  const payerId = `${slug}-payer`;
+  const parentId = await seedStore({
+    store,
+    auth,
+    accountId: authorId,
+    lightningAddress: `${slug}-author@example.com`,
+    messageId: `${slug}-parent`,
+  });
+  await auth.createAccount({
+    id: payerId,
+    linkingKey: null,
+    role: 'basis',
+    name: 'Retry Payer',
+    lightningAddress: `${slug}-payer@example.com`,
+    lightningAddressVerified: true,
+    location: null,
+    forumLawsDismissed: false,
+    viewKey: viewKeyFor(payerId),
+    createdAt: 2,
+    rulesAgreedAt: null,
+  });
+  const bolt11 = `lnbc-${slug}`;
+  await store.recordInvoiceAttempt({
+    id: `${slug}-invoice`,
+    createdAt: new Date('2026-09-18T10:00:00.000Z'),
+    messageId: parentId,
+    payerAccountId: payerId,
+    authorAccountId: authorId,
+    amountSats: 21,
+    lightningAddress: `${slug}-author@example.com`,
+    zapRequest: { content: `${slug} gift` },
+    result: 'ok',
+    httpStatus: 200,
+    pr: bolt11,
+    paymentHash,
+    description: null,
+    descriptionHash: null,
+    isNip57Invoice: true,
+    lnurlResponse: null,
+  });
+  const receiptId = `${slug}-receipt`;
+  const querier = new RecordingQuerier();
+  querier.events = [
+    {
+      id: receiptId,
+      pubkey: PROVIDER_PUBKEY,
+      kind: 9735,
+      tags: [
+        ['e', NOTE_EVENT_ID],
+        ['bolt11', bolt11],
+      ],
+    },
+  ];
+  mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+  mockedInspect.mockReturnValue(null);
+  return { store, auth, parentId, payerId, receiptId, querier };
+}
+
+/** Prepare a strictly verified external zap for retry-path tests. */
+async function externalGiftRetryFixture(
+  store: InMemoryMessageStore,
+  slug: string,
+  paymentHash: string,
+): Promise<{
+  auth: InMemoryAuthStore;
+  parentId: string;
+  fixture: ReturnType<typeof externalZapFixture>;
+  querier: RecordingQuerier;
+}> {
+  const auth = new InMemoryAuthStore();
+  const parentId = await seedStore({
+    store,
+    auth,
+    accountId: `${slug}-author`,
+    lightningAddress: `${slug}-author@example.com`,
+    messageId: `${slug}-parent`,
+  });
+  const fixture = externalZapFixture({
+    receiptId: `${slug}-receipt`,
+    bolt11: `lnbc-${slug}`,
+    content: `${slug} gift`,
+  });
+  mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+  mockedInspect.mockReturnValue({
+    paymentHash,
+    amountMsat: 21_000,
+    description: null,
+    descriptionHash: fixture.descriptionHash,
+    expirySeconds: null,
+  });
+  const querier = new RecordingQuerier();
+  querier.events = [fixture.receipt];
+  return { auth, parentId, fixture, querier };
 }
 
 /** Seed one successful forum invoice for manual-settle tests. */
@@ -263,6 +541,617 @@ describe('backfillZapPayments', () => {
     await expect(backfillZapPayments(new FailingBackfillStore())).rejects.toThrow(
       'backfill read failed',
     );
+  });
+});
+
+describe('backfillExternalZappers', () => {
+  it('stops after an empty initial page without advancing a cursor', async () => {
+    const store = new BackfillRowsStore([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(store.backfillCalls).toEqual([{ limit: 200, before: undefined }]);
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zapper.backfill.done', scanned: 0 }),
+    );
+    warn.mockRestore();
+  });
+
+  it('pages past 450 newer unattributable receipts and is idempotent', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'paged-backfill-author',
+      messageId: 'paged-backfill-parent',
+    });
+    for (let index = 0; index < 450; index += 1) {
+      const receiptId = `newer-unattributable-${index.toString().padStart(3, '0')}`;
+      await store.recordZapReceipt(receiptId, parentId, 1);
+      await store.recordZapIngest({
+        id: `newer-ingest-${index.toString().padStart(3, '0')}`,
+        createdAt: new Date('2026-09-18T11:00:00.000Z'),
+        receiptId,
+        noteEventId: NOTE_EVENT_ID,
+        messageId: parentId,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 1,
+        receiptPubkey: PROVIDER_PUBKEY,
+        receipt: {
+          id: `mismatched-${receiptId}`,
+          pubkey: PROVIDER_PUBKEY,
+          kind: 9735,
+          tags: [],
+        },
+      });
+    }
+    const fixture = externalZapFixture({
+      receiptId: 'older-valid-receipt',
+      bolt11: 'lnbc-older-valid',
+      content: 'older gift',
+    });
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    await store.recordZapIngest({
+      id: 'older-valid-ingest',
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      receiptId: fixture.receipt.id,
+      noteEventId: NOTE_EVENT_ID,
+      messageId: parentId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: PROVIDER_PUBKEY,
+      receipt: { ...fixture.receipt },
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '90'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '90'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const deps = {
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_800_000_000_000,
+    };
+
+    await expect(backfillExternalZappers(store, deps)).resolves.toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(1);
+    expect((await store.listReplies(parentId))[0]?.text).toBe('older gift');
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'nostr.zapper.backfill.done',
+        scanned: 451,
+        verified: 1,
+        attributed: 1,
+        gifts: 1,
+      }),
+    );
+
+    await expect(backfillExternalZappers(store, deps)).resolves.toBe(0);
+    expect(await store.listReplies(parentId)).toHaveLength(1);
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'nostr.zapper.backfill.done',
+        scanned: 450,
+        verified: 0,
+        attributed: 0,
+        gifts: 0,
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('stops and logs after scanning the 10,000-receipt ceiling', async () => {
+    const rows = Array.from({ length: 10_001 }, (_, index) =>
+      backfillRow(`ceiling-receipt-${index}`, {
+        id: `mismatched-ceiling-receipt-${index}`,
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [],
+      }),
+    );
+    const store = new BackfillRowsStore(rows);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(store.backfillCalls).toHaveLength(50);
+    expect(store.backfillCalls[0]).toEqual({ limit: 200, before: undefined });
+    expect(store.backfillCalls.at(-1)?.limit).toBe(200);
+    expect(store.backfillCalls.at(-1)?.before).toBeDefined();
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zapper.backfill.ceiling', ceiling: 10_000 }),
+    );
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zapper.backfill.done', scanned: 10_000 }),
+    );
+    warn.mockRestore();
+  });
+
+  it('does not skip or repeat rows when a seen receipt is attributed between pages', async () => {
+    const rows = [
+      backfillRow('zz-attributed-between-pages', {
+        id: 'mismatched-attributed-between-pages',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [],
+      }),
+      ...Array.from({ length: 199 }, (_, index) =>
+        backfillRow(`yy-staying-receipt-${index.toString().padStart(3, '0')}`, {
+          id: `mismatched-staying-receipt-${index.toString().padStart(3, '0')}`,
+          pubkey: PROVIDER_PUBKEY,
+          kind: 9735,
+          tags: [],
+        }),
+      ),
+      backfillRow('aa-oldest-receipt', {
+        id: 'mismatched-oldest-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [],
+      }),
+    ];
+    const store = new BetweenPagesAttributionStore(rows);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(store.backfillCalls).toHaveLength(2);
+    expect(store.backfillCalls[0]).toEqual({ limit: 200, before: undefined });
+    expect(store.backfillCalls[1]?.before).toEqual({
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      eventId: 'yy-staying-receipt-000',
+    });
+    expect(store.returnedReceiptIds).toHaveLength(201);
+    expect(new Set(store.returnedReceiptIds).size).toBe(201);
+    expect(store.returnedReceiptIds).toContain('aa-oldest-receipt');
+    warn.mockRestore();
+  });
+
+  it('creates an external gift reply and skips an account-owned pubkey', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'backfill-author',
+      messageId: 'backfill-parent',
+    });
+    const secret = generateSecretKey();
+    const pubkey = getPublicKey(secret);
+    const request = finalizeEvent(
+      {
+        kind: 9734,
+        created_at: 1_700_000_000,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['amount', '21000'],
+        ],
+        content: 'historical gift',
+      },
+      secret,
+    );
+    const description = JSON.stringify(request);
+    const hash = createHash('sha256').update(description).digest('hex');
+    mockedDecode.mockReturnValue({ paymentHash: '91'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '91'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: hash,
+      expirySeconds: null,
+    });
+    await store.recordZapReceipt('backfill-receipt', parentId, 21);
+    await store.recordZapIngest({
+      id: 'backfill-ingest',
+      createdAt: new Date('2026-09-18T10:00:00Z'),
+      receiptId: 'backfill-receipt',
+      noteEventId: NOTE_EVENT_ID,
+      messageId: parentId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: PROVIDER_PUBKEY,
+      receipt: {
+        id: 'backfill-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-backfill'],
+          ['description', description],
+        ],
+        created_at: 1_700_000_100,
+        content: '',
+        sig: 'sig',
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(
+      backfillExternalZappers(store, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(1);
+    expect(await store.listZapperPubkeys()).toEqual([pubkey]);
+    expect((await store.listReplies(parentId))[0]).toMatchObject({
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'historical gift',
+      nostrPublishState: 'skipped',
+    });
+
+    await auth.setNostrKeyIfAbsent('backfill-author', {
+      pubkey,
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const secondStore = new InMemoryMessageStore();
+    await secondStore.create((await store.getById(parentId))!);
+    await secondStore.recordZapReceipt('member-receipt', parentId, 21);
+    await secondStore.recordZapIngest({
+      ...(await store.listZapIngests(1))[0]!,
+      id: 'member-ingest',
+      receiptId: 'member-receipt',
+      receipt: { ...(await store.listZapIngests(1))[0]!.receipt, id: 'member-receipt' },
+    });
+    await expect(
+      backfillExternalZappers(secondStore, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+    expect(await secondStore.listZapperPubkeys()).toEqual([]);
+    expect(
+      loggedEvents(warn).some((event) => event['event'] === 'nostr.zapper.backfill.done'),
+    ).toBe(true);
+    warn.mockRestore();
+    mockedInspect.mockReset();
+  });
+
+  it('does not record entitlement when the credited amount is below the minimum', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'backfill-zero-author',
+      messageId: 'backfill-zero-parent',
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'backfill-zero-receipt',
+      bolt11: 'lnbc-backfill-zero',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '92'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '92'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 0);
+    await store.recordZapIngest({
+      id: 'backfill-zero-ingest',
+      createdAt: new Date('2026-09-18T10:00:00Z'),
+      receiptId: fixture.receipt.id,
+      noteEventId: NOTE_EVENT_ID,
+      messageId: parentId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 0,
+      receiptPubkey: PROVIDER_PUBKEY,
+      receipt: { ...fixture.receipt },
+    });
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(1);
+
+    expect(recordZapper).not.toHaveBeenCalled();
+    expect(await store.listZapperPubkeys()).toEqual([]);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a mismatched receipt id',
+      { id: 'different-backfill-id', pubkey: PROVIDER_PUBKEY, kind: 9735, tags: [] },
+    ],
+    [
+      'a missing tags field',
+      { id: 'malformed-backfill-receipt', pubkey: PROVIDER_PUBKEY, kind: 9735 },
+    ],
+    [
+      'a non-array tags field',
+      {
+        id: 'malformed-backfill-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: 'not-tags',
+      },
+    ],
+    [
+      'a tag containing a non-string part',
+      {
+        id: 'malformed-backfill-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [['e', 21]],
+      },
+    ],
+  ])('skips %s in the stored backfill frame', async (_caseName, receipt) => {
+    const store = new BackfillRowsStore([backfillRow('malformed-backfill-receipt', receipt)]);
+    const auth = new InMemoryAuthStore();
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+    mockedDecode.mockClear();
+    mockedInspect.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(mockedDecode).not.toHaveBeenCalled();
+    expect(mockedInspect).not.toHaveBeenCalled();
+    expect(recordZapper).not.toHaveBeenCalled();
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ verified: 0, attributed: 0, gifts: 0 }),
+    );
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['has no e tag', [['bolt11', 'lnbc-backfill-tags']]],
+    [
+      'has an empty e tag',
+      [
+        ['e', ''],
+        ['bolt11', 'lnbc-backfill-tags'],
+      ],
+    ],
+    ['has no bolt11 tag', [['e', NOTE_EVENT_ID]]],
+  ])('skips a stored backfill frame that %s', async (_caseName, tags) => {
+    const receiptId = 'missing-backfill-tag-receipt';
+    const store = new BackfillRowsStore([
+      backfillRow(receiptId, {
+        id: receiptId,
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags,
+      }),
+    ]);
+    mockedDecode.mockClear();
+    mockedInspect.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(mockedDecode).not.toHaveBeenCalled();
+    expect(mockedInspect).not.toHaveBeenCalled();
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ verified: 0, attributed: 0, gifts: 0 }),
+    );
+    warn.mockRestore();
+  });
+
+  it.each(['decode failure', 'inspection failure', 'sub-sat amount'] as const)(
+    'skips a stored backfill frame after %s',
+    async (failure) => {
+      const receiptId = `decoded-backfill-${failure.replaceAll(' ', '-')}`;
+      const store = new BackfillRowsStore([
+        backfillRow(receiptId, {
+          id: receiptId,
+          pubkey: PROVIDER_PUBKEY,
+          kind: 9735,
+          tags: [
+            ['e', NOTE_EVENT_ID],
+            ['bolt11', 'lnbc-backfill-decoder'],
+          ],
+        }),
+      ]);
+      mockedDecode.mockReturnValue(
+        failure === 'decode failure'
+          ? null
+          : {
+              paymentHash: '93'.repeat(32),
+              amountMsat: failure === 'sub-sat amount' ? 999 : 21_000,
+            },
+      );
+      mockedInspect.mockReturnValue(
+        failure === 'inspection failure'
+          ? null
+          : {
+              paymentHash: '93'.repeat(32),
+              amountMsat: 21_000,
+              description: null,
+              descriptionHash: '94'.repeat(32),
+              expirySeconds: null,
+            },
+      );
+      const recordZapper = vi.spyOn(store, 'recordZapper');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(
+        backfillExternalZappers(store, {
+          auth: new InMemoryAuthStore(),
+          querier: new RecordingQuerier(),
+          urls: URLS,
+          timeoutMs: 50,
+          now: () => 1_800_000_000_000,
+        }),
+      ).resolves.toBe(0);
+
+      expect(recordZapper).not.toHaveBeenCalled();
+      expect(loggedEvents(warn)).toContainEqual(
+        expect.objectContaining({ verified: 0, attributed: 0, gifts: 0 }),
+      );
+      warn.mockRestore();
+    },
+  );
+
+  it('accepts a stored frame that omits optional receipt fields', async () => {
+    const auth = new InMemoryAuthStore();
+    const fixture = externalZapFixture({
+      receiptId: 'optional-backfill-receipt',
+      bolt11: 'lnbc-optional-backfill',
+    });
+    const storedReceipt = {
+      id: fixture.receipt.id,
+      pubkey: fixture.receipt.pubkey,
+      kind: fixture.receipt.kind,
+      tags: fixture.receipt.tags,
+    };
+    const row = backfillRow(fixture.receipt.id, storedReceipt, 'optional-backfill-parent');
+    const store = new BackfillRowsStore([row]);
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'optional-backfill-author',
+      messageId: row.messageId,
+    });
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    mockedDecode.mockReturnValue({ paymentHash: '95'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '95'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(1);
+
+    expect(store.backfillRows[0]?.receipt).not.toHaveProperty('created_at');
+    expect(store.backfillRows[0]?.receipt).not.toHaveProperty('sig');
+    expect(store.backfillRows[0]?.receipt).not.toHaveProperty('content');
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.createdAt).toEqual(row.createdAt);
+  });
+
+  it('keeps an account-owned zap request out of the external backfill', async () => {
+    const auth = new InMemoryAuthStore();
+    const fixture = externalZapFixture({
+      receiptId: 'member-only-backfill-receipt',
+      bolt11: 'lnbc-member-only-backfill',
+    });
+    const row = backfillRow(
+      fixture.receipt.id,
+      { ...fixture.receipt },
+      'member-only-backfill-parent',
+    );
+    const store = new BackfillRowsStore([row]);
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'member-only-backfill-owner',
+      messageId: row.messageId,
+    });
+    await auth.setNostrKeyIfAbsent('member-only-backfill-owner', {
+      pubkey: fixture.pubkey,
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    mockedDecode.mockReturnValue({ paymentHash: '96'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '96'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(recordZapper).not.toHaveBeenCalled();
+    expect(await store.listZapperPubkeys()).toEqual([]);
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ verified: 0, attributed: 0, gifts: 0 }),
+    );
+    warn.mockRestore();
   });
 });
 
@@ -972,6 +1861,708 @@ describe('indexZapReceipt', () => {
 });
 
 describe('indexOpenZapReceipts', () => {
+  it('creates one clamped external gift reply and rejects a replayed zap request id', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'external-author',
+      lightningAddress: 'external-author@example.com',
+    });
+    const secret = generateSecretKey();
+    const first = externalZapFixture({
+      receiptId: 'external-receipt-one',
+      bolt11: 'lnbc-external-one',
+      createdAt: 1_800_000_000,
+      secret,
+    });
+    const replay = externalZapFixture({
+      receiptId: 'external-receipt-two',
+      bolt11: 'lnbc-external-two',
+      createdAt: 1_800_000_100,
+      secret,
+      description: first.description,
+    });
+    expect(replay.requestId).toBe(first.requestId);
+    const paymentHashes = new Map([
+      ['lnbc-external-one', '31'.repeat(32)],
+      ['lnbc-external-two', '32'.repeat(32)],
+    ]);
+    mockedDecode.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '33'.repeat(32),
+      amountMsat: 21_000,
+    }));
+    mockedInspect.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '33'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: first.descriptionHash,
+      expirySeconds: null,
+    }));
+    const querier = new RecordingQuerier();
+    querier.events = [first.receipt, replay.receipt];
+    const nowMs = 1_700_000_200_000;
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => nowMs,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(42);
+    expect(await store.listZapperPubkeys()).toEqual([first.pubkey]);
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      accountId: null,
+      authorPubkey: first.pubkey,
+      text: 'external gift',
+      sats: 21,
+      nostrPublishState: 'skipped',
+    });
+    expect(replies[0]?.createdAt.getTime()).toBe(nowMs);
+    expect((await store.getZapReceiptGift('external-receipt-one'))?.zapRequestId).toBe(
+      first.requestId,
+    );
+    expect(await store.getZapReceiptGift('external-receipt-two')).toMatchObject({
+      payerPubkey: null,
+      zapRequestId: null,
+      giftReplyId: null,
+    });
+  });
+
+  it('keeps a replayed zap request rejected on a later tick', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'external-replay-later-author',
+      lightningAddress: 'external-replay-later-author@example.com',
+      messageId: 'external-replay-later-parent',
+    });
+    const secret = generateSecretKey();
+    const first = externalZapFixture({
+      receiptId: 'external-replay-later-receipt-one',
+      bolt11: 'lnbc-external-replay-later-one',
+      createdAt: 1_800_000_200,
+      secret,
+    });
+    const replay = externalZapFixture({
+      receiptId: 'external-replay-later-receipt-two',
+      bolt11: 'lnbc-external-replay-later-two',
+      createdAt: 1_800_000_300,
+      secret,
+      description: first.description,
+    });
+    expect(replay.requestId).toBe(first.requestId);
+    const paymentHashes = new Map([
+      ['lnbc-external-replay-later-one', '71'.repeat(32)],
+      ['lnbc-external-replay-later-two', '72'.repeat(32)],
+    ]);
+    mockedDecode.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '73'.repeat(32),
+      amountMsat: 21_000,
+    }));
+    mockedInspect.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '73'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: first.descriptionHash,
+      expirySeconds: null,
+    }));
+    const querier = new RecordingQuerier();
+    querier.events = [first.receipt, replay.receipt];
+    const nowMs = 1_700_000_300_000;
+    mockedVerifiedExternalZapRequest.mockClear();
+    const writes = [
+      vi.spyOn(store, 'claimZapPayment'),
+      vi.spyOn(store, 'recordZapReceipt'),
+      vi.spyOn(store, 'recordZapIngest'),
+      vi.spyOn(store, 'addSats'),
+      vi.spyOn(store, 'recordZapper'),
+      vi.spyOn(store, 'attributeZapReceipt'),
+      vi.spyOn(store, 'updateZapReceiptGift'),
+      vi.spyOn(store, 'create'),
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => nowMs,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(42);
+    expect(await store.listZapperPubkeys()).toEqual([first.pubkey]);
+    const replies = await store.listReplies(parentId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      accountId: null,
+      authorPubkey: first.pubkey,
+      text: 'external gift',
+      sats: 21,
+      nostrPublishState: 'skipped',
+    });
+    expect(replies[0]?.createdAt.getTime()).toBe(nowMs);
+    expect((await store.getZapReceiptGift(first.receipt.id))?.zapRequestId).toBe(first.requestId);
+    expect(await store.getZapReceiptGift(replay.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      zapRequestId: null,
+      giftReplyId: null,
+    });
+    const writesAfterFirstTick = writes.map((spy) => spy.mock.calls.length);
+    const verificationsAfterFirstTick = mockedVerifiedExternalZapRequest.mock.calls.length;
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => nowMs,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(42);
+    expect(await store.listZapperPubkeys()).toEqual([first.pubkey]);
+    expect(await store.listReplies(parentId)).toHaveLength(1);
+    expect(await store.getZapReceiptGift(replay.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      zapRequestId: null,
+      giftReplyId: null,
+    });
+    expect(writes.map((spy) => spy.mock.calls.length)).toEqual(writesAfterFirstTick);
+    expect(mockedVerifiedExternalZapRequest).toHaveBeenCalledTimes(verificationsAfterFirstTick);
+  });
+
+  it('remembers a below-minimum external receipt without writes or re-verification', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'external-below-minimum-author',
+      lightningAddress: 'external-below-minimum@example.com',
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'external-below-minimum-receipt',
+      bolt11: 'lnbc-external-below-minimum',
+    });
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 0);
+    mockedDecode.mockReturnValue({ paymentHash: '74'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '74'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+    mockedVerifiedExternalZapRequest.mockClear();
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+    const writes = [
+      vi.spyOn(store, 'claimZapPayment'),
+      vi.spyOn(store, 'recordZapReceipt'),
+      vi.spyOn(store, 'recordZapIngest'),
+      vi.spyOn(store, 'addSats'),
+      recordZapper,
+      vi.spyOn(store, 'attributeZapReceipt'),
+      vi.spyOn(store, 'updateZapReceiptGift'),
+      vi.spyOn(store, 'create'),
+    ];
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_300_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      sats: 0,
+      payerPubkey: null,
+      zapRequestId: null,
+      giftReplyId: null,
+    });
+    expect(recordZapper).not.toHaveBeenCalled();
+    const writesAfterFirstTick = writes.map((spy) => spy.mock.calls.length);
+    const verificationsAfterFirstTick = mockedVerifiedExternalZapRequest.mock.calls.length;
+    expect(verificationsAfterFirstTick).toBe(1);
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_300_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(writes.map((spy) => spy.mock.calls.length)).toEqual(writesAfterFirstTick);
+    expect(mockedVerifiedExternalZapRequest).toHaveBeenCalledTimes(verificationsAfterFirstTick);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('evicts the oldest terminal external receipt after 10,000 remembered ids', async () => {
+    const fillerFixture = externalZapFixture({
+      receiptId: 'terminal-external-filler',
+      bolt11: 'lnbc-terminal-external-filler',
+    });
+    const parentId = 'terminal-external-bound-parent';
+    const backfillRows = Array.from({ length: 10_000 }, (_, index) => {
+      const receiptId = `terminal-external-filler-${index.toString().padStart(5, '0')}`;
+      return backfillRow(receiptId, { ...fillerFixture.receipt, id: receiptId }, parentId);
+    });
+    const store = new BackfillRowsStore(backfillRows);
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'terminal-external-bound-author',
+      lightningAddress: 'terminal-external-bound@example.com',
+      messageId: parentId,
+    });
+    for (const row of backfillRows) {
+      await store.recordZapReceipt(row.receiptEventId, parentId, row.sats);
+    }
+    const oldest = externalZapFixture({
+      receiptId: 'terminal-external-oldest',
+      bolt11: 'lnbc-terminal-external-oldest',
+    });
+    await store.recordZapReceipt(oldest.receipt.id, parentId, 0);
+    mockedDecode.mockReturnValue({ paymentHash: '75'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '75'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: oldest.descriptionHash,
+      expirySeconds: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [oldest.receipt];
+    mockedVerifiedExternalZapRequest.mockClear();
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_300_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    const claimedRequestReceiptId = 'terminal-external-claimed-request';
+    await store.recordZapReceipt(claimedRequestReceiptId, parentId, 21);
+    await expect(
+      store.attributeZapReceipt(claimedRequestReceiptId, {
+        payerPubkey: fillerFixture.pubkey,
+        zapRequestId: fillerFixture.requestId,
+        comment: '',
+      }),
+    ).resolves.toBe(true);
+    await store.updateZapReceiptGift(claimedRequestReceiptId, { payerPubkey: null });
+
+    const originalVerification = mockedVerifiedExternalZapRequest.getMockImplementation();
+    if (originalVerification === undefined) {
+      throw new Error('expected wrapped external verifier');
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedVerifiedExternalZapRequest.mockReturnValue({
+      pubkey: fillerFixture.pubkey,
+      requestId: fillerFixture.requestId,
+      content: '',
+    });
+    try {
+      await expect(
+        backfillExternalZappers(store, {
+          auth,
+          querier: new RecordingQuerier(),
+          urls: URLS,
+          timeoutMs: 50,
+          now: () => 1_700_000_300_000,
+        }),
+      ).resolves.toBe(10_000);
+    } finally {
+      mockedVerifiedExternalZapRequest.mockImplementation(originalVerification);
+      warn.mockRestore();
+    }
+    // 1 oldest + 10,000 colliding fillers = 10,001 additions, so the oldest is evicted.
+    mockedVerifiedExternalZapRequest.mockClear();
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_300_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(mockedVerifiedExternalZapRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('records one entitlement across ticks while attributing two external gifts', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const firstNoteEventId = '81'.repeat(32);
+    const secondNoteEventId = '82'.repeat(32);
+    const firstParentId = await seedStore({
+      store,
+      auth,
+      accountId: 'same-external-zapper-author',
+      eventId: firstNoteEventId,
+      lightningAddress: 'same-external-zapper@example.com',
+      messageId: 'same-external-zapper-parent-one',
+    });
+    const secondParentId = await seedStore({
+      store,
+      auth,
+      accountId: 'same-external-zapper-author',
+      eventId: secondNoteEventId,
+      messageId: 'same-external-zapper-parent-two',
+      createAccount: false,
+    });
+    const secret = generateSecretKey();
+    const first = externalZapFixture({
+      receiptId: 'same-external-zapper-receipt-one',
+      bolt11: 'lnbc-same-external-zapper-one',
+      noteEventId: firstNoteEventId,
+      secret,
+    });
+    const second = externalZapFixture({
+      receiptId: 'same-external-zapper-receipt-two',
+      bolt11: 'lnbc-same-external-zapper-two',
+      noteEventId: secondNoteEventId,
+      secret,
+    });
+    expect(second.pubkey).toBe(first.pubkey);
+    const paymentHashes = new Map([
+      ['lnbc-same-external-zapper-one', '83'.repeat(32)],
+      ['lnbc-same-external-zapper-two', '84'.repeat(32)],
+    ]);
+    const descriptionHashes = new Map([
+      ['lnbc-same-external-zapper-one', first.descriptionHash],
+      ['lnbc-same-external-zapper-two', second.descriptionHash],
+    ]);
+    mockedDecode.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '85'.repeat(32),
+      amountMsat: 21_000,
+    }));
+    mockedInspect.mockImplementation((bolt11) => ({
+      paymentHash: paymentHashes.get(bolt11) ?? '85'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: descriptionHashes.get(bolt11) ?? null,
+      expirySeconds: null,
+    }));
+    const querier = new RecordingQuerier();
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+    const deps = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_300_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    };
+
+    querier.events = [first.receipt];
+    await ingest(deps);
+    querier.events = [second.receipt];
+    await ingest(deps);
+
+    expect(recordZapper).toHaveBeenCalledTimes(1);
+    expect(recordZapper).toHaveBeenCalledWith(
+      first.pubkey,
+      first.receipt.id,
+      new Date(1_700_000_300_000),
+    );
+    expect(await store.getZapReceiptGift(first.receipt.id)).toMatchObject({
+      payerPubkey: first.pubkey,
+      zapRequestId: first.requestId,
+    });
+    expect(await store.getZapReceiptGift(second.receipt.id)).toMatchObject({
+      payerPubkey: second.pubkey,
+      zapRequestId: second.requestId,
+    });
+    expect(await store.listReplies(firstParentId)).toHaveLength(1);
+    expect(await store.listReplies(secondParentId)).toHaveLength(1);
+  });
+
+  it('keeps strictly invalid external attribution anonymous while crediting sats', async () => {
+    const cases = [
+      { name: 'description hash', requestEventId: NOTE_EVENT_ID, amount: '21000', badHash: true },
+      { name: 'e tag', requestEventId: '12'.repeat(32), amount: '21000', badHash: false },
+      { name: 'amount', requestEventId: NOTE_EVENT_ID, amount: '22000', badHash: false },
+    ] as const;
+    for (const [index, row] of cases.entries()) {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      const parentId = await seedStore({
+        store,
+        auth,
+        accountId: `invalid-external-author-${index}`,
+        lightningAddress: `invalid-${index}@example.com`,
+      });
+      const fixture = externalZapFixture({
+        receiptId: `invalid-external-${index}`,
+        bolt11: `lnbc-invalid-${index}`,
+        requestNoteEventId: row.requestEventId,
+        amount: row.amount,
+      });
+      mockedDecode.mockReturnValue({ paymentHash: `${40 + index}`.repeat(32), amountMsat: 21_000 });
+      mockedInspect.mockReturnValue({
+        paymentHash: `${40 + index}`.repeat(32),
+        amountMsat: 21_000,
+        description: null,
+        descriptionHash: row.badHash ? '00'.repeat(32) : fixture.descriptionHash,
+        expirySeconds: null,
+      });
+      const querier = new RecordingQuerier();
+      querier.events = [fixture.receipt];
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_700_000_200_000,
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      });
+      expect((await store.getById(parentId))?.sats, row.name).toBe(21);
+      expect(await store.listZapperPubkeys(), row.name).toEqual([]);
+      expect(await store.listReplies(parentId), row.name).toEqual([]);
+      expect((await store.getZapReceiptGift(fixture.receipt.id))?.payerPubkey, row.name).toBeNull();
+    }
+  });
+
+  it('credits and attributes a blocked external zap once without a visible gift reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'blocked-external-author',
+      lightningAddress: 'blocked-external@example.com',
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'blocked-external-receipt',
+      bolt11: 'lnbc-blocked-external',
+    });
+    await store.blockPubkey(fixture.pubkey, new Date(1), 'staff', 'blocked-message');
+    mockedDecode.mockReturnValue({ paymentHash: '51'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '51'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+    mockedVerifiedExternalZapRequest.mockClear();
+    const recordZapper = vi.spyOn(store, 'recordZapper');
+    const writes = [
+      vi.spyOn(store, 'claimZapPayment'),
+      vi.spyOn(store, 'recordZapReceipt'),
+      vi.spyOn(store, 'recordZapIngest'),
+      vi.spyOn(store, 'addSats'),
+      recordZapper,
+      vi.spyOn(store, 'attributeZapReceipt'),
+      vi.spyOn(store, 'updateZapReceiptGift'),
+      vi.spyOn(store, 'create'),
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listZapperPubkeys()).toEqual([fixture.pubkey]);
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      zapRequestId: fixture.requestId,
+      giftReplyId: null,
+    });
+    const writesAfterFirstTick = writes.map((spy) => spy.mock.calls.length);
+    const verificationsAfterFirstTick = mockedVerifiedExternalZapRequest.mock.calls.length;
+    await store.unblockPubkeyByMessage('blocked-message');
+    expect(await store.listBlockedPubkeys()).toEqual([]);
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(writes.map((spy) => spy.mock.calls.length)).toEqual(writesAfterFirstTick);
+    expect(mockedVerifiedExternalZapRequest).toHaveBeenCalledTimes(verificationsAfterFirstTick);
+    expect(recordZapper).toHaveBeenCalledTimes(1);
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('lets an in-flight block win before a live external gift reply is created', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'live-block-race-author',
+      lightningAddress: 'live-block-race@example.com',
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'live-block-race-receipt',
+      bolt11: 'lnbc-live-block-race',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '52'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '52'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    mockedVerifiedExternalZapRequest.mockClear();
+    let releaseProfile: () => void = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      releaseProfile = resolve;
+    });
+    let enterProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enterProfile = resolve;
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+    let queryCount = 0;
+    querier.query = async (): Promise<NostrEventFrame[]> => {
+      queryCount += 1;
+      if (queryCount === 1) {
+        return querier.events;
+      }
+      enterProfile();
+      await profileHeld;
+      return [];
+    };
+
+    const pending = ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    await profileEntered;
+    await store.blockPubkey(
+      fixture.pubkey,
+      new Date(1_700_000_200_000),
+      'live-block-race-staff',
+      'live-block-race-message',
+    );
+    releaseProfile();
+    await pending;
+
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      giftReplyId: null,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+  });
+
+  it('keeps a dequeued external receipt inert when the receipt is delivered again', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const topId = await seedStore({
+      store,
+      auth,
+      accountId: 'reply-zap-author',
+      eventId: '61'.repeat(32),
+      lightningAddress: 'reply-zap@example.com',
+      messageId: 'reply-zap-top',
+    });
+    await store.create({
+      id: 'reply-zap-child',
+      accountId: 'reply-zap-author',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:01:00Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: topId,
+      eventId: NOTE_EVENT_ID,
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'reply-zap-receipt',
+      bolt11: 'lnbc-reply-zap',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '62'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '62'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+    const giftWrites = vi.spyOn(store, 'updateZapReceiptGift');
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById('reply-zap-child'))?.sats).toBe(21);
+    expect(await store.listReplies('reply-zap-child')).toEqual([]);
+    expect(await store.listZapperPubkeys()).toEqual([fixture.pubkey]);
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      zapRequestId: fixture.requestId,
+      giftReplyId: null,
+    });
+    const writesAfterDequeue = giftWrites.mock.calls.length;
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(giftWrites).toHaveBeenCalledTimes(writesAfterDequeue);
+    expect(await store.listReplies('reply-zap-child')).toEqual([]);
+  });
+
   it('does nothing when urls is empty', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -2208,6 +3799,34 @@ describe('indexOpenZapReceipts', () => {
       getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
       listZapReceiptsAwaitingGiftReply: (limit: number) =>
         base.listZapReceiptsAwaitingGiftReply(limit),
+      attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+        base.attributeZapReceipt(...args),
+      recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+        base.recordZapper(...args),
+      listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+        base.listZapperPubkeys(...args),
+      listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+        base.listZappers(...args),
+      blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+        base.blockPubkey(...args),
+      blockPubkeyAndHideRows: (
+        ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+      ) => base.blockPubkeyAndHideRows(...args),
+      unblockPubkeyByMessage: (
+        ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+      ) => base.unblockPubkeyByMessage(...args),
+      isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
+        base.isPubkeyBlocked(...args),
+      listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+        base.listBlockedPubkeys(...args),
+      listBlockedPubkeyRows: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>) =>
+        base.listBlockedPubkeyRows(...args),
+      markDeletedByExternalPubkey: (
+        ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+      ) => base.markDeletedByExternalPubkey(...args),
+      listUnattributedIndexedReceipts: (
+        ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+      ) => base.listUnattributedIndexedReceipts(...args),
       listInvoiceAttemptsForPayer: (payerAccountId: string) =>
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
@@ -2401,6 +4020,35 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+          base.attributeZapReceipt(...args),
+        recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+          base.recordZapper(...args),
+        listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+          base.listZapperPubkeys(...args),
+        listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+          base.listZappers(...args),
+        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+          base.blockPubkey(...args),
+        blockPubkeyAndHideRows: (
+          ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+        ) => base.blockPubkeyAndHideRows(...args),
+        unblockPubkeyByMessage: (
+          ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+        ) => base.unblockPubkeyByMessage(...args),
+        isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
+          base.isPubkeyBlocked(...args),
+        listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+          base.listBlockedPubkeys(...args),
+        listBlockedPubkeyRows: (
+          ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
+        ) => base.listBlockedPubkeyRows(...args),
+        markDeletedByExternalPubkey: (
+          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+        ) => base.markDeletedByExternalPubkey(...args),
+        listUnattributedIndexedReceipts: (
+          ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+        ) => base.listUnattributedIndexedReceipts(...args),
         listInvoiceAttemptsForPayer: (payerAccountId: string) =>
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
@@ -2725,6 +4373,35 @@ describe('indexOpenZapReceipts', () => {
         getZapReceiptGift: (id: string) => base.getZapReceiptGift(id),
         listZapReceiptsAwaitingGiftReply: (limit: number) =>
           base.listZapReceiptsAwaitingGiftReply(limit),
+        attributeZapReceipt: (...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>) =>
+          base.attributeZapReceipt(...args),
+        recordZapper: (...args: Parameters<InMemoryMessageStore['recordZapper']>) =>
+          base.recordZapper(...args),
+        listZapperPubkeys: (...args: Parameters<InMemoryMessageStore['listZapperPubkeys']>) =>
+          base.listZapperPubkeys(...args),
+        listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
+          base.listZappers(...args),
+        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
+          base.blockPubkey(...args),
+        blockPubkeyAndHideRows: (
+          ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+        ) => base.blockPubkeyAndHideRows(...args),
+        unblockPubkeyByMessage: (
+          ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
+        ) => base.unblockPubkeyByMessage(...args),
+        isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
+          base.isPubkeyBlocked(...args),
+        listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
+          base.listBlockedPubkeys(...args),
+        listBlockedPubkeyRows: (
+          ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
+        ) => base.listBlockedPubkeyRows(...args),
+        markDeletedByExternalPubkey: (
+          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
+        ) => base.markDeletedByExternalPubkey(...args),
+        listUnattributedIndexedReceipts: (
+          ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
+        ) => base.listUnattributedIndexedReceipts(...args),
         listInvoiceAttemptsForPayer: (payerAccountId: string) =>
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
@@ -3306,6 +4983,153 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(21);
   });
 
+  it('keeps account zap resolution when invoice inspection lacks a description hash', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'inspect-null-author',
+      lightningAddress: 'inspect-null-author@example.com',
+      messageId: 'inspect-null-parent',
+    });
+    await auth.createAccount({
+      id: 'inspect-null-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Iris',
+      lightningAddress: 'inspect-null-payer@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('inspect-null-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inspect-null-invoice',
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'inspect-null-payer',
+      authorAccountId: 'inspect-null-author',
+      amountSats: 21,
+      lightningAddress: 'inspect-null-author@example.com',
+      zapRequest: { content: 'inspection fallback' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-inspect-null',
+      paymentHash: 'a4'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'inspect-null-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-inspect-null'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'a4'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue(null);
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(mockedInspect).toHaveBeenCalledWith('lnbc-inspect-null');
+    expect(await store.listReplies(parentId)).toEqual([
+      expect.objectContaining({ accountId: 'inspect-null-payer', text: 'inspection fallback' }),
+    ]);
+  });
+
+  it('resolves a remembered receipt without an e tag using an empty note event id', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'remembered-no-e-author',
+      lightningAddress: 'remembered-no-e-author@example.com',
+      messageId: 'remembered-no-e-parent',
+    });
+    await auth.createAccount({
+      id: 'remembered-no-e-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Nia',
+      lightningAddress: 'remembered-no-e-payer@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('remembered-no-e-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'remembered-no-e-invoice',
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'remembered-no-e-payer',
+      authorAccountId: 'remembered-no-e-author',
+      amountSats: 21,
+      lightningAddress: 'remembered-no-e-author@example.com',
+      zapRequest: { content: 'no e retry' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-remembered-no-e',
+      paymentHash: 'a5'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const receipt: NostrEventFrame = {
+      id: 'remembered-no-e-receipt',
+      pubkey: PROVIDER_PUBKEY,
+      kind: 9735,
+      tags: [['bolt11', 'lnbc-remembered-no-e']],
+    };
+    mockedDecode.mockReturnValue({ paymentHash: 'a5'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue(null);
+    await indexZapReceipt({
+      store,
+      messageId: parentId,
+      receipt,
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 21,
+      receiptEvent: { ...receipt },
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [receipt];
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(await store.listReplies(parentId)).toEqual([
+      expect.objectContaining({ accountId: 'remembered-no-e-payer', text: 'no e retry' }),
+    ]);
+  });
+
   it('creates a gift-only reply from an ok invoice after indexing', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -3604,6 +5428,9 @@ describe('indexOpenZapReceipts', () => {
         messageId: topAwaitId,
         sats: 7,
         payerAccountId: 'payer-queue-drop-top',
+        payerPubkey: null,
+        zapRequestId: null,
+        receiptCreatedAt: null,
         comment: '',
       },
     ]);
@@ -3830,6 +5657,282 @@ describe('indexOpenZapReceipts', () => {
     expect(siblings[0]?.id).toBe(replyId);
     expect((await store.getById(replyId))?.sats).toBe(7);
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
+  });
+
+  it('dequeues a pending external payer when its parent is hidden', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-hidden-external-author',
+      messageId: 'retry-hidden-external-parent',
+    });
+    const receiptId = 'retry-hidden-external-receipt';
+    const payerPubkey = 'b6'.repeat(32);
+    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey,
+      zapRequestId: 'b7'.repeat(32),
+      comment: 'hidden retry',
+    });
+    await store.markDeleted(parentId, new Date(2), 'retry-hidden-moderator');
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect((await store.getZapReceiptGift(receiptId))?.payerPubkey).toBeNull();
+    expect(await store.listReplies(parentId)).toEqual([]);
+  });
+
+  it('dequeues a pending external payer when its parent is a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-reply-external-author',
+      eventId: 'b8'.repeat(32),
+      messageId: 'retry-reply-external-parent',
+    });
+    const replyId = 'retry-reply-external-child';
+    await store.create({
+      id: replyId,
+      accountId: 'retry-reply-external-author',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: NOTE_EVENT_ID,
+    });
+    const receiptId = 'retry-reply-external-receipt';
+    await store.recordZapReceipt(receiptId, replyId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey: 'b9'.repeat(32),
+      zapRequestId: 'ba'.repeat(32),
+      comment: 'reply retry',
+    });
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect((await store.getZapReceiptGift(receiptId))?.payerPubkey).toBeNull();
+    expect(await store.listReplies(replyId)).toEqual([]);
+  });
+
+  it('clears a blocked external payer without a reply on this and a later retry tick', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-blocked-external-author',
+      messageId: 'retry-blocked-external-parent',
+    });
+    const receiptId = 'retry-blocked-external-receipt';
+    const payerPubkey = '9c67a2e14d8f305b71c694e2af83d0574b2e9c116fd37a508ce429db65f184aa';
+
+    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey,
+      zapRequestId: '2a8d5e71c4930fb6e17c4a925bd8603f74e1a9c50d6b328fac9574e163b20df8',
+      comment: 'blocked retry',
+    });
+    await store.blockPubkey(
+      payerPubkey,
+      new Date(1),
+      'retry-blocked-staff',
+      'retry-blocked-external-parent',
+    );
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect((await store.getZapReceiptGift(receiptId))?.payerPubkey).toBeNull();
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect((await store.getZapReceiptGift(receiptId))?.giftReplyId).toBeNull();
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect((await store.getZapReceiptGift(receiptId))?.payerPubkey).toBeNull();
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect((await store.getZapReceiptGift(receiptId))?.giftReplyId).toBeNull();
+  });
+
+  it('lets an in-flight block win before a retried external gift reply is created', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-block-race-author',
+      messageId: 'retry-block-race-parent',
+    });
+    const receiptId = 'retry-block-race-receipt';
+    const payerPubkey = getPublicKey(generateSecretKey());
+    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey,
+      zapRequestId: '53'.repeat(32),
+      comment: 'retry block race',
+    });
+    let releaseProfile: () => void = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      releaseProfile = resolve;
+    });
+    let enterProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enterProfile = resolve;
+    });
+    const querier = new RecordingQuerier();
+    querier.query = async (): Promise<NostrEventFrame[]> => {
+      enterProfile();
+      await profileHeld;
+      return [];
+    };
+
+    const pending = ingest({
+      store,
+      auth,
+      querier,
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+    await profileEntered;
+    await store.blockPubkey(
+      payerPubkey,
+      new Date(1_700_000_200_000),
+      'retry-block-race-staff',
+      'retry-block-race-message',
+    );
+    releaseProfile();
+    await pending;
+
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.getZapReceiptGift(receiptId)).toMatchObject({
+      payerPubkey: null,
+      giftReplyId: null,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+  });
+
+  it('retries a pending external payer directly from the retry queue', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-live-external-author',
+      messageId: 'retry-live-external-parent',
+    });
+    const receiptId = 'retry-live-external-receipt';
+    const payerPubkey = 'bb'.repeat(32);
+    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey,
+      zapRequestId: 'bc'.repeat(32),
+      comment: 'live retry',
+    });
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect(await store.listReplies(parentId)).toEqual([
+      expect.objectContaining({
+        accountId: null,
+        authorPubkey: payerPubkey,
+        text: 'live retry',
+        nostrPublishState: 'skipped',
+      }),
+    ]);
+    expect((await store.getZapReceiptGift(receiptId))?.giftReplyId).not.toBeNull();
+  });
+
+  it('skips a defensive retry row that has neither payer kind', async () => {
+    const receiptId = 'retry-no-payer-receipt';
+    const parentId = 'retry-no-payer-parent';
+    class NoPayerRetryStore extends InMemoryMessageStore {
+      override listZapReceiptsAwaitingGiftReply(_limit: number): Promise<ZapReceiptGiftRow[]> {
+        return Promise.resolve([
+          {
+            receiptEventId: receiptId,
+            messageId: parentId,
+            sats: 21,
+            payerAccountId: null,
+            payerPubkey: null,
+            zapRequestId: null,
+            receiptCreatedAt: null,
+            comment: 'must skip',
+          },
+        ]);
+      }
+    }
+    const store = new NoPayerRetryStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'retry-no-payer-author',
+      messageId: parentId,
+    });
+    const update = vi.spyOn(store, 'updateZapReceiptGift');
+    const create = vi.spyOn(store, 'create');
+
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+
+    expect(update).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(await store.listReplies(parentId)).toEqual([]);
   });
 
   it('does not create a reply when no payer can be resolved', async () => {
@@ -4905,6 +7008,333 @@ describe('indexOpenZapReceipts', () => {
     const replies = await store.listReplies(parentId);
     expect(replies).toHaveLength(1);
     expect((await store.getZapReceiptGift('r-link'))?.giftReplyId).toBe(replies[0]?.id);
+  });
+
+  it('clears a pre-resolved account payer on a re-delivered receipt after its parent is hidden', async () => {
+    const fixture = await memberGiftRetryFixture(
+      'region1-hidden-redeliver',
+      '8f27c34ad1906be5427a8190fc63de8ba4510d73e92f674cb8a13605ed49fa21',
+    );
+    const create = vi.spyOn(fixture.store, 'create');
+
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(await fixture.store.getZapReceiptGift(fixture.receiptId)).toMatchObject({
+      payerAccountId: fixture.payerId,
+      giftReplyId: null,
+    });
+    const createsForParent = create.mock.calls.filter(
+      ([row]) => row.parentId === fixture.parentId,
+    ).length;
+    expect(createsForParent).toBeGreaterThan(0);
+
+    await fixture.store.markDeleted(fixture.parentId, new Date(2), fixture.payerId);
+    await seedStore({
+      store: fixture.store,
+      auth: fixture.auth,
+      accountId: 'region1-hidden-redeliver-keepalive',
+      lightningAddress: 'region1-hidden-redeliver-keepalive@example.com',
+      messageId: 'region1-hidden-redeliver-keepalive-parent',
+      eventId: 'd3a86104bc7f9e254190a3f76d8cb5201e649af782c3156db9470e2af53c6819',
+    });
+    fixture.store.failGiftLinks = false;
+
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect((await fixture.store.getZapReceiptGift(fixture.receiptId))?.payerAccountId).toBeNull();
+    expect((await fixture.store.getZapReceiptGift(fixture.receiptId))?.giftReplyId).toBeNull();
+    expect(create.mock.calls.filter(([row]) => row.parentId === fixture.parentId)).toHaveLength(
+      createsForParent,
+    );
+  });
+
+  it('clears a pre-resolved account payer after its parent is hidden', async () => {
+    const fixture = await memberGiftRetryFixture('account-hidden-retry', 'b1'.repeat(32));
+    const create = vi.spyOn(fixture.store, 'create');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await fixture.store.getZapReceiptGift(fixture.receiptId)).toMatchObject({
+      payerAccountId: fixture.payerId,
+      giftReplyId: null,
+    });
+    const replyCreatesAfterFirstIngest = create.mock.calls.filter(
+      ([row]) => row.parentId === fixture.parentId,
+    ).length;
+    await fixture.store.markDeleted(fixture.parentId, new Date(2), fixture.payerId);
+    fixture.store.failGiftLinks = false;
+
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+
+    expect((await fixture.store.getZapReceiptGift(fixture.receiptId))?.payerAccountId).toBeNull();
+    expect(create.mock.calls.filter(([row]) => row.parentId === fixture.parentId)).toHaveLength(
+      replyCreatesAfterFirstIngest,
+    );
+  });
+
+  it('clears a pre-resolved account payer when the account disappears before retry', async () => {
+    const fixture = await memberGiftRetryFixture('account-missing-retry', 'b2'.repeat(32));
+    const create = vi.spyOn(fixture.store, 'create');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await fixture.store.getZapReceiptGift(fixture.receiptId)).toMatchObject({
+      payerAccountId: fixture.payerId,
+      giftReplyId: null,
+    });
+    const replyCreatesAfterFirstIngest = create.mock.calls.filter(
+      ([row]) => row.parentId === fixture.parentId,
+    ).length;
+    await fixture.auth.deleteAccount(fixture.payerId);
+    fixture.store.failGiftLinks = false;
+
+    await ingest({
+      store: fixture.store,
+      auth: fixture.auth,
+      querier: fixture.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+
+    expect((await fixture.store.getZapReceiptGift(fixture.receiptId))?.payerAccountId).toBeNull();
+    expect(create.mock.calls.filter(([row]) => row.parentId === fixture.parentId)).toHaveLength(
+      replyCreatesAfterFirstIngest,
+    );
+  });
+
+  it('clears a pre-resolved external payer when the pubkey is blocked before retry', async () => {
+    class ExternalCreateFailureStore extends InMemoryMessageStore {
+      failExternalCreates = true;
+
+      override create(
+        ...args: Parameters<InMemoryMessageStore['create']>
+      ): ReturnType<InMemoryMessageStore['create']> {
+        if (this.failExternalCreates && args[0].accountId === null && args[0].parentId !== null) {
+          return Promise.reject(new Error('external create failed'));
+        }
+        return super.create(...args);
+      }
+    }
+    const store = new ExternalCreateFailureStore();
+    const scenario = await externalGiftRetryFixture(
+      store,
+      'external-blocked-retry',
+      'b3'.repeat(32),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.getZapReceiptGift(scenario.fixture.receipt.id)).toMatchObject({
+      payerPubkey: scenario.fixture.pubkey,
+      zapRequestId: scenario.fixture.requestId,
+      giftReplyId: null,
+    });
+    expect(await store.listReplies(scenario.parentId)).toEqual([]);
+    await store.blockPubkey(scenario.fixture.pubkey, new Date(2), 'retry-staff', 'blocked-reply');
+    store.failExternalCreates = false;
+
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+
+    expect((await store.getZapReceiptGift(scenario.fixture.receipt.id))?.payerPubkey).toBeNull();
+    expect(await store.listReplies(scenario.parentId)).toEqual([]);
+  });
+
+  it('clears a pre-resolved external payer on a re-delivered receipt after its parent is hidden', async () => {
+    const store = new GiftLinkFailureStore();
+    const scenario = await externalGiftRetryFixture(
+      store,
+      'region2-hidden-redeliver',
+      'd13c6f36d3c66a9cc5a56b7e3d26260b8132db94de72050be92900702e2b6dd3',
+    );
+    const create = vi.spyOn(store, 'create');
+
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(await store.getZapReceiptGift(scenario.fixture.receipt.id)).toMatchObject({
+      payerPubkey: scenario.fixture.pubkey,
+      giftReplyId: null,
+    });
+    const replyCreatesAfterFirstIngest = create.mock.calls.filter(
+      ([row]) => row.parentId === scenario.parentId,
+    ).length;
+    expect(replyCreatesAfterFirstIngest).toBeGreaterThan(0);
+
+    await store.markDeleted(scenario.parentId, new Date(2), 'region2-hidden-redeliver-mod');
+    await seedStore({
+      store,
+      auth: scenario.auth,
+      accountId: 'region2-hidden-redeliver-keepalive',
+      lightningAddress: 'region2-hidden-redeliver-keepalive@example.com',
+      messageId: 'region2-hidden-redeliver-keepalive-parent',
+      eventId: '79af968c8597d4bdc1937ab33a68ec5b317f0d3140862f390519380aad6dc55f',
+    });
+    store.failGiftLinks = false;
+
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect((await store.getZapReceiptGift(scenario.fixture.receipt.id))?.payerPubkey).toBeNull();
+    expect((await store.getZapReceiptGift(scenario.fixture.receipt.id))?.giftReplyId).toBeNull();
+    expect(create.mock.calls.filter(([row]) => row.parentId === scenario.parentId)).toHaveLength(
+      replyCreatesAfterFirstIngest,
+    );
+  });
+
+  it('clears a pre-resolved external payer after its parent is hidden', async () => {
+    const store = new GiftLinkFailureStore();
+    const scenario = await externalGiftRetryFixture(
+      store,
+      'external-hidden-retry',
+      'b4'.repeat(32),
+    );
+    const create = vi.spyOn(store, 'create');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.getZapReceiptGift(scenario.fixture.receipt.id)).toMatchObject({
+      payerPubkey: scenario.fixture.pubkey,
+      giftReplyId: null,
+    });
+    const replyCreatesAfterFirstIngest = create.mock.calls.filter(
+      ([row]) => row.parentId === scenario.parentId,
+    ).length;
+    await store.markDeleted(scenario.parentId, new Date(2), 'retry-moderator');
+    store.failGiftLinks = false;
+
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+
+    expect((await store.getZapReceiptGift(scenario.fixture.receipt.id))?.payerPubkey).toBeNull();
+    expect(create.mock.calls.filter(([row]) => row.parentId === scenario.parentId)).toHaveLength(
+      replyCreatesAfterFirstIngest,
+    );
+  });
+
+  it('relinks a pre-resolved external gift reply after its first link write fails', async () => {
+    const store = new GiftLinkFailureStore();
+    const scenario = await externalGiftRetryFixture(store, 'external-link-retry', 'b5'.repeat(32));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.getZapReceiptGift(scenario.fixture.receipt.id)).toMatchObject({
+      payerPubkey: scenario.fixture.pubkey,
+      zapRequestId: scenario.fixture.requestId,
+      giftReplyId: null,
+    });
+    expect(await store.listReplies(scenario.parentId)).toHaveLength(1);
+    store.failGiftLinks = false;
+
+    await ingest({
+      store,
+      auth: scenario.auth,
+      querier: scenario.querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    warn.mockRestore();
+
+    const replies = await store.listReplies(scenario.parentId);
+    expect(replies).toHaveLength(1);
+    expect((await store.getZapReceiptGift(scenario.fixture.receipt.id))?.giftReplyId).toBe(
+      replies[0]?.id,
+    );
   });
 
   it('skips gift-reply insert when the receipt vanishes after the payer link', async () => {

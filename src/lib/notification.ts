@@ -245,6 +245,8 @@ export async function fanoutToBellSubscribers(args: {
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Account id to skip (actor); `null` skips nobody. */
   skipAccountId: string | null;
+  /** Optional allowlist applied to both in-app and push recipients before level matching. */
+  onlyAccountIds?: readonly string[];
   /**
    * Event match context. Omitted → today's every-id-except-skip behaviour.
    * Applied only when `auth` is also set.
@@ -269,6 +271,11 @@ export async function fanoutToBellSubscribers(args: {
     args.pushStore === undefined ? [] : await args.pushStore.listAccountIdsWithSubscriptions();
   let inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
   let pushIds = exceptSkip(fromPush, args.skipAccountId);
+  if (args.onlyAccountIds !== undefined) {
+    const only = new Set(args.onlyAccountIds);
+    inAppIds = inAppIds.filter((id) => only.has(id));
+    pushIds = pushIds.filter((id) => only.has(id));
+  }
   const match = args.match;
   if (match !== undefined && args.auth !== undefined) {
     const accountsById = new Map(accounts.map((account) => [account.id, account]));
@@ -451,6 +458,67 @@ export async function notifyForumReply(args: {
       parentId: parent.id,
       replyId: args.created.id,
       name: args.created.name,
+      text: args.created.text,
+      createdAt: args.created.createdAt,
+      readAt: null,
+    },
+    outboxType: 'forum',
+    outboxMessageId: args.created.id,
+    payload: JSON.stringify(buildReplyPushPayload(args.created.id)),
+    nowMs: args.created.createdAt.getTime(),
+  });
+}
+
+/**
+ * Notify only the member who authored the parent of an external Nostr reply.
+ *
+ * A parent without an account is a no-op. The notification actor name is
+ * always the generic 'Someone', never the external row's display name. The
+ * parent author supplies the internal actor id required by notification
+ * persistence. The targeted
+ * allowlist is applied before notification-level matching to both in-app and
+ * push recipients.
+ *
+ * @param args - Parent, persisted external reply, optional stores, auth, and inbox count.
+ * @returns Resolves after the targeted fan-out, including no-op parents.
+ * @throws If fan-out persistence or enqueue fails.
+ */
+export async function notifyExternalForumReply(args: {
+  /** Parent forum note. */
+  parent: MessageRow;
+  /** Persisted external reply. */
+  created: MessageRow;
+  /** Optional notification persistence. */
+  notifications?: NotificationStore;
+  /** Optional push outbox. */
+  pushStore?: PushStore;
+  /** Optional auth account list for notification-level filtering. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
+  /** Optional listed inbox unread; forwarded to fan-out. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
+}): Promise<void> {
+  const parentAccountId = args.parent.accountId;
+  if (parentAccountId === null) {
+    return;
+  }
+  await fanoutToBellSubscribers({
+    ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
+    ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.auth === undefined ? {} : { auth: args.auth }),
+    ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
+    skipAccountId: null,
+    onlyAccountIds: [parentAccountId],
+    match: {
+      actorIsStaff: false,
+      isActive: args.parent.sats > 0,
+      mentionedAccountId: parentAccountId,
+    },
+    template: {
+      actorAccountId: parentAccountId,
+      type: 'forum_reply',
+      parentId: args.parent.id,
+      replyId: args.created.id,
+      name: 'Someone',
       text: args.created.text,
       createdAt: args.created.createdAt,
       readAt: null,
