@@ -4726,6 +4726,64 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.getByEventId('66'.repeat(32))).toBeDefined();
   });
 
+  it('resolves the parent of a member reply past non-e tags and unknown e tags', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a3'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob-tags',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '7'.repeat(64),
+      createdAt: 8,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob-tags', KEK);
+    const bobPubkey = (await auth.getNostrPublicKey('bob-tags')) as string;
+    const replyEventId = 'b3'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: replyEventId,
+        pubkey: bobPubkey,
+        kind: 1,
+        tags: [
+          ['p', 'd3'.repeat(32)],
+          ['e'],
+          ['e', 'c3'.repeat(32)],
+          ['e', noteEventId, '', 'reply'],
+        ],
+        content: 'tagged member reply',
+        created_at: 1_700_000_000,
+        sig: 'c3'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: () => true,
+      }),
+    );
+
+    expect(await messages.getByEventId(replyEventId)).toMatchObject({
+      accountId: 'bob-tags',
+      parentId: 'm1',
+      text: 'tagged member reply',
+    });
+  });
+
   it('keeps an account-owned zapper pubkey on the member inbound path', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'a0'.repeat(32);
