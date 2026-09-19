@@ -1760,9 +1760,12 @@ the hidden target and stamp-matched **direct** children; already-live
 target is a no-op for children). Does not recreate the row via
 `POST /messages`, does not `DELETE FROM message`, and does not unlink
 media, invoices, zap receipts, Nostr, text, or photo. It also removes a
-pubkey block whose `message_id` is this restored id. Rows hidden elsewhere by
-the external-author cascade are restored one by one; restoring the original
-block-triggering row does not automatically unhide unrelated rows.
+pubkey block whose `message_id` is this restored id. Restoring a different row
+hidden by that block's external-author cascade makes that row visible again but
+does not remove the block; the pubkey stays blocked and its new gift-replies
+and inbound replies keep being rejected. Restoring the original
+block-triggering row removes the block but does not automatically unhide rows
+hidden by its cascade. Those rows are restored individually.
 
 Same debug token gate as `GET /debug/messages`.
 
@@ -2843,6 +2846,9 @@ staff block for that pubkey and soft-hides every other live external row by
 that author. The block prevents later gift-replies and inbound replies but
 does not remove `nostr_zapper` entitlement or reverse credited sats. Hiding a
 member note that merely has external children does not block those authors.
+Restore does not undo this author-wide cascade in bulk; see
+`POST /debug/messages/:id/restore` for its source-row unblock and per-row
+unhide semantics.
 
 Missing/invalid/expired bearer → **Response** `401`:
 

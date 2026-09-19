@@ -1523,7 +1523,7 @@ describe('InMemoryMessageStore', () => {
       receiptPubkey: '96'.repeat(32),
       receipt: { id: 'receipt-rejected' },
     });
-    expect(await store.listUnattributedIndexedReceipts(10, 0)).toEqual([
+    expect(await store.listUnattributedIndexedReceipts(10)).toEqual([
       {
         receiptEventId: 'receipt-a',
         messageId: 'a',
@@ -1551,7 +1551,7 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listBlockedPubkeys()).toEqual([]);
   });
 
-  it('uses Postgres secondary keys before limits and receipt offsets on timestamp ties', async () => {
+  it('uses secondary keys for strict receipt cursors on timestamp ties', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
     const tiedAt = new Date('2026-09-18T10:00:00Z');
@@ -1575,12 +1575,21 @@ describe('InMemoryMessageStore', () => {
     await store.blockPubkey('cc', tiedAt, 'staff', 'external-c');
     await store.blockPubkey('dd', tiedAt, 'staff', 'external-d');
 
-    expect((await store.listUnattributedIndexedReceipts(1, 0))[0]?.receiptEventId).toBe(
-      'receipt-z',
-    );
-    expect((await store.listUnattributedIndexedReceipts(1, 1))[0]?.receiptEventId).toBe(
-      'receipt-a',
-    );
+    const firstPage = await store.listUnattributedIndexedReceipts(1);
+    expect(firstPage[0]?.receiptEventId).toBe('receipt-z');
+    const first = firstPage[0];
+    expect(first).toBeDefined();
+    if (first === undefined) {
+      throw new Error('expected first receipt page');
+    }
+    expect(
+      (
+        await store.listUnattributedIndexedReceipts(1, {
+          createdAt: first.createdAt,
+          eventId: first.receiptEventId,
+        })
+      )[0]?.receiptEventId,
+    ).toBe('receipt-a');
     expect((await store.listZappers(1))[0]?.pubkey).toBe('bb');
     expect((await store.listBlockedPubkeyRows(1))[0]?.pubkey).toBe('dd');
   });
@@ -1608,6 +1617,64 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('external-1'))?.deletedBy).toBe('staff');
     expect((await store.getById('external-hidden'))?.deletedBy).toBe('older');
     expect((await store.getById('member-signed'))?.deletedAt).toBeNull();
+  });
+
+  it('atomically blocks an external pubkey and hides only its live external rows', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const firstAt = new Date('2026-09-18T00:00:00Z');
+    const secondAt = new Date('2026-09-19T00:00:00Z');
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'external-a', accountId: null, authorPubkey: pubkey });
+    await store.create({ ...LATE, id: 'external-b', accountId: null, authorPubkey: pubkey });
+    await store.create({
+      ...LATE,
+      id: 'external-hidden',
+      accountId: null,
+      authorPubkey: pubkey,
+      deletedAt: new Date('2026-09-17T00:00:00Z'),
+      deletedBy: 'older',
+    });
+    await store.create({
+      ...LATE,
+      id: 'external-other',
+      accountId: null,
+      authorPubkey: 'cd'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'external-anonymous',
+      accountId: null,
+      authorPubkey: null,
+    });
+    await store.create({ ...LATE, id: 'member-signed', authorPubkey: pubkey });
+
+    expect(
+      await store.blockPubkeyAndHideRows(pubkey.toUpperCase(), firstAt, 'staff', 'external-a'),
+    ).toBe(2);
+    expect((await store.getById('external-a'))?.deletedAt).toEqual(firstAt);
+    expect((await store.getById('external-b'))?.deletedAt).toEqual(firstAt);
+    expect((await store.getById('external-b'))?.deletedBy).toBe('staff');
+    expect((await store.getById('external-hidden'))?.deletedBy).toBe('older');
+    expect((await store.getById('external-other'))?.deletedAt).toBeNull();
+    expect((await store.getById('external-anonymous'))?.deletedAt).toBeNull();
+    expect((await store.getById('member-signed'))?.deletedAt).toBeNull();
+
+    await store.create({
+      ...LATE,
+      id: 'external-later',
+      accountId: null,
+      authorPubkey: pubkey.toUpperCase(),
+    });
+    expect(await store.blockPubkeyAndHideRows(pubkey, secondAt, 'other', 'external-later')).toBe(1);
+    expect((await store.getById('external-later'))?.deletedAt).toEqual(secondAt);
+    expect(await store.listBlockedPubkeyRows(1)).toEqual([
+      {
+        pubkey,
+        blockedAt: firstAt,
+        blockedBy: 'staff',
+        messageId: 'external-a',
+      },
+    ]);
   });
 
   it('listOpenConversationZapEventIds reads e-tags from ok conversation invoices', async () => {
@@ -4741,7 +4808,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(
       /NOT EXISTS \([\s\S]*other\.zap_request_id = \$3 AND other\.event_id <> \$1/,
     );
-    expect(await store.listUnattributedIndexedReceipts(10, 0)).toEqual([
+    expect(await store.listUnattributedIndexedReceipts(10)).toEqual([
       {
         receiptEventId: 'receipt-a',
         messageId: 'm1',
@@ -4750,7 +4817,9 @@ describe('PostgresMessageStore', () => {
         receipt: { id: 'receipt-a' },
       },
     ]);
-    expect(sql.queries[1]?.params).toEqual([10, 0]);
+    expect(sql.queries[1]?.params).toEqual([10]);
+    expect(sql.queries[1]?.text).not.toContain('(i.created_at, r.event_id) <');
+    expect(sql.queries[1]?.text).not.toContain('OFFSET');
     await store.recordZapper('AA', 'receipt-a', new Date('2026-09-18T10:00:00Z'));
     expect(sql.executes[0]?.text).toContain('ON CONFLICT (pubkey) DO NOTHING');
     expect(await store.listZapperPubkeys()).toEqual(['aa']);
@@ -4781,6 +4850,27 @@ describe('PostgresMessageStore', () => {
     expect(
       sql.executes.some((entry) => entry.text.includes('INSERT INTO nostr_blocked_pubkey')),
     ).toBe(true);
+  });
+
+  it('blocks and hides external rows in one Postgres statement', async () => {
+    const sql = new MockSql();
+    const at = new Date('2026-09-18T12:00:00Z');
+    sql.queryQueue = [[{ id: 'external-a' }, { id: 'external-b' }], [{ id: 'external-c' }]];
+    const store = new PostgresMessageStore(sql);
+
+    await expect(store.blockPubkeyAndHideRows('AA', at, 'staff', 'external-a')).resolves.toBe(2);
+    await expect(store.blockPubkeyAndHideRows('aa', at, 'other', 'external-c')).resolves.toBe(1);
+    expect(sql.queries).toHaveLength(2);
+    for (const query of sql.queries) {
+      expect(query.text).toContain('INSERT INTO nostr_blocked_pubkey');
+      expect(query.text).toContain('ON CONFLICT (pubkey) DO NOTHING');
+      expect(query.text).toContain('UPDATE message');
+      expect(query.text).toContain('RETURNING id');
+      expect(query.text).toContain('SELECT id FROM hidden');
+    }
+    expect(sql.queries[0]?.params).toEqual(['AA', at, 'staff', 'external-a']);
+    expect(sql.queries[1]?.params).toEqual(['aa', at, 'other', 'external-c']);
+    expect(sql.executes).toHaveLength(0);
   });
 
   it('preserves Postgres Date instances in external attribution rows', async () => {
@@ -4815,24 +4905,24 @@ describe('PostgresMessageStore', () => {
       ],
     ];
     const store = new PostgresMessageStore(sql);
-    const receipts = await store.listUnattributedIndexedReceipts(1, 0);
+    const receipts = await store.listUnattributedIndexedReceipts(1);
     expect(receipts[0]?.createdAt).toBe(receiptCreatedAt);
     expect(receipts[0]?.receipt).toEqual({});
     expect((await store.listZappers(1))[0]?.createdAt).toBe(zapperCreatedAt);
     expect((await store.listBlockedPubkeyRows(1))[0]?.blockedAt).toBe(blockedAt);
   });
 
-  it('uses descending secondary keys and an offset for tied Postgres listings', async () => {
+  it('uses a strict keyset cursor for tied Postgres receipt listings', async () => {
     const sql = new MockSql();
     const tiedAt = new Date('2026-09-18T10:00:00Z');
     sql.queryQueue = [
       [
         {
-          event_id: 'receipt-z',
+          event_id: 'receipt-a',
           message_id: 'm1',
           sats: '21',
           created_at: tiedAt,
-          receipt: { id: 'receipt-z' },
+          receipt: { id: 'receipt-a' },
         },
       ],
       [{ pubkey: 'bb', receipt_event_id: 'receipt-z', created_at: tiedAt }],
@@ -4847,14 +4937,21 @@ describe('PostgresMessageStore', () => {
     ];
     const store = new PostgresMessageStore(sql);
 
-    expect((await store.listUnattributedIndexedReceipts(1, 1))[0]?.receiptEventId).toBe(
-      'receipt-z',
-    );
+    expect(
+      (
+        await store.listUnattributedIndexedReceipts(1, {
+          createdAt: tiedAt,
+          eventId: 'receipt-z',
+        })
+      )[0]?.receiptEventId,
+    ).toBe('receipt-a');
     expect((await store.listZappers(1))[0]?.pubkey).toBe('bb');
     expect((await store.listBlockedPubkeyRows(1))[0]?.pubkey).toBe('dd');
     expect(sql.queries[0]?.text).toContain('ORDER BY i.created_at DESC, r.event_id DESC');
-    expect(sql.queries[0]?.text).toContain('LIMIT $1 OFFSET $2');
-    expect(sql.queries[0]?.params).toEqual([1, 1]);
+    expect(sql.queries[0]?.text).toContain('(i.created_at, r.event_id) < ($2, $3)');
+    expect(sql.queries[0]?.text).toContain('LIMIT $1');
+    expect(sql.queries[0]?.text).not.toContain('OFFSET');
+    expect(sql.queries[0]?.params).toEqual([1, tiedAt, 'receipt-z']);
     expect(sql.queries[1]?.text).toContain('ORDER BY created_at DESC, pubkey DESC');
     expect(sql.queries[2]?.text).toContain('ORDER BY blocked_at DESC, pubkey DESC');
   });

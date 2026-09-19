@@ -123,9 +123,9 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
  * The scan pages through unattributed receipts in newest-first batches and is
  * capped at 10,000 rows per boot. Account-owned pubkeys are kept on the member
  * path, while malformed, synthetic, replayed, or otherwise unverifiable frames
- * remain unattributed for a later bounded boot scan. The offset advances only
- * past rows that remain unattributed because successful attribution removes a
- * row from subsequent pages.
+ * remain unattributed for a later bounded boot scan. A strict cursor advances
+ * past every row seen, using immutable ingest creation time and receipt event
+ * id keys so attribution changes between pages cannot skip or repeat rows.
  *
  * @param store - Message store containing indexed receipt frames.
  * @param deps - Auth, profile querier, relays, timeout, and clock.
@@ -147,12 +147,11 @@ export async function backfillExternalZappers(
   let attributed = 0;
   let gifts = 0;
   let scanned = 0;
-  let offset = 0;
+  let before: { createdAt: Date; eventId: string } | undefined;
   while (scanned < EXTERNAL_ZAPPER_BACKFILL_CEILING) {
     const batchLimit = Math.min(MESSAGE_LIST_LIMIT, EXTERNAL_ZAPPER_BACKFILL_CEILING - scanned);
-    const rows = await store.listUnattributedIndexedReceipts(batchLimit, offset);
+    const rows = await store.listUnattributedIndexedReceipts(batchLimit, before);
     scanned += rows.length;
-    let batchAttributed = 0;
     for (const row of rows) {
       const event = storedReceiptFrame(row.receipt);
       if (event === null || event.id !== row.receiptEventId) {
@@ -199,11 +198,13 @@ export async function backfillExternalZappers(
       });
       if (result.attributed) {
         attributed += 1;
-        batchAttributed += 1;
       }
       if (result.gift) gifts += 1;
     }
-    offset += rows.length - batchAttributed;
+    const lastRow = rows[rows.length - 1];
+    if (lastRow !== undefined) {
+      before = { createdAt: lastRow.createdAt, eventId: lastRow.receiptEventId };
+    }
     if (rows.length < batchLimit) {
       break;
     }
@@ -1452,7 +1453,7 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
       return;
     }
     if (receipt.payerPubkey !== null) {
-      if ((await args.store.listBlockedPubkeys()).includes(receipt.payerPubkey.toLowerCase())) {
+      if (await args.store.isPubkeyBlocked(receipt.payerPubkey)) {
         await args.store.updateZapReceiptGift(event.id, { payerPubkey: null });
         return;
       }
@@ -1634,7 +1635,7 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         continue;
       }
       if (row.payerPubkey !== null) {
-        if ((await args.store.listBlockedPubkeys()).includes(row.payerPubkey.toLowerCase())) {
+        if (await args.store.isPubkeyBlocked(row.payerPubkey)) {
           await args.store.updateZapReceiptGift(row.receiptEventId, { payerPubkey: null });
           continue;
         }
@@ -1705,7 +1706,7 @@ async function persistExternalGiftReply(
     rememberNoExternalGiftReply(args.store, args.receiptEventId);
     return { attributed: false, gift: false };
   }
-  if ((await args.store.listBlockedPubkeys()).includes(args.payerPubkey.toLowerCase())) {
+  if (await args.store.isPubkeyBlocked(args.payerPubkey)) {
     await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
     return { attributed: true, gift: false };
   }
@@ -1725,7 +1726,18 @@ async function persistExternalGiftReply(
   return { attributed: true, gift: true };
 }
 
-/** Create one non-custodial gift reply without scheduling Nostr publication. */
+/**
+ * Create one non-custodial gift reply without scheduling Nostr publication.
+ *
+ * Listing accounts and resolving the relay profile introduce an asynchronous
+ * gap after the caller's block check. The payer is therefore checked again
+ * immediately before creation; a block that landed during either lookup
+ * clears the attributed payer and leaves the receipt credited but dequeued.
+ *
+ * @param args - Receipt, payer, parent, profile dependencies, and creation time.
+ * @throws Propagates account-list and store failures; relay profile failures
+ *   are suppressed by {@link resolveExternalProfileName}.
+ */
 async function insertExternalGiftReply(
   args: GiftReplyDeps & {
     receiptEventId: string;
@@ -1751,6 +1763,10 @@ async function insertExternalGiftReply(
       .map((account) => account.name)
       .filter((value): value is string => value !== null),
   });
+  if (await args.store.isPubkeyBlocked(args.payerPubkey)) {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
+    return;
+  }
   const created = await args.store.create({
     id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: null,

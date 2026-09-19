@@ -218,7 +218,11 @@ function externalZapFixture(args: {
 
 /** Store override for focused historical-frame backfill cases. */
 class BackfillRowsStore extends InMemoryMessageStore {
-  readonly backfillCalls: Array<{ limit: number; offset: number }> = [];
+  readonly backfillCalls: Array<{
+    limit: number;
+    before: { createdAt: Date; eventId: string } | undefined;
+  }> = [];
+  readonly returnedReceiptIds: string[] = [];
 
   constructor(readonly backfillRows: UnattributedIndexedReceipt[]) {
     super();
@@ -226,21 +230,55 @@ class BackfillRowsStore extends InMemoryMessageStore {
 
   override listUnattributedIndexedReceipts(
     limit: number,
-    offset: number,
+    before?: { createdAt: Date; eventId: string },
   ): ReturnType<InMemoryMessageStore['listUnattributedIndexedReceipts']> {
-    this.backfillCalls.push({ limit, offset });
-    return Promise.resolve(this.backfillRows.slice(offset, offset + limit));
+    this.backfillCalls.push({
+      limit,
+      before:
+        before === undefined
+          ? undefined
+          : { createdAt: new Date(before.createdAt.getTime()), eventId: before.eventId },
+    });
+    const sorted = [...this.backfillRows].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.receiptEventId.localeCompare(a.receiptEventId);
+    });
+    const candidates =
+      before === undefined
+        ? sorted
+        : sorted.filter((row) => {
+            const byTime = row.createdAt.getTime() - before.createdAt.getTime();
+            return (
+              byTime < 0 || (byTime === 0 && row.receiptEventId.localeCompare(before.eventId) < 0)
+            );
+          });
+    const page = candidates.slice(0, limit);
+    this.returnedReceiptIds.push(...page.map((row) => row.receiptEventId));
+    return Promise.resolve(page);
   }
 }
 
-/** Paging store that removes rows as soon as the backfill attributes them. */
-class RemovingBackfillRowsStore extends BackfillRowsStore {
-  override attributeZapReceipt(
-    ...args: Parameters<InMemoryMessageStore['attributeZapReceipt']>
-  ): ReturnType<InMemoryMessageStore['attributeZapReceipt']> {
-    const index = this.backfillRows.findIndex((row) => row.receiptEventId === args[0]);
-    this.backfillRows.splice(index, 1);
-    return Promise.resolve(true);
+/** Paging store that simulates another worker attributing a seen receipt between pages. */
+class BetweenPagesAttributionStore extends BackfillRowsStore {
+  #attributed = false;
+
+  override listUnattributedIndexedReceipts(
+    limit: number,
+    before?: { createdAt: Date; eventId: string },
+  ): ReturnType<InMemoryMessageStore['listUnattributedIndexedReceipts']> {
+    if (before !== undefined && !this.#attributed) {
+      const index = this.backfillRows.findIndex(
+        (row) => row.receiptEventId === 'zz-attributed-between-pages',
+      );
+      if (index >= 0) {
+        this.backfillRows.splice(index, 1);
+      }
+      this.#attributed = true;
+    }
+    return super.listUnattributedIndexedReceipts(limit, before);
   }
 }
 
@@ -507,6 +545,27 @@ describe('backfillZapPayments', () => {
 });
 
 describe('backfillExternalZappers', () => {
+  it('stops after an empty initial page without advancing a cursor', async () => {
+    const store = new BackfillRowsStore([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+      }),
+    ).resolves.toBe(0);
+
+    expect(store.backfillCalls).toEqual([{ limit: 200, before: undefined }]);
+    expect(loggedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zapper.backfill.done', scanned: 0 }),
+    );
+    warn.mockRestore();
+  });
+
   it('pages past 450 newer unattributable receipts and is idempotent', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -622,7 +681,9 @@ describe('backfillExternalZappers', () => {
     ).resolves.toBe(0);
 
     expect(store.backfillCalls).toHaveLength(50);
-    expect(store.backfillCalls.at(-1)).toEqual({ limit: 200, offset: 9_800 });
+    expect(store.backfillCalls[0]).toEqual({ limit: 200, before: undefined });
+    expect(store.backfillCalls.at(-1)?.limit).toBe(200);
+    expect(store.backfillCalls.at(-1)?.before).toBeDefined();
     expect(loggedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.ceiling', ceiling: 10_000 }),
     );
@@ -632,37 +693,30 @@ describe('backfillExternalZappers', () => {
     warn.mockRestore();
   });
 
-  it('advances the next page only past rows that remain unattributed', async () => {
-    const first = externalZapFixture({
-      receiptId: 'first-removing-receipt',
-      bolt11: 'lnbc-first-removing',
-    });
-    const older = externalZapFixture({
-      receiptId: 'older-removing-receipt',
-      bolt11: 'lnbc-older-removing',
-    });
+  it('does not skip or repeat rows when a seen receipt is attributed between pages', async () => {
     const rows = [
-      backfillRow(first.receipt.id, { ...first.receipt }),
+      backfillRow('zz-attributed-between-pages', {
+        id: 'mismatched-attributed-between-pages',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [],
+      }),
       ...Array.from({ length: 199 }, (_, index) =>
-        backfillRow(`staying-receipt-${index}`, {
-          id: `mismatched-staying-receipt-${index}`,
+        backfillRow(`yy-staying-receipt-${index.toString().padStart(3, '0')}`, {
+          id: `mismatched-staying-receipt-${index.toString().padStart(3, '0')}`,
           pubkey: PROVIDER_PUBKEY,
           kind: 9735,
           tags: [],
         }),
       ),
-      backfillRow(older.receipt.id, { ...older.receipt }),
+      backfillRow('aa-oldest-receipt', {
+        id: 'mismatched-oldest-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [],
+      }),
     ];
-    const store = new RemovingBackfillRowsStore(rows);
-    mockedDecode.mockReturnValue({ paymentHash: '89'.repeat(32), amountMsat: 21_000 });
-    mockedInspect.mockImplementation((bolt11) => ({
-      paymentHash: '89'.repeat(32),
-      amountMsat: 21_000,
-      description: null,
-      descriptionHash:
-        bolt11 === 'lnbc-first-removing' ? first.descriptionHash : older.descriptionHash,
-      expirySeconds: null,
-    }));
+    const store = new BetweenPagesAttributionStore(rows);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(
@@ -673,12 +727,17 @@ describe('backfillExternalZappers', () => {
         timeoutMs: 50,
         now: () => 1_800_000_000_000,
       }),
-    ).resolves.toBe(2);
+    ).resolves.toBe(0);
 
-    expect(store.backfillCalls).toEqual([
-      { limit: 200, offset: 0 },
-      { limit: 200, offset: 199 },
-    ]);
+    expect(store.backfillCalls).toHaveLength(2);
+    expect(store.backfillCalls[0]).toEqual({ limit: 200, before: undefined });
+    expect(store.backfillCalls[1]?.before).toEqual({
+      createdAt: new Date('2026-09-18T10:00:00.000Z'),
+      eventId: 'yy-staying-receipt-000',
+    });
+    expect(store.returnedReceiptIds).toHaveLength(201);
+    expect(new Set(store.returnedReceiptIds).size).toBe(201);
+    expect(store.returnedReceiptIds).toContain('aa-oldest-receipt');
     warn.mockRestore();
   });
 
@@ -2364,6 +2423,76 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toEqual([]);
   });
 
+  it('lets an in-flight block win before a live external gift reply is created', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'live-block-race-author',
+      lightningAddress: 'live-block-race@example.com',
+    });
+    const fixture = externalZapFixture({
+      receiptId: 'live-block-race-receipt',
+      bolt11: 'lnbc-live-block-race',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '52'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue({
+      paymentHash: '52'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: fixture.descriptionHash,
+      expirySeconds: null,
+    });
+    mockedVerifiedExternalZapRequest.mockClear();
+    let releaseProfile: () => void = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      releaseProfile = resolve;
+    });
+    let enterProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enterProfile = resolve;
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+    let queryCount = 0;
+    querier.query = async (): Promise<NostrEventFrame[]> => {
+      queryCount += 1;
+      if (queryCount === 1) {
+        return querier.events;
+      }
+      enterProfile();
+      await profileHeld;
+      return [];
+    };
+
+    const pending = ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    await profileEntered;
+    await store.blockPubkey(
+      fixture.pubkey,
+      new Date(1_700_000_200_000),
+      'live-block-race-staff',
+      'live-block-race-message',
+    );
+    releaseProfile();
+    await pending;
+
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerPubkey: null,
+      giftReplyId: null,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+  });
+
   it('keeps a dequeued external receipt inert when the receipt is delivered again', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -3680,6 +3809,9 @@ describe('indexOpenZapReceipts', () => {
         base.listZappers(...args),
       blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
         base.blockPubkey(...args),
+      blockPubkeyAndHideRows: (
+        ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+      ) => base.blockPubkeyAndHideRows(...args),
       unblockPubkeyByMessage: (
         ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
       ) => base.unblockPubkeyByMessage(...args),
@@ -3898,6 +4030,9 @@ describe('indexOpenZapReceipts', () => {
           base.listZappers(...args),
         blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
           base.blockPubkey(...args),
+        blockPubkeyAndHideRows: (
+          ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+        ) => base.blockPubkeyAndHideRows(...args),
         unblockPubkeyByMessage: (
           ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
         ) => base.unblockPubkeyByMessage(...args),
@@ -4248,6 +4383,9 @@ describe('indexOpenZapReceipts', () => {
           base.listZappers(...args),
         blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
           base.blockPubkey(...args),
+        blockPubkeyAndHideRows: (
+          ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
+        ) => base.blockPubkeyAndHideRows(...args),
         unblockPubkeyByMessage: (
           ...args: Parameters<InMemoryMessageStore['unblockPubkeyByMessage']>
         ) => base.unblockPubkeyByMessage(...args),
@@ -5652,6 +5790,65 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toEqual([]);
     expect((await store.getById(parentId))?.sats).toBe(21);
     expect((await store.getZapReceiptGift(receiptId))?.giftReplyId).toBeNull();
+  });
+
+  it('lets an in-flight block win before a retried external gift reply is created', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'retry-block-race-author',
+      messageId: 'retry-block-race-parent',
+    });
+    const receiptId = 'retry-block-race-receipt';
+    const payerPubkey = getPublicKey(generateSecretKey());
+    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.attributeZapReceipt(receiptId, {
+      payerPubkey,
+      zapRequestId: '53'.repeat(32),
+      comment: 'retry block race',
+    });
+    let releaseProfile: () => void = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      releaseProfile = resolve;
+    });
+    let enterProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enterProfile = resolve;
+    });
+    const querier = new RecordingQuerier();
+    querier.query = async (): Promise<NostrEventFrame[]> => {
+      enterProfile();
+      await profileHeld;
+      return [];
+    };
+
+    const pending = ingest({
+      store,
+      auth,
+      querier,
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: failFetch(),
+    });
+    await profileEntered;
+    await store.blockPubkey(
+      payerPubkey,
+      new Date(1_700_000_200_000),
+      'retry-block-race-staff',
+      'retry-block-race-message',
+    );
+    releaseProfile();
+    await pending;
+
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.getZapReceiptGift(receiptId)).toMatchObject({
+      payerPubkey: null,
+      giftReplyId: null,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
   });
 
   it('retries a pending external payer directly from the retry queue', async () => {
