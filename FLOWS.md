@@ -255,7 +255,7 @@ notification unread plus listed inbox unread.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip
-a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = staff/platform actor or reply/zap on the recipient's own note). Filter applies to in-app and Web Push. GET /notifications lists stored rows unfiltered.
+a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = reply/zap on the recipient's own note, not every staff/platform post). Filter applies to in-app and Web Push. GET /notifications lists stored rows unfiltered.
 
 HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
 `/notifications`, `/notifications/read-all`, `/notifications/:id/read`.

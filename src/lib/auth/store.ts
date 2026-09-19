@@ -24,7 +24,7 @@ export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
  *
  * - `all` — every living-room post, reply, and zap (default).
  * - `active` — related top-level post has `sats > 0` (zaps also when `amountSats > 0`).
- * - `mentions` — staff/platform actor, or a reply/zap on the recipient's own note.
+ * - `mentions` — a reply/zap on the recipient's own note (not every staff post).
  */
 export type NotificationLevel = 'all' | 'active' | 'mentions';
 

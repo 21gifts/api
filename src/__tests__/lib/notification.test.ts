@@ -1227,56 +1227,42 @@ describe('wantsNotification', () => {
   const recipientAccountId = 'me';
   const cases: Array<{
     name: string;
-    actorIsStaff: boolean;
     isActive: boolean;
     mentionedAccountId: string | null;
     expected: { all: boolean; active: boolean; mentions: boolean };
   }> = [
     {
       name: 'unpaid post',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: null,
       expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'paid post',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: null,
       expected: { all: true, active: true, mentions: false },
     },
     {
-      name: 'staff unpaid post',
-      actorIsStaff: true,
-      isActive: false,
-      mentionedAccountId: null,
-      expected: { all: true, active: false, mentions: true },
-    },
-    {
       name: 'reply-to-me',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: recipientAccountId,
       expected: { all: true, active: false, mentions: true },
     },
     {
       name: 'reply-to-other',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: 'other',
       expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'zap-to-me',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: recipientAccountId,
       expected: { all: true, active: true, mentions: true },
     },
     {
       name: 'zap-to-other',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: 'other',
       expected: { all: true, active: true, mentions: false },
@@ -1289,7 +1275,6 @@ describe('wantsNotification', () => {
         expect(
           wantsNotification({
             level,
-            actorIsStaff: row.actorIsStaff,
             isActive: row.isActive,
             mentionedAccountId: row.mentionedAccountId,
             recipientAccountId,
@@ -1323,7 +1308,7 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 
-  it('notifies all and mentions on a staff unpaid forum post; active is dropped', async () => {
+  it('notifies only all on a staff unpaid forum post; mentions and active are dropped', async () => {
     const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
     const notifications = new InMemoryNotificationStore();
     const auth = {
@@ -1342,12 +1327,12 @@ describe('notification level fan-out', () => {
       created,
     });
     expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
-    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 
-  it('treats an actor missing from listAccounts as non-staff', async () => {
+  it('does not notify mentions on a top-level unpaid post when the actor is missing from listAccounts', async () => {
     const created = message({ id: 'post-1', accountId: 'ghost', name: 'Ada', text: 'hello' });
     const notifications = new InMemoryNotificationStore();
     const auth = {
@@ -1467,7 +1452,7 @@ describe('notification level fan-out', () => {
       notifications,
       pushStore,
       skipAccountId: 'actor',
-      match: { actorIsStaff: false, isActive: false, mentionedAccountId: null },
+      match: { isActive: false, mentionedAccountId: null },
       template,
       outboxType: 'forum',
       outboxMessageId: 'reply-1',
