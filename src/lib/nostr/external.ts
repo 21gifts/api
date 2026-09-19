@@ -185,7 +185,7 @@ const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u03bf': 'o',
   '\u03a1': 'P',
   '\u03c1': 'p',
-  '\u039d': 'V',
+  '\u039d': 'N',
   '\u03bd': 'v',
   '\u03a4': 'T',
   '\u03c4': 't',
@@ -203,13 +203,15 @@ const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u0392': 'B',
   '\u03b2': 'b',
   '\u0397': 'H',
-  '\u03b7': 'h',
+  '\u03b7': 'n',
   '\u039c': 'M',
   '\u03bc': 'm',
 };
 
 const LATIN_LETTER_RE = /(?=\p{L})[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/u;
-const CYRILLIC_OR_GREEK_LETTER_RE = /(?=\p{L})[\u0370-\u03ff\u0400-\u052f]/u;
+const GREEK_LETTER_RE = /(?=\p{L})[\u0370-\u03ff]/u;
+const CYRILLIC_LETTER_RE = /(?=\p{L})[\u0400-\u052f]/u;
+const LETTER_OR_DIGIT_RE = /[\p{L}\p{N}]/u;
 
 function foldedName(value: string): string {
   let mapped = '';
@@ -220,20 +222,24 @@ function foldedName(value: string): string {
   return mapped.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
 }
 
-function mixesLatinWithCyrillicOrGreek(value: string): boolean {
-  let hasLatin = false;
-  let hasCyrillicOrGreek = false;
+/** True when a name mixes more than one of the Latin, Cyrillic and Greek scripts. */
+function mixesConfusableScripts(value: string): boolean {
+  const scripts = new Set<string>();
   for (const character of value.normalize('NFKD')) {
     if (LATIN_LETTER_RE.test(character)) {
-      hasLatin = true;
-    } else if (CYRILLIC_OR_GREEK_LETTER_RE.test(character)) {
-      hasCyrillicOrGreek = true;
-    }
-    if (hasLatin && hasCyrillicOrGreek) {
-      return true;
+      scripts.add('latin');
+    } else if (CYRILLIC_LETTER_RE.test(character)) {
+      scripts.add('cyrillic');
+    } else if (GREEK_LETTER_RE.test(character)) {
+      scripts.add('greek');
     }
   }
-  return false;
+  return scripts.size > 1;
+}
+
+/** Case-insensitive comparison of two names after compatibility normalisation. */
+function sameRawName(a: string, b: string): boolean {
+  return a.normalize('NFKC').trim().toLowerCase() === b.normalize('NFKC').trim().toLowerCase();
 }
 
 /**
@@ -264,10 +270,12 @@ export function externalDisplayName(args: {
   const capped = trimmed.slice(0, NAME_MAX_LENGTH);
   const folded = foldedName(capped);
   if (
-    folded === '' ||
-    args.accountNames.some((name) => foldedName(name) === folded) ||
+    !LETTER_OR_DIGIT_RE.test(capped) ||
+    args.accountNames.some(
+      (name) => sameRawName(name, capped) || (folded !== '' && foldedName(name) === folded),
+    ) ||
     RESERVED_NAME_PARTS.some((part) => folded.includes(part)) ||
-    mixesLatinWithCyrillicOrGreek(capped)
+    mixesConfusableScripts(capped)
   ) {
     return fallback;
   }

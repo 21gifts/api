@@ -2371,10 +2371,10 @@ eligible live top-level note receives a
 deterministic external gift-reply (`accountId` null, `via: "nostr"`, comment and
 sats from the zap, receipt time clamped to now, Nostr publish skipped). Profile
 lookup failure falls back to a non-impersonating truncated-pubkey display name.
-Resolved profile names use the same fallback when they contain control characters,
-mix Latin letters with Cyrillic or Greek letters, or collide with a member name or
-reserved project/staff identity after diacritic and common Cyrillic/Greek look-alike
-folding. Names written entirely in one non-Latin script remain eligible when their fold does not collide with a reserved word or an account name.
+Resolved profile names use the same fallback when they contain control characters or
+no letter or digit at all, mix more than one of the Latin, Cyrillic and Greek scripts,
+equal a member name, or collide with a member name or reserved project/staff identity
+after diacritic and common Cyrillic/Greek look-alike folding. Names written entirely in one non-Latin script remain eligible when their fold does not collide with a reserved word or an account name.
 
 Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while

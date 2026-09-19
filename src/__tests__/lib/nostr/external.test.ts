@@ -318,6 +318,62 @@ describe('externalDisplayName', () => {
     ).toBe('José');
   });
 
+  it('folds Greek capital nu to N and small eta to n before comparing member names', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(
+      externalDisplayName({
+        profileName: '\u039d\u0399\u039a\u039f',
+        pubkey,
+        accountNames: ['Niko'],
+      }),
+    ).toBe('abcdef01…6789');
+    expect(
+      externalDisplayName({
+        profileName: '\u03a4\u03b9\u03b7\u03b1',
+        pubkey,
+        accountNames: ['Tina'],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('falls back for Admin spelled with Greek and Cyrillic look-alikes only', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(
+      externalDisplayName({
+        profileName: '\u0391\u0501\u043c\u0456\u039d',
+        pubkey,
+        accountNames: [],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('falls back for a name mixing Greek and Cyrillic without any Latin letter', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(
+      externalDisplayName({
+        profileName: '\u0391\u043b\u0435\u043a\u0441',
+        pubkey,
+        accountNames: [],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('keeps a name in a script without Latin look-alikes and still protects a member with that name', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(
+      externalDisplayName({ profileName: '\u7530\u4e2d', pubkey, accountNames: ['Alice'] }),
+    ).toBe('\u7530\u4e2d');
+    expect(
+      externalDisplayName({ profileName: '\u7530\u4e2d', pubkey, accountNames: ['\u7530\u4e2d'] }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('falls back for a name without any letter or digit', () => {
+    expect(
+      externalDisplayName({ profileName: '***', pubkey: 'ABCDEF0123456789', accountNames: [] }),
+    ).toBe('abcdef01…6789');
+  });
+
   it('falls back for an otherwise ordinary mixed Latin and Cyrillic name', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(externalDisplayName({ profileName: 'Ca\u0442nip', pubkey, accountNames: [] })).toBe(
