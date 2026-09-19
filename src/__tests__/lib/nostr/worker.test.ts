@@ -4756,6 +4756,7 @@ describe('runNostrWorkerTick', () => {
           ['p', 'd3'.repeat(32)],
           ['e'],
           ['e', 'c3'.repeat(32)],
+          ['e', noteEventId, '', 'root'],
           ['e', noteEventId, '', 'reply'],
         ],
         content: 'tagged member reply',
