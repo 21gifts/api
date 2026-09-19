@@ -1244,12 +1244,6 @@ describe('wantsNotification', () => {
       expected: { all: true, active: true, mentions: false },
     },
     {
-      name: 'staff unpaid post',
-      isActive: false,
-      mentionedAccountId: null,
-      expected: { all: true, active: false, mentions: false },
-    },
-    {
       name: 'reply-to-me',
       isActive: false,
       mentionedAccountId: recipientAccountId,
@@ -1338,7 +1332,7 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 
-  it('treats an actor missing from listAccounts as non-staff', async () => {
+  it('does not notify mentions on a top-level unpaid post when the actor is missing from listAccounts', async () => {
     const created = message({ id: 'post-1', accountId: 'ghost', name: 'Ada', text: 'hello' });
     const notifications = new InMemoryNotificationStore();
     const auth = {

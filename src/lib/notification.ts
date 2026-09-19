@@ -135,7 +135,7 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
  *
  * `all` is always true. `active` is `isActive`. `mentions` is
  * `mentionedAccountId === recipientAccountId` (both non-null). A staff actor
- * is not enough; living-room admin posts were matching almost every event.
+ * is not enough.
  *
  * @param args - Recipient level, active flag, mention target, recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
@@ -441,7 +441,7 @@ export async function notifyForumReply(args: {
  * `pushStore` is set. No-op when the note has no `accountId`. Does not skip the
  * note author unless they are also `payerAccountId`. Matching uses
  * {@link wantsNotification}: `isActive` is `note.sats > 0` or `amountSats > 0`
- * (first gift still counts), `mentionedAccountId` is `note.accountId`,
+ * (first gift still counts), `mentionedAccountId` is `note.accountId`.
  * When `auth` is unset, do
  * not filter by level. Missing `pushStore` still writes in-app rows when
  * `auth` is set. This helper may throw; callers wrap it.
