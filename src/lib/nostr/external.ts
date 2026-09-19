@@ -212,10 +212,51 @@ const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u03bc': 'u',
 };
 
+/**
+ * Cyrillic letters by sound, for words that READ like a reserved word or a member name without
+ * looking like Latin glyphs (for example the Russian word for admin). Used in addition to the
+ * glyph table above, never instead of it.
+ */
+const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = {
+  '\u0430': 'a',
+  '\u0431': 'b',
+  '\u0432': 'v',
+  '\u0433': 'g',
+  '\u0434': 'd',
+  '\u0435': 'e',
+  '\u0437': 'z',
+  '\u0438': 'i',
+  '\u0439': 'i',
+  '\u0456': 'i',
+  '\u043a': 'k',
+  '\u043b': 'l',
+  '\u043c': 'm',
+  '\u043d': 'n',
+  '\u043e': 'o',
+  '\u043f': 'p',
+  '\u0440': 'r',
+  '\u0441': 's',
+  '\u0442': 't',
+  '\u0443': 'u',
+  '\u0444': 'f',
+  '\u0445': 'h',
+  '\u0446': 'c',
+};
+
 const LATIN_LETTER_RE = /(?=\p{L})[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/u;
 const GREEK_LETTER_RE = /(?=\p{L})[\u0370-\u03ff]/u;
 const CYRILLIC_LETTER_RE = /(?=\p{L})[\u0400-\u052f]/u;
 const LETTER_OR_DIGIT_RE = /[\p{L}\p{N}]/u;
+
+/** Fold a name by sound: lower-case, transliterate Cyrillic, keep only `[a-z0-9]`. */
+function transliteratedName(value: string): string {
+  let mapped = '';
+  const normalized = value.normalize('NFKD').replaceAll(/\p{M}/gu, '').toLowerCase();
+  for (const character of normalized) {
+    mapped += CYRILLIC_TRANSLITERATION[character] ?? character;
+  }
+  return mapped.replaceAll(/[^a-z0-9]/g, '');
+}
 
 function foldedName(value: string): string {
   let mapped = '';
@@ -273,12 +314,16 @@ export function externalDisplayName(args: {
   }
   const capped = trimmed.slice(0, NAME_MAX_LENGTH);
   const folded = foldedName(capped);
+  const transliterated = transliteratedName(capped);
   if (
     !LETTER_OR_DIGIT_RE.test(capped) ||
     args.accountNames.some(
-      (name) => sameRawName(name, capped) || (folded !== '' && foldedName(name) === folded),
+      (name) =>
+        sameRawName(name, capped) ||
+        (folded !== '' && foldedName(name) === folded) ||
+        (transliterated !== '' && transliteratedName(name) === transliterated),
     ) ||
-    RESERVED_NAME_PARTS.some((part) => folded.includes(part)) ||
+    RESERVED_NAME_PARTS.some((part) => folded.includes(part) || transliterated.includes(part)) ||
     mixesConfusableScripts(capped)
   ) {
     return fallback;
