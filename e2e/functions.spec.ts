@@ -94,6 +94,13 @@ test('Function: logEvent — GET /info succeeds through middleware', async ({ re
   expect(res.status()).toBe(200);
 });
 
+test('Function: errorLogFields — GET /healthz is ok while the worker logs no tick failure', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: resolveAllowedOrigins — CORS preflight allows localhost', async ({ request }) => {
   const res = await request.fetch('/info', {
     method: 'OPTIONS',
@@ -315,7 +322,12 @@ test('Function: PostgresAuthStore — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
-test('Function: isUniqueViolation — GET /healthz is ok', async ({ request }) => {
+test('Function: isUniqueViolation — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: sqlState — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });

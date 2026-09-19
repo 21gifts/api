@@ -1068,6 +1068,18 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: firstId,
     });
+    // Child with the same eventId so reply collection dedups via `seen`.
+    rows.push({
+      id: 'm-chunk-child-dup',
+      accountId: 'acc-chunk',
+      name: 'Ada',
+      text: 'child-dup',
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, 23)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-chunk-0',
+      eventId: firstId,
+    });
     const store = new InMemoryMessageStore(rows);
     await ingest({
       store,
@@ -3381,6 +3393,344 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
+  it('does not insert a nested gift-reply when the zapped note is a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-reply-parent',
+      lightningAddress: 'zap-gift-reply-parent@example.com',
+      messageId: 'm-gift-reply-parent',
+    });
+    const replyEventId = 'dd'.repeat(32);
+    const replyId = 'm-gift-reply-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-gift-reply-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-gift-reply',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-gift-reply@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-reply'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift-reply',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-gift-reply',
+      authorAccountId: 'acc-gift-reply-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-reply-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-reply',
+      paymentHash: '44'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-reply',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-gift-reply'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '44'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+  });
+
+  it('does not occupy the gift-reply retry queue when the zapped note is a reply', async () => {
+    class HoldRetryStore extends InMemoryMessageStore {
+      payerWrites: Array<string | null> = [];
+
+      override updateZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>
+      ): ReturnType<InMemoryMessageStore['updateZapReceiptGift']> {
+        if (args[0] === 'r-queue-drop-reply' && args[1].payerAccountId !== undefined) {
+          this.payerWrites.push(args[1].payerAccountId);
+        }
+        return super.updateZapReceiptGift(...args);
+      }
+
+      override listZapReceiptsAwaitingGiftReply(
+        _limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        // Keep retryGiftReplies from dropping the reply receipt itself.
+        return Promise.resolve([]);
+      }
+
+      peekZapReceiptsAwaitingGiftReply(
+        limit: number,
+      ): ReturnType<InMemoryMessageStore['listZapReceiptsAwaitingGiftReply']> {
+        return super.listZapReceiptsAwaitingGiftReply(limit);
+      }
+    }
+    const store = new HoldRetryStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-parent',
+    });
+    const topAwaitId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-queue-drop-parent',
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      messageId: 'm-queue-drop-top',
+      eventId: 'ce'.repeat(32),
+      createAccount: false,
+    });
+    await store.recordZapReceipt('r-queue-drop-top', topAwaitId, 7);
+    await store.updateZapReceiptGift('r-queue-drop-top', {
+      payerAccountId: 'payer-queue-drop-top',
+    });
+    const replyEventId = 'cd'.repeat(32);
+    const replyId = 'm-queue-drop-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-queue-drop-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-queue-drop',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-queue-drop@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-queue-drop'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-queue-drop',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-queue-drop',
+      authorAccountId: 'acc-queue-drop-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-queue-drop-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-queue-drop',
+      paymentHash: 'cf'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-queue-drop-reply',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-queue-drop'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'cf'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const gift = await store.getZapReceiptGift('r-queue-drop-reply');
+    expect(gift?.payerAccountId).toBeNull();
+    expect(gift?.giftReplyId).toBeNull();
+    expect(store.payerWrites).toEqual([null]);
+    expect(await store.peekZapReceiptsAwaitingGiftReply(10)).toEqual([
+      {
+        receiptEventId: 'r-queue-drop-top',
+        messageId: topAwaitId,
+        sats: 7,
+        payerAccountId: 'payer-queue-drop-top',
+        comment: '',
+      },
+    ]);
+  });
+
+  it('queries a reply eventId and does not insert a nested gift-reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-watch-parent',
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      messageId: 'm-gift-watch-parent',
+    });
+    const replyEventId = 'bb'.repeat(32);
+    const replyId = 'm-gift-watch-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await store.create({
+      id: 'm-gift-watch-unsigned-parent',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'unsigned parent',
+      createdAt: new Date('2026-08-28T00:00:02.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-null-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'null eventId child',
+      createdAt: new Date('2026-08-28T00:00:03.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: null,
+    });
+    await store.create({
+      id: 'm-gift-watch-empty-child',
+      accountId: 'acc-gift-watch-parent',
+      name: 'Ada',
+      text: 'empty eventId child',
+      createdAt: new Date('2026-08-28T00:00:04.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm-gift-watch-unsigned-parent',
+      eventId: '',
+    });
+    await auth.createAccount({
+      id: 'payer-gift-watch',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-gift-watch@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-watch'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-gift-watch',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-gift-watch',
+      authorAccountId: 'acc-gift-watch-parent',
+      amountSats: 21,
+      lightningAddress: 'zap-gift-watch-parent@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-watch',
+      paymentHash: '55'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-watch',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-gift-watch'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+  });
+
   it('retries a pending gift reply on the next tick', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -3423,6 +3773,63 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('keep going');
     expect(replies[0]?.nostrPublishState).toBe('pending');
     expect(replies[0]?.sats).toBe(7);
+  });
+
+  it('skips retry insert when the pending receipt parent is a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-retry-reply-parent',
+      lightningAddress: 'zap-retry-reply-parent@example.com',
+      messageId: 'm-retry-reply-parent',
+    });
+    const replyId = 'm-retry-reply-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-retry-reply-parent',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: 'cc'.repeat(32),
+    });
+    await auth.createAccount({
+      id: 'payer-retry-reply',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Cara',
+      lightningAddress: 'cara-retry-reply@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-retry-reply'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordZapReceipt('r-retry-reply', replyId, 7);
+    await store.updateZapReceiptGift('r-retry-reply', {
+      payerAccountId: 'payer-retry-reply',
+      comment: 'keep going',
+    });
+    await ingest({
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+    });
+    expect(await store.listReplies(replyId)).toEqual([]);
+    const siblings = await store.listReplies(parentId);
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]?.id).toBe(replyId);
+    expect((await store.getById(replyId))?.sats).toBe(7);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
   });
 
   it('does not create a reply when no payer can be resolved', async () => {
@@ -5383,7 +5790,123 @@ describe('conversation zap ingest', () => {
     }
   });
 
-  it('logs unique-violation code and errno on a throwing PN claim', async () => {
+  it('queries a shared PN e-tag when only the first invoice gift exists', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-shared-recv',
+      eventId: null,
+      lightningAddress: 'shared-recv@example.com',
+      messageId: 'm-pn-shared-profile',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-shared-pay',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'shared-pay@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-shared-pay'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-shared-pay',
+      'acc-pn-shared-recv',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const firstGiftId = '12121212-1212-4121-8121-121212121212';
+    const secondGiftId = '34343434-3434-4343-8343-343434343434';
+    const sharedEventId = 'bc'.repeat(32);
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-pn-shared-first',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-shared-pay',
+      authorAccountId: 'acc-pn-shared-recv',
+      amountSats: 21,
+      lightningAddress: 'shared-recv@example.com',
+      zapRequest: { tags: [['e', sharedEventId]], content: 'first gift' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-shared-first',
+      paymentHash: 'c1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: firstGiftId,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    await store.recordInvoiceAttempt({
+      ...invoice,
+      id: 'inv-pn-shared-second',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      zapRequest: { tags: [['e', sharedEventId]], content: 'second gift' },
+      pr: 'lnbc-pn-shared-second',
+      paymentHash: 'c2'.repeat(32),
+      conversationMessageId: secondGiftId,
+    });
+    await conversations.appendMessage({
+      id: firstGiftId,
+      conversationId: thread.id,
+      text: 'first gift',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      senderAccountId: 'acc-pn-shared-pay',
+      senderPubkey: null,
+      name: 'Pat',
+      ...unsignedConversationDefaults(),
+      sats: 21,
+    });
+    const append = vi.spyOn(conversations, 'appendMessage');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-shared-second',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', sharedEventId],
+          ['bolt11', 'lnbc-pn-shared-second'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c2'.repeat(32), amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+    });
+
+    expect(
+      querier.calls.some(
+        (call) =>
+          Array.isArray(call.filter['#e']) &&
+          (call.filter['#e'] as string[]).includes(sharedEventId),
+      ),
+    ).toBe(true);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ id: secondGiftId }));
+    expect((await conversations.listMessages(thread.id, 10)).map((row) => row.id)).toEqual([
+      firstGiftId,
+      secondGiftId,
+    ]);
+    append.mockRestore();
+  });
+
+  it('logs allowlisted catch fields without the error message', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5447,7 +5970,7 @@ describe('conversation zap ingest', () => {
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'ae'.repeat(32), amountMsat: 21_000 });
     const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(
-      Object.assign(new Error('duplicate key value violates unique constraint'), {
+      Object.assign(new Error('invalid input syntax for type uuid: "secret-value"'), {
         code: 'ERR_POSTGRES_SERVER_ERROR',
         errno: '23505',
       }),
@@ -5469,18 +5992,20 @@ describe('conversation zap ingest', () => {
         expect.objectContaining({
           event: 'nostr.zap.rejected',
           reason: 'error',
+          name: 'Error',
           code: 'ERR_POSTGRES_SERVER_ERROR',
           errno: '23505',
         }),
       );
-      expect(String(event?.['error'])).toContain('duplicate key');
+      expect(event).not.toHaveProperty('error');
+      expect(warn.mock.calls.flat().join('\n')).not.toContain('secret-value');
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('logs a non-Error catch as a string without code or errno', async () => {
+  it('logs only the reason for primitive and null catches', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5541,9 +6066,21 @@ describe('conversation zap ingest', () => {
           ['bolt11', 'lnbc-pn-catch-plain'],
         ],
       },
+      {
+        id: 'r-pn-catch-null',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-catch-plain'],
+        ],
+      },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'af'.repeat(32), amountMsat: 21_000 });
-    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce('plain');
+    const claim = vi
+      .spyOn(store, 'claimZapPayment')
+      .mockRejectedValueOnce('plain')
+      .mockRejectedValueOnce(null);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -5556,18 +6093,22 @@ describe('conversation zap ingest', () => {
         fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
         conversations,
       });
-      const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
-      expect(event?.['reason']).toBe('error');
-      expect(event?.['error']).toBe('plain');
-      expect(event).not.toHaveProperty('code');
-      expect(event).not.toHaveProperty('errno');
+      const events = loggedEvents(warn).filter((row) => row['event'] === 'nostr.zap.rejected');
+      expect(events).toHaveLength(2);
+      for (const event of events) {
+        expect(event?.['reason']).toBe('error');
+        expect(event).not.toHaveProperty('name');
+        expect(event).not.toHaveProperty('error');
+        expect(event).not.toHaveProperty('code');
+        expect(event).not.toHaveProperty('errno');
+      }
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('truncates a catch error message to 200 characters', async () => {
+  it('omits catch fields outside the allowlist', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5630,9 +6171,12 @@ describe('conversation zap ingest', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'b0'.repeat(32), amountMsat: 21_000 });
-    const claim = vi
-      .spyOn(store, 'claimZapPayment')
-      .mockRejectedValueOnce(new Error('x'.repeat(250)));
+    const rejected = Object.assign(new Error('do not log me'), {
+      name: 'Postgres-Error',
+      code: 'BAD CODE',
+      errno: 23505,
+    });
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(rejected);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -5647,15 +6191,17 @@ describe('conversation zap ingest', () => {
       });
       const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
       expect(event?.['reason']).toBe('error');
-      expect(typeof event?.['error']).toBe('string');
-      expect((event?.['error'] as string).length).toBe(200);
+      expect(event).not.toHaveProperty('name');
+      expect(event).not.toHaveProperty('error');
+      expect(event).not.toHaveProperty('code');
+      expect(event).not.toHaveProperty('errno');
     } finally {
       warn.mockRestore();
       claim.mockRestore();
     }
   });
 
-  it('omits an empty catch error message', async () => {
+  it('omits non-string code and disallowed errno while retaining a safe name', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const profileId = await seedStore({
@@ -5718,7 +6264,13 @@ describe('conversation zap ingest', () => {
       },
     ];
     mockedDecode.mockReturnValue({ paymentHash: 'b1'.repeat(32), amountMsat: 21_000 });
-    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(new Error(''));
+    const claim = vi.spyOn(store, 'claimZapPayment').mockRejectedValueOnce(
+      Object.assign(new Error('do not log me either'), {
+        name: 'PostgresError',
+        code: 23505,
+        errno: 'BAD-ERRNO',
+      }),
+    );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await ingest({
@@ -5733,7 +6285,10 @@ describe('conversation zap ingest', () => {
       });
       const event = loggedEvents(warn).find((row) => row['event'] === 'nostr.zap.rejected');
       expect(event?.['reason']).toBe('error');
+      expect(event?.['name']).toBe('PostgresError');
       expect(event).not.toHaveProperty('error');
+      expect(event).not.toHaveProperty('code');
+      expect(event).not.toHaveProperty('errno');
     } finally {
       warn.mockRestore();
       claim.mockRestore();

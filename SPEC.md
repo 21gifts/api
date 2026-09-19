@@ -46,9 +46,11 @@ routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
-`gifts.record_failed` and still returns **200**. When the issued invoice stored
-`messageId`, proof inserts a platform-account gift-reply first, then
-`addSats` (idempotent). Optional `messageId` on
+`gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
+platform-account gift-reply first, then `addSats` (idempotent). When that
+`messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
+under the reply, then `addSats` the reply (a live existing marker is hidden
+only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
@@ -114,6 +116,7 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                                                       |
 | POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                                                    |
 | GET    | `/conversations`                             | Bearer                     | List visible private threads                                                                              |
+| GET    | `/conversations/moderator-group`             | Bearer (moderator)         | Open/ensure closed moderator-group tool                                                                   |
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
@@ -447,7 +450,7 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when `eventId` and a Lightning Address are set).
+`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -455,7 +458,7 @@ Omits `parentId`. Replies by that member are not listed.
 Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
-`serializeMessage` with `payable` false, `accountId`, and optional
+`serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
 `parentId` when set; omits `replyCount`. Top-level notes by that member
 are not listed.
 
@@ -2211,9 +2214,13 @@ response.
 When the invoice has `messageId`, the api inserts a platform-account
 gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post. Repeat proof with the same preimage is idempotent (existing
-reply id skips `addSats`). Parent missing/deleted or platform missing: skip
-attach, log `invoice.gift_reply.failed`, still **200** + gift persist.
+on that post, then `notifyForumReply`. When `messageId` is already a reply,
+attach persists a deterministic `spendGiftReplyId` marker under that reply,
+`markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
+existing marker is `markDeleted` only and does not `addSats`; no nested
+gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
+idempotent. Parent missing/deleted or platform missing: skip attach, log
+`invoice.gift_reply.failed`, still **200** + gift persist.
 
 Success → **Response** `200`:
 
@@ -2233,8 +2240,9 @@ the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
-`payable` (true when the note is signed and the author has a Lightning
-Address), `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
+`payable` (true when the note has a non-empty signed `eventId` and the author
+has a non-blank Lightning Address; null or empty `eventId` is not payable),
+`hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for Damus-only authors), and
@@ -2296,7 +2304,9 @@ column.
 
 The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
-receipts whose `e` tag matches a recent note `event_id`. A receipt is
+receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
+or a non-null `listReplies` child of those rows (unioned with open
+conversation zap event ids). Empty `event_id` rows are skipped. A receipt is
 indexed when the signer pubkey matches the author's LNURL-pay
 `nostrPubkey`, the bolt11 amount is at least 1 sat, the receipt id is
 new, and the bolt11 payment hash is not already claimed by another
@@ -2476,10 +2486,12 @@ Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
-zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt still increments
-the **parent** `sats`. After that increment (never in the same SQL CTE), the worker
-inserts a reply from the payer (`text` from the zap-request comment or `""`,
-`sats` = this zap). Gift-only replies (`text === ""`) stay `nostrPublishState`
+zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
+paid row (`:id`, which may be a reply). After that increment (never in the same
+SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
+comment or `""`, `sats` = this zap) only when the paid row is top-level
+(`parentId` null). A zap on a signed reply is `addSats` only (no nested
+gift-reply). Gift-only replies (`text === ""`) stay `nostrPublishState`
 `skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
 every account except the resolved payer, then filtered by each account's
@@ -2509,7 +2521,9 @@ Success → **Response** `200`:
 Missing Bearer → **401** `{ "error": "Unauthorized" }`.
 Payer missing living-room rules → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Malformed body or `sats` above 10 million → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
-Unknown id → **404** `{ "error": "Not found" }`. Unsigned note, author without a Lightning Address, or missing recipient pubkey →
+Unknown id → **404** `{ "error": "Not found" }`. Unsigned note (null or empty
+`eventId`), author without a non-blank Lightning Address (including
+whitespace-only), or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
@@ -2605,7 +2619,7 @@ Public (Bearer optional). Lists **direct live 21.gifts-author replies**
 then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
 children are omitted. Each item is the public message JSON (`photoCount` 0–10 always present;
 `hasPhoto` still means photo 0 exists) with
-`payable` false and no `replyCount`. Unauthenticated items omit
+`payable` when a non-empty `eventId` and a non-blank Lightning Address are set, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in replies include `accountId` (21gifts author id).
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
@@ -2911,11 +2925,9 @@ and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
-inbound and listed. Kind includes `moderator_group`. The empty group is
-listed for moderators only (`role === 'moderator'`), named `Moderators`;
-founder / verified / basis never see it. The empty `moderator_group` is
-pinned first for moderators and remains listed even when 200 newer
-threads exist (still cap 200). `GET /conversations/:id` and
+inbound and listed. This list never includes `moderator_group` (even for
+`role === 'moderator'`). The closed group is `GET /conversations/moderator-group`
+only. `GET /conversations/:id` and
 `POST` still return/open outbound-only and empty threads. Newest
 `lastMessageAt` first. Cap 200. List/open rows may include optional
 `accountId` of the counterpart 21.gifts account (omitted for Damus-only
@@ -2960,6 +2972,16 @@ cap/filter, not a second uncapped query). Per-row `unread` is `hasUnread`
 (outbound-only listed contact tickets are `false`). List GET does not stamp
 last-read. `accountId` is the counterpart 21.gifts account. It is omitted
 for Damus-only counterparts (never JSON `null`).
+
+### `GET /conversations/moderator-group`
+
+Bearer session required. Confirmed moderators (`role === 'moderator'`
+only) open or insert the closed singleton and receive it as
+`{ "conversation": { ... } }` (same public row as a list item, `kind`
+`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Founder / verified / basis get
+**404** `{ "error": "Not found" }` (no existence leak). Missing platform
+account or store failure → **503** `{ "error": "Conversations are unavailable" }`.
+Unauthenticated → **401**.
 
 ### `POST /conversations`
 
@@ -3172,7 +3194,8 @@ deposit route.
 recipients. They are paid by the external spend worker **when the recipient
 posts a top-level note**, not on a daily timer. Invoice HTTP (`POST /invoices`
 / `POST /invoices/proof`) is unchanged except proof now attaches a gift-reply
-when `messageId` was stored; do not invent new paths. No `/me/recurring` or
+when a top-level `messageId` was stored, or a hidden spend marker when
+`messageId` is a reply; do not invent new paths. No `/me/recurring` or
 in-process scheduler.
 
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed

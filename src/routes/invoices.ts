@@ -29,7 +29,11 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Spend-worker invoice routes: check passkey eligibility and a live
  * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
  * the payment preimage as proof. A proof with `messageId` attaches a platform
- * gift-reply under that post. The api does not pay.
+ * gift-reply when that message is a top-level post. If `messageId` is already
+ * a reply, the proof persists a deterministic `spendGiftReplyId` marker
+ * under that reply, `markDeleted` so live `listReplies` omits it, then
+ * `addSats`s the reply. A live existing marker is `markDeleted` only and
+ * does not `addSats`. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -56,7 +60,12 @@ export interface InvoiceRouteDeps {
    */
   messageStore: Pick<
     MessageStore,
-    'accountHasLiveTopLevelPost' | 'getById' | 'addSats' | 'create' | 'listPostsByAccount'
+    | 'accountHasLiveTopLevelPost'
+    | 'getById'
+    | 'addSats'
+    | 'create'
+    | 'listPostsByAccount'
+    | 'markDeleted'
   >;
   /** Clock, epoch milliseconds. */
   now: () => number;
@@ -200,7 +209,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
     try {
       const replyId = spendGiftReplyId(invoice.id);
       const existing = await deps.messageStore.getById(replyId);
-      if (existing !== undefined) {
+      if (existing !== undefined && existing.deletedAt !== null) {
         return;
       }
       const parent = await deps.messageStore.getById(invoice.messageId);
@@ -215,6 +224,34 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const name = nameTrim !== '' ? nameTrim : '21.gifts';
       const text = invoice.comment ?? '';
       const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
+      if (parent.parentId !== null) {
+        if (existing !== undefined) {
+          await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+          return;
+        }
+        await deps.messageStore.create({
+          id: replyId,
+          accountId: platform.id,
+          name,
+          text,
+          createdAt: new Date(paidAtMs),
+          hasPhoto: false,
+          hasVideo: false,
+          videoContentType: null,
+          contentFp: null,
+          ...unsignedNostrDefaults(),
+          parentId: invoice.messageId,
+          sats,
+          nostrPublishState: 'skipped',
+          authorPubkey,
+        });
+        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+        await deps.messageStore.addSats(invoice.messageId, sats);
+        return;
+      }
+      if (existing !== undefined) {
+        return;
+      }
       const created = await deps.messageStore.create({
         id: replyId,
         accountId: platform.id,

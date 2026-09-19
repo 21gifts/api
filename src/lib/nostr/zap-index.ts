@@ -5,7 +5,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { logEvent, type LogFields } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -113,7 +113,8 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
  * Empty after process restart; the first tick may then re-persist a forgotten
  * decision, but only for the receipts that tick still queries. A receipt is
- * queried only while its message is present in the current `listLatest` result.
+ * queried while its message is in the current `listLatest` result, or is a
+ * reply of one of those latest rows (non-null child `eventId`).
  *
  * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
  * the receipt id when the message goes away and would record it again, but this
@@ -214,32 +215,13 @@ async function persistZapIngest(store: MessageStore, row: ZapIngestRow): Promise
 }
 
 /**
- * Scalar fields for a thrown ingest: `reason` plus optional `error`/`code`/`errno`.
+ * Fields for a thrown ingest: `reason` plus the allowlisted error scalars.
  *
  * @param error - Caught value from `ingestOneReceipt`.
- * @returns Fields for `nostr.zap.rejected` (omit empty strings).
+ * @returns Fields for `nostr.zap.rejected` ({@link errorLogFields}; never message text).
  */
 function zapIngestCatchFields(error: unknown): LogFields {
-  const fields: { [key: string]: string } = { reason: 'error' };
-  const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
-  if (message !== '') {
-    fields['error'] = message;
-  }
-  if (typeof error === 'object' && error !== null) {
-    if ('code' in error) {
-      const code = (error as { code: unknown }).code;
-      if (typeof code === 'string' && code !== '') {
-        fields['code'] = code;
-      }
-    }
-    if ('errno' in error) {
-      const errno = (error as { errno: unknown }).errno;
-      if (typeof errno === 'string' && errno !== '') {
-        fields['errno'] = errno;
-      }
-    }
-  }
-  return fields;
+  return { reason: 'error', ...errorLogFields(error) };
 }
 
 /**
@@ -552,13 +534,18 @@ export async function indexZapReceipt(args: {
 }
 
 /**
- * Query zap relays for kind:9735 receipts on recent forum notes and on
- * open conversation-invoice e-tags, index validated ones, then insert a
- * payer gift-reply (forum) or append the paid PN row (conversation invoice)
- * and fan out zap in-app notifications to every account except skip (Web
- * Push only to bell subscribers). Conversation invoices skip `addSats`,
- * gift-reply, and `notifyZap`. Retries receipts that have a payer and no
- * gift-reply id yet. The gift-reply insert does not call `notifyForumReply`.
+ * Query zap relays for kind:9735 receipts on recent forum notes, their
+ * nested replies, and open conversation-invoice e-tags, index validated
+ * ones, then insert a payer gift-reply (forum) or append the paid PN row
+ * (conversation invoice) and fan out zap in-app notifications to every
+ * account except skip (Web Push only to bell subscribers). Conversation
+ * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
+ * runs only when the paid message is top-level (`parentId` null); a reply
+ * zap is `addSats` only (no nested gift-reply) and clears `payerAccountId`
+ * so the receipt never occupies the awaiting-gift-reply queue. Retries
+ * receipts that have a payer and no gift-reply id yet, and drops
+ * already-queued reply receipts from that queue. The gift-reply insert
+ * does not call `notifyForumReply`.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
@@ -625,6 +612,19 @@ export async function indexOpenZapReceipts(args: {
     }
     seen.add(row.eventId);
     eventIds.push(row.eventId);
+  }
+  for (const row of rows) {
+    const children = await args.store.listReplies(row.id, MESSAGE_LIST_LIMIT);
+    for (const child of children) {
+      if (child.eventId === null || child.eventId === '') {
+        continue;
+      }
+      if (seen.has(child.eventId)) {
+        continue;
+      }
+      seen.add(child.eventId);
+      eventIds.push(child.eventId);
+    }
   }
   if (eventIds.length === 0) {
     await retryGiftReplies(args);
@@ -1316,6 +1316,11 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
         continue;
       }
+      if (parent.parentId !== null) {
+        // Stop awaiting: a reply zap must not nest a gift-reply child.
+        await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
+        continue;
+      }
       const payer = await args.auth.getAccount(row.payerAccountId);
       if (payer === undefined) {
         await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
@@ -1343,7 +1348,9 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
  * missing or soft-hidden. Create/link failures propagate so
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
  * Does not call `notifyForumReply`; zap ingest already called `notifyZap`
- * after indexing.
+ * after indexing. When the parent is itself a reply, sets `payerAccountId`
+ * to null and returns without `store.create` so the receipt never occupies
+ * the awaiting-gift-reply queue.
  *
  * @param args - Payer, parent, text, receipt id.
  */
@@ -1356,6 +1363,11 @@ async function insertGiftReply(
     text: string;
   },
 ): Promise<void> {
+  if (args.parent.parentId !== null) {
+    // Stop awaiting: a reply zap must not nest a gift-reply child.
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+    return;
+  }
   await args.store.updateZapReceiptGift(args.receiptEventId, {
     payerAccountId: args.payer.id,
     comment: args.text,

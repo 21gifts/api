@@ -156,7 +156,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under that post first, then `addSats` (the daily gift is visible in the thread, not a silent wallet credit)
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply)
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note**, not on a daily timer. Invoice HTTP
@@ -185,8 +185,9 @@ dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
 notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign, plus `#<locationHashtagName>` and a `t` tag when account `location` is non-null (not on the profile note, not kind:0); forum `text` unchanged; pending notes EVENT before any hashtag/photo re-sign so the sign lease cannot starve fan-out);
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
-validated kind:9735 is indexed, the same payment appears as a forum reply from
-the payer. Gift-only (empty text) replies are not published to Nostr. Unpaid
+validated kind:9735 is indexed, a payer gift-reply is inserted only when the
+paid row is top-level (`parentId` null). A zap on a signed reply credits that
+reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
 replies from `basis` (not the parent author) are **403**; `verified` /
 `moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 

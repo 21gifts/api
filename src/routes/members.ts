@@ -202,6 +202,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           }
           const payable =
             kept.eventId !== null &&
+            kept.eventId !== '' &&
             account.lightningAddress !== null &&
             account.lightningAddress.trim() !== '';
           messages.push(
@@ -239,7 +240,12 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, account.role, undefined, true));
+            const payable =
+              kept.eventId !== null &&
+              kept.eventId !== '' &&
+              account.lightningAddress !== null &&
+              account.lightningAddress.trim() !== '';
+            messages.push(serializeMessage(kept, payable, account.role, undefined, true));
           } catch {
             continue;
           }
@@ -270,6 +276,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           if (row !== undefined && row.deletedAt === null) {
             const payable =
               row.eventId !== null &&
+              row.eventId !== '' &&
               account.lightningAddress !== null &&
               account.lightningAddress.trim() !== '';
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);

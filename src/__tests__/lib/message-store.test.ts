@@ -1321,6 +1321,7 @@ describe('InMemoryMessageStore', () => {
     });
     expect(await store.listOpenConversationZapEventIds()).toEqual([
       { eventId: 'ab'.repeat(32), conversationMessageId: 'cm1' },
+      { eventId: 'ab'.repeat(32), conversationMessageId: 'cm-later' },
     ]);
   });
 

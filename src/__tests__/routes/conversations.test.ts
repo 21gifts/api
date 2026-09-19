@@ -418,7 +418,7 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; lastFromMe: boolean }>;
     };
-    expect(body.conversations.filter((c) => c.kind !== 'moderator_group')).toHaveLength(0);
+    expect(body.conversations).toHaveLength(0);
   });
 
   it('sets lastFromMe false when staff views a member-sent last message', async () => {
@@ -446,9 +446,8 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; lastFromMe: boolean }>;
     };
-    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.lastFromMe).toBe(false);
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
   it('sets lastFromMe true when staff views a platform-sent last message after a member send', async () => {
@@ -490,9 +489,8 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; lastFromMe: boolean }>;
     };
-    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.lastFromMe).toBe(true);
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.lastFromMe).toBe(true);
   });
 
   it('sets lastFromMe false for Damus inbound without a sender account', async () => {
@@ -547,10 +545,9 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.name).toBe('Bob');
-    expect(listed[0]?.accountId).toBe('someone');
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('someone');
   });
 
   it('lets staff see a member_platform thread when no platform account exists', async () => {
@@ -577,10 +574,9 @@ describe('GET /conversations', () => {
     const noPlat = (await res.json()) as {
       conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    const listedNoPlat = noPlat.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(listedNoPlat).toHaveLength(1);
-    expect(listedNoPlat[0]?.name).toBe('Bob');
-    expect(listedNoPlat[0]?.accountId).toBe('someone');
+    expect(noPlat.conversations).toHaveLength(1);
+    expect(noPlat.conversations[0]?.name).toBe('Bob');
+    expect(noPlat.conversations[0]?.accountId).toBe('someone');
   });
 
   it('names the counterpart when the viewer is accountB', async () => {
@@ -637,10 +633,9 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    const listed = body.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.name).toBe('Bob');
-    expect(listed[0]?.accountId).toBe('other');
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.name).toBe('Bob');
+    expect(body.conversations[0]?.accountId).toBe('other');
   });
 
   it('lets staff list a member_member platform thread when the platform sorts first', async () => {
@@ -668,10 +663,9 @@ describe('GET /conversations', () => {
     const sortBody = (await res.json()) as {
       conversations: Array<{ kind: string; name: string; accountId?: string }>;
     };
-    const sortListed = sortBody.conversations.filter((c) => c.kind !== 'moderator_group');
-    expect(sortListed).toHaveLength(1);
-    expect(sortListed[0]?.name).toBe('Bob');
-    expect(sortListed[0]?.accountId).toBe('zzz');
+    expect(sortBody.conversations).toHaveLength(1);
+    expect(sortBody.conversations[0]?.name).toBe('Bob');
+    expect(sortBody.conversations[0]?.accountId).toBe('zzz');
   });
 
   it('names a counterpart without a display name as member', async () => {
@@ -1745,21 +1739,85 @@ describe('POST /conversations/:id', () => {
 });
 
 describe('moderator_group', () => {
-  it('lists the empty singleton named Moderators for a moderator', async () => {
+  it('returns the empty singleton named Moderators for a moderator', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
-    const res = await mount(auth).request('/conversations', { headers: AUTH });
+    const conversations = new InMemoryConversationStore();
+    const res = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ kind: string; name: string; lastText: string }>;
+      conversation: {
+        kind: string;
+        name: string;
+        lastText: string;
+        lastFromMe: boolean;
+        unread: boolean;
+      };
     };
-    expect(body.conversations).toHaveLength(1);
-    expect(body.conversations[0]?.kind).toBe('moderator_group');
-    expect(body.conversations[0]?.name).toBe('Moderators');
-    expect(body.conversations[0]?.lastText).toBe('');
+    expect(body.conversation.kind).toBe('moderator_group');
+    expect(body.conversation.name).toBe('Moderators');
+    expect(body.conversation.lastText).toBe('');
+    expect(body.conversation.lastFromMe).toBe(false);
+    expect(body.conversation.unread).toBe(false);
+    const list = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const listed = (await list.json()) as { conversations: Array<{ kind: string }> };
+    expect(listed.conversations).toHaveLength(0);
+    expect(listed.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
   });
 
-  it('still lists the empty moderator group when 200 newer threads exist', async () => {
+  it('does not list the moderator group after an inbound message from another account', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-inbound',
+      conversationId: thread.id,
+      text: 'hello mods',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const listVisible = vi.spyOn(conversations, 'listVisible');
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
+    expect(listVisible.mock.calls[0]?.[4]).toBe(false);
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(group.status).toBe(200);
+    const groupBody = (await group.json()) as { conversation: { kind: string; unread: boolean } };
+    expect(groupBody.conversation.kind).toBe('moderator_group');
+    expect(groupBody.conversation.unread).toBe(true);
+  });
+
+  it('skips a moderator_group row even when listVisible returns one', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const inbound = vi.spyOn(conversations, 'hasInboundMessage');
+    conversations.listVisible = async () => [thread];
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversations: Array<{ kind: string }> };
+    expect(body.conversations).toHaveLength(0);
+    expect(inbound).not.toHaveBeenCalled();
+  });
+
+  it('does not list the moderator group when 200 newer threads exist', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     const conversations = new InMemoryConversationStore();
@@ -1785,9 +1843,14 @@ describe('moderator_group', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { conversations: Array<{ kind: string }> };
-    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(true);
-    expect(body.conversations[0]?.kind).toBe('moderator_group');
+    expect(body.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
     expect(body.conversations.length).toBeLessThanOrEqual(200);
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(group.status).toBe(200);
+    const groupBody = (await group.json()) as { conversation: { kind: string } };
+    expect(groupBody.conversation.kind).toBe('moderator_group');
   });
 
   it('does not list the group for a founder and GET /:id is 404', async () => {
@@ -1842,6 +1905,72 @@ describe('moderator_group', () => {
       `/conversations/${thread.id}`,
     );
     expect(res.status).toBe(401);
+  });
+
+  it('returns 404 for a founder GET /moderator-group', async () => {
+    const auth = await seeded('founder');
+    await withPlatform(auth);
+    const res = await mount(auth).request('/conversations/moderator-group', { headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for verified and basis GET /moderator-group', async () => {
+    for (const role of ['verified', 'basis'] as const) {
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount({
+        id: 'acc',
+        linkingKey: null,
+        role,
+        name: 'Ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'a'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
+      await withPlatform(auth);
+      const res = await mount(auth).request('/conversations/moderator-group', {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+    }
+  });
+
+  it('returns 401 for unauthenticated GET /moderator-group', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/conversations/moderator-group');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 when a moderator has no platform account', async () => {
+    const auth = await seeded('moderator');
+    const res = await mount(auth).request('/conversations/moderator-group', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'conversations.moderator_group.failed'),
+    ).toBe(true);
+  });
+
+  it('returns 503 when ensureModeratorGroup throws', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    conversations.ensureModeratorGroup = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'conversations.moderator_group.failed'),
+    ).toBe(true);
   });
 
   it('persists a moderator reply as the moderator with skipped Nostr', async () => {

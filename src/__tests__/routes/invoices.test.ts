@@ -167,6 +167,37 @@ function uuidPostStore(): InMemoryMessageStore {
   ]);
 }
 
+/** Same derivation as production `spendGiftReplyId` (not exported). */
+function spendGiftReplyId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
+function uuidReplyStore(): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: POST_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'first',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+    {
+      id: REPLY_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-01T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: POST_ID,
+    },
+  ]);
+}
+
 describe('GET /invoices/passkey', () => {
   it('returns 503 when the spend token is not configured', async () => {
     const res = await createApp({ spendApiToken: '' }).request(
@@ -1407,6 +1438,33 @@ describe('POST /invoices/proof', () => {
     expect(replies[0]?.nostrPublishState).toBe('pending');
   });
 
+  it('addSats a reply invoice without creating a nested gift-reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidReplyStore();
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
+    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
+    const marker = await messageStore.getById(spendGiftReplyId(unpaid().id));
+    expect(marker).toBeDefined();
+    expect(marker?.deletedAt).not.toBeNull();
+    expect(marker?.deletedBy).toBe('plat');
+    expect(marker?.parentId).toBe(REPLY_ID);
+    expect(marker?.nostrPublishState).toBe('skipped');
+  });
+
   it('does not double addSats or create a second gift-reply on the same preimage', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
@@ -1426,6 +1484,30 @@ describe('POST /invoices/proof', () => {
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
+  });
+
+  it('does not double addSats or create a second gift-reply on a reply invoice with the same preimage', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidReplyStore();
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 
@@ -1694,6 +1776,99 @@ describe('POST /invoices/proof', () => {
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await inner.getById(POST_ID))?.sats).toBe(1);
     expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
+  });
+
+  it('does not addSats when create throws on a reply invoice, then credits once on retry', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const inner = uuidReplyStore();
+    let createCalls = 0;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'create') {
+          return async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
+            createCalls += 1;
+            if (createCalls === 1) {
+              throw new Error('create');
+            }
+            return target.create(row);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(1);
+    expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
+    const marker = await inner.getById(spendGiftReplyId(unpaid().id));
+    expect(marker).toBeDefined();
+    expect(marker?.deletedAt).not.toBeNull();
+  });
+
+  it('hides a live reply marker on retry without addSats when markDeleted throws after create', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const inner = uuidReplyStore();
+    let markDeletedCalls = 0;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'markDeleted') {
+          return async (id: string, at: Date, byAccountId: string) => {
+            markDeletedCalls += 1;
+            if (markDeletedCalls === 1) {
+              throw new Error('markDeleted');
+            }
+            return target.markDeleted(id, at, byAccountId);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      messageStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    const markerId = spendGiftReplyId(unpaid().id);
+    const liveMarker = await inner.getById(markerId);
+    expect(liveMarker).toBeDefined();
+    expect(liveMarker?.deletedAt).toBeNull();
+    expect(await inner.listReplies(REPLY_ID, 200)).toHaveLength(1);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
+    const hidden = await inner.getById(markerId);
+    expect(hidden?.deletedAt).not.toBeNull();
   });
 
   it('returns 200 and logs messages.reply.notify.failed when notifyForumReply throws', async () => {
