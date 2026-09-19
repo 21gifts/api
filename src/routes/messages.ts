@@ -640,7 +640,10 @@ const invoiceBody = z.object({
  * an account nor an author pubkey is 404. Top-level Damus-only notes stay
  * 200. Public `GET /:id/replies` lists live children with either an account
  * or a recorded external author pubkey; Bearer is optional (`accountId`
- * present only when signed in).
+ * present only when signed in). Deleting an external row (`accountId` null
+ * with `authorPubkey` set) also blocks that pubkey, soft-hides its other live
+ * external rows, and logs `messages.external.blocked` with the target
+ * `messageId` and total `hidden` count.
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
  * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`, and

@@ -4763,6 +4763,7 @@ describe('runNostrWorkerTick', () => {
     ];
     const limiter = new ExternalIngestLimiter();
     const tryAcquire = vi.spyOn(limiter, 'tryAcquire');
+    const verifyKind1 = vi.fn(() => true);
     const notifications = new InMemoryNotificationStore();
     await runNostrWorkerTick(
       deps({
@@ -4775,7 +4776,7 @@ describe('runNostrWorkerTick', () => {
         env: {},
         conversations: new InMemoryConversationStore(),
         notificationStore: notifications,
-        verifyKind1: () => true,
+        verifyKind1,
         externalLimiter: limiter,
       }),
     );
@@ -4793,6 +4794,8 @@ describe('runNostrWorkerTick', () => {
       }),
     ).toBe(false);
     expect(tryAcquire).toHaveBeenCalledTimes(0);
+    expect(verifyKind1).toHaveBeenCalledTimes(1);
+    expect(verifyKind1).toHaveBeenCalledWith(expect.objectContaining({ id: replyEventId }));
     const forParent = await notifications.listByRecipient('acc', 10);
     expect(forParent).toHaveLength(1);
     expect(forParent[0]).toMatchObject({
@@ -4808,6 +4811,88 @@ describe('runNostrWorkerTick', () => {
       expect(limiter.tryAcquire(bobPubkey, 1_700_000_000_000)).toBe(true);
     }
     expect(limiter.tryAcquire(bobPubkey, 1_700_000_000_000)).toBe(false);
+  });
+
+  it('rejects a non-entitled reply before signature verification or event-id reads', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a6'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const eventId = 'c9'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: eventId,
+        pubkey: 'b8'.repeat(32),
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'unknown reply',
+        created_at: 1_700_000_000,
+        sig: 'd9'.repeat(32),
+      },
+    ];
+    const verifyKind1 = vi.fn(() => true);
+    const getByEventId = vi.spyOn(messages, 'getByEventId');
+    const create = vi.spyOn(messages, 'create');
+
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1,
+      }),
+    );
+
+    expect(verifyKind1).not.toHaveBeenCalled();
+    expect(getByEventId).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blocked zapper reply before signature verification or event-id reads', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a7'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'b9'.repeat(32);
+    await messages.recordZapper(pubkey, 'receipt-blocked-early', new Date(1_699_999_000_000));
+    await messages.blockPubkey(pubkey, new Date(1_699_999_500_000), 'acc', 'blocked-early-message');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'ca'.repeat(32),
+        pubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'blocked reply',
+        created_at: 1_700_000_000,
+        sig: 'da'.repeat(32),
+      },
+    ];
+    const verifyKind1 = vi.fn(() => true);
+    const getByEventId = vi.spyOn(messages, 'getByEventId');
+    const create = vi.spyOn(messages, 'create');
+
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1,
+      }),
+    );
+
+    expect(verifyKind1).not.toHaveBeenCalled();
+    expect(getByEventId).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('persists entitled external replies, skips blocked and unknown pubkeys, and clamps future dates', async () => {
@@ -4855,7 +4940,20 @@ describe('runNostrWorkerTick', () => {
         sig: 'd3'.repeat(32),
       },
     ];
-    await inboundTick(auth, messages, new InMemoryConversationStore(), querier);
+    const verifyKind1 = vi.fn(() => true);
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1,
+      }),
+    );
     const replies = await messages.listReplies('m1');
     expect(replies).toHaveLength(1);
     expect(replies[0]).toMatchObject({
@@ -4869,6 +4967,149 @@ describe('runNostrWorkerTick', () => {
     expect(replies[0]?.createdAt.toISOString()).toBe('2023-11-14T22:13:20.000Z');
     expect(await messages.getByEventId('c2'.repeat(32))).toBeUndefined();
     expect(await messages.getByEventId('c3'.repeat(32))).toBeUndefined();
+    expect(verifyKind1).toHaveBeenCalledTimes(1);
+    expect(verifyKind1).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1'.repeat(32) }));
+  });
+
+  it('guards an external event across overlapping ticks before acquiring limiter budget', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a8'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'facefeed'.repeat(8);
+    const eventId = 'cb'.repeat(32);
+    await messages.recordZapper(pubkey, 'receipt-overlap', new Date(1_699_999_000_000));
+    const frame: NostrEventFrame = {
+      id: eventId,
+      pubkey,
+      kind: 1,
+      tags: [['e', noteEventId]],
+      content: 'one in flight',
+      created_at: 1_700_000_000,
+      sig: 'db'.repeat(32),
+    };
+    let resolveProfile: (events: NostrEventFrame[]) => void = () => {};
+    const profileHeld = new Promise<NostrEventFrame[]>((resolve) => {
+      resolveProfile = resolve;
+    });
+    let enteredProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enteredProfile = resolve;
+    });
+    const query = vi.fn((filter: Record<string, unknown>) => {
+      const kinds = filter['kinds'];
+      const kind = Array.isArray(kinds) ? kinds[0] : undefined;
+      if (kind === 1) {
+        return Promise.resolve([frame]);
+      }
+      if (kind === 0) {
+        enteredProfile();
+        return profileHeld;
+      }
+      return Promise.resolve([]);
+    });
+    const limiter = new ExternalIngestLimiter();
+    const tryAcquire = vi.spyOn(limiter, 'tryAcquire');
+    const create = vi.spyOn(messages, 'create');
+    const tickDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier: { query },
+      now: () => 1_700_000_000_000,
+      env: {},
+      conversations: new InMemoryConversationStore(),
+      verifyKind1: () => true,
+      externalLimiter: limiter,
+    });
+
+    const first = runNostrWorkerTick(tickDeps);
+    await profileEntered;
+    const second = runNostrWorkerTick(tickDeps);
+    await second;
+    expect(tryAcquire).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+
+    resolveProfile([]);
+    await first;
+    expect(tryAcquire).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(await messages.getByEventId(eventId)).toBeDefined();
+    for (let i = 0; i < 5; i += 1) {
+      expect(limiter.tryAcquire(pubkey, 1_700_000_000_000 + i)).toBe(true);
+    }
+    expect(limiter.tryAcquire(pubkey, 1_700_000_000_005)).toBe(false);
+  });
+
+  it('releases limiter budget and the in-flight guard when external persistence fails', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'a9'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'badc0ffe'.repeat(8);
+    const eventId = 'cc'.repeat(32);
+    const nowMs = 1_700_000_000_000;
+    await messages.recordZapper(pubkey, 'receipt-create-failure', new Date(1_699_999_000_000));
+    const limiter = new ExternalIngestLimiter();
+    for (let i = 0; i < 5; i += 1) {
+      expect(limiter.tryAcquire(pubkey, nowMs)).toBe(true);
+    }
+    const release = vi.spyOn(limiter, 'release');
+    const originalCreate = messages.create.bind(messages);
+    let rejectReply = true;
+    const createReply: typeof messages.create = async (row, photo, video, extraPhotos) => {
+      if (row.eventId === eventId && rejectReply) {
+        rejectReply = false;
+        throw new Error('disk');
+      }
+      return originalCreate(row, photo, video, extraPhotos);
+    };
+    const create = vi.fn(createReply);
+    messages.create = create;
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: eventId,
+        pubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'retry after failure',
+        created_at: 1_700_000_000,
+        sig: 'dc'.repeat(32),
+      },
+    ];
+    const tickDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier,
+      now: () => nowMs,
+      env: {},
+      conversations: new InMemoryConversationStore(),
+      verifyKind1: () => true,
+      externalLimiter: limiter,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await runNostrWorkerTick(tickDeps);
+      expect(await messages.getByEventId(eventId)).toBeUndefined();
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledWith(pubkey, nowMs);
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes('nostr.reply.inbound.failed')),
+      ).toBe(true);
+
+      await runNostrWorkerTick(tickDeps);
+      expect(await messages.getByEventId(eventId)).toMatchObject({
+        accountId: null,
+        authorPubkey: pubkey,
+        text: 'retry after failure',
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(limiter.tryAcquire(pubkey, nowMs)).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('clamps a future-dated member reply to worker time', async () => {
@@ -5026,6 +5267,12 @@ describe('runNostrWorkerTick', () => {
       );
     await run();
     expect(await messages.getByEventId(eventId)).toBeUndefined();
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds[0] === 0;
+      }),
+    ).toBe(true);
     nowMs += 60 * 60 * 1000 + 1;
     await run();
     expect(await messages.getByEventId(eventId)).toMatchObject({
@@ -5224,11 +5471,12 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: 'bb'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'bad sig',
@@ -5236,6 +5484,7 @@ describe('runNostrWorkerTick', () => {
         sig: 'ff'.repeat(32),
       },
     ];
+    const verifyKind1 = vi.fn(() => false);
     await runNostrWorkerTick(
       deps({
         messages,
@@ -5246,10 +5495,11 @@ describe('runNostrWorkerTick', () => {
         now: () => 1_700_000_000_000,
         env: {},
         conversations: new InMemoryConversationStore(),
-        verifyKind1: () => false,
+        verifyKind1,
       }),
     );
     expect(await messages.listReplies('m1')).toHaveLength(0);
+    expect(verifyKind1).toHaveBeenCalledTimes(1);
   });
 
   it('logs inbound.failed when persisting a kind:1 reply throws', async () => {
@@ -5339,11 +5589,12 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: 'cc'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: '   ',
@@ -5352,7 +5603,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: '11'.repeat(32),
-        pubkey: '22'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         created_at: 1_700_000_000,
@@ -5367,11 +5618,12 @@ describe('runNostrWorkerTick', () => {
     const { auth, messages } = await seed();
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
         id: 'cc'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'A'.repeat(MESSAGE_INBOUND_REPLY_MAX_LENGTH + 1),
@@ -5435,7 +5687,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: 'cc'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: signed.pubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'no sig',
@@ -5443,7 +5695,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: 'dd'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: signed.pubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'empty sig',
@@ -5452,7 +5704,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: '11'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: signed.pubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         created_at: 1_700_000_000,
@@ -5511,6 +5763,7 @@ describe('runNostrWorkerTick', () => {
       id === 'emptykey' ? '' : origPubkey(id);
     const noteEventId = 'aa'.repeat(32);
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -5542,7 +5795,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: '33'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', noteEventId]],
         content: 'bad sig',
@@ -5572,6 +5825,7 @@ describe('runNostrWorkerTick', () => {
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const foreignId = '11'.repeat(32);
     const selfId = '22'.repeat(32);
+    const accPubkey = (await auth.getNostrPublicKey('acc')) as string;
     const origList = messages.listPublishedEventIds.bind(messages);
     messages.listPublishedEventIds = async (limit: number) => {
       const ids = await origList(limit);
@@ -5581,7 +5835,7 @@ describe('runNostrWorkerTick', () => {
     querier.events = [
       {
         id: 'bb'.repeat(32),
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', foreignId]],
         content: 'foreign parent',
@@ -5589,7 +5843,7 @@ describe('runNostrWorkerTick', () => {
       },
       {
         id: selfId,
-        pubkey: 'ee'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', selfId]],
         content: 'self parent',
@@ -5632,7 +5886,7 @@ describe('runNostrWorkerTick', () => {
     querier.events = [
       {
         id: '11'.repeat(32),
-        pubkey: '22'.repeat(32),
+        pubkey: accPubkey,
         kind: 1,
         tags: [['e', replyEventId]],
         content: 'nested',

@@ -187,6 +187,34 @@ interface ProfileCacheRow {
 const profileCache = new Map<string, ProfileCacheRow>();
 const PROFILE_HIT_TTL_MS = 60 * 60 * 1000;
 const PROFILE_MISS_TTL_MS = 5 * 60 * 1000;
+const PROFILE_CONTENT_MAX_LENGTH = 64 * 1024;
+
+/** Verify a queried kind:0 frame is a signed Nostr event. */
+function defaultVerifyProfile(event: NostrEventFrame): boolean {
+  if (
+    typeof event.created_at !== 'number' ||
+    typeof event.id !== 'string' ||
+    event.id === '' ||
+    typeof event.sig !== 'string' ||
+    event.sig === ''
+  ) {
+    return false;
+  }
+  try {
+    return verifyEvent({
+      id: event.id,
+      pubkey: event.pubkey,
+      created_at: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content ?? '',
+      sig: event.sig,
+    });
+    /* v8 ignore next 3 -- nostr-tools verifyEvent returns boolean, does not throw */
+  } catch {
+    return false;
+  }
+}
 
 function profileNameFromEvent(event: NostrEventFrame): string | null {
   if (typeof event.content !== 'string') {
@@ -210,12 +238,12 @@ function profileNameFromEvent(event: NostrEventFrame): string | null {
 }
 
 /**
- * Resolve the newest kind:0 profile name for an external pubkey.
+ * Resolve the newest verified kind:0 profile name for an external pubkey.
  *
  * Successful names are cached for one hour; misses and failures for five
  * minutes. Relay and parsing failures are collapsed to `null`.
  *
- * @param args - Relay querier, URLs, pubkey, clock, and timeout.
+ * @param args - Relay querier, URLs, pubkey, clock, timeout, and optional verifier.
  * @returns `display_name`, then `name`, from the newest profile, or `null`.
  */
 export async function resolveExternalProfileName(args: {
@@ -224,6 +252,8 @@ export async function resolveExternalProfileName(args: {
   pubkey: string;
   nowMs: number;
   timeoutMs: number;
+  /** Signature check; production uses nostr-tools `verifyEvent`. */
+  verifyProfile?: (event: NostrEventFrame) => boolean;
 }): Promise<string | null> {
   const pubkey = args.pubkey.toLowerCase();
   const cached = profileCache.get(pubkey);
@@ -232,13 +262,21 @@ export async function resolveExternalProfileName(args: {
   }
   let name: string | null = null;
   try {
+    const verifyProfile = args.verifyProfile ?? defaultVerifyProfile;
     const events = await args.querier.query(
       { kinds: [0], authors: [pubkey], limit: 20 },
       args.urls,
       args.timeoutMs,
     );
     const newest = events
-      .filter((event) => event.kind === 0 && event.pubkey.toLowerCase() === pubkey)
+      .filter(
+        (event) =>
+          event.kind === 0 &&
+          event.pubkey.toLowerCase() === pubkey &&
+          (typeof event.content !== 'string' ||
+            event.content.length <= PROFILE_CONTENT_MAX_LENGTH) &&
+          verifyProfile(event),
+      )
       .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
     name = newest === undefined ? null : profileNameFromEvent(newest);
   } catch {
@@ -260,7 +298,10 @@ interface IngestHits {
 const EXTERNAL_HOUR_MS = 60 * 60 * 1000;
 const EXTERNAL_IDLE_MS = 48 * EXTERNAL_HOUR_MS;
 
-/** In-process sliding limits for persisting external Nostr replies. */
+/**
+ * In-process per-pubkey and global sliding limits for external Nostr replies.
+ * Successful acquisitions can be released when persistence fails.
+ */
 export class ExternalIngestLimiter {
   readonly #byPubkey = new Map<string, IngestHits>();
   readonly #global: IngestHits = { hours: [], days: new Map(), lastHitAt: 0 };
@@ -293,6 +334,35 @@ export class ExternalIngestLimiter {
     local.lastHitAt = nowMs;
     this.#global.lastHitAt = nowMs;
     return true;
+  }
+
+  /**
+   * Undo the most recent retained acquisition for an external pubkey.
+   *
+   * Removes one per-pubkey and global hourly hit and decrements both UTC-day
+   * counters. This is a no-op when the pubkey has no retained acquisition,
+   * including after idle eviction.
+   *
+   * @param pubkey - External author pubkey from the successful acquisition.
+   * @param nowMs - Current epoch milliseconds, used for idle eviction.
+   */
+  release(pubkey: string, nowMs: number): void {
+    this.#evictIdle(nowMs);
+    const local = this.#byPubkey.get(pubkey.toLowerCase());
+    if (local === undefined) {
+      return;
+    }
+    const at = local.hours.pop();
+    if (at === undefined) {
+      return;
+    }
+    const globalIndex = this.#global.hours.lastIndexOf(at);
+    if (globalIndex !== -1) {
+      this.#global.hours.splice(globalIndex, 1);
+    }
+    const day = utcDayKey(at);
+    local.days.set(day, local.days.get(day)! - 1);
+    this.#global.days.set(day, this.#global.days.get(day)! - 1);
   }
 
   #hits(pubkey: string): IngestHits {

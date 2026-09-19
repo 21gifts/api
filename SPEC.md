@@ -2360,8 +2360,15 @@ Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
 unblocked, and within both per-pubkey and global ingest limits. The reply REQ
 has no `since`, so older replies become visible on the first tick after the
-first verified zap. External replies notify only the parent note's member
-author and only when at most one hour old; older rows still persist. The
+first verified zap. Member ownership or external zapper entitlement plus
+not-blocked status is decided before verifying the inbound kind:1 signature and
+before any event-specific message-store read. A per-store in-flight event-id
+guard prevents overlapping ticks from concurrently persisting the same external
+reply. External profile names come only from signed kind:0 events whose content
+is at most 64 KiB. Profile resolution finishes before the ingest limiter is
+acquired; limiter budget is consumed immediately before `messages.create` and
+released when that write fails. External replies notify only the parent note's
+member author and only when at most one hour old; older rows still persist. The
 notification uses the generic actor name `Someone`, never the external reply's
 own display name, so a visitor-chosen name cannot appear in a notification. All
 inbound reply timestamps are clamped to the ingest clock so future-dated events

@@ -284,7 +284,14 @@ describe('resolveExternalProfileName', () => {
         content: '{"display_name":"Display","name":"Name"}',
       },
     ];
-    const args = { querier, urls: ['wss://relay.example'], pubkey, nowMs: 1000, timeoutMs: 50 };
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey,
+      nowMs: 1000,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
     await expect(resolveExternalProfileName(args)).resolves.toBe('Display');
     querier.events = [];
     await expect(resolveExternalProfileName({ ...args, nowMs: 2000 })).resolves.toBe('Display');
@@ -299,6 +306,110 @@ describe('resolveExternalProfileName', () => {
     await expect(resolveExternalProfileName(args)).resolves.toBeNull();
     await expect(resolveExternalProfileName({ ...args, nowMs: 2000 })).resolves.toBeNull();
     expect(querier.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a newer forged profile after a valid cached profile expires', async () => {
+    const querier = new RecordingQuerier();
+    const signed = finalizeEvent(
+      { kind: 0, created_at: 1, tags: [], content: '{"name":"Signed"}' },
+      generateSecretKey(),
+    );
+    const pubkey = signed.pubkey;
+    querier.events = [signed];
+    const args = { querier, urls: ['wss://relay.example'], pubkey, nowMs: 1000, timeoutMs: 50 };
+    await expect(resolveExternalProfileName(args)).resolves.toBe('Signed');
+
+    querier.events = [
+      signed,
+      {
+        id: '11'.repeat(32),
+        pubkey,
+        kind: 0,
+        tags: [],
+        created_at: 2,
+        content: '{"name":"Forged"}',
+      },
+    ];
+    await expect(
+      resolveExternalProfileName({ ...args, nowMs: 1000 + 60 * 60 * 1000 }),
+    ).resolves.toBe('Signed');
+    expect(querier.calls).toHaveLength(2);
+  });
+
+  it('lets an injected verifier select a valid older profile over an invalid newer one', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = '0d'.repeat(32);
+    querier.events = [
+      { id: 'valid', pubkey, kind: 0, tags: [], created_at: 1, content: '{"name":"Valid"}' },
+      { id: 'forged', pubkey, kind: 0, tags: [], created_at: 2, content: '{"name":"Forged"}' },
+    ];
+    await expect(
+      resolveExternalProfileName({
+        querier,
+        urls: ['wss://relay.example'],
+        pubkey,
+        nowMs: 1000,
+        timeoutMs: 50,
+        verifyProfile: (event) => event.id === 'valid',
+      }),
+    ).resolves.toBe('Valid');
+  });
+
+  it.each([
+    ['a missing created_at', '0e', { created_at: undefined }],
+    ['a non-string id', '0f', { id: 1 }],
+    ['an empty id', '10', { id: '' }],
+    ['a non-string signature', '11', { sig: 1 }],
+    ['an empty signature', '12', { sig: '' }],
+    ['missing content', '14', { content: undefined }],
+  ])('rejects a profile frame with %s', async (_label, pubkeyByte, overrides) => {
+    const querier = new RecordingQuerier();
+    const pubkey = pubkeyByte.repeat(32);
+    querier.events = [
+      {
+        id: '11'.repeat(32),
+        pubkey,
+        kind: 0,
+        tags: [],
+        created_at: 1,
+        content: '{"name":"Forged"}',
+        sig: '22'.repeat(64),
+        ...overrides,
+      } as unknown as NostrEventFrame,
+    ];
+    await expect(
+      resolveExternalProfileName({
+        querier,
+        urls: ['wss://relay.example'],
+        pubkey,
+        nowMs: 1000,
+        timeoutMs: 50,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('ignores oversized profile content before parsing it', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = '13'.repeat(32);
+    querier.events = [profileEvent(pubkey, 'x'.repeat(64 * 1024 + 1))];
+    const parse = vi.spyOn(JSON, 'parse');
+    const verifyProfile = vi.fn(() => true);
+    try {
+      await expect(
+        resolveExternalProfileName({
+          querier,
+          urls: ['wss://relay.example'],
+          pubkey,
+          nowMs: 1000,
+          timeoutMs: 50,
+          verifyProfile,
+        }),
+      ).resolves.toBeNull();
+      expect(verifyProfile).not.toHaveBeenCalled();
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it.each([
@@ -322,6 +433,7 @@ describe('resolveExternalProfileName', () => {
         pubkey,
         nowMs: 1000,
         timeoutMs: 50,
+        verifyProfile: () => true,
       }),
     ).resolves.toBe(expected);
   });
@@ -340,6 +452,7 @@ describe('resolveExternalProfileName', () => {
         pubkey,
         nowMs: 1000,
         timeoutMs: 50,
+        verifyProfile: () => true,
       }),
     ).resolves.toBe('First');
   });
@@ -376,6 +489,60 @@ describe('ExternalIngestLimiter', () => {
     }
     expect(global.tryAcquire('overflow', 100 * 600_001)).toBe(false);
     expect(global.tryAcquire('overflow', 86_400_001)).toBe(true);
+  });
+
+  it('release restores per-pubkey hourly and UTC-day budget', () => {
+    const hourly = new ExternalIngestLimiter();
+    for (let i = 0; i < 6; i += 1) {
+      expect(hourly.tryAcquire('AA', i)).toBe(true);
+    }
+    expect(hourly.tryAcquire('aa', 6)).toBe(false);
+    hourly.release('aa', 6);
+    expect(hourly.tryAcquire('aa', 6)).toBe(true);
+    expect(hourly.tryAcquire('aa', 6)).toBe(false);
+
+    const daily = new ExternalIngestLimiter();
+    for (let i = 0; i < 20; i += 1) {
+      expect(daily.tryAcquire('key', i * 3_600_001)).toBe(true);
+    }
+    const afterTwentyHours = 20 * 3_600_001;
+    expect(daily.tryAcquire('key', afterTwentyHours)).toBe(false);
+    daily.release('KEY', afterTwentyHours);
+    expect(daily.tryAcquire('key', afterTwentyHours)).toBe(true);
+  });
+
+  it('release restores global hourly and UTC-day budget', () => {
+    const hourly = new ExternalIngestLimiter();
+    for (let i = 0; i < 30; i += 1) {
+      expect(hourly.tryAcquire(`hour-${i}`, i)).toBe(true);
+    }
+    expect(hourly.tryAcquire('hour-overflow', 30)).toBe(false);
+    hourly.release('HOUR-0', 30);
+    expect(hourly.tryAcquire('hour-overflow', 30)).toBe(true);
+
+    const daily = new ExternalIngestLimiter();
+    for (let i = 0; i < 100; i += 1) {
+      expect(daily.tryAcquire(`day-${i}`, i * 600_001)).toBe(true);
+    }
+    const afterHundredIntervals = 100 * 600_001;
+    expect(daily.tryAcquire('day-overflow', afterHundredIntervals)).toBe(false);
+    daily.release('DAY-99', afterHundredIntervals);
+    expect(daily.tryAcquire('day-overflow', afterHundredIntervals)).toBe(true);
+  });
+
+  it('release is a safe no-op without a retained acquisition', () => {
+    const limiter = new ExternalIngestLimiter();
+    limiter.release('missing', 0);
+
+    expect(limiter.tryAcquire('old', 0)).toBe(true);
+    expect(limiter.tryAcquire('current', 3_600_001)).toBe(true);
+    limiter.release('old', 3_600_001);
+    limiter.release('old', 3_600_001);
+
+    for (let i = 1; i < 6; i += 1) {
+      expect(limiter.tryAcquire('current', 3_600_001 + i)).toBe(true);
+    }
+    expect(limiter.tryAcquire('current', 3_600_007)).toBe(false);
   });
 
   it('evicts a pubkey after the idle window', () => {

@@ -1460,6 +1460,61 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getZapReceiptGift('receipt-a'))?.zapRequestId).toBe('request-1');
   });
 
+  it('allows idempotent re-attribution of an in-memory receipt and refreshes payer details', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('receipt-a', 'a', 21);
+    await store.attributeZapReceipt('receipt-a', {
+      payerPubkey: 'AA',
+      zapRequestId: 'request-1',
+      comment: 'first',
+    });
+
+    expect(
+      await store.attributeZapReceipt('receipt-a', {
+        payerPubkey: 'BB',
+        zapRequestId: 'request-1',
+        comment: 'updated',
+      }),
+    ).toBe(true);
+    expect(await store.getZapReceiptGift('receipt-a')).toEqual({
+      receiptEventId: 'receipt-a',
+      messageId: 'a',
+      sats: 21,
+      payerAccountId: null,
+      payerPubkey: 'bb',
+      zapRequestId: 'request-1',
+      giftReplyId: null,
+      comment: 'updated',
+    });
+  });
+
+  it('rejects a different request id for an attributed in-memory receipt without changes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('receipt-a', 'a', 21);
+    await store.attributeZapReceipt('receipt-a', {
+      payerPubkey: 'AA',
+      zapRequestId: 'request-1',
+      comment: 'first',
+    });
+    const before = await store.getZapReceiptGift('receipt-a');
+    expect(before).toMatchObject({
+      payerPubkey: 'aa',
+      zapRequestId: 'request-1',
+      comment: 'first',
+    });
+
+    expect(
+      await store.attributeZapReceipt('receipt-a', {
+        payerPubkey: 'BB',
+        zapRequestId: 'request-2',
+        comment: 'replacement',
+      }),
+    ).toBe(false);
+    expect(await store.getZapReceiptGift('receipt-a')).toEqual(before);
+  });
+
   it('lists unattributed indexed receipts and manages external blocks', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -4766,6 +4821,81 @@ describe('PostgresMessageStore', () => {
     expect(receipts[0]?.receipt).toEqual({});
     expect((await store.listZappers(1))[0]?.createdAt).toBe(zapperCreatedAt);
     expect((await store.listBlockedPubkeyRows(1))[0]?.blockedAt).toBe(blockedAt);
+  });
+
+  it('allows idempotent re-attribution of a Postgres receipt and refreshes payer details', async () => {
+    const sql = new MockSql();
+    const original = {
+      event_id: 'receipt-a',
+      message_id: 'm1',
+      sats: '21',
+      payer_account_id: null,
+      payer_pubkey: 'aa',
+      zap_request_id: 'request-1',
+      gift_reply_id: null,
+      comment: 'first',
+    };
+    const updated = {
+      ...original,
+      payer_pubkey: 'bb',
+      comment: 'updated',
+    };
+    sql.queryQueue = [[original], [{ event_id: 'receipt-a' }], [updated]];
+    const store = new PostgresMessageStore(sql);
+    expect((await store.getZapReceiptGift('receipt-a'))?.zapRequestId).toBe('request-1');
+
+    await expect(
+      store.attributeZapReceipt('receipt-a', {
+        payerPubkey: 'BB',
+        zapRequestId: 'request-1',
+        comment: 'updated',
+      }),
+    ).resolves.toBe(true);
+    expect(sql.queries[1]?.text).toContain('AND (zap_request_id IS NULL OR zap_request_id = $3)');
+    expect(sql.queries[1]?.params).toEqual(['receipt-a', 'BB', 'request-1', 'updated']);
+    expect(await store.getZapReceiptGift('receipt-a')).toEqual({
+      receiptEventId: 'receipt-a',
+      messageId: 'm1',
+      sats: 21,
+      payerAccountId: null,
+      payerPubkey: 'bb',
+      zapRequestId: 'request-1',
+      giftReplyId: null,
+      comment: 'updated',
+    });
+  });
+
+  it('rejects a different request id for an attributed Postgres receipt without changes', async () => {
+    const sql = new MockSql();
+    const original = {
+      event_id: 'receipt-a',
+      message_id: 'm1',
+      sats: '21',
+      payer_account_id: null,
+      payer_pubkey: 'aa',
+      zap_request_id: 'request-1',
+      gift_reply_id: null,
+      comment: 'first',
+    };
+    sql.queryQueue = [[original], [], [original]];
+    const store = new PostgresMessageStore(sql);
+    const before = await store.getZapReceiptGift('receipt-a');
+    expect(before).toMatchObject({
+      payerPubkey: 'aa',
+      zapRequestId: 'request-1',
+      comment: 'first',
+    });
+
+    await expect(
+      store.attributeZapReceipt('receipt-a', {
+        payerPubkey: 'BB',
+        zapRequestId: 'request-2',
+        comment: 'replacement',
+      }),
+    ).resolves.toBe(false);
+    expect(sql.queries[1]?.text).toContain('AND (zap_request_id IS NULL OR zap_request_id = $3)');
+    expect(sql.queries[1]?.params).toEqual(['receipt-a', 'BB', 'request-2', 'replacement']);
+    expect(await store.getZapReceiptGift('receipt-a')).toEqual(before);
   });
 
   it('returns false without attributing when another receipt holds the request id', async () => {

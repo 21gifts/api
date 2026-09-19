@@ -269,9 +269,11 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
  * `hasVideo`, `videoContentType`; live `role` for 21gifts authors; optional
- * `accountId` when requested; optional `parentId` when `row.parentId !== null`);
- * `createdAt` ISO-8601. Never includes photo or video bytes, and never
- * includes `contentFp`. Omits the `parentId` key on top-level notes.
+ * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
+ * optional `accountId` when requested; optional `parentId` when
+ * `row.parentId !== null`); `createdAt` ISO-8601. Never includes photo or
+ * video bytes, and never includes `contentFp`. Omits the `parentId` key on
+ * top-level notes.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
