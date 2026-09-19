@@ -100,6 +100,7 @@ export interface NostrWorkerDeps {
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
+const externalInFlightEventIds = new WeakMap<MessageStore, Set<string>>();
 
 /** Resolve the injected limiter or retain one default limiter per message store. */
 function externalLimiterFor(deps: NostrWorkerDeps): ExternalIngestLimiter {
@@ -112,6 +113,17 @@ function externalLimiterFor(deps: NostrWorkerDeps): ExternalIngestLimiter {
   }
   const created = new ExternalIngestLimiter();
   externalLimiters.set(deps.messages, created);
+  return created;
+}
+
+/** Retain external reply event ids currently being processed per message store. */
+function externalInFlightFor(deps: NostrWorkerDeps): Set<string> {
+  const existing = externalInFlightEventIds.get(deps.messages);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Set<string>();
+  externalInFlightEventIds.set(deps.messages, created);
   return created;
 }
 
@@ -360,6 +372,7 @@ async function indexInboundForumReplies(
     (await deps.messages.listBlockedPubkeys()).map((value) => value.toLowerCase()),
   );
   const limiter = externalLimiterFor(deps);
+  const externalInFlight = externalInFlightFor(deps);
   const accountNames = accounts
     .map((account) => account.name)
     .filter((value): value is string => value !== null);
@@ -375,6 +388,12 @@ async function indexInboundForumReplies(
         continue;
       }
       if (typeof event.pubkey !== 'string' || event.pubkey === '') {
+        continue;
+      }
+      const pubkey = event.pubkey.toLowerCase();
+      const matched = pubkeyToAccount.get(pubkey);
+      const external = matched === undefined;
+      if (external && (!zappers.has(pubkey) || blocked.has(pubkey))) {
         continue;
       }
       if (!verify(event)) {
@@ -399,94 +418,105 @@ async function indexInboundForumReplies(
         continue;
       }
       const nowMs = deps.now();
-      const pubkey = event.pubkey.toLowerCase();
-      const matched = pubkeyToAccount.get(pubkey);
-      let accountId: string | null;
-      let name: string;
-      let authorPubkey: string;
-      let external = false;
-      if (matched !== undefined) {
-        accountId = matched.id;
-        const accountName = matched.name?.trim() ?? '';
-        name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
-        authorPubkey = event.pubkey;
-      } else {
-        if (!zappers.has(pubkey) || blocked.has(pubkey) || !limiter.tryAcquire(pubkey, nowMs)) {
+      if (external) {
+        if (externalInFlight.has(event.id)) {
           continue;
         }
-        external = true;
-        accountId = null;
-        authorPubkey = pubkey;
-        const profileName = await resolveExternalProfileName({
-          querier: deps.querier,
-          urls,
-          pubkey,
-          nowMs,
-          timeoutMs: RELAY_TIMEOUT_MS,
-        });
-        name = externalDisplayName({ profileName, pubkey, accountNames });
+        externalInFlight.add(event.id);
       }
-      const eventMs = typeof event.created_at === 'number' ? event.created_at * 1000 : nowMs;
-      const createdAt = new Date(Math.min(eventMs, nowMs));
       try {
-        const created = await deps.messages.create({
-          id: crypto.randomUUID(),
-          accountId,
-          name,
-          text,
-          createdAt,
-          hasPhoto: false,
-          hasVideo: false,
-          videoContentType: null,
-          parentId: parentNote.id,
-          authorPubkey,
-          eventId: event.id,
-          nostrPublishState: 'published',
-          sats: 0,
-          nostrEvent: kind1Frame(event, rawContent, rawSig),
-          claimedUntil: null,
-          nostrFirstAttemptAt: null,
-          nostrPublishEpoch: null,
-          nostrAttempts: 0,
-          deletedAt: null,
-          deletedBy: null,
-        });
+        let accountId: string | null;
+        let name: string;
+        let authorPubkey: string;
+        if (matched !== undefined) {
+          accountId = matched.id;
+          const accountName = matched.name?.trim() ?? '';
+          name = accountName !== '' ? accountName : truncatePubkeyDisplay(event.pubkey);
+          authorPubkey = event.pubkey;
+        } else {
+          accountId = null;
+          authorPubkey = pubkey;
+          const profileName = await resolveExternalProfileName({
+            querier: deps.querier,
+            urls,
+            pubkey,
+            nowMs,
+            timeoutMs: RELAY_TIMEOUT_MS,
+          });
+          name = externalDisplayName({ profileName, pubkey, accountNames });
+        }
+        const eventMs = typeof event.created_at === 'number' ? event.created_at * 1000 : nowMs;
+        const createdAt = new Date(Math.min(eventMs, nowMs));
+        if (external && !limiter.tryAcquire(pubkey, nowMs)) {
+          continue;
+        }
         try {
-          const notificationDeps = {
-            auth: deps.auth,
-            ...(deps.notificationStore === undefined
-              ? {}
-              : { notifications: deps.notificationStore }),
-            ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-            /* v8 ignore next 3 -- production worker always has conversationStore */
-            ...(deps.conversations === undefined
-              ? {}
-              : { inboxUnreadCount: inboxUnreadCountFor(deps.conversations, deps.auth) }),
-          };
-          if (external) {
-            if (nowMs - eventMs <= EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS) {
-              await notifyExternalForumReply({
+          const created = await deps.messages.create({
+            id: crypto.randomUUID(),
+            accountId,
+            name,
+            text,
+            createdAt,
+            hasPhoto: false,
+            hasVideo: false,
+            videoContentType: null,
+            parentId: parentNote.id,
+            authorPubkey,
+            eventId: event.id,
+            nostrPublishState: 'published',
+            sats: 0,
+            nostrEvent: kind1Frame(event, rawContent, rawSig),
+            claimedUntil: null,
+            nostrFirstAttemptAt: null,
+            nostrPublishEpoch: null,
+            nostrAttempts: 0,
+            deletedAt: null,
+            deletedBy: null,
+          });
+          try {
+            const notificationDeps = {
+              auth: deps.auth,
+              ...(deps.notificationStore === undefined
+                ? {}
+                : { notifications: deps.notificationStore }),
+              ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+              /* v8 ignore next 3 -- production worker always has conversationStore */
+              ...(deps.conversations === undefined
+                ? {}
+                : { inboxUnreadCount: inboxUnreadCountFor(deps.conversations, deps.auth) }),
+            };
+            if (external) {
+              if (nowMs - eventMs <= EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS) {
+                await notifyExternalForumReply({
+                  ...notificationDeps,
+                  parent: parentNote,
+                  created,
+                });
+              }
+            } else {
+              /* v8 ignore next -- the member branch always has an account id */
+              if (accountId === null) continue;
+              await notifyForumReply({
                 ...notificationDeps,
-                parent: parentNote,
+                messages: deps.messages,
+                account: { id: accountId },
                 created,
+                parentId: parentNote.id,
               });
             }
-          } else {
-            /* v8 ignore next -- the member branch always has an account id */
-            if (accountId === null) continue;
-            await notifyForumReply({
-              ...notificationDeps,
-              messages: deps.messages,
-              account: { id: accountId },
-              created,
-              parentId: parentNote.id,
-            });
+          } catch {
+            logEvent('nostr.reply.notify.failed', { eventId: event.id });
           }
         } catch {
-          logEvent('nostr.reply.notify.failed', { eventId: event.id });
+          if (external) {
+            limiter.release(pubkey, nowMs);
+          }
+          logEvent('nostr.reply.inbound.failed', { eventId: event.id });
         }
-      } catch {
-        logEvent('nostr.reply.inbound.failed', { eventId: event.id });
+      } finally {
+        if (external) {
+          externalInFlight.delete(event.id);
+        }
       }
     }
   }

@@ -230,7 +230,7 @@ api/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
-│   ├── message.sql           # forum `message` plus `message_invoice` and `nostr_zap_ingest`
+│   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + nostr_zap_ingest + message_extra_photo
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr)
 │   ├── push.sql              # push_subscription + push_outbox

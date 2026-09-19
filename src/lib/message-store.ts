@@ -604,8 +604,8 @@ export interface MessageStore {
    *
    * @param receiptEventId - Receipt to attribute.
    * @param attribution - External pubkey, unique request id, and comment.
-   * @returns `false` when the receipt is missing or another receipt already
-   *   holds the request id; otherwise `true`.
+   * @returns `false` when the receipt is missing, already holds a different
+   *   request id, or another receipt holds the request id; otherwise `true`.
    */
   attributeZapReceipt(
     receiptEventId: string,
@@ -1953,6 +1953,9 @@ export class InMemoryMessageStore implements MessageStore {
   ): Promise<boolean> {
     const receipt = this.#receipts.get(receiptEventId);
     if (receipt === undefined) {
+      return Promise.resolve(false);
+    }
+    if (receipt.zapRequestId !== null && receipt.zapRequestId !== attribution.zapRequestId) {
       return Promise.resolve(false);
     }
     for (const [otherId, other] of this.#receipts) {
@@ -3333,6 +3336,7 @@ export class PostgresMessageStore implements MessageStore {
         `UPDATE nostr_zap_receipt
          SET payer_pubkey = lower($2), zap_request_id = $3, comment = $4
          WHERE event_id = $1
+           AND (zap_request_id IS NULL OR zap_request_id = $3)
            AND NOT EXISTS (
              SELECT 1 FROM nostr_zap_receipt other
              WHERE other.zap_request_id = $3 AND other.event_id <> $1

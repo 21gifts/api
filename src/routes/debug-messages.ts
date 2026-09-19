@@ -5,7 +5,8 @@
  * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
  * by `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not create rows.
  * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
- * only.
+ * and removes the pubkey block tied to that message via
+ * `unblockPubkeyByMessage`.
  */
 
 import { Hono } from 'hono';

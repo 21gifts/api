@@ -203,12 +203,16 @@ replies or hidden notes keep the sats and entitlement but create no row.
 
 **External reply → visible after first zap.** The inbound reply REQ deliberately
 has no `since`. Before entitlement, a kind:1 reply from an unknown pubkey is
-silently skipped. On the first worker tick after that pubkey's first verified
-zap, the same older event is queried again and persists when unblocked and
-within the per-pubkey and global limits. It is listed and counted like a member
-reply, but public JSON exposes only `via: "nostr"`, never the pubkey. Only the
-parent's member author is notified, and only for an event no more than one hour
-old.
+silently skipped. Membership, or zapper entitlement plus not-blocked status, is
+decided before the event signature check and before event-specific store reads.
+On the first worker tick after that pubkey's first verified zap, the same older
+event is queried again. A per-store in-flight event-id guard prevents overlapping
+ticks from storing it concurrently. Only signed kind:0 profiles up to 64 KiB
+can supply its name; name resolution precedes limiter acquisition. Per-pubkey
+and global budget is consumed immediately before the row write and released if
+that write fails. It is listed and counted like a member reply, but public JSON
+exposes only `via: "nostr"`, never the pubkey. Only the parent's member author is
+notified, and only for an event no more than one hour old.
 
 **Staff hide → block.** Founder/moderator `DELETE /messages/:id` keeps the
 normal target-and-direct-reply soft-hide. When the target itself is external,
