@@ -11,6 +11,9 @@ export const EXTERNAL_ZAPPER_MIN_SATS = 1;
 /** Inbound external replies older than this at ingest time never notify. */
 export const EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS = 60 * 60 * 1000;
 
+/** Maximum future clock skew for an inbound external-reply notification. */
+export const EXTERNAL_REPLY_FUTURE_SKEW_MS = 10 * 60 * 1000;
+
 /** Strictly verified payer details from an embedded NIP-57 zap request. */
 export interface VerifiedExternalZapRequest {
   /** Lowercase signing pubkey. */
@@ -135,11 +138,102 @@ const RESERVED_NAME_PARTS = [
   'official',
 ] as const;
 
+/** Common single-codepoint Cyrillic and Greek look-alikes used in Latin names. */
+const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
+  '\u0410': 'A',
+  '\u0430': 'a',
+  '\u0415': 'E',
+  '\u0435': 'e',
+  '\u041e': 'O',
+  '\u043e': 'o',
+  '\u0420': 'P',
+  '\u0440': 'p',
+  '\u0421': 'C',
+  '\u0441': 'c',
+  '\u0425': 'X',
+  '\u0445': 'x',
+  '\u0423': 'Y',
+  '\u0443': 'y',
+  '\u0406': 'I',
+  '\u0456': 'i',
+  '\u0408': 'J',
+  '\u0458': 'j',
+  '\u0405': 'S',
+  '\u0455': 's',
+  '\u04ba': 'H',
+  '\u04bb': 'h',
+  '\u0500': 'D',
+  '\u0501': 'd',
+  '\u051a': 'Q',
+  '\u051b': 'q',
+  '\u051c': 'W',
+  '\u051d': 'w',
+  '\u041a': 'K',
+  '\u043a': 'k',
+  '\u041c': 'M',
+  '\u043c': 'm',
+  '\u0422': 'T',
+  '\u0442': 't',
+  '\u0412': 'B',
+  '\u0432': 'b',
+  // н/Н map to h/H for their Latin-glyph resemblance, rather than transliterating to n/N.
+  '\u041d': 'H',
+  '\u043d': 'h',
+  '\u0391': 'A',
+  '\u03b1': 'a',
+  '\u039f': 'O',
+  '\u03bf': 'o',
+  '\u03a1': 'P',
+  '\u03c1': 'p',
+  '\u039d': 'V',
+  '\u03bd': 'v',
+  '\u03a4': 'T',
+  '\u03c4': 't',
+  '\u039a': 'K',
+  '\u03ba': 'k',
+  '\u0399': 'I',
+  '\u03b9': 'i',
+  // υ/Υ map to y/Y because capital Greek upsilon is a direct Latin Y look-alike.
+  '\u03a5': 'Y',
+  '\u03c5': 'y',
+  '\u03a7': 'X',
+  '\u03c7': 'x',
+  '\u0395': 'E',
+  '\u03b5': 'e',
+  '\u0392': 'B',
+  '\u03b2': 'b',
+  '\u0397': 'H',
+  '\u03b7': 'h',
+  '\u039c': 'M',
+  '\u03bc': 'm',
+};
+
+const LATIN_LETTER_RE = /(?=\p{L})[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/u;
+const CYRILLIC_OR_GREEK_LETTER_RE = /(?=\p{L})[\u0370-\u03ff\u0400-\u052f]/u;
+
 function foldedName(value: string): string {
-  return value
-    .normalize('NFKD')
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]/g, '');
+  let mapped = '';
+  const normalized = value.normalize('NFKD').replaceAll(/\p{M}/gu, '');
+  for (const character of normalized) {
+    mapped += CONFUSABLE_TO_LATIN[character] ?? character;
+  }
+  return mapped.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+}
+
+function mixesLatinWithCyrillicOrGreek(value: string): boolean {
+  let hasLatin = false;
+  let hasCyrillicOrGreek = false;
+  for (const character of value.normalize('NFKD')) {
+    if (LATIN_LETTER_RE.test(character)) {
+      hasLatin = true;
+    } else if (CYRILLIC_OR_GREEK_LETTER_RE.test(character)) {
+      hasCyrillicOrGreek = true;
+    }
+    if (hasLatin && hasCyrillicOrGreek) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -172,7 +266,8 @@ export function externalDisplayName(args: {
   if (
     folded === '' ||
     args.accountNames.some((name) => foldedName(name) === folded) ||
-    RESERVED_NAME_PARTS.some((part) => folded.includes(part))
+    RESERVED_NAME_PARTS.some((part) => folded.includes(part)) ||
+    mixesLatinWithCyrillicOrGreek(capped)
   ) {
     return fallback;
   }

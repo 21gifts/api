@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import {
+  EXTERNAL_REPLY_FUTURE_SKEW_MS,
   EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
   EXTERNAL_ZAPPER_MIN_SATS,
   ExternalIngestLimiter,
@@ -60,6 +61,7 @@ describe('external constants', () => {
   it('uses the product thresholds', () => {
     expect(EXTERNAL_ZAPPER_MIN_SATS).toBe(1);
     expect(EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS).toBe(3_600_000);
+    expect(EXTERNAL_REPLY_FUTURE_SKEW_MS).toBe(600_000);
   });
 });
 
@@ -265,6 +267,61 @@ describe('externalDisplayName', () => {
     ).toBe(fallback);
     expect(externalDisplayName({ profileName: 'Official Helper', pubkey, accountNames: [] })).toBe(
       fallback,
+    );
+  });
+
+  it('falls back for Support with Cyrillic o U+043E', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: 'Supp\u043ert', pubkey, accountNames: [] })).toBe(
+      'abcdef01…6789',
+    );
+  });
+
+  it('falls back for Admin with Cyrillic A U+0410', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: '\u0410dmin', pubkey, accountNames: [] })).toBe(
+      'abcdef01…6789',
+    );
+  });
+
+  it('falls back for a Cyrillic-Alice collision with a member name', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(
+      externalDisplayName({ profileName: '\u0410lice', pubkey, accountNames: ['Alice'] }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('falls back for Team with Greek capital tau U+03A4', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: '\u03a4eam', pubkey, accountNames: [] })).toBe(
+      'abcdef01…6789',
+    );
+  });
+
+  it('keeps an ordinary pure-Cyrillic name', () => {
+    expect(
+      externalDisplayName({
+        profileName: '\u041c\u0430\u0440\u0438\u044f',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('\u041c\u0430\u0440\u0438\u044f');
+  });
+
+  it('keeps an ordinary Latin name with diacritics', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'José',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('José');
+  });
+
+  it('falls back for an otherwise ordinary mixed Latin and Cyrillic name', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: 'Ca\u0442nip', pubkey, accountNames: [] })).toBe(
+      'abcdef01…6789',
     );
   });
 });

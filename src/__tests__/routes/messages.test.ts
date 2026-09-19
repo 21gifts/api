@@ -199,10 +199,11 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listZappers: boom,
     blockPubkey: boom,
     unblockPubkeyByMessage: boom,
+    isPubkeyBlocked: boom,
     listBlockedPubkeys: boom,
     listBlockedPubkeyRows: boom,
     markDeletedByExternalPubkey: boom,
-    listUnattributedIndexedReceipts: boom,
+    listUnattributedIndexedReceipts: (_limit, _offset) => boom(),
     ...overrides,
   };
 }
@@ -1923,11 +1924,13 @@ describe('POST /messages', () => {
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit) => base.listUnattributedIndexedReceipts(limit),
+      listUnattributedIndexedReceipts: (limit, offset) =>
+        base.listUnattributedIndexedReceipts(limit, offset),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -2024,11 +2027,13 @@ describe('POST /messages', () => {
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit) => base.listUnattributedIndexedReceipts(limit),
+      listUnattributedIndexedReceipts: (limit, offset) =>
+        base.listUnattributedIndexedReceipts(limit, offset),
     };
     const app = new Hono().route(
       '/messages',
@@ -3575,11 +3580,13 @@ describe('POST /messages/:id/invoice', () => {
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
+      isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit) => base.listUnattributedIndexedReceipts(limit),
+      listUnattributedIndexedReceipts: (limit, offset) =>
+        base.listUnattributedIndexedReceipts(limit, offset),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);

@@ -46,6 +46,7 @@ import { signEventForAccount } from '@/lib/nostr/sign';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
 import {
+  EXTERNAL_REPLY_FUTURE_SKEW_MS,
   EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
   ExternalIngestLimiter,
   externalDisplayName,
@@ -447,6 +448,9 @@ async function indexInboundForumReplies(
         }
         const eventMs = typeof event.created_at === 'number' ? event.created_at * 1000 : nowMs;
         const createdAt = new Date(Math.min(eventMs, nowMs));
+        if (external && (await deps.messages.isPubkeyBlocked(pubkey))) {
+          continue;
+        }
         if (external && !limiter.tryAcquire(pubkey, nowMs)) {
           continue;
         }
@@ -486,7 +490,11 @@ async function indexInboundForumReplies(
                 : { inboxUnreadCount: inboxUnreadCountFor(deps.conversations, deps.auth) }),
             };
             if (external) {
-              if (nowMs - eventMs <= EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS) {
+              if (
+                typeof event.created_at === 'number' &&
+                eventMs <= nowMs + EXTERNAL_REPLY_FUTURE_SKEW_MS &&
+                nowMs - eventMs <= EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS
+              ) {
                 await notifyExternalForumReply({
                   ...notificationDeps,
                   parent: parentNote,

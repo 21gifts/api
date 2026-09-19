@@ -50,6 +50,8 @@ interface ProviderCacheRow {
 }
 
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
+const EXTERNAL_ZAPPER_BACKFILL_CEILING = 10_000;
+const NO_EXTERNAL_GIFT_REPLY_LIMIT = 10_000;
 
 type SettleInvoiceResult =
   | { ok: true; receiptId: string; messageId: string; amountSats: number; resumed: boolean }
@@ -118,9 +120,12 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
 /**
  * Backfill external-zapper attribution from stored indexed receipt frames.
  *
- * The scan is bounded and idempotent. Account-owned pubkeys are kept on the
- * member path, while malformed, synthetic, replayed, or otherwise unverifiable
- * frames remain unattributed for a later bounded boot scan.
+ * The scan pages through unattributed receipts in newest-first batches and is
+ * capped at 10,000 rows per boot. Account-owned pubkeys are kept on the member
+ * path, while malformed, synthetic, replayed, or otherwise unverifiable frames
+ * remain unattributed for a later bounded boot scan. The offset advances only
+ * past rows that remain unattributed because successful attribution removes a
+ * row from subsequent pages.
  *
  * @param store - Message store containing indexed receipt frames.
  * @param deps - Auth, profile querier, relays, timeout, and clock.
@@ -138,59 +143,78 @@ export async function backfillExternalZappers(
     now: () => number;
   },
 ): Promise<number> {
-  const rows = await store.listUnattributedIndexedReceipts(MESSAGE_LIST_LIMIT);
   let verified = 0;
   let attributed = 0;
   let gifts = 0;
-  for (const row of rows) {
-    const event = storedReceiptFrame(row.receipt);
-    if (event === null || event.id !== row.receiptEventId) {
-      continue;
+  let scanned = 0;
+  let offset = 0;
+  while (scanned < EXTERNAL_ZAPPER_BACKFILL_CEILING) {
+    const batchLimit = Math.min(MESSAGE_LIST_LIMIT, EXTERNAL_ZAPPER_BACKFILL_CEILING - scanned);
+    const rows = await store.listUnattributedIndexedReceipts(batchLimit, offset);
+    scanned += rows.length;
+    let batchAttributed = 0;
+    for (const row of rows) {
+      const event = storedReceiptFrame(row.receipt);
+      if (event === null || event.id !== row.receiptEventId) {
+        continue;
+      }
+      const noteEventId = event.tags.find((tag) => tag[0] === 'e')?.[1];
+      const bolt11 = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+      if (typeof noteEventId !== 'string' || noteEventId === '' || typeof bolt11 !== 'string') {
+        continue;
+      }
+      const decoded = decodeBolt11(bolt11);
+      const inspected = inspectBolt11(bolt11);
+      if (
+        decoded === null ||
+        inspected === null ||
+        Math.floor(decoded.amountMsat / 1000) < EXTERNAL_ZAPPER_MIN_SATS
+      ) {
+        continue;
+      }
+      const request = verifiedExternalZapRequest({
+        tags: event.tags,
+        descriptionHash: inspected.descriptionHash,
+        amountMsat: decoded.amountMsat,
+        noteEventId,
+      });
+      if (request === null || (await deps.auth.getAccountByPubkey(request.pubkey)) !== undefined) {
+        continue;
+      }
+      verified += 1;
+      const result = await persistExternalGiftReply({
+        store,
+        auth: deps.auth,
+        querier: deps.querier,
+        urls: deps.urls,
+        timeoutMs: deps.timeoutMs,
+        now: deps.now,
+        receiptEventId: row.receiptEventId,
+        parent: await store.getById(row.messageId),
+        amountSats: row.sats,
+        payerPubkey: request.pubkey,
+        zapRequestId: request.requestId,
+        text: request.content,
+        receiptCreatedAt: receiptCreatedAt(event, row.createdAt.getTime()),
+      });
+      if (result.attributed) {
+        attributed += 1;
+        batchAttributed += 1;
+      }
+      if (result.gift) gifts += 1;
     }
-    const noteEventId = event.tags.find((tag) => tag[0] === 'e')?.[1];
-    const bolt11 = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
-    if (typeof noteEventId !== 'string' || noteEventId === '' || typeof bolt11 !== 'string') {
-      continue;
+    offset += rows.length - batchAttributed;
+    if (rows.length < batchLimit) {
+      break;
     }
-    const decoded = decodeBolt11(bolt11);
-    const inspected = inspectBolt11(bolt11);
-    if (
-      decoded === null ||
-      inspected === null ||
-      Math.floor(decoded.amountMsat / 1000) < EXTERNAL_ZAPPER_MIN_SATS
-    ) {
-      continue;
-    }
-    const request = verifiedExternalZapRequest({
-      tags: event.tags,
-      descriptionHash: inspected.descriptionHash,
-      amountMsat: decoded.amountMsat,
-      noteEventId,
+  }
+  if (scanned === EXTERNAL_ZAPPER_BACKFILL_CEILING) {
+    logEvent('nostr.zapper.backfill.ceiling', {
+      ceiling: EXTERNAL_ZAPPER_BACKFILL_CEILING,
     });
-    if (request === null || (await deps.auth.getAccountByPubkey(request.pubkey)) !== undefined) {
-      continue;
-    }
-    verified += 1;
-    const result = await persistExternalGiftReply({
-      store,
-      auth: deps.auth,
-      querier: deps.querier,
-      urls: deps.urls,
-      timeoutMs: deps.timeoutMs,
-      now: deps.now,
-      receiptEventId: row.receiptEventId,
-      parent: await store.getById(row.messageId),
-      amountSats: row.sats,
-      payerPubkey: request.pubkey,
-      zapRequestId: request.requestId,
-      text: request.content,
-      receiptCreatedAt: receiptCreatedAt(event, row.createdAt.getTime()),
-    });
-    if (result.attributed) attributed += 1;
-    if (result.gift) gifts += 1;
   }
   logEvent('nostr.zapper.backfill.done', {
-    scanned: rows.length,
+    scanned,
     verified,
     attributed,
     gifts,
@@ -209,9 +233,24 @@ export async function backfillExternalZappers(
  * the receipt id when the message goes away and would record it again, but this
  * map does not, so a terminal decision here keeps suppressing ingest persist
  * until the process restarts. Terminal receipts still run `verifyReceipt` then
- * `tryEnsureGiftReply`.
+ * `tryEnsureGiftReply`, whose separate terminal-outcome memo can stop before
+ * external request verification.
  */
 const zapDecisions = new WeakMap<MessageStore, Map<string, string>>();
+
+/**
+ * Receipt ids whose verified external path cannot produce a gift-reply.
+ * This process-local, per-store memory covers replayed request ids and amounts
+ * below the external minimum. Oldest entries are evicted above the fixed cap.
+ */
+const noExternalGiftReplyReceipts = new WeakMap<MessageStore, Set<string>>();
+
+/**
+ * Lowercase pubkeys whose durable zapper entitlement this process recorded.
+ * This per-store set is intentionally unbounded: distinct entitled pubkeys
+ * are limited by the real-world zapper population, not receipt-count churn.
+ */
+const knownExternalZapperPubkeys = new WeakMap<MessageStore, Set<string>>();
 
 /**
  * Get-or-create the per-store map of last persisted ingest decisions.
@@ -227,6 +266,38 @@ function decisionsFor(store: MessageStore): Map<string, string> {
   const created = new Map<string, string>();
   zapDecisions.set(store, created);
   return created;
+}
+
+/** Get-or-create the per-store terminal external gift-reply receipt set. */
+function noExternalGiftReplyReceiptsFor(store: MessageStore): Set<string> {
+  const existing = noExternalGiftReplyReceipts.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Set<string>();
+  noExternalGiftReplyReceipts.set(store, created);
+  return created;
+}
+
+/** Get-or-create the per-store set of already-recorded zapper pubkeys. */
+function knownExternalZapperPubkeysFor(store: MessageStore): Set<string> {
+  const existing = knownExternalZapperPubkeys.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Set<string>();
+  knownExternalZapperPubkeys.set(store, created);
+  return created;
+}
+
+/** Remember a terminal external outcome, evicting the oldest id at the cap. */
+function rememberNoExternalGiftReply(store: MessageStore, receiptEventId: string): void {
+  const receiptIds = noExternalGiftReplyReceiptsFor(store);
+  receiptIds.add(receiptEventId);
+  if (receiptIds.size > NO_EXTERNAL_GIFT_REPLY_LIMIT) {
+    const oldest = receiptIds.values().next().value as string;
+    receiptIds.delete(oldest);
+  }
 }
 
 /**
@@ -796,8 +867,10 @@ export async function indexOpenZapReceipts(args: {
  * Returns after id validation when this process already persisted a terminal
  * decision for the receipt id on this store instance (`indexed`, or `rejected`
  * with reason `duplicate`): still runs `verifyReceipt` then `tryEnsureGiftReply`,
- * and does not persist ingest again. A payment hash already represented by a
- * synthetic manual receipt is rejected as `settled` before provider lookup.
+ * whose terminal external memo can return before receipt lookup and request
+ * verification, and does not persist ingest again. A payment hash already
+ * represented by a synthetic manual receipt is rejected as `settled` before
+ * provider lookup.
  * After address/provider/pubkey checks, an existing PN gift row is persisted
  * as `indexed` without claim or append. Every other rejection reason is
  * re-validated on each call.
@@ -1327,7 +1400,8 @@ interface GiftReplyDeps extends BaseGiftReplyDeps {
 /**
  * Decode the receipt's parent and bolt11, then insert a gift-reply.
  * Never throws — lookup/create failures log `nostr.zap.gift_reply.failed`.
- * A soft-deleted parent is treated as missing (`payerAccountId` cleared).
+ * A soft-deleted parent is treated as missing (`payerAccountId` cleared), and
+ * remembered terminal external outcomes return before receipt lookup.
  *
  * @param event - Indexed kind:9735 frame.
  * @param args - Store, auth, clock.
@@ -1337,13 +1411,16 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
   if (typeof event.id !== 'string' || event.id === '') {
     return;
   }
+  if (noExternalGiftReplyReceiptsFor(args.store).has(event.id)) {
+    return;
+  }
   try {
     const receipt = await args.store.getZapReceiptGift(event.id);
     if (receipt === undefined || receipt.giftReplyId !== null) {
       return;
     }
     // An attributed external receipt with its payer cleared was deliberately
-    // dequeued because the parent was hidden, missing, or itself a reply.
+    // dequeued because it was blocked or its parent could not receive a reply.
     if (
       receipt.payerAccountId === null &&
       receipt.payerPubkey === null &&
@@ -1596,7 +1673,7 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
   }
 }
 
-/** Persist an attributed external gift reply after applying abuse guards. */
+/** Persist external attribution, then apply block and gift-reply guards. */
 async function persistExternalGiftReply(
   args: GiftReplyDeps & {
     receiptEventId: string;
@@ -1609,12 +1686,15 @@ async function persistExternalGiftReply(
   },
 ): Promise<{ attributed: boolean; gift: boolean }> {
   if (args.amountSats < EXTERNAL_ZAPPER_MIN_SATS) {
+    rememberNoExternalGiftReply(args.store, args.receiptEventId);
     return { attributed: false, gift: false };
   }
   const at = new Date(args.now());
-  await args.store.recordZapper(args.payerPubkey, args.receiptEventId, at);
-  if ((await args.store.listBlockedPubkeys()).includes(args.payerPubkey.toLowerCase())) {
-    return { attributed: false, gift: false };
+  const payerPubkey = args.payerPubkey.toLowerCase();
+  const knownZappers = knownExternalZapperPubkeysFor(args.store);
+  if (!knownZappers.has(payerPubkey)) {
+    await args.store.recordZapper(args.payerPubkey, args.receiptEventId, at);
+    knownZappers.add(payerPubkey);
   }
   const attributed = await args.store.attributeZapReceipt(args.receiptEventId, {
     payerPubkey: args.payerPubkey,
@@ -1622,7 +1702,12 @@ async function persistExternalGiftReply(
     comment: args.text,
   });
   if (!attributed) {
+    rememberNoExternalGiftReply(args.store, args.receiptEventId);
     return { attributed: false, gift: false };
+  }
+  if ((await args.store.listBlockedPubkeys()).includes(args.payerPubkey.toLowerCase())) {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
+    return { attributed: true, gift: false };
   }
   if (
     args.parent === undefined ||
