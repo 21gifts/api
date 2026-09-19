@@ -567,12 +567,15 @@ export interface MessageStore {
    * by ingest creation time then receipt event id descending.
    *
    * @param limit - Maximum rows to return.
-   * @param offset - Rows to skip before returning the page.
+   * @param before - Optional strict keyset cursor. Only rows ordered after this
+   *   immutable ingest creation time and receipt event id pair are returned.
+   *   This avoids skips or repeats when attribution changes between pages,
+   *   unlike an `OFFSET` over the changing unattributed result set.
    * @returns Receipt/frame pairs newest-first.
    */
   listUnattributedIndexedReceipts(
     limit: number,
-    offset: number,
+    before?: { createdAt: Date; eventId: string },
   ): Promise<UnattributedIndexedReceipt[]>;
 
   /**
@@ -627,28 +630,95 @@ export interface MessageStore {
     attribution: { payerPubkey: string; zapRequestId: string; comment: string },
   ): Promise<boolean>;
 
-  /** Record permanent external-zapper visibility entitlement, first write wins. */
+  /**
+   * Record permanent external-zapper visibility entitlement, first write wins.
+   *
+   * @param pubkey - External author pubkey (stored lower-case).
+   * @param receiptEventId - Kind:9735 event id that first proved the zap.
+   * @param at - Time of the first recording.
+   * @returns Resolves once the row exists; an existing row is left unchanged.
+   */
   recordZapper(pubkey: string, receiptEventId: string, at: Date): Promise<void>;
 
-  /** List all entitled external pubkeys. */
+  /**
+   * List all entitled external pubkeys.
+   *
+   * @returns Lower-case pubkeys of every recorded external zapper.
+   */
   listZapperPubkeys(): Promise<string[]>;
 
-  /** List newest external-zapper entitlement rows for operator debug. */
+  /**
+   * List newest external-zapper entitlement rows for operator debug.
+   *
+   * @param limit - Maximum number of rows.
+   * @returns Rows newest first, ties broken by pubkey descending.
+   */
   listZappers(limit: number): Promise<NostrZapperRow[]>;
 
-  /** Record a staff block for an external pubkey, first write wins. */
+  /**
+   * Record a staff block for an external pubkey, first write wins.
+   *
+   * @param pubkey - External author pubkey (stored lower-case).
+   * @param at - Time of the block.
+   * @param byAccountId - Staff account that hid the row.
+   * @param messageId - Hidden message that caused the block.
+   * @returns Resolves once the block exists; an existing block is left unchanged.
+   */
   blockPubkey(pubkey: string, at: Date, byAccountId: string, messageId: string): Promise<void>;
 
-  /** Remove the block whose source is one restored message. */
+  /**
+   * Atomically record a staff block for an external pubkey and soft-hide every
+   * live null-account row authored by that pubkey. The block is stored in
+   * lower-case and remains first-write-wins, while author matching is
+   * case-insensitive.
+   *
+   * @param pubkey - External author pubkey to block and match case-insensitively.
+   * @param at - Shared block and hide timestamp for every affected row.
+   * @param byAccountId - Staff account that created the block and hid the rows.
+   * @param messageId - Message whose deletion caused the block.
+   * @returns Number of previously-live rows newly hidden by the cascade. A row
+   *   hidden by an earlier `markDeleted` call is not included.
+   */
+  blockPubkeyAndHideRows(
+    pubkey: string,
+    at: Date,
+    byAccountId: string,
+    messageId: string,
+  ): Promise<number>;
+
+  /**
+   * Remove the block whose own `message_id` equals one restored message. This
+   * succeeds only when `messageId` is the row whose hide created the block,
+   * not another row hidden by that block's external-author cascade. Restoring
+   * such a cascaded row through `markUndeleted` makes that row live but leaves
+   * the block in place because its id does not match.
+   *
+   * @param messageId - Restored message id.
+   * @returns `true` when a block was removed.
+   */
   unblockPubkeyByMessage(messageId: string): Promise<boolean>;
 
-  /** Whether one external pubkey is currently blocked. */
+  /**
+   * Whether one external pubkey is currently blocked.
+   *
+   * @param pubkey - External author pubkey, compared case-insensitively.
+   * @returns `true` when a block row exists for that pubkey.
+   */
   isPubkeyBlocked(pubkey: string): Promise<boolean>;
 
-  /** List every blocked external pubkey. */
+  /**
+   * List every blocked external pubkey.
+   *
+   * @returns Lower-case pubkeys of every block row.
+   */
   listBlockedPubkeys(): Promise<string[]>;
 
-  /** List newest external-pubkey block rows for operator debug. */
+  /**
+   * List newest external-pubkey block rows for operator debug.
+   *
+   * @param limit - Maximum number of rows.
+   * @returns Rows newest first, ties broken by pubkey descending.
+   */
   listBlockedPubkeyRows(limit: number): Promise<NostrBlockedPubkeyRow[]>;
 
   /**
@@ -1893,7 +1963,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   listUnattributedIndexedReceipts(
     limit: number,
-    offset: number,
+    before?: { createdAt: Date; eventId: string },
   ): Promise<UnattributedIndexedReceipt[]> {
     const rows: UnattributedIndexedReceipt[] = [];
     for (const ingest of this.#zapIngests) {
@@ -1925,7 +1995,16 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.receiptEventId.localeCompare(a.receiptEventId);
     });
-    return Promise.resolve(rows.slice(offset, offset + limit));
+    const page =
+      before === undefined
+        ? rows
+        : rows.filter((row) => {
+            const byTime = row.createdAt.getTime() - before.createdAt.getTime();
+            return (
+              byTime < 0 || (byTime === 0 && row.receiptEventId.localeCompare(before.eventId) < 0)
+            );
+          });
+    return Promise.resolve(page.slice(0, limit));
   }
 
   listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
@@ -2034,6 +2113,36 @@ export class InMemoryMessageStore implements MessageStore {
       });
     }
     return Promise.resolve();
+  }
+
+  blockPubkeyAndHideRows(
+    pubkey: string,
+    at: Date,
+    byAccountId: string,
+    messageId: string,
+  ): Promise<number> {
+    const key = pubkey.toLowerCase();
+    if (!this.#blockedPubkeys.has(key)) {
+      this.#blockedPubkeys.set(key, {
+        pubkey: key,
+        blockedAt: new Date(at.getTime()),
+        blockedBy: byAccountId,
+        messageId,
+      });
+    }
+    let hidden = 0;
+    for (const row of this.#rows) {
+      if (
+        row.deletedAt === null &&
+        row.accountId === null &&
+        row.authorPubkey?.toLowerCase() === key
+      ) {
+        row.deletedAt = new Date(at.getTime());
+        row.deletedBy = byAccountId;
+        hidden += 1;
+      }
+    }
+    return Promise.resolve(hidden);
   }
 
   unblockPubkeyByMessage(messageId: string): Promise<boolean> {
@@ -3300,8 +3409,12 @@ export class PostgresMessageStore implements MessageStore {
 
   async listUnattributedIndexedReceipts(
     limit: number,
-    offset: number,
+    before?: { createdAt: Date; eventId: string },
   ): Promise<UnattributedIndexedReceipt[]> {
+    const beforeClause =
+      before === undefined ? '' : '\n         AND (i.created_at, r.event_id) < ($2, $3)';
+    const params: unknown[] =
+      before === undefined ? [limit] : [limit, before.createdAt, before.eventId];
     const rows = await this.#sql.query<{
       event_id: string;
       message_id: string;
@@ -3319,10 +3432,10 @@ export class PostgresMessageStore implements MessageStore {
          LIMIT 1
        ) i ON true
        WHERE r.payer_account_id IS NULL AND r.payer_pubkey IS NULL
-         AND r.zap_request_id IS NULL AND r.gift_reply_id IS NULL
+         AND r.zap_request_id IS NULL AND r.gift_reply_id IS NULL${beforeClause}
        ORDER BY i.created_at DESC, r.event_id DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset],
+       LIMIT $1`,
+      params,
     );
     return rows.map((row) => ({
       receiptEventId: row.event_id,
@@ -3481,6 +3594,29 @@ export class PostgresMessageStore implements MessageStore {
        ON CONFLICT (pubkey) DO NOTHING`,
       [pubkey, at, byAccountId, messageId],
     );
+  }
+
+  async blockPubkeyAndHideRows(
+    pubkey: string,
+    at: Date,
+    byAccountId: string,
+    messageId: string,
+  ): Promise<number> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH blocked AS (
+         INSERT INTO nostr_blocked_pubkey (pubkey, blocked_at, blocked_by, message_id)
+         VALUES (lower($1), $2, $3, $4)
+         ON CONFLICT (pubkey) DO NOTHING
+       ), hidden AS (
+         UPDATE message
+         SET deleted_at = $2, deleted_by = $3
+         WHERE deleted_at IS NULL AND account_id IS NULL AND lower(author_pubkey) = lower($1)
+         RETURNING id
+       )
+       SELECT id FROM hidden`,
+      [pubkey, at, byAccountId, messageId],
+    );
+    return rows.length;
   }
 
   async unblockPubkeyByMessage(messageId: string): Promise<boolean> {

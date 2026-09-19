@@ -198,12 +198,13 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listZapperPubkeys: boom,
     listZappers: boom,
     blockPubkey: boom,
+    blockPubkeyAndHideRows: boom,
     unblockPubkeyByMessage: boom,
     isPubkeyBlocked: boom,
     listBlockedPubkeys: boom,
     listBlockedPubkeyRows: boom,
     markDeletedByExternalPubkey: boom,
-    listUnattributedIndexedReceipts: (_limit, _offset) => boom(),
+    listUnattributedIndexedReceipts: (_limit, _before) => boom(),
     ...overrides,
   };
 }
@@ -1923,14 +1924,16 @@ describe('POST /messages', () => {
       listZappers: (limit) => base.listZappers(limit),
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit, offset) =>
-        base.listUnattributedIndexedReceipts(limit, offset),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const res = await mount(await namedStore('Ada'), store).request('/messages', {
       method: 'POST',
@@ -2026,14 +2029,16 @@ describe('POST /messages', () => {
       listZappers: (limit) => base.listZappers(limit),
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit, offset) =>
-        base.listUnattributedIndexedReceipts(limit, offset),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const app = new Hono().route(
       '/messages',
@@ -3579,14 +3584,16 @@ describe('POST /messages/:id/invoice', () => {
       listZappers: (limit) => base.listZappers(limit),
       blockPubkey: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkey(pubkey, at, byAccountId, messageId),
+      blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
+        base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
       markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
         base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
-      listUnattributedIndexedReceipts: (limit, offset) =>
-        base.listUnattributedIndexedReceipts(limit, offset),
+      listUnattributedIndexedReceipts: (limit, before) =>
+        base.listUnattributedIndexedReceipts(limit, before),
     };
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);
@@ -5640,15 +5647,11 @@ describe('DELETE /messages/:id', () => {
       authorPubkey: '77'.repeat(32),
     });
     const markDeleted = vi.fn<MessageStore['markDeleted']>(async () => false);
-    const blockPubkey = vi.fn<MessageStore['blockPubkey']>(async () => undefined);
-    const markDeletedByExternalPubkey = vi.fn<MessageStore['markDeletedByExternalPubkey']>(
-      async () => 0,
-    );
+    const blockPubkeyAndHideRows = vi.fn<MessageStore['blockPubkeyAndHideRows']>(async () => 0);
     const messages = throwingStore({
       getById: (id) => base.getById(id),
       markDeleted,
-      blockPubkey,
-      markDeletedByExternalPubkey,
+      blockPubkeyAndHideRows,
     });
     warn.mockClear();
 
@@ -5660,8 +5663,7 @@ describe('DELETE /messages/:id', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
     expect(markDeleted).toHaveBeenCalledTimes(1);
-    expect(blockPubkey).toHaveBeenCalledTimes(0);
-    expect(markDeletedByExternalPubkey).toHaveBeenCalledTimes(0);
+    expect(blockPubkeyAndHideRows).toHaveBeenCalledTimes(0);
     const events = parsedEvents(warn);
     expect(events.some((event) => event['event'] === 'messages.external.blocked')).toBe(false);
     expect(events.some((event) => event['event'] === 'messages.deleted')).toBe(false);

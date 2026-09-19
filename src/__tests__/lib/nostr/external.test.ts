@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
+import { NAME_MAX_LENGTH } from '@/lib/name';
 import {
   EXTERNAL_REPLY_FUTURE_SKEW_MS,
   EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
@@ -10,7 +11,7 @@ import {
   resolveExternalProfileName,
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
-import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
+import { RecordingQuerier, type NostrEventFrame, type NostrQuerier } from '@/lib/nostr/query';
 
 function signedRequest(noteEventId: string, amount = '21000', content = ' thanks '): string {
   return JSON.stringify(
@@ -55,6 +56,23 @@ function profileEvent(pubkey: string, content: unknown): NostrEventFrame {
     created_at: 1,
     content,
   } as unknown as NostrEventFrame;
+}
+
+class AuthorProfileQuerier implements NostrQuerier {
+  calls = 0;
+
+  query(
+    filter: Record<string, unknown>,
+    _urls: readonly string[],
+    _timeoutMs: number,
+  ): Promise<NostrEventFrame[]> {
+    this.calls += 1;
+    const authors = filter['authors'] as string[] | undefined;
+    const pubkey = authors?.[0] ?? '';
+    return Promise.resolve([
+      profileEvent(pubkey, JSON.stringify({ display_name: `Profile ${this.calls}` })),
+    ]);
+  }
 }
 
 describe('external constants', () => {
@@ -270,6 +288,36 @@ describe('externalDisplayName', () => {
     );
   });
 
+  it('falls back for a name containing an explicit bidi control', () => {
+    expect(
+      externalDisplayName({
+        profileName: '\u202e' + 'nimda',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('keeps ordinary right-to-left letters without explicit bidi controls', () => {
+    expect(
+      externalDisplayName({
+        profileName: '  שלום  ',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('שלום');
+  });
+
+  it('keeps a name containing a zero-width joiner emoji sequence', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'Family 👩‍👩‍👧‍👦',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('Family 👩‍👩‍👧‍👦');
+  });
+
   it('falls back for Support with Cyrillic o U+043E', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(externalDisplayName({ profileName: 'Supp\u043ert', pubkey, accountNames: [] })).toBe(
@@ -379,6 +427,36 @@ describe('externalDisplayName', () => {
     ).toBe('\u0418\u0432\u0430\u043d');
   });
 
+  it('keeps a Cyrillic name when unmapped letters make the look-alike fold lossy', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'Мария',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: ['Map'],
+      }),
+    ).toBe('Мария');
+  });
+
+  it('falls back when every Cyrillic letter supports the member-name transliteration', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'Иван',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: ['Ivan'],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
+  it('keeps reserved-word checks unconditional when a transliteration drops letters', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'Админ Саша',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('abcdef01…6789');
+  });
+
   it('falls back for Admin spelled with Greek and Cyrillic look-alikes only', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(
@@ -462,6 +540,31 @@ describe('resolveExternalProfileName', () => {
     await expect(resolveExternalProfileName(args)).resolves.toBeNull();
     await expect(resolveExternalProfileName({ ...args, nowMs: 2000 })).resolves.toBeNull();
     expect(querier.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('trims and caps a resolved profile name before returning and caching it', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = 'f1'.repeat(32);
+    querier.events = [
+      profileEvent(
+        pubkey,
+        JSON.stringify({ display_name: `  ${'x'.repeat(NAME_MAX_LENGTH + 200)}  ` }),
+      ),
+    ];
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey,
+      nowMs: 1000,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    await expect(resolveExternalProfileName(args)).resolves.toBe('x'.repeat(NAME_MAX_LENGTH));
+    querier.events = [];
+    await expect(resolveExternalProfileName({ ...args, nowMs: 2000 })).resolves.toBe(
+      'x'.repeat(NAME_MAX_LENGTH),
+    );
   });
 
   it('ignores a newer forged profile after a valid cached profile expires', async () => {
@@ -612,6 +715,47 @@ describe('resolveExternalProfileName', () => {
       }),
     ).resolves.toBe('First');
   });
+
+  it('evicts the oldest profile after 5000 distinct cached pubkeys', async () => {
+    const querier = new AuthorProfileQuerier();
+    const pubkeys = Array.from(
+      { length: 5001 },
+      (_, index) => `e11c${index.toString(16).padStart(60, '0')}`,
+    );
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      nowMs: 1000,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    for (const pubkey of pubkeys) {
+      await resolveExternalProfileName({ ...args, pubkey });
+    }
+    expect(querier.calls).toBe(5001);
+
+    await resolveExternalProfileName({ ...args, pubkey: pubkeys[0]! });
+    expect(querier.calls).toBe(5002);
+  });
+
+  it('deletes an expired profile entry and queries it again', async () => {
+    const querier = new AuthorProfileQuerier();
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey: 'f2'.repeat(32),
+      nowMs: 0,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    await expect(resolveExternalProfileName(args)).resolves.toBe('Profile 1');
+    await expect(resolveExternalProfileName({ ...args, nowMs: 60 * 60 * 1000 })).resolves.toBe(
+      'Profile 2',
+    );
+    expect(querier.calls).toBe(2);
+  });
 });
 
 describe('ExternalIngestLimiter', () => {
@@ -653,7 +797,7 @@ describe('ExternalIngestLimiter', () => {
       expect(hourly.tryAcquire('AA', i)).toBe(true);
     }
     expect(hourly.tryAcquire('aa', 6)).toBe(false);
-    hourly.release('aa', 6);
+    hourly.release('aa', 0);
     expect(hourly.tryAcquire('aa', 6)).toBe(true);
     expect(hourly.tryAcquire('aa', 6)).toBe(false);
 
@@ -663,7 +807,7 @@ describe('ExternalIngestLimiter', () => {
     }
     const afterTwentyHours = 20 * 3_600_001;
     expect(daily.tryAcquire('key', afterTwentyHours)).toBe(false);
-    daily.release('KEY', afterTwentyHours);
+    daily.release('KEY', 19 * 3_600_001);
     expect(daily.tryAcquire('key', afterTwentyHours)).toBe(true);
   });
 
@@ -673,7 +817,7 @@ describe('ExternalIngestLimiter', () => {
       expect(hourly.tryAcquire(`hour-${i}`, i)).toBe(true);
     }
     expect(hourly.tryAcquire('hour-overflow', 30)).toBe(false);
-    hourly.release('HOUR-0', 30);
+    hourly.release('HOUR-0', 0);
     expect(hourly.tryAcquire('hour-overflow', 30)).toBe(true);
 
     const daily = new ExternalIngestLimiter();
@@ -682,8 +826,28 @@ describe('ExternalIngestLimiter', () => {
     }
     const afterHundredIntervals = 100 * 600_001;
     expect(daily.tryAcquire('day-overflow', afterHundredIntervals)).toBe(false);
-    daily.release('DAY-99', afterHundredIntervals);
+    daily.release('DAY-99', 99 * 600_001);
     expect(daily.tryAcquire('day-overflow', afterHundredIntervals)).toBe(true);
+  });
+
+  it('release removes the matching older acquisition without disturbing the newer hit', () => {
+    const local = new ExternalIngestLimiter();
+    expect(local.tryAcquire('same', 0)).toBe(true);
+    expect(local.tryAcquire('same', 3_599_999)).toBe(true);
+    local.release('same', 0);
+    for (let i = 0; i < 5; i += 1) {
+      expect(local.tryAcquire('same', 3_600_000 + i)).toBe(true);
+    }
+    expect(local.tryAcquire('same', 3_600_005)).toBe(false);
+
+    const global = new ExternalIngestLimiter();
+    expect(global.tryAcquire('same', 0)).toBe(true);
+    expect(global.tryAcquire('same', 3_599_999)).toBe(true);
+    global.release('same', 0);
+    for (let i = 0; i < 29; i += 1) {
+      expect(global.tryAcquire(`other-${i}`, 3_600_000 + i)).toBe(true);
+    }
+    expect(global.tryAcquire('global-overflow', 3_600_030)).toBe(false);
   });
 
   it('release is a safe no-op without a retained acquisition', () => {
@@ -693,12 +857,25 @@ describe('ExternalIngestLimiter', () => {
     expect(limiter.tryAcquire('old', 0)).toBe(true);
     expect(limiter.tryAcquire('current', 3_600_001)).toBe(true);
     limiter.release('old', 3_600_001);
-    limiter.release('old', 3_600_001);
+    limiter.release('old', 0);
+    limiter.release('old', 0);
 
     for (let i = 1; i < 6; i += 1) {
       expect(limiter.tryAcquire('current', 3_600_001 + i)).toBe(true);
     }
     expect(limiter.tryAcquire('current', 3_600_007)).toBe(false);
+  });
+
+  it('double release keeps the per-pubkey day counter at zero', () => {
+    const limiter = new ExternalIngestLimiter();
+    expect(limiter.tryAcquire('key', 0)).toBe(true);
+    limiter.release('key', 0);
+    limiter.release('key', 0);
+
+    for (let i = 0; i < 20; i += 1) {
+      expect(limiter.tryAcquire('key', i * 3_600_001)).toBe(true);
+    }
+    expect(limiter.tryAcquire('key', 20 * 3_600_001)).toBe(false);
   });
 
   it('evicts a pubkey after the idle window', () => {

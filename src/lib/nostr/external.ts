@@ -138,6 +138,12 @@ const RESERVED_NAME_PARTS = [
   'official',
 ] as const;
 
+/**
+ * Explicit bidi controls can render logical-order text reversed, making a name such as RLO plus
+ * `nimda` appear to a moderator as the reserved word `admin` without matching the lossy folds.
+ */
+const BIDI_CONTROL_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+
 /** Common single-codepoint Cyrillic and Greek look-alikes used in Latin names. */
 const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u0410': 'A',
@@ -247,6 +253,8 @@ const LATIN_LETTER_RE = /(?=\p{L})[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/u;
 const GREEK_LETTER_RE = /(?=\p{L})[\u0370-\u03ff]/u;
 const CYRILLIC_LETTER_RE = /(?=\p{L})[\u0400-\u052f]/u;
 const LETTER_OR_DIGIT_RE = /[\p{L}\p{N}]/u;
+const LETTER_RE = /\p{L}/u;
+const ASCII_LETTER_RE = /[A-Za-z]/u;
 
 /** Fold a name by sound: lower-case, transliterate Cyrillic, keep only `[a-z0-9]`. */
 function transliteratedName(value: string): string {
@@ -265,6 +273,36 @@ function foldedName(value: string): string {
     mapped += CONFUSABLE_TO_LATIN[character] ?? character;
   }
   return mapped.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+}
+
+/** True when every letter survives the glyph look-alike fold. */
+function hasCompleteConfusableFold(value: string): boolean {
+  const normalized = value.normalize('NFKD').replaceAll(/\p{M}/gu, '');
+  for (const character of normalized) {
+    if (
+      LETTER_RE.test(character) &&
+      !ASCII_LETTER_RE.test(character) &&
+      CONFUSABLE_TO_LATIN[character] === undefined
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when every letter survives the Cyrillic transliteration fold. */
+function hasCompleteTransliteration(value: string): boolean {
+  const normalized = value.normalize('NFKD').replaceAll(/\p{M}/gu, '').toLowerCase();
+  for (const character of normalized) {
+    if (
+      LETTER_RE.test(character) &&
+      !ASCII_LETTER_RE.test(character) &&
+      CYRILLIC_TRANSLITERATION[character] === undefined
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** True when a name mixes more than one of the Latin, Cyrillic and Greek scripts. */
@@ -312,16 +350,23 @@ export function externalDisplayName(args: {
       return fallback;
     }
   }
+  if (BIDI_CONTROL_RE.test(trimmed)) {
+    return fallback;
+  }
   const capped = trimmed.slice(0, NAME_MAX_LENGTH);
   const folded = foldedName(capped);
   const transliterated = transliteratedName(capped);
+  const completeConfusableFold = hasCompleteConfusableFold(capped);
+  const completeTransliteration = hasCompleteTransliteration(capped);
   if (
     !LETTER_OR_DIGIT_RE.test(capped) ||
     args.accountNames.some(
       (name) =>
         sameRawName(name, capped) ||
-        (folded !== '' && foldedName(name) === folded) ||
-        (transliterated !== '' && transliteratedName(name) === transliterated),
+        (folded !== '' && completeConfusableFold && foldedName(name) === folded) ||
+        (transliterated !== '' &&
+          completeTransliteration &&
+          transliteratedName(name) === transliterated),
     ) ||
     RESERVED_NAME_PARTS.some((part) => folded.includes(part) || transliterated.includes(part)) ||
     mixesConfusableScripts(capped)
@@ -340,6 +385,7 @@ const profileCache = new Map<string, ProfileCacheRow>();
 const PROFILE_HIT_TTL_MS = 60 * 60 * 1000;
 const PROFILE_MISS_TTL_MS = 5 * 60 * 1000;
 const PROFILE_CONTENT_MAX_LENGTH = 64 * 1024;
+const PROFILE_CACHE_MAX_ENTRIES = 5000;
 
 /** Verify a queried kind:0 frame is a signed Nostr event. */
 function defaultVerifyProfile(event: NostrEventFrame): boolean {
@@ -412,6 +458,9 @@ export async function resolveExternalProfileName(args: {
   if (cached !== undefined && cached.expiresAt > args.nowMs) {
     return cached.name;
   }
+  if (cached !== undefined) {
+    profileCache.delete(pubkey);
+  }
   let name: string | null = null;
   try {
     const verifyProfile = args.verifyProfile ?? defaultVerifyProfile;
@@ -430,9 +479,13 @@ export async function resolveExternalProfileName(args: {
           verifyProfile(event),
       )
       .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
-    name = newest === undefined ? null : profileNameFromEvent(newest);
+    const rawName = newest === undefined ? null : profileNameFromEvent(newest);
+    name = rawName === null ? null : rawName.trim().slice(0, NAME_MAX_LENGTH);
   } catch {
     name = null;
+  }
+  if (profileCache.size >= PROFILE_CACHE_MAX_ENTRIES) {
+    profileCache.delete(profileCache.keys().next().value!);
   }
   profileCache.set(pubkey, {
     name,
@@ -489,14 +542,15 @@ export class ExternalIngestLimiter {
   }
 
   /**
-   * Undo the most recent retained acquisition for an external pubkey.
+   * Undo the retained acquisition matching an external pubkey and timestamp.
    *
-   * Removes one per-pubkey and global hourly hit and decrements both UTC-day
-   * counters. This is a no-op when the pubkey has no retained acquisition,
-   * including after idle eviction.
+   * Removes the matching per-pubkey and global hourly hit and decrements both
+   * UTC-day counters without letting either become negative. This is a no-op
+   * when the exact acquisition is not retained, including after idle eviction.
    *
    * @param pubkey - External author pubkey from the successful acquisition.
-   * @param nowMs - Current epoch milliseconds, used for idle eviction.
+   * @param nowMs - Exact epoch milliseconds passed to the successful acquisition.
+   * @returns Nothing.
    */
   release(pubkey: string, nowMs: number): void {
     this.#evictIdle(nowMs);
@@ -504,17 +558,18 @@ export class ExternalIngestLimiter {
     if (local === undefined) {
       return;
     }
-    const at = local.hours.pop();
-    if (at === undefined) {
+    const localIndex = local.hours.indexOf(nowMs);
+    if (localIndex === -1) {
       return;
     }
-    const globalIndex = this.#global.hours.lastIndexOf(at);
+    local.hours.splice(localIndex, 1);
+    const globalIndex = this.#global.hours.indexOf(nowMs);
     if (globalIndex !== -1) {
       this.#global.hours.splice(globalIndex, 1);
     }
-    const day = utcDayKey(at);
-    local.days.set(day, local.days.get(day)! - 1);
-    this.#global.days.set(day, this.#global.days.get(day)! - 1);
+    const day = utcDayKey(nowMs);
+    local.days.set(day, Math.max(0, local.days.get(day)! - 1));
+    this.#global.days.set(day, Math.max(0, this.#global.days.get(day)! - 1));
   }
 
   #hits(pubkey: string): IngestHits {

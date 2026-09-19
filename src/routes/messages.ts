@@ -864,11 +864,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         if (target.accountId === null && target.authorPubkey !== null) {
-          await deps.store.blockPubkey(target.authorPubkey, at, account.id, id);
-          const cascaded = await deps.store.markDeletedByExternalPubkey(
+          const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
             at,
             account.id,
+            id,
           );
           logEvent('messages.external.blocked', { messageId: id, hidden: cascaded + 1 });
         }
