@@ -185,6 +185,7 @@ const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u03bf': 'o',
   '\u03a1': 'P',
   '\u03c1': 'p',
+  // Capital nu looks like N, small nu like v.
   '\u039d': 'N',
   '\u03bd': 'v',
   '\u03a4': 'T',
@@ -193,19 +194,22 @@ const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u03ba': 'k',
   '\u0399': 'I',
   '\u03b9': 'i',
-  // υ/Υ map to y/Y because capital Greek upsilon is a direct Latin Y look-alike.
+  // Each case maps to its own glyph look-alike (the fold lower-cases afterwards):
+  // capital upsilon looks like Y, small upsilon like u.
   '\u03a5': 'Y',
-  '\u03c5': 'y',
+  '\u03c5': 'u',
   '\u03a7': 'X',
   '\u03c7': 'x',
   '\u0395': 'E',
   '\u03b5': 'e',
   '\u0392': 'B',
   '\u03b2': 'b',
+  // Capital eta looks like H, small eta like n.
   '\u0397': 'H',
   '\u03b7': 'n',
+  // Capital mu looks like M, small mu (the micro sign shape) like u.
   '\u039c': 'M',
-  '\u03bc': 'm',
+  '\u03bc': 'u',
 };
 
 const LATIN_LETTER_RE = /(?=\p{L})[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/u;
