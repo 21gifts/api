@@ -336,6 +336,16 @@ describe('externalDisplayName', () => {
     ).toBe('abcdef01…6789');
   });
 
+  it('folds Greek small upsilon and small mu to u before comparing member names', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: '\u03a4\u03c5', pubkey, accountNames: ['Tu'] })).toBe(
+      'abcdef01…6789',
+    );
+    expect(externalDisplayName({ profileName: '\u03b1\u03bc', pubkey, accountNames: ['au'] })).toBe(
+      'abcdef01…6789',
+    );
+  });
+
   it('falls back for Admin spelled with Greek and Cyrillic look-alikes only', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(
