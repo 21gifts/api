@@ -2004,7 +2004,7 @@ Strictly attributes a zap receipt to the signer of its embedded NIP-57 request.
 Creates a safe display-name snapshot for a visible external Nostr author.
 
 - **Preference:** Uses the trimmed profile `display_name` or `name` supplied by the caller.
-- **Protection:** Rejects control characters, names without any letter or digit, names mixing more than one of the Latin, Cyrillic and Greek scripts, names equal to a member name (case-insensitive after compatibility normalisation), and names that impersonate a member or reserved project/staff identity after diacritic and common Cyrillic/Greek look-alike folding. Names written entirely in one non-Latin script remain eligible when neither comparison collides.
+- **Protection:** Rejects control characters, names without any letter or digit, names mixing more than one of the Latin, Cyrillic and Greek scripts, names equal to a member name (case-insensitive after compatibility normalisation), and names that impersonate a member or reserved project/staff identity after diacritic and common Cyrillic/Greek look-alike folding or after a by-sound transliteration of Cyrillic (so the Russian spelling of a reserved word or of a member name is caught too). Names written entirely in one non-Latin script remain eligible when neither comparison collides.
 - **Fallback:** Uses a truncated pubkey display; accepted profile names are capped at the member-name limit.
 
 ## Function: resolveExternalProfileName

@@ -226,7 +226,8 @@ event is queried again. A per-store in-flight event-id guard prevents overlappin
 ticks from storing it concurrently. Only signed kind:0 profiles up to 64 KiB
 can supply its name. Control characters, names without a letter or digit, names
 mixing more than one of the Latin, Cyrillic and Greek scripts, and member or
-reserved-identity confusables fall back to the truncated pubkey; eligible pure non-Latin names remain visible. Name resolution precedes
+reserved-identity confusables (by glyph, or by sound for Cyrillic) fall back to the
+truncated pubkey; eligible pure non-Latin names remain visible. Name resolution precedes
 a fresh single-pubkey block check inside the in-flight guard. A block added
 during profile lookup wins before limiter acquisition, consumes no budget, and
 the event id is still released.

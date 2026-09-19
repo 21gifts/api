@@ -346,6 +346,39 @@ describe('externalDisplayName', () => {
     );
   });
 
+  it('falls back for reserved words and member names that only read alike in Cyrillic', () => {
+    const pubkey = 'ABCDEF0123456789';
+    const fallback = 'abcdef01…6789';
+    expect(
+      externalDisplayName({
+        profileName: '\u0430\u0434\u043c\u0438\u043d',
+        pubkey,
+        accountNames: [],
+      }),
+    ).toBe(fallback);
+    expect(
+      externalDisplayName({
+        profileName: '\u041c\u043e\u0434\u0435\u0440\u0430\u0442\u043e\u0440',
+        pubkey,
+        accountNames: [],
+      }),
+    ).toBe(fallback);
+    expect(
+      externalDisplayName({
+        profileName: '\u0418\u0432\u0430\u043d',
+        pubkey,
+        accountNames: ['Ivan'],
+      }),
+    ).toBe(fallback);
+    expect(
+      externalDisplayName({
+        profileName: '\u0418\u0432\u0430\u043d',
+        pubkey,
+        accountNames: ['Alice'],
+      }),
+    ).toBe('\u0418\u0432\u0430\u043d');
+  });
+
   it('falls back for Admin spelled with Greek and Cyrillic look-alikes only', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(
