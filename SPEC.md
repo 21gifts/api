@@ -1807,7 +1807,8 @@ external pubkeys.
 Returns **200** `{ "zappers": [ … ], "blocked": [ … ] }`. `zappers` rows are
 `{ pubkey, receiptEventId, createdAt }`; `blocked` rows are
 `{ pubkey, blockedAt, blockedBy, messageId }`. Each list is independently
-newest-first and capped at 200. Store failure returns **503**
+newest-first and capped at 200; equal timestamps are ordered by `pubkey`
+descending in both the in-memory and Postgres stores. Store failure returns **503**
 `{ "error": "External pubkeys are unavailable" }`. The operator helper is
 `gifts-debug external-pubkeys [--raw]`.
 
@@ -2338,6 +2339,14 @@ payment, or an operator settle, is recorded as `rejected` / `settled`).
 The claim has no foreign key to `message` and survives `deleteById`.
 At Postgres boot, receipts credited before the claim table existed are
 backfilled so a second real receipt for the same payment cannot double-credit.
+The separate external-payer backfill pages through every currently
+unattributed indexed receipt newest-first in 200-row batches, stopping at a
+hard ceiling of 10,000 scanned receipts per boot. Its offset advances only by
+rows that remain unattributed because successful attribution removes rows from
+later pages. Equal ingest timestamps are ordered by receipt event id descending
+in both message-store implementations. Re-running it is idempotent; reaching
+the ceiling is logged, and a read or processing failure is logged without
+aborting boot. The payment-hash claim backfill remains boot-critical.
 Indexed receipts increment that row's `sats` (GET /messages then
 returns the new total). Kind:1 EVENT frames published to relays are JSON
 objects, not JSON strings.
@@ -2348,13 +2357,24 @@ valid signed event; its exact tagged JSON must match the BOLT11 description
 hash; its `e` tag must match the paid note; and an optional decimal `amount`
 tag must equal the invoice msat. A verified zap of at least 1 sat permanently
 records the pubkey in `nostr_zapper`, including when the paid note is a reply
-or cannot receive a gift-reply. A staff block prevents attribution and visible
-rows but does not undo sats already credited or the zapper entitlement. A
-kind:9734 request id may attribute only one receipt; replay on another receipt
-creates no second gift-reply. An eligible live top-level note receives a
+or cannot receive a gift-reply. Later zaps from the same pubkey skip the repeated
+`recordZapper` write through a per-store process-local lowercase-pubkey memo.
+Attribution is recorded before the staff block check; a blocked payer is then
+durably dequeued by clearing `payer_pubkey` while retaining `zap_request_id`.
+Sats stay credited, nothing is shown, a later unblock does not resurrect zaps
+made while blocked. A kind:9734 request id may attribute only one receipt;
+replay on another receipt creates no second gift-reply.
+Replayed requests and credited receipts below the external minimum are remembered
+in a per-store process-local set of at most 10,000 receipt ids, so later worker
+ticks neither re-verify their embedded kind:9734 nor repeat store writes. An
+eligible live top-level note receives a
 deterministic external gift-reply (`accountId` null, `via: "nostr"`, comment and
 sats from the zap, receipt time clamped to now, Nostr publish skipped). Profile
 lookup failure falls back to a non-impersonating truncated-pubkey display name.
+Resolved profile names use the same fallback when they contain control characters,
+mix Latin letters with Cyrillic or Greek letters, or collide with a member name or
+reserved project/staff identity after diacritic and common Cyrillic/Greek look-alike
+folding. Pure Cyrillic or Greek names remain eligible when their fold does not collide.
 
 Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
@@ -2365,14 +2385,20 @@ not-blocked status is decided before verifying the inbound kind:1 signature and
 before any event-specific message-store read. A per-store in-flight event-id
 guard prevents overlapping ticks from concurrently persisting the same external
 reply. External profile names come only from signed kind:0 events whose content
-is at most 64 KiB. Profile resolution finishes before the ingest limiter is
-acquired; limiter budget is consumed immediately before `messages.create` and
-released when that write fails. External replies notify only the parent note's
-member author and only when at most one hour old; older rows still persist. The
-notification uses the generic actor name `Someone`, never the external reply's
-own display name, so a visitor-chosen name cannot appear in a notification. All
-inbound reply timestamps are clamped to the ingest clock so future-dated events
-cannot pin thread order. Other unknown pubkeys remain on Nostr only.
+is at most 64 KiB. After profile resolution, a fresh single-pubkey block lookup
+runs inside the in-flight guard and before the ingest limiter. A block added
+while profile lookup is pending therefore wins, consumes no limiter budget, and
+the event id is still released by the guard's `finally`. Limiter budget is
+consumed immediately before `messages.create` and released when that write
+fails. External replies notify only the parent note's member author and only
+when `created_at` is numeric, at most one hour old, and no more than ten minutes
+in the future. Missing/non-numeric, farther-future, and older timestamps still
+persist but do not notify. The notification uses the generic actor name
+`Someone`, never the external reply's own display name, so a visitor-chosen name
+cannot appear in a notification. All inbound reply timestamps are clamped to
+the ingest clock so future-dated events cannot pin thread order; missing or
+non-numeric `created_at` retains the existing ingest-time storage fallback.
+Other unknown pubkeys remain on Nostr only.
 
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement

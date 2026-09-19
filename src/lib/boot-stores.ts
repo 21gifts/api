@@ -134,9 +134,10 @@ export interface BootFxOptions {
  * best-effort fills rates for the outbound gift day range (BTC-USD failures
  * log `gifts.fx.boot_fill.failed`; fiat failures log
  * `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres message
- * store exists, it backfills zap-payment claims and external zappers after the
- * `db_change` triggers are attached and before the remaining Postgres stores
- * are constructed.
+ * store exists, it backfills zap-payment claims and best-effort backfills
+ * external zappers after the `db_change` triggers are attached and before the
+ * remaining Postgres stores are constructed. External-zapper backfill failures
+ * log `nostr.zapper.backfill.failed` and do not abort boot.
  * Memory boots omit
  * `notificationStore` and `trustStore`, leave `nostrKek` undefined, and do
  * not run the `db_change` migrate. SQL boots return
@@ -150,7 +151,7 @@ export interface BootFxOptions {
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
  *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
- *   zap backfill store operation fails.
+ *   zap-payment backfill store operation fails.
  */
 export async function openBootStores(
   databaseUrl: string | undefined,
@@ -232,13 +233,17 @@ export async function openBootStores(
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
   await backfillZapPayments(messageStore);
-  await backfillExternalZappers(messageStore, {
-    auth: authStore,
-    querier: fx?.nostrQuerier ?? new WebsocketNostrQuerier(),
-    urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
-    timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
-    now,
-  });
+  try {
+    await backfillExternalZappers(messageStore, {
+      auth: authStore,
+      querier: fx?.nostrQuerier ?? new WebsocketNostrQuerier(),
+      urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
+      timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
+      now,
+    });
+  } catch {
+    logEvent('nostr.zapper.backfill.failed');
+  }
   const contactStore = new PostgresContactStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);

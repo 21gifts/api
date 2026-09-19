@@ -4726,10 +4726,21 @@ describe('runNostrWorkerTick', () => {
     expect(await messages.getByEventId('66'.repeat(32))).toBeDefined();
   });
 
-  it('resolves the parent of a member reply past non-e tags and unknown e tags', async () => {
+  it('prefers the reply-marked parent past non-e tags and unknown e tags', async () => {
     const { auth, messages } = await seed();
-    const noteEventId = 'a3'.repeat(32);
-    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const rootEventId = 'a3'.repeat(32);
+    const replyEventId = 'a4'.repeat(32);
+    await messages.updateSignedEvent('m1', rootEventId, BITCOIN_KIND1);
+    await messages.create({
+      id: 'm2',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'second note',
+      createdAt: new Date('2026-08-29T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m2', replyEventId, BITCOIN_KIND1);
     await auth.createAccount({
       id: 'bob-tags',
       linkingKey: null,
@@ -4745,19 +4756,19 @@ describe('runNostrWorkerTick', () => {
     });
     await ensureAccountNostrKey(auth, 'bob-tags', KEK);
     const bobPubkey = (await auth.getNostrPublicKey('bob-tags')) as string;
-    const replyEventId = 'b3'.repeat(32);
+    const inboundReplyEventId = 'b3'.repeat(32);
     const querier = new RecordingQuerier();
     querier.events = [
       {
-        id: replyEventId,
+        id: inboundReplyEventId,
         pubkey: bobPubkey,
         kind: 1,
         tags: [
           ['p', 'd3'.repeat(32)],
           ['e'],
           ['e', 'c3'.repeat(32)],
-          ['e', noteEventId, '', 'root'],
-          ['e', noteEventId, '', 'reply'],
+          ['e', rootEventId, '', 'root'],
+          ['e', replyEventId, '', 'reply'],
         ],
         content: 'tagged member reply',
         created_at: 1_700_000_000,
@@ -4778,10 +4789,77 @@ describe('runNostrWorkerTick', () => {
       }),
     );
 
-    expect(await messages.getByEventId(replyEventId)).toMatchObject({
+    expect(await messages.getByEventId(inboundReplyEventId)).toMatchObject({
       accountId: 'bob-tags',
-      parentId: 'm1',
+      parentId: 'm2',
       text: 'tagged member reply',
+    });
+  });
+
+  it('prefers the root-marked parent over the first plain e tag', async () => {
+    const { auth, messages } = await seed();
+    const rootEventId = 'a5'.repeat(32);
+    const plainEventId = 'a6'.repeat(32);
+    await messages.updateSignedEvent('m1', rootEventId, BITCOIN_KIND1);
+    await messages.create({
+      id: 'm2',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'second note',
+      createdAt: new Date('2026-08-29T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.updateSignedEvent('m2', plainEventId, BITCOIN_KIND1);
+    await auth.createAccount({
+      id: 'bob-root-tags',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '6'.repeat(64),
+      createdAt: 8,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'bob-root-tags', KEK);
+    const bobPubkey = (await auth.getNostrPublicKey('bob-root-tags')) as string;
+    const inboundReplyEventId = 'b4'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: inboundReplyEventId,
+        pubkey: bobPubkey,
+        kind: 1,
+        tags: [
+          ['e', plainEventId],
+          ['e', rootEventId, '', 'root'],
+        ],
+        content: 'rooted member reply',
+        created_at: 1_700_000_000,
+        sig: 'c4'.repeat(32),
+      },
+    ];
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: () => true,
+      }),
+    );
+
+    expect(await messages.getByEventId(inboundReplyEventId)).toMatchObject({
+      accountId: 'bob-root-tags',
+      parentId: 'm1',
+      text: 'rooted member reply',
     });
   });
 
@@ -5100,6 +5178,75 @@ describe('runNostrWorkerTick', () => {
     expect(limiter.tryAcquire(pubkey, 1_700_000_000_005)).toBe(false);
   });
 
+  it('lets an in-flight block win without consuming budget and releases the event guard', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'ad'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const pubkey = 'beadfeed'.repeat(8);
+    const eventId = 'ce'.repeat(32);
+    await messages.recordZapper(pubkey, 'receipt-block-race', new Date(1_699_999_000_000));
+    const frame: NostrEventFrame = {
+      id: eventId,
+      pubkey,
+      kind: 1,
+      tags: [['e', noteEventId]],
+      content: 'blocked while resolving profile',
+      created_at: 1_700_000_000,
+      sig: 'de'.repeat(32),
+    };
+    let resolveProfile: (events: NostrEventFrame[]) => void = () => {};
+    const profileHeld = new Promise<NostrEventFrame[]>((resolve) => {
+      resolveProfile = resolve;
+    });
+    let enteredProfile: () => void = () => {};
+    const profileEntered = new Promise<void>((resolve) => {
+      enteredProfile = resolve;
+    });
+    const query = vi.fn((filter: Record<string, unknown>) => {
+      const kinds = filter['kinds'];
+      const kind = Array.isArray(kinds) ? kinds[0] : undefined;
+      if (kind === 1) {
+        return Promise.resolve([frame]);
+      }
+      if (kind === 0) {
+        enteredProfile();
+        return profileHeld;
+      }
+      return Promise.resolve([]);
+    });
+    const limiter = new ExternalIngestLimiter();
+    const tryAcquire = vi.spyOn(limiter, 'tryAcquire');
+    const create = vi.spyOn(messages, 'create');
+    const tickDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier: { query },
+      now: () => 1_700_000_000_000,
+      env: {},
+      conversations: new InMemoryConversationStore(),
+      verifyKind1: () => true,
+      externalLimiter: limiter,
+    });
+
+    const blockedTick = runNostrWorkerTick(tickDeps);
+    await profileEntered;
+    await messages.blockPubkey(pubkey, new Date(1_700_000_000_000), 'acc', 'blocked-race');
+    resolveProfile([]);
+    await blockedTick;
+
+    expect(await messages.getByEventId(eventId)).toBeUndefined();
+    expect(tryAcquire).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+
+    await messages.unblockPubkeyByMessage('blocked-race');
+    await runNostrWorkerTick(tickDeps);
+    expect(tryAcquire).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(await messages.getByEventId(eventId)).toBeDefined();
+  });
+
   it('releases limiter budget and the in-flight guard when external persistence fails', async () => {
     const { auth, messages } = await seed();
     const noteEventId = 'a9'.repeat(32);
@@ -5248,6 +5395,70 @@ describe('runNostrWorkerTick', () => {
     expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
     expect(await messages.getByEventId('c5'.repeat(32))).toBeDefined();
     expect(await messages.getByEventId('c6'.repeat(32))).toBeDefined();
+  });
+
+  it('notifies within future skew but stores beyond-skew and unknown-age external replies silently', async () => {
+    const { auth, messages } = await seed();
+    const noteEventId = 'ae'.repeat(32);
+    await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
+    const withinPubkey = 'ba'.repeat(32);
+    const beyondPubkey = 'bb'.repeat(32);
+    const unknownAgePubkey = 'bc'.repeat(32);
+    await messages.recordZapper(withinPubkey, 'receipt-within-skew', new Date(1_699_999_000_000));
+    await messages.recordZapper(beyondPubkey, 'receipt-beyond-skew', new Date(1_699_999_000_000));
+    await messages.recordZapper(
+      unknownAgePubkey,
+      'receipt-unknown-age',
+      new Date(1_699_999_000_000),
+    );
+    const withinEventId = 'cf'.repeat(32);
+    const beyondEventId = 'd0'.repeat(32);
+    const unknownAgeEventId = 'd1'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: withinEventId,
+        pubkey: withinPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'within future skew',
+        created_at: 1_700_000_600,
+        sig: 'df'.repeat(32),
+      },
+      {
+        id: beyondEventId,
+        pubkey: beyondPubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'beyond future skew',
+        created_at: 1_700_000_601,
+        sig: 'e0'.repeat(32),
+      },
+      {
+        id: unknownAgeEventId,
+        pubkey: unknownAgePubkey,
+        kind: 1,
+        tags: [['e', noteEventId]],
+        content: 'unknown age',
+        sig: 'e1'.repeat(32),
+      },
+    ];
+    const notifications = new InMemoryNotificationStore();
+
+    await inboundTick(auth, messages, new InMemoryConversationStore(), querier, notifications);
+
+    expect(await messages.getByEventId(withinEventId)).toBeDefined();
+    expect(await messages.getByEventId(beyondEventId)).toBeDefined();
+    expect(await messages.getByEventId(unknownAgeEventId)).toBeDefined();
+    expect((await messages.getByEventId(beyondEventId))?.createdAt.toISOString()).toBe(
+      '2023-11-14T22:13:20.000Z',
+    );
+    expect((await messages.getByEventId(unknownAgeEventId))?.createdAt.toISOString()).toBe(
+      '2023-11-14T22:13:20.000Z',
+    );
+    const forParent = await notifications.listByRecipient('acc', 10);
+    expect(forParent).toHaveLength(1);
+    expect(forParent[0]).toMatchObject({ text: 'within future skew' });
   });
 
   it('keeps an external reply and logs when its targeted notification fails', async () => {

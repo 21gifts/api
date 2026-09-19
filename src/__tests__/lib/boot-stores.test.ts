@@ -312,6 +312,39 @@ describe('openBootStores', () => {
     );
   });
 
+  it('logs a failed external-zapper backfill and still returns every durable store', async () => {
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text.includes('JOIN LATERAL')) {
+          throw new Error('external-zapper backfill failed');
+        }
+        return [] as T[];
+      },
+      execute: async () => undefined,
+    };
+
+    const stores = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+    });
+
+    expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
+    expect(stores.contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(stores.conversationStore).toBeInstanceOf(PostgresConversationStore);
+    expect(stores.notificationStore).toBeInstanceOf(PostgresNotificationStore);
+    expect(stores.pushStore).toBeInstanceOf(PostgresPushStore);
+    expect(stores.trustStore).toBeInstanceOf(PostgresTrustStore);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
+    );
+  });
+
   it('uses default fetch and candles URL when fx options are omitted', async () => {
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {

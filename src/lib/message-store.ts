@@ -553,12 +553,17 @@ export interface MessageStore {
   listIndexedZapIngests(): Promise<ZapIngestRow[]>;
 
   /**
-   * Newest indexed receipt frames that have no payer attribution yet.
+   * Newest indexed receipt frames that have no payer attribution yet, ordered
+   * by ingest creation time then receipt event id descending.
    *
    * @param limit - Maximum rows to return.
+   * @param offset - Rows to skip before returning the page.
    * @returns Receipt/frame pairs newest-first.
    */
-  listUnattributedIndexedReceipts(limit: number): Promise<UnattributedIndexedReceipt[]>;
+  listUnattributedIndexedReceipts(
+    limit: number,
+    offset: number,
+  ): Promise<UnattributedIndexedReceipt[]>;
 
   /**
    * Every forum row this account authored, including hidden notes
@@ -626,6 +631,9 @@ export interface MessageStore {
 
   /** Remove the block whose source is one restored message. */
   unblockPubkeyByMessage(messageId: string): Promise<boolean>;
+
+  /** Whether one external pubkey is currently blocked. */
+  isPubkeyBlocked(pubkey: string): Promise<boolean>;
 
   /** List every blocked external pubkey. */
   listBlockedPubkeys(): Promise<string[]>;
@@ -1873,7 +1881,10 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.map((row) => copyZapIngest(row)));
   }
 
-  listUnattributedIndexedReceipts(limit: number): Promise<UnattributedIndexedReceipt[]> {
+  listUnattributedIndexedReceipts(
+    limit: number,
+    offset: number,
+  ): Promise<UnattributedIndexedReceipt[]> {
     const rows: UnattributedIndexedReceipt[] = [];
     for (const ingest of this.#zapIngests) {
       if (ingest.outcome !== 'indexed') {
@@ -1897,8 +1908,14 @@ export class InMemoryMessageStore implements MessageStore {
         receipt: { ...ingest.receipt },
       });
     }
-    rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    return Promise.resolve(rows.slice(0, limit));
+    rows.sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.receiptEventId.localeCompare(a.receiptEventId);
+    });
+    return Promise.resolve(rows.slice(offset, offset + limit));
   }
 
   listAuthoredMessages(accountId: string): Promise<MessageRow[]> {
@@ -1984,7 +2001,13 @@ export class InMemoryMessageStore implements MessageStore {
   listZappers(limit: number): Promise<NostrZapperRow[]> {
     return Promise.resolve(
       [...this.#zappers.values()]
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .sort((a, b) => {
+          const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+          if (byTime !== 0) {
+            return byTime;
+          }
+          return b.pubkey.localeCompare(a.pubkey);
+        })
         .slice(0, limit)
         .map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) })),
     );
@@ -2013,6 +2036,10 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(false);
   }
 
+  isPubkeyBlocked(pubkey: string): Promise<boolean> {
+    return Promise.resolve(this.#blockedPubkeys.has(pubkey.toLowerCase()));
+  }
+
   listBlockedPubkeys(): Promise<string[]> {
     return Promise.resolve([...this.#blockedPubkeys.keys()]);
   }
@@ -2020,7 +2047,13 @@ export class InMemoryMessageStore implements MessageStore {
   listBlockedPubkeyRows(limit: number): Promise<NostrBlockedPubkeyRow[]> {
     return Promise.resolve(
       [...this.#blockedPubkeys.values()]
-        .sort((a, b) => b.blockedAt.getTime() - a.blockedAt.getTime())
+        .sort((a, b) => {
+          const byTime = b.blockedAt.getTime() - a.blockedAt.getTime();
+          if (byTime !== 0) {
+            return byTime;
+          }
+          return b.pubkey.localeCompare(a.pubkey);
+        })
         .slice(0, limit)
         .map((row) => ({ ...row, blockedAt: new Date(row.blockedAt.getTime()) })),
     );
@@ -3218,7 +3251,10 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => mapZapIngestRow(row));
   }
 
-  async listUnattributedIndexedReceipts(limit: number): Promise<UnattributedIndexedReceipt[]> {
+  async listUnattributedIndexedReceipts(
+    limit: number,
+    offset: number,
+  ): Promise<UnattributedIndexedReceipt[]> {
     const rows = await this.#sql.query<{
       event_id: string;
       message_id: string;
@@ -3238,8 +3274,8 @@ export class PostgresMessageStore implements MessageStore {
        WHERE r.payer_account_id IS NULL AND r.payer_pubkey IS NULL
          AND r.zap_request_id IS NULL AND r.gift_reply_id IS NULL
        ORDER BY i.created_at DESC, r.event_id DESC
-       LIMIT $1`,
-      [limit],
+       LIMIT $1 OFFSET $2`,
+      [limit, offset],
     );
     return rows.map((row) => ({
       receiptEventId: row.event_id,
@@ -3404,6 +3440,14 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<{ pubkey: string }>(
       `DELETE FROM nostr_blocked_pubkey WHERE message_id = $1 RETURNING pubkey`,
       [messageId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async isPubkeyBlocked(pubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM nostr_blocked_pubkey WHERE pubkey = $1 LIMIT 1`,
+      [pubkey.toLowerCase()],
     );
     return rows[0] !== undefined;
   }
