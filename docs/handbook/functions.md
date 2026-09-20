@@ -980,7 +980,7 @@
 
 ## Function: notificationsMatchingLevel
 
-- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` always stays. `forum_post` is never personal (`mentionedAccountId` null). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Actor staff comes from `accounts` via `isStaffAccount`.
+- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` always stays. `forum_post` is never personal (`mentionedAccountId` null). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Zap actor staff is the stored actor via `isStaffAccount` only when that actor is not the parent note author (missing payer is not staff).
 - **Inputs:** `{ rows, level, recipientAccountId, accounts, parentById }`.
 - **Returns / side effects:** Matching rows in the same order. No I/O.
 - **Used by:** `notificationRoutes` `GET /notifications` after scanning the newest `NOTIFICATION_FILTER_SCAN_LIMIT` rows.

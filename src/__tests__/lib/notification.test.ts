@@ -1531,6 +1531,114 @@ describe('notificationsMatchingLevel', () => {
     expect(matched.map((row) => row.id)).toEqual(['n-post']);
   });
 
+  it('drops an unknown-payer zap on a founder note at mentions', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-zap',
+        recipientAccountId: 'me',
+        actorAccountId: 'actor',
+        type: 'zap',
+        parentId: 'parent-note',
+        replyId: ZAP_REPLY_ID,
+        text: '21',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'parent-note',
+        message({ id: 'parent-note', accountId: 'actor', parentId: null, sats: 0, text: 'mine' }),
+      ],
+    ]);
+    const matched = notificationsMatchingLevel({
+      rows,
+      level: 'mentions',
+      recipientAccountId: 'me',
+      accounts: [{ id: 'actor', role: 'founder' }],
+      parentById,
+    });
+    expect(matched.map((row) => row.id)).toEqual([]);
+  });
+
+  it('keeps a zap from a distinct founder payer at mentions', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-zap',
+        recipientAccountId: 'me',
+        actorAccountId: 'staff',
+        type: 'zap',
+        parentId: 'parent-note',
+        replyId: ZAP_REPLY_ID,
+        text: '21',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'parent-note',
+        message({ id: 'parent-note', accountId: 'author', parentId: null, sats: 0, text: 'mine' }),
+      ],
+    ]);
+    const matched = notificationsMatchingLevel({
+      rows,
+      level: 'mentions',
+      recipientAccountId: 'me',
+      accounts: [{ id: 'staff', role: 'founder' }],
+      parentById,
+    });
+    expect(matched.map((row) => row.id)).toEqual(['n-zap']);
+  });
+
+  it('drops a zap with missing parent at mentions even if the actor is founder', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-zap',
+        recipientAccountId: 'me',
+        actorAccountId: 'staff',
+        type: 'zap',
+        parentId: 'missing',
+        replyId: ZAP_REPLY_ID,
+        text: '21',
+      }),
+    ];
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'mentions',
+        recipientAccountId: 'me',
+        accounts: [{ id: 'staff', role: 'founder' }],
+        parentById: new Map(),
+      }).map((row) => row.id),
+    ).toEqual([]);
+  });
+
+  it('drops a zap whose parent has a null accountId at mentions even if the actor is founder', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-zap',
+        recipientAccountId: 'me',
+        actorAccountId: 'staff',
+        type: 'zap',
+        parentId: 'parent-note',
+        replyId: ZAP_REPLY_ID,
+        text: '21',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'parent-note',
+        message({ id: 'parent-note', accountId: null, parentId: null, sats: 0, text: 'anon' }),
+      ],
+    ]);
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'mentions',
+        recipientAccountId: 'me',
+        accounts: [{ id: 'staff', role: 'founder' }],
+        parentById,
+      }).map((row) => row.id),
+    ).toEqual([]);
+  });
+
   it('drops a forum_reply with missing parent at mentions', () => {
     const rows: NotificationRow[] = [
       notification({

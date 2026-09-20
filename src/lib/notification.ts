@@ -174,6 +174,8 @@ export function wantsNotification(args: {
  * living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. Zap `text` is the amount string.
+ * Zap actor staff is the stored actor via {@link isStaffAccount} only when
+ * that actor is not the parent note author (missing payer is not staff).
  *
  * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
  * @returns Matching rows in the same order.
@@ -200,9 +202,17 @@ export function notificationsMatchingLevel(args: {
     const zapAmount = row.type === 'zap' && Number.isFinite(amountSats) ? amountSats : 0;
     const isActive = parent === undefined ? zapAmount > 0 : parent.sats > 0 || zapAmount > 0;
     const mentionedAccountId = row.type === 'forum_post' ? null : (parent?.accountId ?? null);
+    const storedActorIsStaff = staffById.get(row.actorAccountId) === true;
+    const actorIsStaff =
+      row.type !== 'zap'
+        ? storedActorIsStaff
+        : storedActorIsStaff &&
+          parent !== undefined &&
+          parent.accountId !== null &&
+          row.actorAccountId !== parent.accountId;
     return wantsNotification({
       level: args.level,
-      actorIsStaff: staffById.get(row.actorAccountId) === true,
+      actorIsStaff,
       isActive,
       mentionedAccountId,
       recipientAccountId: args.recipientAccountId,

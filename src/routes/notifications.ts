@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
+import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
   NOTIFICATION_FILTER_SCAN_LIMIT,
@@ -64,7 +65,7 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
         const rows = await deps.store.listByRecipient(account.id, NOTIFICATION_FILTER_SCAN_LIMIT);
         const accounts = await deps.authStore.listAccounts();
         const parentIds = [...new Set(rows.map((row) => row.parentId))];
-        const parentById = new Map();
+        const parentById = new Map<string, MessageRow>();
         for (const id of parentIds) {
           const parent = await deps.messages.getById(id);
           if (parent !== undefined) {
