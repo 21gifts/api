@@ -568,7 +568,6 @@ export class PostgresAuthStore implements AuthStore {
          INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
          SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
          WHERE EXISTS (SELECT 1 FROM deleted)
-         ON CONFLICT (credential_id) DO NOTHING
          RETURNING credential_id`,
         [
           credential.credentialId,

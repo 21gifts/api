@@ -313,10 +313,11 @@ Otherwise **Response** `200`:
 ```
 
 `options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
-`userVerification` required, attestation `none`). `user.id` is the pending
-account UUID encoded as UTF-8 (the provisioned account when claiming by
-`viewKey`). The process still boots without
-`WEBAUTHN_RP_ID` — only these routes fail closed.
+`userVerification` required, attestation `none`). `options.extensions.prf`
+is `{}` so a capable authenticator enables hmac-secret. The api never sees
+PRF output or a mnemonic. `user.id` is the pending account UUID encoded as
+UTF-8 (the provisioned account when claiming by `viewKey`). The process
+still boots without `WEBAUTHN_RP_ID` — only these routes fail closed.
 
 ### `POST /auth/passkey/register/finish`
 
@@ -380,7 +381,9 @@ Starts a discoverable-credential assertion. `allowCredentials` is empty.
 Same 500 as register begin when WebAuthn is unconfigured.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
-`PublicKeyCredentialRequestOptionsJSON`.
+`PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
+is the base64url SHA-256 of `21gifts-nostr-v1`. The api never sees PRF
+output or a mnemonic.
 
 ### `POST /auth/passkey/authenticate/finish`
 

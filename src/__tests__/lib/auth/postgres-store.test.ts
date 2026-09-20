@@ -1066,7 +1066,7 @@ describe('PostgresAuthStore', () => {
     expect(query?.text).toMatch(/DELETE FROM passkey_credential WHERE account_id = \$4/);
     expect(query?.text).toMatch(/INSERT INTO passkey_credential/);
     expect(query?.text).toMatch(/WHERE EXISTS \(SELECT 1 FROM deleted\)/);
-    expect(query?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    expect(query?.text).not.toMatch(/ON CONFLICT/);
     expect(query?.text).toMatch(/RETURNING credential_id/);
     expect(query?.params).toEqual(['cred-2', new Uint8Array([4, 5, 6]), 0, 'acc', 2]);
   });
@@ -1100,7 +1100,7 @@ describe('PostgresAuthStore', () => {
       }),
     ).toBe(false);
     expect(sql.executes).toEqual([]);
-    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    expect(sql.queries[0]?.text).not.toMatch(/ON CONFLICT/);
   });
 
   it('returns false when replace insert hits unique_violation', async () => {
