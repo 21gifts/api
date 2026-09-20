@@ -7,7 +7,7 @@ import {
 } from '@/lib/auth/account-setup';
 import type { Account, AuthStore, NotificationLevel } from '@/lib/auth/store';
 import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
-import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import type { FundingStore } from '@/lib/funding-store';
 import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
 
@@ -189,9 +189,8 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
- * @returns Eighteen fields including `viewKey`, `setup`, `missing`,
- * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`, `username`,
- * `notificationLevel`, and `funding`.
+ * @returns Nineteen fields (eleven public + `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`).
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -263,7 +262,7 @@ export async function serializeOwnerAccountWithPosts(
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
-    const grant = await loadGrantEffective(funding.store, account.id, funding.nowMs);
+    const grant = await funding.store.getByAccountId(account.id);
     let reviewerName: string | null = null;
     if (grant?.decidedBy !== null && grant?.decidedBy !== undefined) {
       const reviewer = await funding.authStore.getAccount(grant.decidedBy);

@@ -1448,12 +1448,12 @@
 
 - **Purpose:** Owner JSON for authenticated account responses: the eleven public fields (including username and location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel` (`all` / `active` / `mentions`, default `all`, owner-only), and `funding` (`null` for `basis`), so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, About me photo display, living-room notify filter, and funding status. Used by `GET /me`, `/me` writes including `POST /me/username`, `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, `POST /me/notification-level`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null` plus `aboutMeHasPhoto: boolean` plus optional `funding` (`OwnerFundingJson | null`, default `null`).
-- **Returns / side effects:** `OwnerAccountResponse` (eighteen fields: eleven public including username, plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`). No I/O. Does not expose `profileMessageId`.
+- **Returns / side effects:** `OwnerAccountResponse` (nineteen fields: eleven public + `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts` (`meRoutes` including `POST /me/username`).
 
 ## Function: serializeOwnerAccountWithPosts
 
-- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null` — see `src/lib/auth/account-json.ts` 247: `if (row !== undefined && row.deletedAt === null)`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename, and `aboutMeHasPhoto` from `row.hasPhoto === true`. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`. Optional funding lookup loads the grant via `loadGrantEffective` and admitted `reviewedByName`.
+- **Purpose:** Async owner JSON with live-post lookup and profile-note About me. Calls `accountHasLivePost(account.id, account.profileMessageId ?? null)`, loads the profile note via `getById` when `profileMessageId` is non-blank, then `serializeOwnerAccount` so HTTP callers cannot drift. `aboutMe` is `null` when the profile note is missing or `deletedAt` is set (`getById` still returns soft-hidden rows; the serializer requires `row.deletedAt === null` — see `src/lib/auth/account-json.ts` 247: `if (row !== undefined && row.deletedAt === null)`). A live row passes `aboutMeFromNote(account.name, row.text, row.name)` so auto name-copy stays unfilled after a display-name rename, and `aboutMeHasPhoto` from `row.hasPhoto === true`. Overlay `hasPosted` (`GET /me`) uses `accountHasLivePost` (replies count) and is **not** the spend/invoice predicate. Spend eligibility is `accountHasLiveTopLevelPost` / `GET /invoices/posted`. Optional funding lookup loads the grant via `getByAccountId` and admitted `reviewedByName`.
 - **Inputs:** `Account`, `Pick<MessageStore, 'accountHasLivePost' | 'getById'>`, optional `OwnerFundingLookup` (`store`, `nowMs`, `authStore`).
 - **Returns / side effects:** `OwnerAccountResponse` including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`. Overlay lookup is `accountHasLivePost`; spend/invoice lookup is `accountHasLiveTopLevelPost`. Omitted funding lookup is `basis` `null` or `{ status: 'none', … }`. Store throw is unhandled.
 - **Used by:** `meRoutes` and `authRoutes`.
@@ -2189,10 +2189,10 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: loadGrantEffective
 
-- **Purpose:** Load one grant and lazily persist expired trials. Missing row is `undefined` (no upsert). When `effectiveStatus` is `'pending'` and the stored status is still `'trial'`, upserts `expiredTrialAsPending` and returns that row. Today's and future trials are returned unchanged.
+- **Purpose:** Load one grant and lazily persist expired trials via compare-and-set. Missing row is `undefined` (no upsert). When `effectiveStatus` is `'pending'` and the stored status is still `'trial'`, rewrites pending only if the row is still `status='trial'` with the same expired `trialUtcDate` (InMemory re-read then upsert; Postgres `UPDATE … WHERE account_id AND status='trial' AND trial_utc_date RETURNING *`; 0 rows → `getByAccountId`). Today's and future trials are returned unchanged.
 - **Inputs:** `FundingStore`, `accountId`, `nowMs`.
-- **Returns / side effects:** Observed grant, or `undefined`. May write pending over an expired trial.
-- **Used by:** `fundingRoutes`, `serializeOwnerAccountWithPosts`, `membersRoutes`, `messagesRoutes`, `conversationRoutes`, `invoiceRoutes`.
+- **Returns / side effects:** Observed grant, or `undefined`. May write pending over an expired trial that still matches.
+- **Used by:** `fundingRoutes`.
 
 ## Function: migrateFundingSchema
 
@@ -2210,7 +2210,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: PostgresFundingStore
 
-- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`.
+- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. `expireTrialIfUnchanged` is `UPDATE … WHERE account_id=$1 AND status='trial' AND trial_utc_date=$2 RETURNING *` (0 rows → `getByAccountId`). Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Query and execute errors propagate.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.

@@ -2803,4 +2803,44 @@ describe('GET /invoices/eligible', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: false });
   });
+  it('does not persist when GET /eligible sees an expired trial', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const stored = expiredTrialGrant();
+    const fundingStore = new InMemoryFundingStore([stored]);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore,
+      now: () => NOW_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+    expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
+    expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
+  });
+  it('does not persist when POST /invoices sees an expired trial', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const stored = expiredTrialGrant();
+    const fundingStore = new InMemoryFundingStore([stored]);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      fundingStore,
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
+    expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
+  });
 

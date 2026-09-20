@@ -7,12 +7,14 @@ import {
   PostgresFundingStore,
   loadGrantEffective,
   migrateFundingSchema,
+  type FundingStore,
 } from '@/lib/funding-store';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
+  queryResults: unknown[][] | undefined;
   queryError: unknown | undefined;
   executeError: unknown | undefined;
 
@@ -20,6 +22,10 @@ class MockSql implements SqlClient {
     this.queries.push({ text, params });
     if (this.queryError !== undefined) {
       throw this.queryError;
+    }
+    if (this.queryResults !== undefined) {
+      const next = this.queryResults.shift();
+      return (next ?? []) as T[];
     }
     return this.nextRows as T[];
   }
@@ -182,6 +188,36 @@ describe('InMemoryFundingStore', () => {
   });
 });
 
+/** First read returns `seed`; later reads/upserts see `replacement`. */
+class RaceStore implements FundingStore {
+  readonly #inner: InMemoryFundingStore;
+  #reads = 0;
+
+  constructor(
+    seed: FundingGrant,
+    private readonly replacement: FundingGrant,
+  ) {
+    this.#inner = new InMemoryFundingStore([seed]);
+  }
+
+  async getByAccountId(accountId: string): Promise<FundingGrant | undefined> {
+    const value = await this.#inner.getByAccountId(accountId);
+    this.#reads += 1;
+    if (this.#reads === 1) {
+      await this.#inner.upsert(this.replacement);
+    }
+    return value;
+  }
+
+  listGrants(): Promise<FundingGrant[]> {
+    return this.#inner.listGrants();
+  }
+
+  upsert(grant: FundingGrant): Promise<FundingGrant> {
+    return this.#inner.upsert(grant);
+  }
+}
+
 describe('loadGrantEffective', () => {
   it('persists pending when the stored trial day is before today UTC', async () => {
     const store = new InMemoryFundingStore();
@@ -207,6 +243,28 @@ describe('loadGrantEffective', () => {
     expect(await store.getByAccountId('acc-a')).toEqual(loaded);
   });
 
+  it('does not overwrite an admitted row that replaced the expired trial', async () => {
+    const expired = grant({
+      status: 'trial',
+      trialUtcDate: YESTERDAY,
+      decidedAt: DECIDED,
+      decidedBy: 'staff',
+      note: 'keep',
+    });
+    const admitted = grant({
+      status: 'admitted',
+      decidedAt: DECIDED,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: ADMITTED,
+      note: 'keep',
+    });
+    const store = new RaceStore(expired, admitted);
+    const loaded = await loadGrantEffective(store, 'acc-a', NOW_MS);
+    expect(loaded).toEqual(admitted);
+    expect(await store.getByAccountId('acc-a')).toEqual(admitted);
+  });
+
   it('returns undefined and does not upsert when no row exists', async () => {
     const store = new InMemoryFundingStore();
     expect(await loadGrantEffective(store, 'missing', NOW_MS)).toBeUndefined();
@@ -225,6 +283,111 @@ describe('loadGrantEffective', () => {
     expect(tomorrow?.trialUtcDate).toBe(TOMORROW);
     expect((await store.getByAccountId('today'))?.status).toBe('trial');
     expect((await store.getByAccountId('tomorrow'))?.status).toBe('trial');
+  });
+
+  it('persists pending via Postgres UPDATE … WHERE still that trial', async () => {
+    const sql = new MockSql();
+    const expiredRow = {
+      account_id: 'acc-a',
+      status: 'trial' as const,
+      applied_at: new Date('2026-09-01T00:00:00.000Z'),
+      decided_at: new Date('2026-09-10T08:00:00.000Z'),
+      decided_by: 'staff',
+      trial_utc_date: YESTERDAY,
+      admitted_at: null,
+      note: 'keep',
+    };
+    const pendingRow = {
+      ...expiredRow,
+      status: 'pending' as const,
+      trial_utc_date: null,
+      admitted_at: null,
+    };
+    sql.queryResults = [[expiredRow], [pendingRow]];
+    const loaded = await loadGrantEffective(new PostgresFundingStore(sql), 'acc-a', NOW_MS);
+    expect(sql.queries[1]?.text).toMatch(/UPDATE funding_grant SET/);
+    expect(sql.queries[1]?.text).toMatch(
+      /WHERE account_id = \$1 AND status = 'trial' AND trial_utc_date = \$2/,
+    );
+    expect(sql.queries[1]?.text).toMatch(/RETURNING /);
+    expect(sql.queries[1]?.params[0]).toBe('acc-a');
+    expect(sql.queries[1]?.params[1]).toBe(YESTERDAY);
+    expect(sql.queries[1]?.params[2]).toBe('pending');
+    expect(sql.executes).toEqual([]);
+    expect(loaded).toEqual({
+      accountId: 'acc-a',
+      status: 'pending',
+      appliedAt: APPLIED,
+      decidedAt: DECIDED,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: null,
+      note: 'keep',
+    });
+  });
+
+  it('binds null decided_at when the expired Postgres trial has no decision stamp', async () => {
+    const sql = new MockSql();
+    const expiredRow = {
+      account_id: 'acc-a',
+      status: 'trial' as const,
+      applied_at: new Date('2026-09-01T00:00:00.000Z'),
+      decided_at: null,
+      decided_by: null,
+      trial_utc_date: YESTERDAY,
+      admitted_at: null,
+      note: null,
+    };
+    const pendingRow = {
+      ...expiredRow,
+      status: 'pending' as const,
+      trial_utc_date: null,
+    };
+    sql.queryResults = [[expiredRow], [pendingRow]];
+    const loaded = await loadGrantEffective(new PostgresFundingStore(sql), 'acc-a', NOW_MS);
+    expect(sql.queries[1]?.params[4]).toBeNull();
+    expect(sql.queries[1]?.params[7]).toBeNull();
+    expect(loaded?.decidedAt).toBeNull();
+    expect(loaded?.admittedAt).toBeNull();
+  });
+
+  it('does not overwrite a Postgres admitted row when UPDATE matches 0 rows', async () => {
+    const sql = new MockSql();
+    const expiredRow = {
+      account_id: 'acc-a',
+      status: 'trial' as const,
+      applied_at: new Date('2026-09-01T00:00:00.000Z'),
+      decided_at: new Date('2026-09-10T08:00:00.000Z'),
+      decided_by: 'staff',
+      trial_utc_date: YESTERDAY,
+      admitted_at: null,
+      note: 'keep',
+    };
+    const admittedRow = {
+      account_id: 'acc-a',
+      status: 'admitted' as const,
+      applied_at: new Date('2026-09-01T00:00:00.000Z'),
+      decided_at: new Date('2026-09-10T08:00:00.000Z'),
+      decided_by: 'staff',
+      trial_utc_date: null,
+      admitted_at: new Date('2026-09-15T18:00:00.000Z'),
+      note: 'keep',
+    };
+    sql.queryResults = [[expiredRow], [], [admittedRow]];
+    const loaded = await loadGrantEffective(new PostgresFundingStore(sql), 'acc-a', NOW_MS);
+    expect(sql.queries[1]?.text).toMatch(/UPDATE funding_grant SET/);
+    expect(sql.queries[2]?.text).toMatch(/SELECT .+ FROM funding_grant WHERE account_id = \$1/);
+    expect(sql.executes).toEqual([]);
+    expect(loaded).toEqual({
+      accountId: 'acc-a',
+      status: 'admitted',
+      appliedAt: APPLIED,
+      decidedAt: DECIDED,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: ADMITTED,
+      note: 'keep',
+    });
   });
 });
 

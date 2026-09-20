@@ -2394,8 +2394,9 @@ note never become `messageId`.
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential and at least one live **top-level** forum message that is not the
-auto-created profile note. Replies do not unlock an invoice. It then resolves
+credential, a funding grant eligible today (`eligibleToday`), and at least
+one live **top-level** forum message that is not the auto-created profile
+note. Replies do not unlock an invoice. It then resolves
 LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 `{ id, pr, paymentHash }` in memory. It does not pay.
 
@@ -2467,8 +2468,8 @@ is stored):
 
 The account has a passkey but no live **top-level** forum message other than
 the auto-created profile note, or `messageId` is set but is not that
-address's live top-level non-profile note → **403** (after the passkey check,
-before any LNURL fetch; no invoice is stored):
+address's live top-level non-profile note → **403** (after the passkey and
+grant checks, before any LNURL fetch; no invoice is stored):
 
 ```json
 { "error": "Forum post required" }

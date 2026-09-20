@@ -13,7 +13,7 @@ import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { preimageMatchesHash } from '@/lib/proof';
 import { eligibleToday } from '@/lib/funding';
-import { InMemoryFundingStore, loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   NoopGiftRecorder,
@@ -24,16 +24,15 @@ import { logEvent } from '@/lib/log';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Spend-worker invoice routes: check passkey eligibility and a live
- * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
- * the payment preimage as proof. A proof with `messageId` attaches a platform
- * gift-reply when that message is a top-level post. If `messageId` is already
- * a reply, the proof persists a deterministic `spendGiftReplyId` marker
- * under that reply, `markDeleted` so live `listReplies` omits it, then
- * `addSats`s the reply. A live existing marker is `markDeleted` only and
- * does not `addSats`. Platform gift-replies do not notify. A proof with
- * `groupMessageId` attaches a platform stipend message in the closed
- * Moderators group. The api does not pay.
+ * Spend-worker invoice routes: check passkey eligibility, a funding grant
+ * (`eligibleToday`), and a live top-level forum post, fetch a recipient
+ * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
+ * with `messageId` attaches a platform gift-reply when that message is a
+ * top-level post. If `messageId` is already a reply, the proof persists a
+ * deterministic `spendGiftReplyId` marker under that reply, `markDeleted`
+ * so live `listReplies` omits it, then `addSats`s the reply. A live existing
+ * marker is `markDeleted` only and does not `addSats`. Platform gift-replies
+ * do not notify. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -402,7 +401,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ eligible: false }, 200);
       }
-      const grant = await loadGrantEffective(fundingStore, account.id, deps.now());
+      const grant = await fundingStore.getByAccountId(account.id);
       return c.json({ eligible: eligibleToday(account.role, grant, deps.now()) }, 200);
     })
     .get('/posted', async (c) => {
@@ -486,7 +485,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Passkey required' }, 403);
       }
 
-      const grant = await loadGrantEffective(fundingStore, account.id, deps.now());
+      const grant = await fundingStore.getByAccountId(account.id);
       if (!eligibleToday(account.role, grant, deps.now())) {
         logEvent('invoice.funding_required', { address });
         return c.json({ error: 'Funding grant required' }, 403);

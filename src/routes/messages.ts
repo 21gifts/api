@@ -7,7 +7,7 @@ import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { eligibleToday } from '@/lib/funding';
-import { InMemoryFundingStore, loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -582,10 +582,8 @@ async function persistForumPost(
       deps.spendPing !== undefined
     ) {
       try {
-        const grant = await loadGrantEffective(
-          deps.fundingStore ?? new InMemoryFundingStore(),
+        const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
           account.id,
-          deps.now(),
         );
         if (!eligibleToday(account.role, grant, deps.now())) {
           logEvent('spend.ping.skipped', { reason: 'not_eligible' });

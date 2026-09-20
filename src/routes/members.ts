@@ -11,7 +11,7 @@ import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { fundingReviewedAt } from '@/lib/funding';
-import { InMemoryFundingStore, loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
@@ -296,7 +296,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         const counts = await deps.messageStore.countByAccount(account.id);
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
-        const grant = await loadGrantEffective(fundingStore, account.id, deps.now());
+        const grant = await fundingStore.getByAccountId(account.id);
         return c.json(
           {
             id: account.id,
