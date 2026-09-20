@@ -249,6 +249,26 @@ async function actorIsStaffFromAuth(
 }
 
 /**
+ * Look up whether `accountId` is the official platform account.
+ *
+ * @param auth - Optional auth list.
+ * @param accountId - Actor/payer id, or `undefined` when there is no payer.
+ * @returns True only when `auth` and `accountId` are set and that account has
+ *   `isPlatform === true`. Missing auth, missing id, missing account, or
+ *   `isPlatform` not true → false.
+ */
+async function actorIsPlatformAccount(
+  auth: Pick<AuthStore, 'listAccounts'> | undefined,
+  accountId: string | undefined,
+): Promise<boolean> {
+  if (auth === undefined || accountId === undefined) {
+    return false;
+  }
+  const actor = (await auth.listAccounts()).find((account) => account.id === accountId);
+  return actor === undefined ? false : actor.isPlatform === true;
+}
+
+/**
  * Drop ids whose stored level rejects this event. Push-only ids not in
  * `accountsById` are treated as `all`.
  *
@@ -409,15 +429,17 @@ export async function fanoutToBellSubscribers(args: {
 
 /**
  * Notify living-room members of a new top-level forum post except the actor.
- * Persist a `forum_post` row for every matching account (when `auth` is set)
- * or every bell subscriber (otherwise) when `notifications` is set, and
- * enqueue a `/notifications` Web Push when `pushStore` is set. Matching
- * uses {@link wantsNotification}: `isActive` is `created.sats > 0`,
- * `mentionedAccountId` is null (top-level posts are never personal),
- * `actorIsStaff` from the actor in `auth.listAccounts()` (false if missing).
- * When `auth` is unset, do not filter by level. Missing `pushStore` still
- * writes in-app rows when `auth` is set. This helper may throw; callers wrap
- * it.
+ * No-op when the actor is the official platform account (`isPlatform === true`
+ * via `auth.listAccounts()`). Missing auth, missing id, missing account, or
+ * `isPlatform` not true still fans out. Persist a `forum_post` row for every
+ * matching account (when `auth` is set) or every bell subscriber (otherwise)
+ * when `notifications` is set, and enqueue a `/notifications` Web Push when
+ * `pushStore` is set. Matching uses {@link wantsNotification}: `isActive` is
+ * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
+ * personal), `actorIsStaff` from the actor in `auth.listAccounts()` (false if
+ * missing). When `auth` is unset, do not filter by level. Missing `pushStore`
+ * still writes in-app rows when `auth` is set. This helper may throw; callers
+ * wrap it.
  *
  * @param args - Optional stores, actor, persisted post.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -437,6 +459,9 @@ export async function notifyForumPost(args: {
   /** Optional listed inbox unread; forwarded to fan-out. */
   inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
+  if (await actorIsPlatformAccount(args.auth, args.account.id)) {
+    return;
+  }
   await fanoutToBellSubscribers({
     ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
     ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
@@ -468,14 +493,16 @@ export async function notifyForumPost(args: {
 /**
  * Notify living-room members of a forum reply except the actor. Persist a
  * `forum_reply` row when `notifications` is set and enqueue a `/notifications`
- * Web Push when `pushStore` is set. No-op when the parent is missing. Damus-only
- * parents and self-replies still fan out (the actor is skipped). Photo-only
- * empty text still notifies. Matching uses {@link wantsNotification}:
- * `isActive` is `parent.sats > 0`, `mentionedAccountId` is `parent.accountId`
- * (null when the parent has no account), `actorIsStaff` from the reply actor.
- * When `auth` is unset, do not filter by level. Missing `pushStore` still
- * writes in-app rows when `auth` is set. Unique duplicate create is fine.
- * This helper may throw; callers wrap it.
+ * Web Push when `pushStore` is set. No-op when the parent is missing. No-op
+ * when the actor is the official platform account (`isPlatform === true` via
+ * `auth.listAccounts()`). Missing auth, missing id, missing account, or
+ * `isPlatform` not true still fans out. Damus-only parents and self-replies
+ * still fan out (the actor is skipped). Photo-only empty text still notifies.
+ * Matching uses {@link wantsNotification}: `isActive` is `parent.sats > 0`,
+ * `mentionedAccountId` is `parent.accountId` (null when the parent has no
+ * account), `actorIsStaff` from the reply actor. When `auth` is unset, do not
+ * filter by level. Missing `pushStore` still writes in-app rows when `auth` is
+ * set. Unique duplicate create is fine. This helper may throw; callers wrap it.
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -501,6 +528,9 @@ export async function notifyForumReply(args: {
 }): Promise<void> {
   const parent = await args.messages.getById(args.parentId);
   if (parent === undefined) {
+    return;
+  }
+  if (await actorIsPlatformAccount(args.auth, args.account.id)) {
     return;
   }
   await fanoutToBellSubscribers({
@@ -595,14 +625,18 @@ export async function notifyExternalForumReply(args: {
 /**
  * Notify living-room members of a newly indexed zap/payment. Persist a `zap`
  * row when `notifications` is set and enqueue a `/notifications` Web Push when
- * `pushStore` is set. No-op when the note has no `accountId`. Does not skip the
- * note author unless they are also `payerAccountId`. Matching uses
- * {@link wantsNotification}: `isActive` is `note.sats > 0` or `amountSats > 0`
- * (first gift still counts), `mentionedAccountId` is `note.accountId`,
- * `actorIsStaff` from the payer account when `payerAccountId` is found
- * (otherwise false — a zap is not an admin post). When `auth` is unset, do
- * not filter by level. Missing `pushStore` still writes in-app rows when
- * `auth` is set. This helper may throw; callers wrap it.
+ * `pushStore` is set. No-op when the note has no `accountId`. No-op when
+ * `payerAccountId` is the official platform account (`isPlatform === true` via
+ * `auth.listAccounts()`). Do not skip when `payerAccountId` is omitted.
+ * Missing auth, missing account, or `isPlatform` not true still fans out.
+ * Does not skip the note author unless they are also `payerAccountId`.
+ * Matching uses {@link wantsNotification}: `isActive` is `note.sats > 0` or
+ * `amountSats > 0` (first gift still counts), `mentionedAccountId` is
+ * `note.accountId`, `actorIsStaff` from the payer account when
+ * `payerAccountId` is found (otherwise false — a zap is not an admin post).
+ * When `auth` is unset, do not filter by level. Missing `pushStore` still
+ * writes in-app rows when `auth` is set. This helper may throw; callers wrap
+ * it.
  *
  * @param args - Optional stores, zapped note, receipt id, amount, clock, optional payer.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -632,6 +666,9 @@ export async function notifyZap(args: {
 }): Promise<void> {
   const noteAccountId = args.note.accountId;
   if (noteAccountId === null) {
+    return;
+  }
+  if (await actorIsPlatformAccount(args.auth, args.payerAccountId)) {
     return;
   }
   const replyId = zapReplyIdFromReceipt(args.receiptId);

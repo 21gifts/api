@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -47,7 +47,8 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
-platform-account gift-reply first, then `addSats` (idempotent). When that
+platform-account gift-reply first, then `addSats` (idempotent). That path does
+not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
 only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
@@ -131,6 +132,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
 | PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                                |
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
+| GET    | `/debug/api-log`                             | `Authorization: Bearer`  | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
 | POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`  | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
@@ -907,8 +909,9 @@ creates a new live note even without a Lightning Address and claims
 `profileMessageId` via `claimProfileMessageId` only while the pointer
 still matches the missing/hidden read (not on owner JSON); a lost claim
 deletes the insert and adopts a live winner. A won inline create calls
-`notifyForumPost` after the writes (best-effort; enqueue failure still
-200). Updating an already-live note does not notify. The hidden row
+`notifyForumPost` after the writes (best-effort; no-op when the actor is
+the official platform account; enqueue failure still 200). Updating an
+already-live note does not notify. The hidden row
 stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
 so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
@@ -1474,6 +1477,66 @@ logged as `debug.trust_edges.delete_failed`.
 Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
 
 **Response** `200` is the deleted edge, same JSON as `POST /debug/trust-edges`.
+
+### `GET /debug/api-log`
+
+Operator listing of HTTP audit rows (`api_log`). Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. Rows are newest-first (`createdAt` descending, then `id`), capped
+at **200**. The log never stores OPTIONS, `/healthz`, the query string,
+request bodies, or the Authorization header. Paths pass through
+`requestLogPath` (`/view/<segment>` → `/view/:viewKey`). Write failure on
+the request path logs `api_log.write.failed` and does not replace the
+response.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Log is unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "logs": [
+    {
+      "id": "<uuid>",
+      "createdAt": "2026-09-19T15:16:52.530Z",
+      "method": "POST",
+      "path": "/conversations/<uuid>",
+      "status": 200,
+      "ms": 8,
+      "accountId": "<uuid>",
+      "authKind": "session"
+    }
+  ]
+}
+```
+
+`authKind` is `session`, `debug`, `spend`, or `none`. `accountId` is the
+session account when `authKind` is `session`; otherwise JSON `null`. An
+empty log returns `"logs": []`. When `DATABASE_URL` is unset the default
+in-memory store starts empty; when set, rows come from Postgres `api_log`.
+
+Environment:
+
+| Variable       | Meaning                                                                  |
+| -------------- | ------------------------------------------------------------------------ |
+| `DATABASE_URL` | When set, audit rows are stored in Postgres; when unset, in-memory only. |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.        |
 
 ### `GET /debug/contacts`
 
@@ -2348,7 +2411,7 @@ response.
 When the invoice has `messageId`, the api inserts a platform-account
 gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post, then `notifyForumReply`. When `messageId` is already a reply,
+on that post. That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
 attach persists a deterministic `spendGiftReplyId` marker under that reply,
 `markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
 existing marker is `markDeleted` only and does not `addSats`; no nested
@@ -2578,7 +2641,7 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor, then filter recipients by each account's `notificationLevel`
+actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
 fan out. A self-reply skips only the actor. `GET /notifications` applies the
@@ -2713,7 +2776,8 @@ member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer, then filtered by each account's
+every account except the resolved payer, no-op when that payer is the official
+platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
 failure logs `push.enqueue.failed`). `GET /notifications` applies the same
@@ -3186,8 +3250,8 @@ Success → **Response** `200`:
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
 the role is at least `moderator`) every platform thread. Empty threads
-and outbound-only member/Damus threads (every stored sender is
-`conversationFromMe` for the viewer, including staff-as-platform) are
+and outbound-only member/Damus threads (every stored message is
+`conversationFromMe` for the viewer — the actor, else the sender) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. This list never includes `moderator_group` regardless of
@@ -3270,7 +3334,9 @@ thread is `unread: false`).
 
 Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
-on the thread). Each message may include optional sender `accountId`.
+on the thread). Each message may include optional `accountId`: members
+always see the stored sender; staff see the actor when `actorAccountId`
+is set, otherwise the sender.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
@@ -3301,15 +3367,20 @@ Success → **Response** `200`:
 }
 ```
 
-`accountId` is the sender 21.gifts account. It is omitted when
-`senderAccountId` is null (Damus inbound; never JSON `null`).
+`accountId` is omitted when the projected account is null (Damus inbound;
+never JSON `null`). Members always receive the stored sender (typically
+`21.gifts` on a platform send). Staff receive the actor when
+`actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor when
+set, otherwise the sender; there is no staff-as-platform shortcut.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text": "…" }` 1–500 via
 `normalizeForumText`. Moderator replies on a
-platform thread persist as the platform account; the worker signs with the
+platform thread persist as the platform account (sender + Nostr nsec) and
+record the logged-in staff as `actorAccountId` / `actorName`. Staff JSON
+uses the actor; members still see `21.gifts`. The worker signs with the
 platform nsec. Relay failure does not block local persist. Kind includes
 `moderator_group`: persist as the caller account (moderator,
 not platform) with `nostrPublishState` skipped (never Nostr). After a new
@@ -3329,7 +3400,7 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message, including
-optional sender `accountId`). After persist, the api enqueues one Web Push
+optional `accountId` — actor for staff when set, otherwise sender). After persist, the api enqueues one Web Push
 (`type: conversation`, url `/messages?c=<conversationId>`) to each
 bell-subscribed counterpart. `unreadCount` on that payload (and on forum
 and zap payloads) is in-app notification unread plus listed inbox unread.

@@ -55,6 +55,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: '',
     lastText: '',
     lastSenderAccountId: null,
+    lastActorAccountId: null,
     lastSats: 0,
     ...partial,
   };
@@ -77,9 +78,11 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(16);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(18);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
+    expect(joined).toMatch(/actor_account_id/);
+    expect(joined).toMatch(/actor_name/);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_read/i);
     expect(joined).toMatch(/conversation_read_conversation_id_idx/);
     expect(joined).toMatch(/conversation_member_member_uidx/);
@@ -390,10 +393,24 @@ describe('InMemoryConversationStore', () => {
     expect(await store.hasInboundMessage(opened.id, 'acc', false, null)).toBe(true);
   });
 
-  it('hasInboundMessage is false when staff sees only a platform send', async () => {
+  it('hasInboundMessage is true when staff sees only a platform send without actor', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberPlatform('mem', 'plat', NOW);
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasInboundMessage is false when staff is the actor of a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Ada',
+      }),
+    );
     expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(false);
   });
 
@@ -488,15 +505,29 @@ describe('InMemoryConversationStore', () => {
     expect(await store.hasUnread(opened.id, 'b', false, null)).toBe(true);
   });
 
-  it('hasUnread treats staff platform send as not inbound and member send as inbound', async () => {
+  it('hasUnread treats a platform send without actor as inbound for staff', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberPlatform('mem', 'plat', NOW);
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
-    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(false);
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(true);
     await store.appendMessage(
       message({ id: 'from-mem', conversationId: opened.id, senderAccountId: 'mem' }),
     );
     expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasUnread is false when staff is the actor of a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Ada',
+      }),
+    );
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(false);
   });
 
   it('copies last-read seed Dates so callers cannot mutate the stamp', async () => {
@@ -774,11 +805,8 @@ describe('PostgresConversationStore', () => {
     expect(await store.hasInboundMessage('c1', 'acc', true, 'plat')).toBe(true);
     expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
     expect(sql.queries[0]?.text).toContain('EXISTS');
-    expect(sql.queries[0]?.text).toContain('sender_account_id IS NULL');
+    expect(sql.queries[0]?.text).toContain('COALESCE(actor_account_id, sender_account_id)');
     expect(sql.queries[0]?.text).toContain('IS DISTINCT FROM');
-    expect(sql.queries[0]?.text).toContain(
-      'NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)',
-    );
   });
 
   it('hasInboundMessage is false when EXISTS is false', async () => {
@@ -1132,6 +1160,8 @@ describe('PostgresConversationStore', () => {
         sender_account_id: 'acc',
         sender_pubkey: null,
         name: 'Ada',
+        actor_account_id: 'acc',
+        actor_name: 'Ada',
         event_id: null,
         nostr_publish_state: 'pending',
         nostr_event: null,
@@ -1141,6 +1171,8 @@ describe('PostgresConversationStore', () => {
     const store = new PostgresConversationStore(sql);
     const listed = await store.listMessages('c1', 20);
     expect(listed[0]?.text).toBe('hi');
+    expect(listed[0]?.actorAccountId).toBe('acc');
+    expect(listed[0]?.actorName).toBe('Ada');
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
@@ -1161,6 +1193,8 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[9]).toBe(row.nostrPublishState);
     expect(typeof sql.executes[0]?.params[10]).not.toBe('string');
     expect(sql.executes[0]?.params[10]).toStrictEqual(row.nostrEvent);
+    expect(sql.executes[0]?.params[12]).toBe(row.actorAccountId);
+    expect(sql.executes[0]?.params[13]).toBe(row.actorName);
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
   });
@@ -1170,6 +1204,16 @@ describe('PostgresConversationStore', () => {
     const store = new PostgresConversationStore(sql);
     await store.appendMessage(message());
     expect(sql.executes[0]?.params[10]).toBeNull();
+  });
+
+  it('appendMessage binds empty actorName when the field is omitted', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    const row = message();
+    delete (row as { actorName?: string }).actorName;
+    await store.appendMessage(row);
+    expect(sql.executes[0]?.params[12]).toBeNull();
+    expect(sql.executes[0]?.params[13]).toBe('');
   });
 
   it('appendMessage returns the existing row on event_id unique_violation', async () => {

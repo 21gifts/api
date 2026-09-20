@@ -26,6 +26,7 @@ import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
   migrateConversationSchema,
@@ -72,6 +73,11 @@ export interface BootStores {
    */
   contactStore: ContactStore | undefined;
   /**
+   * Postgres-backed HTTP audit log, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  apiLogStore: ApiLogStore | undefined;
+  /**
    * Postgres-backed private messaging store, or `undefined` when no SQL
    * client was opened so `createApp` keeps the empty in-memory default.
    */
@@ -117,15 +123,17 @@ export interface BootFxOptions {
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
- * `contactStore: undefined`, `conversationStore: undefined`,
+ * `contactStore: undefined`, `apiLogStore: undefined`,
+ * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `nostrKek: undefined`, an empty
  * {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}. A set
  * URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
- * and `db_change` schemas (notification after push, trust after notification,
- * both before `db_change`), builds a {@link QueryGiftStore},
+ * `api_log`, and `db_change` schemas (notification after push, trust after
+ * notification, `api_log` after trust and immediately before `db_change` so
+ * `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresContactStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore}, and
@@ -144,6 +152,9 @@ export interface BootFxOptions {
  * {@link PostgresNotificationStore} and {@link PostgresTrustStore}.
  * `migrateTrustSchema` runs after auth/`account` exists and before
  * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
+ * `migrateApiLogSchema` runs after `openAuthStore` (account exists) and
+ * immediately before `migrateDbChangeSchema` so `trg_db_change` attaches
+ * to `api_log`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -178,6 +189,7 @@ export async function openBootStores(
       messageStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
+      apiLogStore: undefined,
       conversationStore: undefined,
       notificationStore: undefined,
       pushStore: undefined,
@@ -195,6 +207,7 @@ export async function openBootStores(
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
   await migrateTrustSchema(sqlClient);
+  await migrateApiLogSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
@@ -245,6 +258,7 @@ export async function openBootStores(
     logEvent('nostr.zapper.backfill.failed');
   }
   const contactStore = new PostgresContactStore(sqlClient);
+  const apiLogStore = new PostgresApiLogStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
@@ -258,6 +272,7 @@ export async function openBootStores(
     messageStore,
     nostrKek,
     contactStore,
+    apiLogStore,
     conversationStore,
     notificationStore,
     pushStore,

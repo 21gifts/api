@@ -20,6 +20,7 @@ import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
+import { debugApiLogRoutes } from '@/routes/debug-api-log';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
@@ -35,6 +36,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
+import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -92,7 +94,7 @@ export interface AppDeps {
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
-   * `GET /debug/contacts`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
+   * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
@@ -100,6 +102,11 @@ export interface AppDeps {
    * return 503.
    */
   debugToken?: string;
+  /**
+   * HTTP audit log (default: empty {@link InMemoryApiLogStore}). Boot
+   * injects {@link PostgresApiLogStore} when `DATABASE_URL` is set.
+   */
+  apiLogStore?: ApiLogStore;
   /**
    * Outbound gifts for public statistics (default: empty
    * {@link InMemoryGiftStore}).
@@ -231,6 +238,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
@@ -246,7 +254,7 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   const app = new Hono();
 
-  app.use('*', requestLog());
+  app.use('*', requestLog({ apiLogStore, authStore: store, debugToken, spendApiToken, now }));
   // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this
   // before the restrictive allowlist cors so `*` is applied last on the way out
   // (Hono middleware registered first wraps later middleware).
@@ -343,6 +351,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
+  app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
   app.route(
@@ -443,9 +452,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
-      notificationStore,
-      pushStore,
-      conversationStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

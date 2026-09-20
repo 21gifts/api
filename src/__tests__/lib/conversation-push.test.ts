@@ -42,6 +42,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: 'Bob',
     lastText: 'hi',
     lastSenderAccountId: 'acc-a',
+    lastActorAccountId: null,
     lastSats: 0,
     ...partial,
   };
@@ -316,6 +317,36 @@ describe('notifyConversationMessage', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('mod-b');
     expect(claimed[0]?.type).toBe('conversation');
+    const payload = JSON.parse(claimed[0]?.payload ?? '{}') as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      type: 'conversation',
+      title: 'Ada',
+      body: 'hello',
+      url: '/moderate/group',
+      tag: `conversation:${group.id}`,
+    });
+    await notifyConversationMessage({
+      pushStore: push,
+      conversations,
+      authStore: auth,
+      thread: group,
+      message: message({
+        id: '22222222-2222-4222-8222-222222222222',
+        conversationId: group.id,
+        senderAccountId: 'mod-a',
+        name: '',
+        text: 'later',
+      }),
+      nowMs: NOW.getTime(),
+    });
+    const emptyName = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(emptyName).toHaveLength(1);
+    expect(JSON.parse(emptyName[0]?.payload ?? '{}')).toMatchObject({
+      title: '21.gifts',
+      body: 'later',
+      url: '/moderate/group',
+      tag: `conversation:${group.id}`,
+    });
   });
 
   it('enqueues for a founder alongside moderators on moderator_group and excludes the sender', async () => {
@@ -430,7 +461,12 @@ describe('notifyConversationMessage', () => {
       notifications,
       conversations,
       authStore: auth,
-      thread: { ...opened, lastText: 'hello', lastSenderAccountId: 'acc-a' },
+      thread: {
+        ...opened,
+        lastText: 'hello',
+        lastSenderAccountId: 'acc-a',
+        lastActorAccountId: null,
+      },
       message: message({
         conversationId: opened.id,
         senderAccountId: 'acc-a',

@@ -734,7 +734,8 @@ export async function indexZapReceipt(args: {
  * nested replies, and open conversation-invoice e-tags, index validated
  * ones, then insert a payer gift-reply (forum) or append the paid PN row
  * (conversation invoice) and fan out zap in-app notifications to every
- * account except skip (Web Push only to bell subscribers). Conversation
+ * account except skip (no-op when the payer is the official platform
+ * account; Web Push only to bell subscribers). Conversation
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
  * runs only when the paid message is top-level (`parentId` null); a reply
  * zap is `addSats` only (no nested gift-reply) and clears `payerAccountId`
@@ -1940,6 +1941,8 @@ async function appendConversationGift(args: {
     senderPubkey: pubkey === '' ? null : pubkey,
     name,
     ...unsignedConversationDefaults(),
+    actorAccountId: args.invoice.payerAccountId,
+    actorName: name,
     sats: args.invoice.amountSats,
     nostrPublishState: text === '' ? 'skipped' : 'pending',
   });

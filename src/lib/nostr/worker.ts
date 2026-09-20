@@ -199,7 +199,8 @@ function reservedContent(
  * 21.gifts account or to an entitled, unblocked external zapper (even when
  * publish is off). Other npubs are skipped.
  * After a member reply is stored, `notifyForumReply` always runs with `auth`
- * (in-app every account except the actor; Web Push only to bell subscribers).
+ * (in-app every account except the actor; no-op when the actor is the
+ * official platform account; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
  * still calls `notifyZap` after a newly indexed forum receipt. PN ingest
  * appends a conversation gift (`appendConversationGift`) and does not call
@@ -336,8 +337,9 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
  * blocked npubs (same silent skip as an empty event id). Member replies posted
  * from Damus with the custodial key still persist (named, or nameless via
  * {@link truncatePubkeyDisplay}). After a successful persist, fans out via
- * {@link notifyForumReply} (in-app every account except the actor; Web Push
- * only to bell subscribers); notify failure logs `nostr.reply.notify.failed`
+ * {@link notifyForumReply} (in-app every account except the actor; no-op when
+ * the actor is the official platform account; Web Push only to bell
+ * subscribers); notify failure logs `nostr.reply.notify.failed`
  * and does not fail persist.
  *
  * @param deps - Worker collaborators.
@@ -1215,6 +1217,8 @@ async function indexInboundDirectMessages(
             senderPubkey,
             name: senderName,
             ...unsignedConversationDefaults(),
+            actorAccountId: sender?.id ?? null,
+            actorName: sender === undefined ? '' : senderName,
             eventId: event.id,
             nostrPublishState: 'published',
             nostrEvent: {

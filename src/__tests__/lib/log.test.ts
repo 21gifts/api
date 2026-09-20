@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { InMemoryApiLogStore } from '@/lib/api-log';
+import { issueSession } from '@/lib/auth/service';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import { errorLogFields, logEvent, requestLog, requestLogPath } from '@/lib/log';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -124,9 +127,17 @@ describe('requestLog', () => {
     warn.mockRestore();
   });
 
-  function appWithRequestLog(): Hono {
+  function appWithRequestLog(store = new InMemoryApiLogStore()): Hono {
     const app = new Hono();
-    app.use('*', requestLog());
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
     app.get('/healthz', (c) => c.text('ok'));
     app.get('/info', (c) => c.text('info'));
     app.options('/info', (c) => c.body(null, 204));
@@ -135,17 +146,22 @@ describe('requestLog', () => {
   }
 
   it('skips http.request for GET /healthz', async () => {
-    await appWithRequestLog().request('/healthz');
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/healthz');
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+    expect(await store.listLatest(10)).toEqual([]);
   });
 
   it('skips http.request for OPTIONS', async () => {
-    await appWithRequestLog().request('/info', { method: 'OPTIONS' });
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info', { method: 'OPTIONS' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+    expect(await store.listLatest(10)).toEqual([]);
   });
 
   it('emits http.request for GET /info', async () => {
-    await appWithRequestLog().request('/info');
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info');
     const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
     expect(httpEvents).toHaveLength(1);
     const line = httpEvents[0];
@@ -153,6 +169,12 @@ describe('requestLog', () => {
     expect(line?.['path']).toBe('/info');
     expect(typeof line?.['status']).toBe('number');
     expect(Number.isInteger(line?.['ms'])).toBe(true);
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.method).toBe('GET');
+    expect(rows[0]?.path).toBe('/info');
+    expect(rows[0]?.authKind).toBe('none');
+    expect(rows[0]?.accountId).toBeNull();
   });
 
   it('emits http.request for GET /view/<64-hex> with redacted path', async () => {
@@ -168,8 +190,56 @@ describe('requestLog', () => {
     expect(raw).not.toContain(key);
   });
 
+  it('still stores a none row when session lookup throws', async () => {
+    const store = new InMemoryApiLogStore();
+    const authStore = new InMemoryAuthStore();
+    vi.spyOn(authStore, 'getSession').mockRejectedValue(new Error('db'));
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore,
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info', { headers: { authorization: 'Bearer tok' } });
+    expect(res.status).toBe(200);
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.authKind).toBe('none');
+    expect(rows[0]?.accountId).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.write.failed')).toBe(false);
+  });
+
+  it('logs api_log.write.failed when append throws and keeps the response', async () => {
+    const store = {
+      append: async () => {
+        throw new Error('disk');
+      },
+      listLatest: async () => [],
+    };
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info');
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.write.failed')).toBe(true);
+  });
+
   it('omits the query string from path and the JSON line', async () => {
-    await appWithRequestLog().request('/info?sig=secret&key=leak');
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info?sig=secret&key=leak');
     const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
     expect(httpEvents).toHaveLength(1);
     expect(httpEvents[0]?.['path']).toBe('/info');
@@ -180,5 +250,49 @@ describe('requestLog', () => {
     expect(raw).not.toContain('?');
     expect(raw).not.toContain('sig');
     expect(raw).not.toContain('key');
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.path).toBe('/info');
+  });
+
+  it('stores session authKind and accountId for a live bearer', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'v'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      isPlatform: false,
+    });
+    const account = await authStore.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const minted = await issueSession(authStore, 1, account);
+    const store = new InMemoryApiLogStore();
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore,
+        debugToken: undefined,
+        spendApiToken: undefined,
+        now: () => 1,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    await app.request('/info', { headers: { authorization: `Bearer ${minted.token}` } });
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.authKind).toBe('session');
+    expect(rows[0]?.accountId).toBe('acc');
   });
 });

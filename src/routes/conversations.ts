@@ -327,9 +327,8 @@ async function publicThread(
     },
     conversationFromMe({
       senderAccountId: thread.lastSenderAccountId,
+      actorAccountId: thread.lastActorAccountId,
       viewerId: account.id,
-      staff: roleAtLeast(account.role, 'moderator'),
-      platformId,
     }),
     unread,
     counterpartAccountId(thread, account.id, platformId),
@@ -517,7 +516,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           await sleep(pollMs);
         }
         const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
-        const platformId = platform?.id ?? null;
         return c.json(
           {
             messages: rows.map((row) =>
@@ -525,10 +523,10 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 row,
                 conversationFromMe({
                   senderAccountId: row.senderAccountId,
+                  actorAccountId: row.actorAccountId ?? null,
                   viewerId: account.id,
-                  staff: roleAtLeast(account.role, 'moderator'),
-                  platformId,
                 }),
+                { staff: roleAtLeast(account.role, 'moderator') },
               ),
             ),
           },
@@ -597,6 +595,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (!staffOnPlatform && senderName === '') {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
+        const actorName = account.name?.trim() ?? '';
         const created = await deps.store.appendMessage({
           id: crypto.randomUUID(),
           conversationId: thread.id,
@@ -612,8 +611,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 nostrPublishState: 'skipped' as const,
                 nostrEvent: null,
                 claimedUntil: null,
+                actorAccountId: account.id,
+                actorName,
               }
-            : unsignedConversationDefaults()),
+            : {
+                ...unsignedConversationDefaults(),
+                actorAccountId: account.id,
+                actorName,
+              }),
         });
         if (thread.kind === 'moderator_group') {
           try {
@@ -659,10 +664,10 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             created,
             conversationFromMe({
               senderAccountId: created.senderAccountId,
+              actorAccountId: account.id,
               viewerId: account.id,
-              staff: roleAtLeast(account.role, 'moderator'),
-              platformId: platform?.id ?? null,
             }),
+            { staff: roleAtLeast(account.role, 'moderator') },
           ),
           200,
         );
