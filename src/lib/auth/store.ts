@@ -743,9 +743,7 @@ export class InMemoryAuthStore implements AuthStore {
     return this.#passkeyCredentials.get(credentialId);
   }
 
-  async getPasskeyCredentialForAccount(
-    accountId: string,
-  ): Promise<PasskeyCredential | undefined> {
+  async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
     for (const credential of this.#passkeyCredentials.values()) {
       if (credential.accountId === accountId) {
         return credential;

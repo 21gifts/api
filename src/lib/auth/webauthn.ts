@@ -234,9 +234,7 @@ function ensurePrfExtension<
   T extends PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialRequestOptionsJSON,
 >(options: T, prf: unknown): T {
   const current =
-    typeof options.extensions === 'object' && options.extensions !== null
-      ? options.extensions
-      : {};
+    typeof options.extensions === 'object' && options.extensions !== null ? options.extensions : {};
   Object.assign(options, { extensions: { ...current, prf } });
   return options;
 }

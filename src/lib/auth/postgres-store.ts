@@ -549,9 +549,7 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapPasskeyCredential(row);
   }
 
-  async getPasskeyCredentialForAccount(
-    accountId: string,
-  ): Promise<PasskeyCredential | undefined> {
+  async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
     const rows = await this.#sql.query<PasskeyCredentialRow>(
       `SELECT credential_id, public_key, sign_count, account_id, created_at
        FROM passkey_credential WHERE account_id = $1`,

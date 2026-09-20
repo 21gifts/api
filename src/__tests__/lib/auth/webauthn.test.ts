@@ -27,9 +27,7 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect(generated.options.rp.id).toBe('localhost');
     expect(generated.options.authenticatorSelection?.residentKey).toBe('required');
     expect(generated.options.authenticatorSelection?.userVerification).toBe('required');
-    expect(
-      (generated.options.extensions as { prf?: unknown } | undefined)?.prf,
-    ).toEqual({});
+    expect((generated.options.extensions as { prf?: unknown } | undefined)?.prf).toEqual({});
   });
 
   it('copies excludeCredentials onto registration options', async () => {
@@ -42,9 +40,7 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
       excludeCredentials: [{ id: 'cred-1', type: 'public-key' }],
     });
     expect(generated.options.excludeCredentials?.[0]?.id).toBe('cred-1');
-    expect(
-      (generated.options.extensions as { prf?: unknown } | undefined)?.prf,
-    ).toEqual({});
+    expect((generated.options.extensions as { prf?: unknown } | undefined)?.prf).toEqual({});
   });
 
   it('rejects a string registration response', async () => {
