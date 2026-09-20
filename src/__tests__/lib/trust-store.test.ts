@@ -14,11 +14,16 @@ class MockSql implements SqlClient {
   nextRows: unknown[] = [];
   queryError: unknown | undefined;
   executeError: unknown | undefined;
+  queryImpl: ((text: string) => unknown[] | undefined) | undefined;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
     if (this.queryError !== undefined) {
       throw this.queryError;
+    }
+    const override = this.queryImpl?.(text);
+    if (override !== undefined) {
+      return override as T[];
     }
     return this.nextRows as T[];
   }
@@ -64,15 +69,23 @@ const TIE_LOW: TrustEdge = {
 };
 
 describe('TRUST_SCHEMA_SQL', () => {
-  it('creates trust_edge, the subject-kind unique index, and the actor index', () => {
-    expect(TRUST_SCHEMA_SQL).toHaveLength(3);
+  it('creates trust_edge, live unique index, kind check, and the actor index', () => {
+    expect(TRUST_SCHEMA_SQL).toHaveLength(6);
     expect(TRUST_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS trust_edge/i);
     expect(TRUST_SCHEMA_SQL[0]).toMatch(/subject_id uuid NOT NULL REFERENCES account/i);
     expect(TRUST_SCHEMA_SQL[0]).toMatch(/CHECK \(subject_id <> actor_id\)/);
-    expect(TRUST_SCHEMA_SQL[1]).toMatch(
-      /CREATE UNIQUE INDEX IF NOT EXISTS trust_edge_subject_kind_uidx/,
+    expect(TRUST_SCHEMA_SQL[0]).toMatch(/moderator_reject/);
+    expect(TRUST_SCHEMA_SQL[1]).toMatch(/DROP CONSTRAINT IF EXISTS trust_edge_kind_check/);
+    expect(TRUST_SCHEMA_SQL[2]).toMatch(/ADD CONSTRAINT trust_edge_kind_check/);
+    expect(TRUST_SCHEMA_SQL[2]).toMatch(/moderator_reject/);
+    expect(TRUST_SCHEMA_SQL[3]).toMatch(/DROP INDEX IF EXISTS trust_edge_subject_kind_uidx/);
+    expect(TRUST_SCHEMA_SQL[4]).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS trust_edge_subject_kind_live_uidx/,
     );
-    expect(TRUST_SCHEMA_SQL[2]).toMatch(/CREATE INDEX IF NOT EXISTS trust_edge_actor_idx/);
+    expect(TRUST_SCHEMA_SQL[4]).toMatch(
+      /WHERE kind IN \('verify', 'moderator_confirm', 'moderator_appoint'\)/,
+    );
+    expect(TRUST_SCHEMA_SQL[5]).toMatch(/CREATE INDEX IF NOT EXISTS trust_edge_actor_idx/);
   });
 });
 
@@ -150,6 +163,30 @@ describe('InMemoryTrustStore', () => {
     ).rejects.toThrow('duplicate trust edge');
   });
 
+  it('inserts multiple moderator_propose and moderator_reject rows for one subject', async () => {
+    const store = new InMemoryTrustStore();
+    await store.insertEdge({ ...LATE, id: 'p1', createdAt: 1 });
+    await store.insertEdge({ ...LATE, id: 'p2', actorId: 'act-3', createdAt: 2 });
+    await store.insertEdge({
+      ...LATE,
+      id: 'r1',
+      kind: 'moderator_reject',
+      createdAt: 3,
+    });
+    await store.insertEdge({
+      ...LATE,
+      id: 'r2',
+      actorId: 'act-3',
+      kind: 'moderator_reject',
+      createdAt: 4,
+    });
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['p1', 'p2', 'r1', 'r2']);
+    await store.insertEdge({ ...EARLY, id: 'v1' });
+    await expect(store.insertEdge({ ...EARLY, id: 'v2', actorId: 'someone-else' })).rejects.toThrow(
+      'duplicate trust edge',
+    );
+  });
+
   it('deleteEdge removes the matching row and leaves others', async () => {
     const store = new InMemoryTrustStore([EARLY, LATE]);
     const removed = await store.deleteEdge('sub', 'verify');
@@ -162,6 +199,48 @@ describe('InMemoryTrustStore', () => {
     const store = new InMemoryTrustStore([EARLY]);
     expect(await store.deleteEdge('sub', 'moderator_confirm')).toBeUndefined();
     expect((await store.listEdges()).map((row) => row.id)).toEqual(['a']);
+  });
+
+  it('deleteEdge removes the latest moderator_propose and leaves the older', async () => {
+    const older: TrustEdge = {
+      id: 'p-old',
+      subjectId: 'sub',
+      actorId: 'act',
+      kind: 'moderator_propose',
+      createdAt: 1,
+    };
+    const newer: TrustEdge = {
+      id: 'p-new',
+      subjectId: 'sub',
+      actorId: 'act-2',
+      kind: 'moderator_propose',
+      createdAt: 2,
+    };
+    const store = new InMemoryTrustStore([older, newer]);
+    const removed = await store.deleteEdge('sub', 'moderator_propose');
+    expect(removed).toEqual(newer);
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['p-old']);
+  });
+
+  it('deleteEdge prefers the higher id when createdAt ties', async () => {
+    const low: TrustEdge = {
+      id: 'p-a',
+      subjectId: 'sub',
+      actorId: 'act',
+      kind: 'moderator_propose',
+      createdAt: 5,
+    };
+    const high: TrustEdge = {
+      id: 'p-z',
+      subjectId: 'sub',
+      actorId: 'act-2',
+      kind: 'moderator_propose',
+      createdAt: 5,
+    };
+    const store = new InMemoryTrustStore([low, high]);
+    const removed = await store.deleteEdge('sub', 'moderator_propose');
+    expect(removed).toEqual(high);
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['p-a']);
   });
 });
 
@@ -272,22 +351,30 @@ describe('PostgresTrustStore', () => {
     await expect(new PostgresTrustStore(sql).insertEdge(EARLY)).rejects.toBeNull();
   });
 
-  it('deleteEdge uses DELETE RETURNING and maps the row', async () => {
+  it('deleteEdge selects the latest row then DELETE WHERE id', async () => {
     const sql = new MockSql();
-    sql.nextRows = [
-      {
-        id: 'e1',
-        subject_id: 'sub',
-        actor_id: 'act',
-        kind: 'moderator_confirm',
-        created_at: new Date('2026-08-28T12:00:00.000Z'),
-      },
-    ];
+    const mapped = {
+      id: 'e1',
+      subject_id: 'sub',
+      actor_id: 'act',
+      kind: 'moderator_confirm',
+      created_at: new Date('2026-08-28T12:00:00.000Z'),
+    };
+    sql.queryImpl = (text) => {
+      if (text.includes('DELETE')) {
+        return [mapped];
+      }
+      return [mapped];
+    };
     const removed = await new PostgresTrustStore(sql).deleteEdge('sub', 'moderator_confirm');
     expect(sql.queries[0]?.text).toMatch(
-      /DELETE FROM trust_edge WHERE subject_id = \$1 AND kind = \$2 RETURNING id, subject_id, actor_id, kind, created_at/,
+      /SELECT id, subject_id, actor_id, kind, created_at FROM trust_edge WHERE subject_id = \$1 AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT 1/,
     );
     expect(sql.queries[0]?.params).toEqual(['sub', 'moderator_confirm']);
+    expect(sql.queries[1]?.text).toMatch(
+      /DELETE FROM trust_edge WHERE id = \$1 RETURNING id, subject_id, actor_id, kind, created_at/,
+    );
+    expect(sql.queries[1]?.params).toEqual(['e1']);
     expect(removed).toEqual({
       id: 'e1',
       subjectId: 'sub',
@@ -297,10 +384,32 @@ describe('PostgresTrustStore', () => {
     });
   });
 
-  it('deleteEdge returns undefined when RETURNING is empty', async () => {
+  it('deleteEdge returns undefined when SELECT is empty', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
     expect(await new PostgresTrustStore(sql).deleteEdge('sub', 'verify')).toBeUndefined();
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC LIMIT 1/);
+  });
+
+  it('deleteEdge returns undefined when DELETE RETURNING is empty', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (text) => {
+      if (text.includes('DELETE')) {
+        return [];
+      }
+      return [
+        {
+          id: 'e1',
+          subject_id: 'sub',
+          actor_id: 'act',
+          kind: 'verify',
+          created_at: new Date('2026-08-28T12:00:00.000Z'),
+        },
+      ];
+    };
+    expect(await new PostgresTrustStore(sql).deleteEdge('sub', 'verify')).toBeUndefined();
+    expect(sql.queries[1]?.params).toEqual(['e1']);
   });
 
   it('propagates list query errors', async () => {

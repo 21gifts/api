@@ -278,7 +278,7 @@ describe('POST /debug/trust-edges', () => {
     ).toBe(true);
   });
 
-  it('returns 409 on a duplicate (subjectId, kind)', async () => {
+  it('returns 200 on a repeated moderator_propose and leaves role unchanged', async () => {
     const store = await seeded();
     const trustStore = new InMemoryTrustStore();
     const app = mount(store, trustStore);
@@ -293,9 +293,34 @@ describe('POST /debug/trust-edges', () => {
       actorId: ACTOR,
       kind: 'moderator_propose',
     });
-    expect(second.status).toBe(409);
-    expect(await second.json()).toEqual({ error: 'Conflict' });
+    expect(second.status).toBe(200);
+    expect(
+      (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_propose'),
+    ).toHaveLength(2);
+    expect((await store.getAccount(SUBJECT))?.role).toBe('basis');
   });
+
+  it.each(['verify', 'moderator_confirm', 'moderator_appoint'] as const)(
+    'returns 409 on a duplicate (subjectId, %s)',
+    async (kind) => {
+      const store = await seeded();
+      const trustStore = new InMemoryTrustStore();
+      const app = mount(store, trustStore);
+      const first = await post(app, 'secret', {
+        subjectId: SUBJECT,
+        actorId: ACTOR,
+        kind,
+      });
+      expect(first.status).toBe(200);
+      const second = await post(app, 'secret', {
+        subjectId: SUBJECT,
+        actorId: ACTOR,
+        kind,
+      });
+      expect(second.status).toBe(409);
+      expect(await second.json()).toEqual({ error: 'Conflict' });
+    },
+  );
 
   it('returns 503 when getAccount throws', async () => {
     const store = await seeded();

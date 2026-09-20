@@ -428,8 +428,8 @@
 
 ## Function: InMemoryNotificationStore
 
-- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, zap, and moderator appointment notifications. Default empty so the process boots without a database. `deleteByMessageIds` removes rows whose `parentId` or `replyId` is in the id list (any type).
-- **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only. `deleteByMessageIds(ids)` is a no-op for empty `ids`. Operator dump: `listAll(limit)` newest-first (cap 200).
+- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, zap, moderator appointment, and open moderator-proposal notifications. Default empty so the process boots without a database. `deleteByMessageIds` removes rows whose `parentId` or `replyId` is in the id list (any type). `deleteByTypeAndReplyId` removes rows whose `type` and `replyId` both match. Mark-read skips `moderator_proposal`.
+- **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only except `moderator_proposal` (left unread). `deleteByMessageIds(ids)` is a no-op for empty `ids`. `deleteByTypeAndReplyId(type, replyId)` returns the removed count. Operator dump: `listAll(limit)` newest-first (cap 200).
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `notificationStore`; memory `openBootStores` omits it.
 
@@ -442,7 +442,7 @@
 
 ## Function: PostgresNotificationStore
 
-- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only, and `deleteByMessageIds` (`parent_id` or `reply_id` in the id list; the ids are bound as one `uuid[]` array-literal string built from well-formed UUIDs only, because the driver does not encode a JavaScript array for `$1::uuid[]`).
+- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only (mark-read / mark-all skip `type = 'moderator_proposal'`), `deleteByMessageIds` (`parent_id` or `reply_id` in the id list; the ids are bound as one `uuid[]` array-literal string built from well-formed UUIDs only, because the driver does not encode a JavaScript array for `$1::uuid[]`), and `deleteByTypeAndReplyId` (`DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migrateNotificationSchema`). Operator dump: `listAll(limit)` newest-first (cap 200).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `NotificationRow`. Unique violation re-selects the existing row. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -873,7 +873,7 @@
 
 ## Function: notificationRoutes
 
-- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (scan newest 1000, `notificationsMatchingLevel` for the owner's `notificationLevel`, then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_reply` also checks the child `replyId` message; `zap` `replyId` is a receipt UUID and is not looked up), then cap 200; `unreadCount` is matching unread among kept rows; each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`; `moderator_appointed` always stays through the level filter and the hidden filter), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list. `createApp` always passes `messages` (`getById`). Hidden/missing forum rows are then best-effort `deleteByMessageIds` (`notifications.hidden.purged`). Appointed `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. If purge throws, count kept unread rows (do not 503 the list).
+- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (scan newest 1000, `notificationsMatchingLevel` for the owner's `notificationLevel`, then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_reply` also checks the child `replyId` message; `zap` `replyId` is a receipt UUID and is not looked up), then cap 200; `unreadCount` is matching unread among kept rows; each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed' | 'moderator_proposal'`; `moderator_appointed` and `moderator_proposal` always stay through the level filter and the hidden filter), `POST /read-all` marks all read except `moderator_proposal`, `POST /:id/read` marks one UUID (`moderator_proposal` stays unread). Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list. `createApp` always passes `messages` (`getById`). Hidden/missing forum rows are then best-effort `deleteByMessageIds` (`notifications.hidden.purged`). Appointed/proposal `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. If purge throws, count kept unread rows (do not 503 the list).
 - **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `messages` (`getById`), `now`.
 - **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id`; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed`). Hidden-row purge failure is not 503.
 - **Used by:** `createApp`.
@@ -1013,7 +1013,7 @@
 
 ## Function: serializeNotification
 
-- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`.
+- **Purpose:** Project a stored notification row to its public JSON shape. `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed' | 'moderator_proposal'`.
 - **Inputs:** `NotificationRow` (includes recipient/actor account ids).
 - **Returns / side effects:** `{ id, type, parentId, replyId, name, text, createdAt, readAt }` with ISO-8601 dates; `readAt` null stays null. Omits recipient and actor account ids. No I/O.
 - **Used by:** `notificationRoutes`.
@@ -1053,6 +1053,13 @@
 - **Returns / side effects:** Void. Writes one in-app row for the subject when `notifications` is set. When `pushStore` is set, enqueues one outbox row with payload from `buildModeratorAppointedPushPayload(subject.id)` (url `/welcome`, tag `moderator_appointed:<subjectId>`). Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** `trustRoutes` `POST /trust/confirm-moderator` and `POST /trust/appoint-moderator` after every 200 that leaves/keeps the subject as `moderator` (new grant **and** idempotent already-moderator same-actor 200). Failure logs `push.enqueue.failed`; HTTP still 200.
 
+## Function: notifyModeratorProposed
+
+- **Purpose:** Notify other staff of an open moderator proposal (not a living-room fan-out). Recipients are staff from the live account list except the proposing actor and anyone with `isPlatform === true`; founder is included; basis and verified are skipped. Persist a `moderator_proposal` row when `notifications` is set (`parentId` and `replyId` = `subject.id`, `name` is `actor.name ?? 'Someone'`, `text` is `subject.name ?? ''`, `readAt` null) and enqueue a Web Push (`type: 'forum'`, url `/moderate/proposals`, tag `moderator_proposal:<subjectId>`) when `pushStore` is set. Missing both stores is a no-op. Unique duplicate create is fine. Mark-read does not dismiss these rows. May throw (`push.fanout.failed`); callers wrap so persist still succeeds.
+- **Inputs:** `{ notifications?, pushStore?, inboxUnreadCount?, recipients, subject, actor, nowMs }`. Recipients are filtered here to other staff.
+- **Returns / side effects:** Void. Writes one in-app row per other staff member when `notifications` is set. When `pushStore` is set, enqueues one outbox row per recipient (`type: 'forum'`, `messageId: subject.id`). Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
+- **Used by:** `trustRoutes` `POST /trust/propose-moderator` after every 200. Failure logs `push.enqueue.failed`; HTTP still 200.
+
 ## Function: parseNotificationLevel
 
 - **Purpose:** Map a stored or request value to the owner fan-out enum so omitted and unknown strings keep current every-account behaviour. Accepts only the strings `all`, `active`, and `mentions`; any other input (number, null, undefined, object, unknown string) becomes `all`.
@@ -1076,7 +1083,7 @@
 
 ## Function: notificationsMatchingLevel
 
-- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` always stays. `forum_post` is never personal (`mentionedAccountId` null). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Zap actor staff is the stored actor via `isStaffAccount` only when that actor is not the parent note author (missing payer is not staff).
+- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` and `moderator_proposal` always stay. `forum_post` is never personal (`mentionedAccountId` null). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Zap actor staff is the stored actor via `isStaffAccount` only when that actor is not the parent note author (missing payer is not staff).
 - **Inputs:** `{ rows, level, recipientAccountId, accounts, parentById }`.
 - **Returns / side effects:** Matching rows in the same order. No I/O.
 - **Used by:** `notificationRoutes` `GET /notifications` after scanning the newest `NOTIFICATION_FILTER_SCAN_LIMIT` rows.
@@ -1093,7 +1100,7 @@
 - **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account). GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
-- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
 
 ## Function: notifyConversationMessage
 
@@ -2127,7 +2134,7 @@
 
 ## Function: pendingModeratorProposals
 
-- **Purpose:** Pure helper for the staff moderator-proposal queue. A row is pending when a `moderator_propose` edge exists, the live subject is `verified`, and that subject has no `moderator_confirm` and no `moderator_appoint`. Missing subject accounts are omitted. Several proposes for one subject keep the latest by `createdAt` then `id` (same tie-break as `accountTrust`). `proposedBy` uses live actor names; a missing actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then propose-edge `id` (FIFO). Never includes `basis` / `moderator` / `founder` subjects.
+- **Purpose:** Pure helper for the staff moderator-proposal queue. A row is pending when the latest `moderator_propose` / `moderator_reject` edge is `moderator_propose`, the live subject is `verified`, and that subject has no `moderator_confirm` and no `moderator_appoint`. A later reject closes the queue; a later propose re-opens it; confirm/appoint close forever. Missing subject accounts are omitted. Several propose/reject edges for one subject keep the latest by `createdAt` then `id` (same tie-break as `accountTrust`). `proposedBy` uses live actor names; a missing actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then propose-edge `id` (FIFO). Never includes `basis` / `moderator` / `founder` subjects.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `ModeratorProposal[]` (epoch-ms `createdAt`; subject `role` is always `"verified"`). No I/O.
 - **Used by:** `trustRoutes` (`GET /trust/proposals`).
@@ -2141,7 +2148,7 @@
 
 ## Function: migrateTrustSchema
 
-- **Purpose:** Applies `TRUST_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS trust_edge` with FKs to `account`, kind CHECK, `subject_id <> actor_id`, unique `(subject_id, kind)` index, actor index). Idempotent. Runs after auth/`account` exists and before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
+- **Purpose:** Applies `TRUST_SCHEMA_SQL` in order (six statements: `CREATE TABLE IF NOT EXISTS trust_edge` with FKs to `account`, kind CHECK including `moderator_reject`, `subject_id <> actor_id`; `DROP CONSTRAINT IF EXISTS trust_edge_kind_check`; `ADD CONSTRAINT` kind check including `moderator_reject`; `DROP INDEX IF EXISTS trust_edge_subject_kind_uidx`; live unique index `trust_edge_subject_kind_live_uidx` on `(subject_id, kind) WHERE kind IN ('verify', 'moderator_confirm', 'moderator_appoint')`; actor index). Idempotent. Runs after auth/`account` exists and before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/trust_edge.sql` (comment header allowed in the `.sql` file only).
 - **Used by:** `openBootStores` when SQL opens.
@@ -2149,13 +2156,13 @@
 ## Function: InMemoryTrustStore
 
 - **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
-- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` when `(subjectId, kind)` exists. `deleteEdge(subjectId, kind)` removes that unique row or returns `undefined`.
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` only for live-unique kinds (`verify` / `moderator_confirm` / `moderator_appoint`); propose and reject may repeat. `deleteEdge(subjectId, kind)` removes the latest matching row (`createdAt` desc, then `id` desc) or returns `undefined`.
 - **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `trustStore`.
 
 ## Function: PostgresTrustStore
 
-- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')`. `deleteEdge` is `DELETE … RETURNING` on `(subject_id, kind)` and returns `undefined` when no row matches.
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')` (live-unique kinds only at the index). `deleteEdge` selects the latest `(subject_id, kind)` (`ORDER BY created_at DESC, id DESC LIMIT 1`) then `DELETE FROM trust_edge WHERE id = $1 RETURNING …`; empty SELECT returns `undefined` with no delete.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -2169,7 +2176,7 @@
 
 ## Function: trustRoutes
 
-- **Purpose:** Hono sub-app for staff Bearer `GET /proposals` (pending `moderator_propose` via `pendingModeratorProposals`; ISO `createdAt`; empty list is 200; logs `trust.proposals.listed` `{ count }` only) and four POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (pending propose, role unchanged), `/confirm-moderator` (independent second staff member; role `moderator` + confirm edge), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_appointed`. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
+- **Purpose:** Hono sub-app for staff Bearer `GET /proposals` (pending via `pendingModeratorProposals`: latest propose/reject is propose, verified, no confirm/appoint; ISO `createdAt`; empty list is 200; logs `trust.proposals.listed` `{ count }` only) and five POSTs: `/verify` (role `verified` + `verify` edge; idempotent when the caller already verified), `/propose-moderator` (new propose after reject; 409 while currently pending or any confirm/appoint; role unchanged; wrap `notifyModeratorProposed`), `/confirm-moderator` (independent second staff member vs the latest pending propose; role `moderator` + confirm edge), `/reject-moderator` (append-only `moderator_reject`; role stays `verified`; proposer may reject), `/appoint-moderator` (founder only; role `moderator` + appoint edge). UUID check reuses `MESSAGE_ID_RE`. Logs `trust.verified` / `trust.moderator_proposed` / `trust.moderator_confirmed` / `trust.moderator_rejected` / `trust.moderator_appointed`. Confirm/reject/appoint delete `moderator_proposal` rows (`replyId === subject.id`) before appointed notify. After every confirm/appoint 200 that leaves/keeps the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wraps `notifyModeratorAppointed` for the subject only.
 - **Inputs:** `TrustRouteDeps`: `authStore`, `trustStore`, `now`, optional `notificationStore`, `pushStore`, and `conversationStore` (appointed push `unreadCount` includes listed inbox unread).
 - **Returns / side effects:** Hono app mounted at `/trust`. 401/403/400/404/409/503 with the documented `{ error }` strings; GET `/proposals` 200 `{ proposals }` (empty list included); POST 200 `{ id, name, role }`.
 - **Used by:** `createApp`.
@@ -2183,7 +2190,7 @@
 
 ## Function: debugTrustRoutes
 
-- **Purpose:** Operator list `GET /debug/trust-edges`, backfill `POST /debug/trust-edges`, and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. GET returns `{ edges }` newest-first. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. POST/DELETE return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Purpose:** Operator list `GET /debug/trust-edges`, backfill `POST /debug/trust-edges`, and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. GET returns `{ edges }` newest-first. POST body `{ subjectId, actorId, kind }` with kind `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint` / `moderator_reject` inserts (409 duplicate only for live-unique kinds; propose/reject may repeat); DELETE body `{ subjectId, kind }` removes the latest `(subjectId, kind)` row (`createdAt` desc, then `id` desc). POST/DELETE return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
 - **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`; unused by DELETE).
 - **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`). GET 503 `{ error: 'Trust chain is unavailable' }` on unexpected `listEdges` throw (`debug.trust_edges.failed`).
 - **Used by:** `createApp`; operator `gifts-debug trust-edges` / `gifts-debug trust-edge` / `gifts-debug trust-edge-delete`.

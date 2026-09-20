@@ -6,16 +6,18 @@
  * {@link buildTrustChain} never invents edges. At most one public incoming
  * kind per subject: the oldest eligible sibling (`createdAt` then `id`).
  * Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when
- * the live subject is a `moderator`. `moderator_confirm` never. A pending
- * propose (subject still `verified`) stays private. Later appoint, confirm,
- * or propose do not replace an earlier eligible contact.
+ * the live subject is a `moderator`. `moderator_confirm` and
+ * `moderator_reject` never. A pending propose (subject still `verified`)
+ * stays private. Later appoint, confirm, or propose do not replace an
+ * earlier eligible contact.
  */
 
 import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole } from '@/lib/auth/store';
 
 /** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is a moderator. */
-export type TrustKind = 'verify' | 'moderator_propose' | 'moderator_confirm' | 'moderator_appoint';
+export type TrustKind =
+  'verify' | 'moderator_propose' | 'moderator_confirm' | 'moderator_appoint' | 'moderator_reject';
 
 /** Edge kinds that appear on the public trust chain. */
 export type TrustChainKind = 'verify' | 'moderator_propose' | 'moderator_appoint';
@@ -85,8 +87,9 @@ export interface AccountTrust {
 /**
  * One pending moderator proposal (staff list only; not the public chain).
  *
- * Pending means a stored `moderator_propose` whose live subject is still
- * `verified` and has no `moderator_confirm` or `moderator_appoint`.
+ * Pending means the latest propose/reject edge is `moderator_propose`,
+ * the live subject is still `verified`, and there is no
+ * `moderator_confirm` or `moderator_appoint`.
  */
 export interface ModeratorProposal {
   /** Live subject; role is always `verified` for a pending row. */
@@ -136,11 +139,11 @@ export function isStaffRole(role: AccountRole): boolean {
  * at most one incoming kind per subject: the oldest eligible sibling
  * (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and
  * `moderator_propose` only when the live subject is a `moderator`.
- * `moderator_confirm` never. A pending propose (subject still `verified`)
- * stays private. Later appoint, confirm, or propose do not replace an
- * earlier eligible contact. Actor and subject must both be in the node
- * set. No synthetic edges. Lightning addresses, view keys, and linking
- * keys are omitted.
+ * `moderator_confirm` and `moderator_reject` never. A pending propose
+ * (subject still `verified`) stays private. Later appoint, confirm, or
+ * propose do not replace an earlier eligible contact. Actor and subject
+ * must both be in the node set. No synthetic edges. Lightning addresses,
+ * view keys, and linking keys are omitted.
  *
  * @param accounts - Live accounts (roles as stored).
  * @param edges - Stored trust edges (any order).
@@ -215,13 +218,14 @@ export function accountTrust(
 /**
  * Pending moderator proposals for the staff queue.
  *
- * A row is pending when a `moderator_propose` edge exists, the live
- * subject account is `verified`, and that subject has no
- * `moderator_confirm` and no `moderator_appoint` (any actor). Missing
- * subject accounts are omitted. Several proposes for one subject keep
- * the latest by `createdAt` then `id` (same tie-break as
- * {@link accountTrust}). `proposedBy` uses live actor names; a missing
- * actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then
+ * A subject with any `moderator_confirm` or `moderator_appoint` is
+ * closed. Among that subject's `moderator_propose` and
+ * `moderator_reject` edges, take the latest by `createdAt` then `id`.
+ * Pending iff that latest edge is `moderator_propose` and the live
+ * subject is `verified`. Missing subject accounts are omitted.
+ * `proposedBy` / `createdAt` come from that latest propose edge.
+ * `proposedBy` uses live actor names; a missing actor is
+ * `{ id, name: null }`. Sorted oldest `createdAt` first, then
  * propose-edge `id` (FIFO). Never includes `basis` / `moderator` /
  * `founder` subjects. Pure; no I/O.
  *
@@ -235,27 +239,27 @@ export function pendingModeratorProposals(
 ): ModeratorProposal[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const closed = new Set<string>();
-  const latestPropose = new Map<string, TrustEdge>();
+  const latestLifecycle = new Map<string, TrustEdge>();
   for (const edge of edges) {
     if (edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint') {
       closed.add(edge.subjectId);
       continue;
     }
-    if (edge.kind !== 'moderator_propose') {
+    if (edge.kind !== 'moderator_propose' && edge.kind !== 'moderator_reject') {
       continue;
     }
-    const prev = latestPropose.get(edge.subjectId);
+    const prev = latestLifecycle.get(edge.subjectId);
     if (
       prev === undefined ||
       edge.createdAt > prev.createdAt ||
       (edge.createdAt === prev.createdAt && edge.id > prev.id)
     ) {
-      latestPropose.set(edge.subjectId, edge);
+      latestLifecycle.set(edge.subjectId, edge);
     }
   }
   const pending: { edge: TrustEdge; account: Account }[] = [];
-  for (const edge of latestPropose.values()) {
-    if (closed.has(edge.subjectId)) {
+  for (const edge of latestLifecycle.values()) {
+    if (closed.has(edge.subjectId) || edge.kind !== 'moderator_propose') {
       continue;
     }
     const account = byId.get(edge.subjectId);
@@ -306,8 +310,8 @@ export function isChainAccount(
  * True iff `edge.kind` is the oldest eligible kind among `subjectEdges`
  * (default `[edge]`), by `createdAt` then `id`. Eligible: `verify`,
  * `moderator_appoint`, and `moderator_propose` only when the live subject
- * is a `moderator`. `moderator_confirm` never. Later siblings do not
- * replace an earlier eligible contact.
+ * is a `moderator`. `moderator_confirm` and `moderator_reject` never.
+ * Later siblings do not replace an earlier eligible contact.
  *
  * @param edge - Stored grant.
  * @param subject - Live subject account, if loaded.
@@ -330,7 +334,7 @@ function winningPublicKind(
 ): TrustChainKind | undefined {
   const eligible: TrustEdge[] = [];
   for (const sibling of subjectEdges) {
-    if (sibling.kind === 'moderator_confirm') {
+    if (sibling.kind === 'moderator_confirm' || sibling.kind === 'moderator_reject') {
       continue;
     }
     if (sibling.kind === 'moderator_propose' && subject?.role !== 'moderator') {
@@ -348,12 +352,13 @@ function winningPublicKind(
     return undefined;
   }
   const oldest = eligible.slice().sort(compareTrustEdgesOldestFirst)[0];
-  /* v8 ignore next 3 -- eligible.length === 0 already returned */
+  /* v8 ignore next 6 -- eligible.length === 0 already returned; confirm/reject filtered */
   if (oldest === undefined) {
     return undefined;
   }
-  /* v8 ignore next -- confirm was filtered from eligible */
-  return oldest.kind === 'moderator_confirm' ? undefined : oldest.kind;
+  return oldest.kind === 'moderator_confirm' || oldest.kind === 'moderator_reject'
+    ? undefined
+    : oldest.kind;
 }
 
 /** Oldest `createdAt` first, then `id`. */

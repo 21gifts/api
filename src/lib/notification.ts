@@ -1,18 +1,21 @@
 /**
  * In-app notification domain: public JSON projection, living-room fan-out,
- * and targeted `moderator_appointed` (subject only, not a fan-out).
+ * targeted `moderator_appointed` (subject only, not a fan-out), and staff
+ * `moderator_proposal` fan-out.
  *
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
  * `auth` is set) and `push_subscription` account ids, except skip, then
  * filtered by each recipient's `notificationLevel` when `auth` is set.
  * `GET /notifications` applies the same filter to stored rows. Targeted
- * `moderator_appointed` does not fan out. Web Push is still only
- * for `push_subscription` rows. Member HTTP never exposes recipient or actor
- * account ids. Callers catch failures so persist still succeeds.
+ * `moderator_appointed` does not fan out. `moderator_proposal` fans out to
+ * other staff and stays unread until the proposal is confirmed or rejected.
+ * Web Push is still only for `push_subscription` rows. Member HTTP never
+ * exposes recipient or actor account ids. Callers catch failures so persist
+ * still succeeds.
  */
 
 import { ROLE_ORDER, roleAtLeast } from '@/lib/auth/roles';
-import type { AuthStore, NotificationLevel } from '@/lib/auth/store';
+import type { AccountRole, AuthStore, NotificationLevel } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -32,7 +35,8 @@ export const NOTIFICATION_LIST_LIMIT = 200;
 export const NOTIFICATION_FILTER_SCAN_LIMIT = 1000;
 
 /** Persisted notification kind. */
-export type NotificationType = 'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed';
+export type NotificationType =
+  'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed' | 'moderator_proposal';
 
 /** Persisted notification row (store-internal; includes account ids). */
 export interface NotificationRow {
@@ -40,17 +44,17 @@ export interface NotificationRow {
   id: string;
   /** Account that should see this notification. */
   recipientAccountId: string;
-  /** Account that caused the notification (poster, replier, zap payer, or appointing staff). */
+  /** Account that caused the notification (poster, replier, zap payer, or staff). */
   actorAccountId: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for staff trust kinds). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for staff trust kinds). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; subject name for `moderator_proposal`; zap amount as a decimal string. */
   text: string;
   /** Creation instant. */
   createdAt: Date;
@@ -64,13 +68,13 @@ export interface PublicNotification {
   id: string;
   /** Notification kind. */
   type: NotificationType;
-  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for `moderator_appointed`). */
+  /** Forum note the event refers to (the post itself for `forum_post`; subject account id for staff trust kinds). */
   parentId: string;
-  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for `moderator_appointed`). */
+  /** Event id (`post.id`, `reply.id`, zap receipt UUID, or subject account id for staff trust kinds). */
   replyId: string;
   /** Actor display-name snapshot. */
   name: string;
-  /** Event text; may be `""` for photo-only or `moderator_appointed`; zap amount as a decimal string. */
+  /** Event text; may be `""` for photo-only or `moderator_appointed`; subject name for `moderator_proposal`; zap amount as a decimal string. */
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
@@ -170,8 +174,8 @@ export function wantsNotification(args: {
 
 /**
  * Keep stored in-app rows that the owner's current {@link NotificationLevel}
- * would still accept. `moderator_appointed` always stays (targeted, not
- * living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
+ * would still accept. `moderator_appointed` and `moderator_proposal` always
+ * stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. Zap `text` is the amount string.
  * Zap actor staff is the stored actor via {@link isStaffAccount} only when
@@ -194,7 +198,7 @@ export function notificationsMatchingLevel(args: {
     args.accounts.map((account) => [account.id, isStaffAccount(account)] as const),
   );
   return args.rows.filter((row) => {
-    if (row.type === 'moderator_appointed') {
+    if (row.type === 'moderator_appointed' || row.type === 'moderator_proposal') {
       return true;
     }
     const parent = args.parentById.get(row.parentId);
@@ -783,6 +787,116 @@ export async function notifyModeratorAppointed(args: {
     } catch {
       failed = true;
       logEvent('push.fanout.failed');
+    }
+  }
+  if (failed) {
+    throw new Error('push.fanout.failed');
+  }
+}
+
+/**
+ * Notify other staff of an open moderator proposal (not a living-room
+ * fan-out). Persist a `moderator_proposal` row for each recipient when
+ * `notifications` is set, and enqueue one Web Push (`url`
+ * `/moderate/proposals`, tag `moderator_proposal:<subjectId>`, outbox
+ * `type: 'forum'`) when `pushStore` is set. Skip the proposing actor,
+ * `isPlatform === true`, and anyone below moderator. Founder is included.
+ * Missing both stores is a no-op. Unique duplicate create is fine. This
+ * helper may throw; callers wrap it. Mark-read does not dismiss these rows.
+ *
+ * @param args - Optional stores, recipients, subject, actor, clock.
+ * @returns Resolves after the optional persist and push enqueue (including no-ops).
+ * @throws If recipient `create`, `unreadCount`, or `enqueue` rejects.
+ */
+export async function notifyModeratorProposed(args: {
+  /** Optional notification persistence. */
+  notifications?: NotificationStore;
+  /** Optional push outbox. */
+  pushStore?: PushStore;
+  /** Optional listed inbox unread; missing contributes 0. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
+  /** Live accounts to consider; filtered to other staff here. */
+  recipients: readonly { id: string; isPlatform?: boolean; role: AccountRole }[];
+  /** Account that was proposed. */
+  subject: { id: string; name: string | null };
+  /** Staff member who proposed. */
+  actor: { id: string; name: string | null };
+  /** Enqueue / row clock. */
+  nowMs: number;
+}): Promise<void> {
+  if (args.notifications === undefined && args.pushStore === undefined) {
+    return;
+  }
+  const staffIds: string[] = [];
+  for (const account of args.recipients) {
+    if (account.id === args.actor.id || account.isPlatform === true) {
+      continue;
+    }
+    if (!roleAtLeast(account.role, 'moderator')) {
+      continue;
+    }
+    staffIds.push(account.id);
+  }
+  const createdAt = new Date(args.nowMs);
+  const actorName = args.actor.name ?? 'Someone';
+  const subjectText = args.subject.name ?? '';
+  let failed = false;
+  if (args.notifications !== undefined) {
+    for (const accountId of staffIds) {
+      try {
+        await args.notifications.create({
+          id: crypto.randomUUID(),
+          recipientAccountId: accountId,
+          actorAccountId: args.actor.id,
+          type: 'moderator_proposal',
+          parentId: args.subject.id,
+          replyId: args.subject.id,
+          name: actorName,
+          text: subjectText,
+          createdAt,
+          readAt: null,
+        });
+      } catch {
+        failed = true;
+        logEvent('push.fanout.failed');
+      }
+    }
+  }
+  if (args.pushStore !== undefined) {
+    const base = {
+      type: 'forum' as const,
+      title: 'Moderator proposal',
+      body: 'A verified member was proposed as moderator.',
+      url: '/moderate/proposals',
+      tag: `moderator_proposal:${args.subject.id}`,
+    };
+    for (const accountId of staffIds) {
+      try {
+        let payload = JSON.stringify(base);
+        if (args.notifications !== undefined || args.inboxUnreadCount !== undefined) {
+          const notifUnread =
+            args.notifications === undefined ? 0 : await args.notifications.unreadCount(accountId);
+          const inboxUnread =
+            args.inboxUnreadCount === undefined ? 0 : await args.inboxUnreadCount(accountId);
+          payload = JSON.stringify({ ...base, unreadCount: notifUnread + inboxUnread });
+        }
+        const row: PushOutboxRow = {
+          id: crypto.randomUUID(),
+          accountId,
+          type: 'forum',
+          messageId: args.subject.id,
+          payload,
+          status: 'pending',
+          attempts: 0,
+          claimedUntil: null,
+          createdAt,
+          deliveredEndpoints: [],
+        };
+        await args.pushStore.enqueue(row);
+      } catch {
+        failed = true;
+        logEvent('push.fanout.failed');
+      }
     }
   }
   if (failed) {

@@ -1541,6 +1541,13 @@ test('Function: notifyModeratorAppointed — POST /trust/confirm-moderator witho
     (await request.post('/trust/confirm-moderator', { data: { accountId: 'x' } })).status(),
   ).toBe(401);
 });
+test('Function: notifyModeratorProposed — POST /trust/propose-moderator without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (await request.post('/trust/propose-moderator', { data: { accountId: 'x' } })).status(),
+  ).toBe(401);
+});
 test('Function: notifyZap — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });

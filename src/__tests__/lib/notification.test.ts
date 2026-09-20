@@ -9,6 +9,7 @@ import {
   notifyForumPost,
   notifyForumReply,
   notifyModeratorAppointed,
+  notifyModeratorProposed,
   notificationsMatchingLevel,
   notifyZap,
   parseNotificationLevel,
@@ -1447,6 +1448,98 @@ describe('notifyModeratorAppointed', () => {
   });
 });
 
+describe('notifyModeratorProposed', () => {
+  it('creates in-app rows for staff except the actor and isPlatform', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const founder = { id: 'founder', role: 'founder' as const };
+    const actor = { id: 'actor', role: 'moderator' as const };
+    const platform = { id: 'platform', role: 'moderator' as const, isPlatform: true };
+    const basis = { id: 'basis', role: 'basis' as const };
+    const subject = { id: 'subject', role: 'verified' as const };
+    await notifyModeratorProposed({
+      notifications,
+      recipients: [founder, actor, platform, basis, subject],
+      subject: { id: subject.id, name: 'Sub' },
+      actor: { id: actor.id, name: 'Mod' },
+      nowMs: NOW.getTime(),
+    });
+    const listed = await notifications.listByRecipient(founder.id, 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('moderator_proposal');
+    expect(listed[0]?.parentId).toBe(subject.id);
+    expect(listed[0]?.replyId).toBe(subject.id);
+    expect(listed[0]?.name).toBe('Mod');
+    expect(listed[0]?.text).toBe('Sub');
+    expect(listed[0]?.readAt).toBeNull();
+    expect(await notifications.listByRecipient(actor.id, 10)).toEqual([]);
+    expect(await notifications.listByRecipient(platform.id, 10)).toEqual([]);
+    expect(await notifications.listByRecipient(basis.id, 10)).toEqual([]);
+    expect(await notifications.listByRecipient(subject.id, 10)).toEqual([]);
+  });
+
+  it('defaults missing actor and subject names', async () => {
+    const notifications = new InMemoryNotificationStore();
+    await notifyModeratorProposed({
+      notifications,
+      recipients: [{ id: 'founder', role: 'founder' }],
+      subject: { id: 'subject', name: null },
+      actor: { id: 'actor', name: null },
+      nowMs: NOW.getTime(),
+    });
+    const listed = await notifications.listByRecipient('founder', 10);
+    expect(listed[0]?.name).toBe('Someone');
+    expect(listed[0]?.text).toBe('');
+  });
+
+  it('throws push.fanout.failed when create rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    notifications.create = async () => {
+      throw new Error('boom');
+    };
+    await expect(
+      notifyModeratorProposed({
+        notifications,
+        recipients: [{ id: 'founder', role: 'founder' }],
+        subject: { id: 'subject', name: 'Sub' },
+        actor: { id: 'actor', name: 'Mod' },
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+
+  it('includes inbox unread in the push payload', async () => {
+    const pushStore = new InMemoryPushStore();
+    await notifyModeratorProposed({
+      pushStore,
+      inboxUnreadCount: async () => 3,
+      recipients: [{ id: 'founder', role: 'founder' }],
+      subject: { id: 'subject', name: 'Sub' },
+      actor: { id: 'actor', name: 'Mod' },
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}').unreadCount).toBe(3);
+  });
+
+  it('throws push.fanout.failed when enqueue rejects', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('boom');
+    };
+    await expect(
+      notifyModeratorProposed({
+        notifications,
+        pushStore,
+        recipients: [{ id: 'founder', role: 'founder' }],
+        subject: { id: 'subject', name: 'Sub' },
+        actor: { id: 'actor', name: 'Mod' },
+        nowMs: NOW.getTime(),
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+});
+
 describe('parseNotificationLevel', () => {
   it('round-trips known levels and defaults unknown values to all', () => {
     expect(parseNotificationLevel('all')).toBe('all');
@@ -1609,6 +1702,27 @@ describe('notificationsMatchingLevel', () => {
         parentById: new Map(),
       }).map((row) => row.id),
     ).toEqual(['n-appoint']);
+  });
+
+  it('keeps moderator_proposal at mentions', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-propose',
+        recipientAccountId: 'me',
+        type: 'moderator_proposal',
+        parentId: 'subject',
+        replyId: 'subject',
+      }),
+    ];
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'mentions',
+        recipientAccountId: 'me',
+        accounts: [],
+        parentById: new Map(),
+      }).map((row) => row.id),
+    ).toEqual(['n-propose']);
   });
 
   it('returns every row at all including an unpaid non-staff forum_post', () => {

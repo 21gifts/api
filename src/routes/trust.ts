@@ -6,7 +6,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
-import { notifyModeratorAppointed } from '@/lib/notification';
+import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import {
@@ -21,7 +21,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Staff trust routes: list pending moderator proposals, verify a person,
- * propose/confirm a moderator, or appoint a moderator as a founder.
+ * propose/confirm/reject a moderator, or appoint a moderator as a founder.
  * Bearer session required.
  */
 
@@ -95,10 +95,11 @@ async function loadTargetAccount(
  *
  * Mounted at `/trust` so the public paths are `GET /trust/proposals`,
  * `POST /trust/verify`, `POST /trust/propose-moderator`,
- * `POST /trust/confirm-moderator`, and `POST /trust/appoint-moderator`.
+ * `POST /trust/confirm-moderator`, `POST /trust/reject-moderator`, and
+ * `POST /trust/appoint-moderator`.
  *
  * @param deps - Auth store, trust-edge store, clock, optional notification/push stores, and optional conversation store.
- * @returns A Hono app with the staff GET and four staff POSTs.
+ * @returns A Hono app with the staff GET and five staff POSTs.
  */
 export function trustRoutes(deps: TrustRouteDeps): Hono {
   return new Hono()
@@ -228,13 +229,10 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
-      const hasStaffGrant = existing.some(
-        (edge) =>
-          edge.kind === 'moderator_propose' ||
-          edge.kind === 'moderator_confirm' ||
-          edge.kind === 'moderator_appoint',
+      const hasClosedGrant = existing.some(
+        (edge) => edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint',
       );
-      if (hasStaffGrant) {
+      if (hasClosedGrant || pendingModeratorProposals([subject], existing).length > 0) {
         return c.json({ error: 'Conflict' }, 409);
       }
       try {
@@ -247,6 +245,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_proposed', { subjectId: subject.id, actorId: caller.id });
+      await notifyStaffProposed(deps, subject, caller);
       return c.json(accountSummary(subject), 200);
     })
     .post('/confirm-moderator', async (c) => {
@@ -285,6 +284,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         if (subject.role === 'moderator') {
+          await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
         }
@@ -299,14 +299,15 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Trust chain is unavailable' }, 503);
         }
         logEvent('trust.moderator_confirmed', { subjectId: subject.id, actorId: caller.id });
+        await clearModeratorProposalNotifications(deps, subject.id);
         await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
       if (subject.role !== 'verified') {
         return c.json({ error: 'Conflict' }, 409);
       }
-      const propose = existing.find((edge) => edge.kind === 'moderator_propose');
-      if (propose === undefined || propose.actorId === caller.id) {
+      const pending = pendingModeratorProposals([subject], existing)[0];
+      if (pending === undefined || pending.proposedBy.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'moderator' as const };
@@ -321,8 +322,58 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_confirmed', { subjectId: subject.id, actorId: caller.id });
+      await clearModeratorProposalNotifications(deps, subject.id);
       await notifySubjectAppointed(deps, subject, caller);
       return c.json(accountSummary(updated), 200);
+    })
+    .post('/reject-moderator', async (c) => {
+      const caller = await authedAccount(deps, c.req.header('authorization'));
+      if (caller === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!isStaffRole(caller.role)) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const parsed = accountIdBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an "accountId" string' }, 400);
+      }
+      if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const loaded = await loadTargetAccount(deps.authStore, parsed.data.accountId);
+      if ('status' in loaded) {
+        return c.json({ error: loaded.error }, loaded.status);
+      }
+      const subject = loaded.account;
+      if (subject.id === caller.id) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
+      if (subject.role !== 'verified') {
+        return c.json({ error: 'Conflict' }, 409);
+      }
+      let existing: TrustEdge[];
+      try {
+        existing = await deps.trustStore.listEdgesForSubject(subject.id);
+      } catch {
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      if (pendingModeratorProposals([subject], existing).length === 0) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
+      try {
+        await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_reject'));
+      } catch (error) {
+        if (isDuplicateTrustEdge(error)) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
+      await clearModeratorProposalNotifications(deps, subject.id);
+      return c.json(accountSummary(subject), 200);
     })
     .post('/appoint-moderator', async (c) => {
       const caller = await authedAccount(deps, c.req.header('authorization'));
@@ -360,6 +411,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         if (subject.role === 'moderator') {
+          await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
         }
@@ -371,6 +423,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Trust chain is unavailable' }, 503);
         }
         logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
+        await clearModeratorProposalNotifications(deps, subject.id);
         await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
@@ -389,9 +442,50 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_appointed', { subjectId: subject.id, actorId: caller.id });
+      await clearModeratorProposalNotifications(deps, subject.id);
       await notifySubjectAppointed(deps, subject, caller);
       return c.json(accountSummary(updated), 200);
     });
+}
+
+/** Best-effort drop of open-proposal in-app rows; persist still 200. */
+async function clearModeratorProposalNotifications(
+  deps: TrustRouteDeps,
+  subjectId: string,
+): Promise<void> {
+  if (deps.notificationStore === undefined) {
+    return;
+  }
+  try {
+    await deps.notificationStore.deleteByTypeAndReplyId('moderator_proposal', subjectId);
+  } catch {
+    logEvent('notifications.hidden.purge_failed');
+  }
+}
+
+/** Best-effort staff fan-out of an open proposal; persist still 200. */
+async function notifyStaffProposed(
+  deps: TrustRouteDeps,
+  subject: Account,
+  caller: Account,
+): Promise<void> {
+  try {
+    const recipients = await deps.authStore.listAccounts();
+    await notifyModeratorProposed({
+      recipients,
+      subject: { id: subject.id, name: subject.name },
+      actor: { id: caller.id, name: caller.name },
+      nowMs: deps.now(),
+      ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
+      ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+      /* v8 ignore next 4 -- createApp always injects conversationStore */
+      ...(deps.conversationStore === undefined
+        ? {}
+        : { inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore) }),
+    });
+  } catch {
+    logEvent('push.enqueue.failed');
+  }
 }
 
 /** Best-effort targeted notify of the appointed subject; persist still 200. */

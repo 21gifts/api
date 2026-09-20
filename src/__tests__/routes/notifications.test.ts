@@ -329,6 +329,31 @@ describe('GET /notifications', () => {
     expect(body.notifications[0]?.['type']).toBe('moderator_appointed');
   });
 
+  it('keeps moderator_proposal when parent and reply are missing', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const accountId = '88888888-8888-4888-8888-888888888888';
+    const store = new InMemoryNotificationStore([
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: accountId,
+        replyId: accountId,
+        text: 'Sub',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, new InMemoryMessageStore()).request(
+      '/notifications',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+    };
+    expect(body.notifications).toHaveLength(1);
+    expect(body.notifications[0]?.['id']).toBe(proposalId);
+    expect(body.notifications[0]?.['type']).toBe('moderator_proposal');
+  });
+
   it('reuses the message lookup when two live replies share a parent', async () => {
     const parentLive = '11111111-1111-4111-8111-111111111111';
     const replyA = '22222222-2222-4222-8222-222222222222';
@@ -597,6 +622,29 @@ describe('POST /notifications/read-all', () => {
     expect(await store.unreadCount('acc')).toBe(0);
   });
 
+  it('leaves moderator_proposal unread when marking all read', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const accountId = '88888888-8888-4888-8888-888888888888';
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A }),
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: accountId,
+        replyId: accountId,
+        text: 'Sub',
+      }),
+    ]);
+    const res = await mount(await seeded(), store).request('/notifications/read-all', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect((await store.getByIdForRecipient(ID_A, 'acc'))?.readAt?.toISOString()).toBe(READ_ISO);
+    expect((await store.getByIdForRecipient(proposalId, 'acc'))?.readAt).toBeNull();
+  });
+
   it('is 200 not 404 (mount order)', async () => {
     const res = await mount(await seeded()).request('/notifications/read-all', {
       method: 'POST',
@@ -647,6 +695,28 @@ describe('POST /notifications/:id/read', () => {
     });
     expect(second.status).toBe(200);
     expect((await second.json()) as { readAt: string }).toEqual({ ...body });
+  });
+
+  it('returns 200 with readAt still null for a moderator_proposal', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const accountId = '88888888-8888-4888-8888-888888888888';
+    const store = new InMemoryNotificationStore([
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: accountId,
+        replyId: accountId,
+        text: 'Sub',
+      }),
+    ]);
+    const res = await mount(await seeded(), store).request(`/notifications/${proposalId}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { readAt: string | null };
+    expect(body.readAt).toBeNull();
+    expect((await store.getByIdForRecipient(proposalId, 'acc'))?.readAt).toBeNull();
   });
 
   it('returns 404 for unknown, other-account, and non-uuid ids', async () => {

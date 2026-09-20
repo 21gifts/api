@@ -492,21 +492,21 @@
 
 ## Endpoint: GET /notifications
 
-- **Purpose:** Bearer required. List `{ notifications, unreadCount }`. Apply the owner's `notificationLevel` filter (`notificationsMatchingLevel` on the newest 1000 stored rows), then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_post` / `zap` / `forum_reply`); `forum_reply` also drops when the child `replyId` message is missing or hidden. A `zap` `replyId` is a receipt-derived UUID, not a message id — it is not looked up and is never added to the purge set. Then cap the kept list at 200 newest-first. Then best-effort `deleteByMessageIds` of those **message** ids (`notifications.hidden.purged`; throw logs `notifications.hidden.purge_failed` and is not 503). Never drops `moderator_appointed` in the hidden filter (those rows stay in `{ notifications }`). Appointed `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not the unfiltered store count (if purge throws, still count kept unread; do not 503 the list). Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`. No account ids. `moderator_appointed` always stays through the level filter.
+- **Purpose:** Bearer required. List `{ notifications, unreadCount }`. Apply the owner's `notificationLevel` filter (`notificationsMatchingLevel` on the newest 1000 stored rows), then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_post` / `zap` / `forum_reply`); `forum_reply` also drops when the child `replyId` message is missing or hidden. A `zap` `replyId` is a receipt-derived UUID, not a message id — it is not looked up and is never added to the purge set. Then cap the kept list at 200 newest-first. Then best-effort `deleteByMessageIds` of those **message** ids (`notifications.hidden.purged`; throw logs `notifications.hidden.purge_failed` and is not 503). Never drops `moderator_appointed` or `moderator_proposal` in the hidden filter (those rows stay in `{ notifications }`; do not look up a forum message; do not add the parent id to the purge set). Appointed/proposal `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not the unfiltered store count (if purge throws, still count kept unread; do not 503 the list). Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed' | 'moderator_proposal'`. No account ids. `moderator_appointed` and `moderator_proposal` always stay through the level filter. Mark-read / read-all do not stamp `moderator_proposal`.
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.list.failed`).
 - **Used by:** App in-app notification list.
 - **Auth:** Bearer session.
 
 ## Endpoint: POST /notifications/read-all
 
-- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read.
+- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read except `moderator_proposal` (those rows stay unread until confirm or reject).
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.read_all.failed`).
 - **Used by:** App mark-all-read control.
 - **Auth:** Bearer session.
 
 ## Endpoint: POST /notifications/:id/read
 
-- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set.
+- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. A `moderator_proposal` row is 200 with `readAt` still `null` (mark-read does not dismiss it).
 - **Errors:** 401 Unauthorized; 404 Not found (unknown/other/non-uuid); 503 Notifications are unavailable (`notifications.read.failed`).
 - **Used by:** App mark-one-read control.
 - **Auth:** Bearer session.
@@ -646,7 +646,7 @@
 
 ## Endpoint: GET /trust/proposals
 
-- **Purpose:** Bearer session required (moderator; not `DEBUG_TOKEN`). Lists pending `moderator_propose` rows via `pendingModeratorProposals`: live subject `role` is `verified` and the subject has no `moderator_confirm` / `moderator_appoint`. JSON `{ "proposals": [ { subject: { id, name, role: "verified" }, proposedBy: { id, name }, createdAt } ] }` with ISO-8601 `createdAt` (empty list is 200). Oldest `createdAt` first, then propose-edge id. Missing subjects are omitted; a missing actor is `{ id, name: null }`. No `forum.read` / rules gate — a moderator without rules agreement is still 200. Logs `trust.proposals.listed` with `{ count }` only. `GET /trust-chain` still omits a pending `moderator_propose`. Once the subject is a `moderator`, that propose is eligible as the public incoming edge only when it is the oldest eligible sibling (`createdAt` then `id`).
+- **Purpose:** Bearer session required (moderator; not `DEBUG_TOKEN`). Lists pending proposals via `pendingModeratorProposals`: latest propose/reject is `moderator_propose`, live subject `role` is `verified`, and the subject has no `moderator_confirm` / `moderator_appoint`. JSON `{ "proposals": [ { subject: { id, name, role: "verified" }, proposedBy: { id, name }, createdAt } ] }` with ISO-8601 `createdAt` (empty list is 200). Oldest `createdAt` first, then propose-edge id. Missing subjects are omitted; a missing actor is `{ id, name: null }`. No `forum.read` / rules gate — a moderator without rules agreement is still 200. Logs `trust.proposals.listed` with `{ count }` only. `GET /trust-chain` still omits a pending `moderator_propose`. Once the subject is a `moderator`, that propose is eligible as the public incoming edge only when it is the oldest eligible sibling (`createdAt` then `id`).
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 503 `{ error: 'Trust chain is unavailable' }` when listing accounts/edges or projecting throws (`trust.proposals.failed`).
 - **Used by:** Staff moderator-proposal queue in the app.
 - **Auth:** `Authorization: Bearer` session (moderator). Not `DEBUG_TOKEN`.
@@ -660,17 +660,24 @@
 
 ## Endpoint: POST /trust/propose-moderator
 
-- **Purpose:** Bearer staff. Body `{ "accountId" }`. Subject must be `verified`, not self, and must not already have `moderator_propose` / `moderator_confirm` / `moderator_appoint` (and not already moderator/founder). Inserts `moderator_propose` without changing role; logs `trust.moderator_proposed`; `200 { id, name, role }`.
-- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when the subject is not verified, is self, or already has a staff-grant edge).
+- **Purpose:** Bearer staff. Body `{ "accountId" }`. Subject must be `verified`, not self. 409 only when currently pending (latest propose/reject is propose), any confirm/appoint exists, the subject is self, or role is not verified. After a reject, 200 inserts a **new** `moderator_propose` (history kept). Role unchanged; logs `trust.moderator_proposed`; `200 { id, name, role }`. After 200, wrap `notifyModeratorProposed` (in-app `moderator_proposal` plus Web Push to other staff). HTTP still 200 if notify fails.
+- **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when the subject is not verified, is self, is currently pending, or already has confirm/appoint).
 - **Used by:** Staff moderator-proposal flow.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
 ## Endpoint: POST /trust/confirm-moderator
 
-- **Purpose:** Bearer staff. Body `{ "accountId" }`. A pending `moderator_propose` must exist and the caller id must differ from the proposer's actor id. Subject must still be `verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs `trust.moderator_confirmed`, `200 { id, name, role }`. If the caller already stored `moderator_confirm` and the subject is still `verified`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200. After a 200 that leaves the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), wrap `notifyModeratorAppointed` for the subject only (in-app `moderator_appointed`, Web Push url `/welcome`). Failure logs `push.enqueue.failed`; persist/HTTP still 200.
+- **Purpose:** Bearer staff. Body `{ "accountId" }`. A pending proposal must exist (latest propose/reject is propose) and the caller id must differ from that latest proposer's actor id. Subject must still be `verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs `trust.moderator_confirmed`, `200 { id, name, role }`. If the caller already stored `moderator_confirm` and the subject is still `verified`, completes the role write and returns 200; already-moderator with that caller-owned edge is idempotent 200. After a 200 that leaves the subject as `moderator` (new grant and idempotent already-moderator same-actor 200), delete `moderator_proposal` rows (`replyId === subject.id`) then wrap `notifyModeratorAppointed` for the subject only (in-app `moderator_appointed`, Web Push url `/welcome`). Failure logs `push.enqueue.failed`; persist/HTTP still 200.
 - **Errors:** Same 401/403/400/404/409/503 JSON shapes as `POST /trust/verify` (409 when there is no pending propose, the caller proposed, the subject is no longer verified, or a confirm edge belongs to someone else).
 - **Used by:** Independent second staff confirmation.
 - **Auth:** `Authorization: Bearer` session. Staff only.
+
+## Endpoint: POST /trust/reject-moderator
+
+- **Purpose:** Bearer staff (same auth as propose-moderator). Body `{ "accountId" }`. Reject an open moderator proposal: pending means the latest propose/reject is propose, the subject is still `verified`, and there is no confirm/appoint. Inserts append-only `moderator_reject`; role stays `verified`. The original proposer may reject. Logs `trust.moderator_rejected` `{ subjectId, actorId }`, then deletes `moderator_proposal` rows with `replyId === subject.id`. No notify for the reject itself. `200 { id, name, role }` with role unchanged.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session; 403 `{ error: 'Forbidden' }` when the caller is not staff; 400 `{ error: 'Expected a JSON body with an "accountId" string' }`; 404 `{ error: 'Not found' }` for a non-UUID or missing subject; 409 `{ error: 'Conflict' }` when the subject is self, not pending, or `role !== verified`; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`trust.write.failed`).
+- **Used by:** Staff moderator-proposal queue in the app (reject an open proposal so another staff member can re-propose).
+- **Auth:** `Authorization: Bearer` session. Staff only (moderator+). Not `DEBUG_TOKEN`.
 
 ## Endpoint: POST /trust/appoint-moderator
 
@@ -730,14 +737,14 @@
 
 ## Endpoint: POST /debug/trust-edges
 
-- **Purpose:** Operator backfill of a stored trust edge. Body `{ "subjectId", "actorId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Inserts the edge, logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`, and returns `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
-- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' }`; 404 `{ error: 'Not found' }` when subject or actor is missing or not a UUID; 409 `{ error: 'Conflict' }` on duplicate `(subjectId, kind)` or `subjectId === actorId`; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
+- **Purpose:** Operator backfill of a stored trust edge. Body `{ "subjectId", "actorId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint` / `moderator_reject`. Inserts the edge, logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`, and returns `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only. POST 409 duplicate only for live-unique kinds (`verify` / `moderator_confirm` / `moderator_appoint`); propose and reject may repeat.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId", "actorId", and "kind" strings' }`; 404 `{ error: 'Not found' }` when subject or actor is missing or not a UUID; 409 `{ error: 'Conflict' }` on duplicate live-unique `(subjectId, kind)` or `subjectId === actorId`; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
 - **Used by:** Operator `gifts-debug trust-edge` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: DELETE /debug/trust-edges
 
-- **Purpose:** Operator delete of a stored trust edge. Body `{ "subjectId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Removes the unique `(subjectId, kind)` row, logs `debug.trust_edges.deleted` `{ subjectId, kind }`, and returns the deleted `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`.
+- **Purpose:** Operator delete of a stored trust edge. Body `{ "subjectId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint` / `moderator_reject`. Removes the latest `(subjectId, kind)` row (`createdAt` desc, then `id` desc), logs `debug.trust_edges.deleted` `{ subjectId, kind }`, and returns the deleted `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId" and "kind" strings' }`; 404 `{ error: 'Not found' }` when `subjectId` is not a UUID or no row matches; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.delete_failed`).
 - **Used by:** Operator `gifts-debug trust-edge-delete` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

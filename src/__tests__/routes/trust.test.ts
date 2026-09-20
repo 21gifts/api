@@ -549,7 +549,7 @@ describe('POST /trust/*', () => {
       ).toBe(true);
     });
 
-    it('does not create a notification on propose 200', async () => {
+    it('fans out moderator_proposal to other staff on propose 200', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
       ]);
@@ -564,11 +564,39 @@ describe('POST /trust/*', () => {
       );
       expect(res.status).toBe(200);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
-      expect(await notifications.listByRecipient(SUBJECT, 10)).toEqual([]);
+      const listed = await notifications.listByRecipient(MOD, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.type).toBe('moderator_proposal');
+      expect(listed[0]?.parentId).toBe(SUBJECT);
+      expect(listed[0]?.replyId).toBe(SUBJECT);
+      expect(listed[0]?.actorAccountId).toBe(FOUNDER);
+      expect(listed[0]?.name).toBe('Founder');
+      expect(listed[0]?.text).toBe('Sub');
+      expect(listed[0]?.readAt).toBeNull();
       expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
-      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(SUBJECT, 10)).toEqual([]);
       expect(await notifications.listByRecipient(OTHER, 10)).toEqual([]);
-      expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
+      const claimed = await pushStore.claimPending(10, now(), 60_000);
+      expect(claimed.map((row) => row.accountId)).toEqual([MOD]);
+      expect((JSON.parse(claimed[0]?.payload ?? '{}') as { url: string }).url).toBe(
+        '/moderate/proposals',
+      );
+    });
+
+    it('still 200 when staff proposal notify throws', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      authStore.listAccounts = async () => {
+        throw new Error('boom');
+      };
+      const res = await post(mount(authStore, trustStore), '/trust/propose-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(parsedEvents(warn).some((event) => event['event'] === 'push.enqueue.failed')).toBe(
+        true,
+      );
     });
 
     it('returns 503 when listing throws and 409/503 on insert failure', async () => {
@@ -983,6 +1011,295 @@ describe('POST /trust/*', () => {
       expect(parsedEvents(warn).some((event) => event['event'] === 'push.enqueue.failed')).toBe(
         true,
       );
+    });
+  });
+
+  describe('POST /trust/reject-moderator', () => {
+    async function pending(): Promise<{
+      authStore: InMemoryAuthStore;
+      trustStore: InMemoryTrustStore;
+    }> {
+      const seeded = await staffed([account({ id: SUBJECT, role: 'verified', name: 'Sub' })]);
+      await seeded.trustStore.insertEdge({
+        id: 'propose',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_propose',
+        createdAt: 1,
+      });
+      return seeded;
+    }
+
+    it('returns 400 and 404 for a bad or missing accountId', async () => {
+      const { authStore, trustStore } = await staffed();
+      expect(
+        (
+          await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+            accountId: true,
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+            accountId: 'bad',
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+            accountId: SUBJECT,
+          })
+        ).status,
+      ).toBe(404);
+    });
+
+    it('returns 401 without a session', async () => {
+      const { authStore, trustStore } = await staffed();
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', undefined, {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 403 when the caller is not staff', async () => {
+      const { authStore, trustStore } = await staffed();
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'other', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 409 when the subject is not verified', async () => {
+      const { authStore, trustStore } = await staffed();
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+        accountId: MOD,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('returns 409 when the subject is not pending', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('returns 409 when rejecting self', async () => {
+      const { authStore, trustStore } = await staffed();
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+        accountId: FOUNDER,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('lets the proposer reject, keeps the propose edge, and logs', async () => {
+      const { authStore, trustStore } = await pending();
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      const edges = await trustStore.listEdges();
+      expect(edges.some((row) => row.kind === 'moderator_propose')).toBe(true);
+      expect(edges.some((row) => row.kind === 'moderator_reject')).toBe(true);
+      expect(
+        parsedEvents(warn).some((event) => event['event'] === 'trust.moderator_rejected'),
+      ).toBe(true);
+    });
+
+    it('allows a second propose after reject', async () => {
+      const { authStore, trustStore } = await pending();
+      const rejected = await post(
+        mount(authStore, trustStore),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(rejected.status).toBe(200);
+      const res = await post(mount(authStore, trustStore), '/trust/propose-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(
+        (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_propose'),
+      ).toHaveLength(2);
+    });
+
+    it('returns 409 when proposing while a proposal is still pending', async () => {
+      const { authStore, trustStore } = await pending();
+      const res = await post(mount(authStore, trustStore), '/trust/propose-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('confirms using the latest propose actor after a reject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'propose-1',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_propose',
+        createdAt: 1,
+      });
+      await trustStore.insertEdge({
+        id: 'reject-1',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_reject',
+        createdAt: 2,
+      });
+      await trustStore.insertEdge({
+        id: 'propose-2',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_propose',
+        createdAt: 3,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
+    });
+
+    it('deletes moderator_proposal rows on reject', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore([
+        {
+          id: '55555555-5555-4555-8555-555555555555',
+          recipientAccountId: MOD,
+          actorAccountId: FOUNDER,
+          type: 'moderator_proposal',
+          parentId: SUBJECT,
+          replyId: SUBJECT,
+          name: 'Founder',
+          text: 'Sub',
+          createdAt: new Date(now()),
+          readAt: null,
+        },
+      ]);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+    });
+
+    it('deletes moderator_proposal rows on confirm and notifies the subject', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore([
+        {
+          id: '55555555-5555-4555-8555-555555555555',
+          recipientAccountId: MOD,
+          actorAccountId: FOUNDER,
+          type: 'moderator_proposal',
+          parentId: SUBJECT,
+          replyId: SUBJECT,
+          name: 'Founder',
+          text: 'Sub',
+          createdAt: new Date(now()),
+          readAt: null,
+        },
+      ]);
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications }),
+        '/trust/confirm-moderator',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      const appointed = await notifications.listByRecipient(SUBJECT, 10);
+      expect(appointed).toHaveLength(1);
+      expect(appointed[0]?.type).toBe('moderator_appointed');
+    });
+
+    it('returns 503 when listing throws', async () => {
+      const { authStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, throwingList), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(503);
+      expect(parsedEvents(warn).some((event) => event['event'] === 'trust.write.failed')).toBe(
+        true,
+      );
+    });
+
+    it('returns 503 when reject insert throws', async () => {
+      const { authStore } = await pending();
+      const withPropose: TrustEdge[] = [
+        {
+          id: 'propose',
+          subjectId: SUBJECT,
+          actorId: FOUNDER,
+          kind: 'moderator_propose',
+          createdAt: 1,
+        },
+      ];
+      const store: TrustStore = {
+        ...boomInsert,
+        listEdgesForSubject: async () => withPropose,
+      };
+      const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(503);
+      expect(parsedEvents(warn).some((event) => event['event'] === 'trust.write.failed')).toBe(
+        true,
+      );
+    });
+
+    it('returns 409 when reject insert reports a duplicate', async () => {
+      const { authStore } = await pending();
+      const withPropose: TrustEdge[] = [
+        {
+          id: 'propose',
+          subjectId: SUBJECT,
+          actorId: FOUNDER,
+          kind: 'moderator_propose',
+          createdAt: 1,
+        },
+      ];
+      const store: TrustStore = {
+        ...duplicateInsert,
+        listEdgesForSubject: async () => withPropose,
+      };
+      const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('still 200 when dropping proposal notifications throws', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore();
+      notifications.deleteByTypeAndReplyId = async () => {
+        throw new Error('boom');
+      };
+      const res = await post(
+        mount(authStore, trustStore, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(
+        parsedEvents(warn).some((event) => event['event'] === 'notifications.hidden.purge_failed'),
+      ).toBe(true);
     });
   });
 
