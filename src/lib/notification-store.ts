@@ -67,6 +67,15 @@ export interface NotificationStore {
    * @param readAt - Read stamp for previously unread rows.
    */
   markAllRead(accountId: string, readAt: Date): Promise<void>;
+
+  /**
+   * Delete notifications whose `parentId` or `replyId` is in `ids`.
+   * Empty `ids` is a no-op and returns 0. Does not inspect `type`.
+   *
+   * @param ids - Forum message ids to match against `parentId` / `replyId`.
+   * @returns Number of rows removed.
+   */
+  deleteByMessageIds(ids: readonly string[]): Promise<number>;
 }
 
 /** Idempotent DDL for the notification table (matches `docs/schema/notification.sql`). */
@@ -217,6 +226,28 @@ export class InMemoryNotificationStore implements NotificationStore {
       }
     }
     return Promise.resolve();
+  }
+
+  /**
+   * Remove rows whose `parentId` or `replyId` is in `ids`.
+   *
+   * @param ids - Forum message ids.
+   * @returns Removed count (`0` when `ids` is empty).
+   */
+  deleteByMessageIds(ids: readonly string[]): Promise<number> {
+    if (ids.length === 0) {
+      return Promise.resolve(0);
+    }
+    const match = new Set(ids);
+    let removed = 0;
+    for (let i = this.#rows.length - 1; i >= 0; i -= 1) {
+      const row = this.#rows[i];
+      if (row !== undefined && (match.has(row.parentId) || match.has(row.replyId))) {
+        this.#rows.splice(i, 1);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
   }
 }
 
@@ -376,6 +407,23 @@ export class PostgresNotificationStore implements NotificationStore {
       `UPDATE notification SET read_at = $2 WHERE recipient_account_id = $1 AND read_at IS NULL`,
       [accountId, readAt],
     );
+  }
+
+  /**
+   * Delete rows whose `parent_id` or `reply_id` is in `ids`.
+   *
+   * @param ids - Forum message ids (`$1::uuid[]`).
+   * @returns Removed count (`0` when `ids` is empty; skips SQL).
+   */
+  async deleteByMessageIds(ids: readonly string[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+    const rows = await this.#sql.query<{ id: string }>(
+      `DELETE FROM notification WHERE parent_id = ANY($1::uuid[]) OR reply_id = ANY($1::uuid[]) RETURNING id`,
+      [ids],
+    );
+    return rows.length;
   }
 }
 

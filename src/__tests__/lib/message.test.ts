@@ -348,6 +348,43 @@ describe('serializeMessage', () => {
     };
     expect(serializeMessage(row, false, 'basis').photoCount).toBe(3);
   });
+
+  it('stamps deletedAt / deletedBy and forces payable false when hidden is set', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-opt',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const deletedAt = new Date('2026-09-01T12:00:00.000Z');
+    const deletedBy = { id: 'staff-1', name: 'Ada', role: 'moderator' as const };
+    const body = serializeMessage(row, true, 'basis', undefined, true, {
+      deletedAt,
+      deletedBy,
+    });
+    expect(body.deletedAt).toBe('2026-09-01T12:00:00.000Z');
+    expect(body.deletedBy).toEqual(deletedBy);
+    expect(body.payable).toBe(false);
+  });
+
+  it('omits deletedAt and deletedBy when hidden is not passed', () => {
+    const row: MessageRow = {
+      id: 'msg-live-opt',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'live',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const body = serializeMessage(row, true, 'basis');
+    expect(body).not.toHaveProperty('deletedAt');
+    expect(body).not.toHaveProperty('deletedBy');
+    expect(body.payable).toBe(true);
+  });
 });
 
 describe('serializeDebugMessage', () => {

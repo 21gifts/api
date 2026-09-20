@@ -3734,7 +3734,9 @@ describe('indexOpenZapReceipts', () => {
       listDebug: (limit: number) => base.listDebug(limit),
       listHidden: (limit: number) => base.listHidden(limit),
       listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
-      listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+      listChildIds: (parentId: string) => base.listChildIds(parentId),
+      listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
+        base.listReplies(parentId, limit, includeHidden),
       listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
       create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
       findLiveByAccountContent: (
@@ -3951,7 +3953,9 @@ describe('indexOpenZapReceipts', () => {
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
-        listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+        listChildIds: (parentId: string) => base.listChildIds(parentId),
+        listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
+          base.listReplies(parentId, limit, includeHidden),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         findLiveByAccountContent: (
@@ -4306,7 +4310,9 @@ describe('indexOpenZapReceipts', () => {
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
-        listReplies: (parentId: string, limit?: number) => base.listReplies(parentId, limit),
+        listChildIds: (parentId: string) => base.listChildIds(parentId),
+        listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
+          base.listReplies(parentId, limit, includeHidden),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         findLiveByAccountContent: (

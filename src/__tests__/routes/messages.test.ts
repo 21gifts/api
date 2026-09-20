@@ -164,6 +164,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listDebug: boom,
     listHidden: boom,
     listDirectChildren: boom,
+    listChildIds: boom,
     listPublishedEventIds: boom,
     create: boom,
     findLiveByAccountContent: boom,
@@ -1879,7 +1880,9 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
-      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      listChildIds: (parentId) => base.listChildIds(parentId),
+      listReplies: (parentId, limit, includeHidden) =>
+        base.listReplies(parentId, limit, includeHidden),
       create: (row, photo, video) => base.create(row, photo, video),
       findLiveByAccountContent: async () => {
         throw new Error('find boom');
@@ -1983,7 +1986,9 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
-      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      listChildIds: (parentId) => base.listChildIds(parentId),
+      listReplies: (parentId, limit, includeHidden) =>
+        base.listReplies(parentId, limit, includeHidden),
       findLiveByAccountContent: async () => undefined,
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
@@ -3535,7 +3540,9 @@ describe('POST /messages/:id/invoice', () => {
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
-      listReplies: (parentId, limit) => base.listReplies(parentId, limit),
+      listChildIds: (parentId) => base.listChildIds(parentId),
+      listReplies: (parentId, limit, includeHidden) =>
+        base.listReplies(parentId, limit, includeHidden),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
       findLiveByAccountContent: (...args) => base.findLiveByAccountContent(...args),
@@ -4247,6 +4254,180 @@ describe('GET /messages/:id', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
+
+  it('returns 404 for a hidden note without a session and omits deletedAt', async () => {
+    const id = '81818181-8181-4181-8181-818181818181';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(new InMemoryAuthStore(), messageStore).request(`/messages/${id}`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('deletedAt');
+  });
+
+  it('returns 404 for a hidden note for a basis session', async () => {
+    const id = '82828282-8282-4282-8282-828282828282';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(await namedStore('Ada'), messageStore).request(`/messages/${id}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('deletedAt');
+  });
+
+  it('returns a hidden 21gifts note with hide stamps for a moderator', async () => {
+    const id = '83838383-8383-4383-8383-838383838383';
+    const auth = await staffStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden clip',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${id}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body['text']).toBe('hidden clip');
+    expect(body['deletedAt']).toBe(new Date(now()).toISOString());
+    expect(body['deletedBy']).toEqual({ id: 'acc', name: 'Ada', role: 'moderator' });
+    expect(body['payable']).toBe(false);
+    expect(body['accountId']).toBe('acc');
+    expect(await messageStore.getById(id)).toBeDefined();
+  });
+
+  it('returns a hidden 21gifts note with hide stamps for a founder', async () => {
+    const id = '84848484-8484-4484-8484-848484848484';
+    const auth = await staffStore('Ada');
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...existing, role: 'founder' });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden founder',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${id}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body['text']).toBe('hidden founder');
+    expect(body['deletedAt']).toBe(new Date(now()).toISOString());
+    expect(body['deletedBy']).toEqual({ id: 'acc', name: 'Ada', role: 'founder' });
+    expect(body['payable']).toBe(false);
+    expect(body['accountId']).toBe('acc');
+  });
+
+  it('returns a hidden Damus-only note without role for staff', async () => {
+    const id = '86868686-8686-4686-8686-868686868686';
+    const auth = await staffStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: null,
+      name: 'npub',
+      text: 'hidden damus',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${id}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body['text']).toBe('hidden damus');
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('role');
+    expect(body['deletedAt']).toBe(new Date(now()).toISOString());
+  });
+
+  it('uses basis when a hidden 21gifts author account is missing', async () => {
+    const id = '87878787-8787-4787-8787-878787878787';
+    const auth = await staffStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'gone',
+      name: 'Ghost',
+      text: 'hidden ghost',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messageStore.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${id}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body['role']).toBe('basis');
+    expect(body['accountId']).toBe('gone');
+  });
+
+  it('omits deletedAt and deletedBy on a live note', async () => {
+    const id = '85858585-8585-4585-8585-858585858585';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'live',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request(`/messages/${id}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('deletedAt');
+    expect(body).not.toHaveProperty('deletedBy');
+  });
 });
 
 describe('GET /messages/:id/replies', () => {
@@ -4846,6 +5027,280 @@ describe('GET /messages/:id/replies', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
   });
+
+  it('returns 404 when the parent is hidden without a staff session', async () => {
+    const parentId = '86868686-8686-4686-8686-868686868686';
+    const childId = '87878787-8787-4787-8787-878787878787';
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(await namedStore('Ada'), store).request(
+      `/messages/${parentId}/replies`,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns hidden children with hide stamps for a moderator session', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.['text']).toBe('hidden child');
+    expect(body.messages[0]?.['deletedAt']).toBe(new Date(now()).toISOString());
+    expect(body.messages[0]?.['deletedBy']).toEqual({
+      id: 'acc',
+      name: 'Ada',
+      role: 'moderator',
+    });
+    expect(body.messages[0]?.['payable']).toBe(false);
+    expect(body.messages[0]?.['accountId']).toBe('acc');
+  });
+
+  it('returns hidden children under a live parent for a moderator session', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(childId, new Date(now()), 'acc')).toBe(true);
+    expect((await store.getById(parentId))?.deletedAt).toBeNull();
+    const unsigned = await mount(auth, store).request(`/messages/${parentId}/replies`);
+    expect(unsigned.status).toBe(200);
+    expect(
+      ((await unsigned.json()) as { messages: Array<{ id: string }> }).messages.map(
+        (row) => row.id,
+      ),
+    ).toEqual([]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.['id']).toBe(childId);
+    expect(body.messages[0]?.['deletedAt']).toBe(new Date(now()).toISOString());
+  });
+
+  it('omits a hidden child that cannot serialize and still 200', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const badId = '87878787-8787-4878-8878-878787878787';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    await store.create({
+      id: badId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'bad child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    const wrapped: MessageStore = throwingStore({
+      getById: (id) => store.getById(id),
+      listReplies: async (parent, limit, includeHidden) => {
+        const rows = await store.listReplies(parent, limit, includeHidden);
+        return rows.map((row) =>
+          row.id === badId ? { ...row, createdAt: new Date(Number.NaN) } : row,
+        );
+      },
+    });
+    const res = await mount(auth, wrapped).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(body.messages.map((row) => row['id'])).toEqual([childId]);
+  });
+
+  it('uses basis when a hidden child author account is missing', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'gone',
+      name: 'Ghost',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.['role']).toBe('basis');
+  });
+
+  it('serializes a hidden zapper child without looking up an account', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: null,
+      name: 'Visitor',
+      text: 'hidden zapper',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+      authorPubkey: 'ab'.repeat(32),
+    });
+    await store.recordZapper('ab'.repeat(32), 'receipt-hidden', new Date(now()));
+    expect(await store.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.['text']).toBe('hidden zapper');
+    expect(body.messages[0]?.['via']).toBe('nostr');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
+    expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]?.['payable']).toBe(false);
+    expect(body.messages[0]?.['deletedAt']).toBe(new Date(now()).toISOString());
+  });
 });
 
 describe('GET /messages/:id/photo', () => {
@@ -5076,6 +5531,60 @@ describe('GET /messages/:id/photo', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.photo.failed')).toBe(true);
+  });
+
+  it('returns 404 for a hidden photo without a staff session', async () => {
+    const id = '8a8a8a8a-8a8a-48a8-8a8a-8a8a8a8a8a8a';
+    const store = new InMemoryMessageStore();
+    await store.create(
+      {
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    expect(await store.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const unauth = await mount(new InMemoryAuthStore(), store).request(`/messages/${id}/photo`);
+    expect(unauth.status).toBe(404);
+    expect(await unauth.json()).toEqual({ error: 'Photo not found' });
+    const basis = await mount(await namedStore('Ada'), store).request(`/messages/${id}/photo`, {
+      headers: AUTH,
+    });
+    expect(basis.status).toBe(404);
+    expect(await basis.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('returns hidden photo bytes for a moderator session', async () => {
+    const id = '8b8b8b8b-8b8b-48b8-8b8b-8b8b8b8b8b8b';
+    const store = new InMemoryMessageStore();
+    await store.create(
+      {
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    expect(await store.markDeleted(id, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(await staffStore('Ada'), store).request(`/messages/${id}/photo`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(res.headers.get('Vary')).toBe('Authorization');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.jpg"');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 });
 
@@ -5981,7 +6490,8 @@ describe('DELETE /messages/:id', () => {
     ).toBe(204);
     expect((await app.request(`/messages/${NOTE_ID}`)).status).toBe(404);
     expect((await app.request(`/messages/${NOTE_ID}/photo`)).status).toBe(404);
-    expect((await app.request(`/messages/${NOTE_ID}/replies`, { headers: AUTH })).status).toBe(404);
+    expect((await app.request(`/messages/${NOTE_ID}/replies`)).status).toBe(404);
+    expect((await app.request(`/messages/${NOTE_ID}/replies`, { headers: AUTH })).status).toBe(200);
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
     expect(
@@ -6011,6 +6521,10 @@ describe('DELETE /messages/:id', () => {
       (await app.request(`/messages/${videoId}`, { method: 'DELETE', headers: AUTH })).status,
     ).toBe(204);
     expect((await app.request(`/messages/${videoId}/video.mp4`)).status).toBe(404);
+    const staffVideo = await app.request(`/messages/${videoId}/video.mp4`, { headers: AUTH });
+    expect(staffVideo.status).toBe(200);
+    expect(staffVideo.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(staffVideo.headers.get('Vary')).toBe('Authorization');
     expect(await messages.getById(videoId)).toBeDefined();
   });
 
@@ -6178,6 +6692,135 @@ describe('DELETE /messages/:id', () => {
     ).toBe(204);
     expect(publisher.calls).toHaveLength(1);
     expect(publisher.calls[0]?.event['kind']).toBe(5);
+  });
+
+  it('retracts notifications whose parentId or replyId is the note or a stamped child', async () => {
+    const childId = '33333333-3333-4333-8333-333333333333';
+    const keepId = '44444444-4444-4444-8444-444444444444';
+    const { auth, messages } = await staffStore('founder');
+    await messages.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: NOTE_ID,
+    });
+    const notificationStore = new InMemoryNotificationStore([
+      {
+        id: 'n-parent',
+        recipientAccountId: 'acc',
+        actorAccountId: 'acc',
+        type: 'forum_reply',
+        parentId: NOTE_ID,
+        replyId: keepId,
+        name: 'Ada',
+        text: 'about parent',
+        createdAt: new Date(now()),
+        readAt: null,
+      },
+      {
+        id: 'n-reply',
+        recipientAccountId: 'acc',
+        actorAccountId: 'acc',
+        type: 'forum_post',
+        parentId: keepId,
+        replyId: NOTE_ID,
+        name: 'Ada',
+        text: 'about note as reply',
+        createdAt: new Date(now()),
+        readAt: null,
+      },
+      {
+        id: 'n-child',
+        recipientAccountId: 'acc',
+        actorAccountId: 'acc',
+        type: 'zap',
+        parentId: childId,
+        replyId: childId,
+        name: 'Ada',
+        text: '21',
+        createdAt: new Date(now()),
+        readAt: null,
+      },
+      {
+        id: 'n-keep',
+        recipientAccountId: 'acc',
+        actorAccountId: 'acc',
+        type: 'forum_reply',
+        parentId: keepId,
+        replyId: keepId,
+        name: 'Ada',
+        text: 'unrelated',
+        createdAt: new Date(now()),
+        readAt: null,
+      },
+    ]);
+    const res = await mount(auth, messages, { notificationStore }).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    const listed = await notificationStore.listByRecipient('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual(['n-keep']);
+    expect(await notificationStore.getByIdForRecipient('n-parent', 'acc')).toBeUndefined();
+    expect(await notificationStore.getByIdForRecipient('n-reply', 'acc')).toBeUndefined();
+    expect(await notificationStore.getByIdForRecipient('n-child', 'acc')).toBeUndefined();
+  });
+
+  it('returns 204 and logs when deleteByMessageIds throws', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const notificationStore = new InMemoryNotificationStore([
+      {
+        id: 'n-throw',
+        recipientAccountId: 'acc',
+        actorAccountId: 'acc',
+        type: 'forum_reply',
+        parentId: NOTE_ID,
+        replyId: NOTE_ID,
+        name: 'Ada',
+        text: 'child',
+        createdAt: new Date(now()),
+        readAt: null,
+      },
+    ]);
+    notificationStore.deleteByMessageIds = async (): Promise<number> => {
+      throw new Error('boom');
+    };
+    warn.mockClear();
+    const res = await mount(auth, messages, { notificationStore }).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'messages.delete.notifications_failed'),
+    ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.delete.failed')).toBe(false);
+    const row = await messages.getById(NOTE_ID);
+    expect(row?.deletedAt).not.toBeNull();
+  });
+
+  it('returns 204 and logs when listChildIds throws after markDeleted', async () => {
+    const { auth, messages } = await staffStore('founder');
+    warn.mockClear();
+    const store = throwingStore({
+      markDeleted: (id, at, byAccountId) => messages.markDeleted(id, at, byAccountId),
+      getById: (id) => messages.getById(id),
+    });
+    const res = await mount(auth, store).request(`/messages/${NOTE_ID}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(204);
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'messages.delete.notifications_failed'),
+    ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.delete.failed')).toBe(false);
+    const row = await messages.getById(NOTE_ID);
+    expect(row?.deletedAt).not.toBeNull();
   });
 });
 

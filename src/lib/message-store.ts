@@ -134,16 +134,27 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageListRow[]>;
 
   /**
-   * Oldest live attributed replies first for a parent note id (`deletedAt`
-   * null and either an account or a recorded zapper pubkey). Null-account
-   * rows whose pubkey is not a zapper, and rows with neither identity, are
-   * omitted; `getById` still returns them.
+   * Oldest attributed replies first for a parent note id (either an account
+   * or a recorded zapper pubkey). Null-account rows whose pubkey is not a
+   * zapper, and rows with neither identity, are omitted; `getById` still
+   * returns them. When `includeHidden` is not `true`, live rows only
+   * (`deletedAt` null). When `true`, hidden children are included.
    *
    * @param parentId - Parent message id.
    * @param limit - Maximum rows (default 200).
+   * @param includeHidden - When `true`, omit the live-only filter.
    * @returns Reply rows (caller-owned copies).
    */
-  listReplies(parentId: string, limit?: number): Promise<MessageRow[]>;
+  listReplies(parentId: string, limit?: number, includeHidden?: boolean): Promise<MessageRow[]>;
+
+  /**
+   * Direct-child ids of `parentId` (any `deletedAt`), newest not required.
+   * Empty array when the parent id is unknown or has no children.
+   *
+   * @param parentId - Parent message id.
+   * @returns Child id strings (any hide stamp).
+   */
+  listChildIds(parentId: string): Promise<string[]>;
 
   /**
    * Newest-first forum rows for operator debug (`createdAt` desc, then `id`
@@ -1252,19 +1263,24 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first live attributed replies for `parentId` (`deletedAt` null
-   * and either an account or a recorded zapper pubkey).
+   * Oldest-first attributed replies for `parentId` (account or zapper
+   * pubkey). Live-only unless `includeHidden` is `true`.
    *
    * @param parentId - Parent note id.
    * @param limit - Max rows (default 200).
+   * @param includeHidden - When `true`, include hidden children.
    * @returns Reply row copies.
    */
-  listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+  listReplies(
+    parentId: string,
+    limit: number = 200,
+    includeHidden?: boolean,
+  ): Promise<MessageRow[]> {
     const replies = this.#rows
       .filter(
         (row) =>
           row.parentId === parentId &&
-          row.deletedAt === null &&
+          (includeHidden === true || row.deletedAt === null) &&
           (row.accountId !== null ||
             (row.authorPubkey !== null && this.#zappers.has(row.authorPubkey.toLowerCase()))),
       )
@@ -1278,6 +1294,18 @@ export class InMemoryMessageStore implements MessageStore {
       .slice(0, limit)
       .map((row) => this.#withListedMedia(row));
     return Promise.resolve(replies);
+  }
+
+  /**
+   * Direct-child ids of `parentId` (any `deletedAt`).
+   *
+   * @param parentId - Parent note id.
+   * @returns Child ids; empty when unknown or childless.
+   */
+  listChildIds(parentId: string): Promise<string[]> {
+    return Promise.resolve(
+      this.#rows.filter((row) => row.parentId === parentId).map((row) => row.id),
+    );
   }
 
   /**
@@ -2539,18 +2567,24 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first live attributed replies for a parent note
-   * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
+   * Oldest-first attributed replies for a parent note (account or zapper
+   * pubkey). Live-only (`deleted_at IS NULL`) unless `includeHidden` is `true`.
    *
    * @param parentId - Parent message id (`$1`).
    * @param limit - Max rows (`$2`, default 200).
+   * @param includeHidden - When `true`, omit the `deleted_at IS NULL` predicate.
    * @returns Mapped reply rows.
    */
-  async listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+  async listReplies(
+    parentId: string,
+    limit: number = 200,
+    includeHidden?: boolean,
+  ): Promise<MessageRow[]> {
+    const hiddenFilter = includeHidden === true ? '' : ' AND deleted_at IS NULL';
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id = $1 AND deleted_at IS NULL
+       WHERE parent_id = $1${hiddenFilter}
          AND (account_id IS NOT NULL
            OR (author_pubkey IS NOT NULL
              AND EXISTS (
@@ -2561,6 +2595,20 @@ export class PostgresMessageStore implements MessageStore {
       [parentId, limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Direct-child ids of `parentId` (any `deleted_at`).
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @returns Child ids; empty when unknown or childless.
+   */
+  async listChildIds(parentId: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id FROM message WHERE parent_id = $1`,
+      [parentId],
+    );
+    return rows.map((row) => row.id);
   }
 
   /**
