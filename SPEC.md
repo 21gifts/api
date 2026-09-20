@@ -2753,6 +2753,21 @@ tagged targets keep their original stamps and still return 204.
 `getById` continues to return tagged rows for workers; public/member HTTP
 reads treat them as missing.
 
+After a successful stamp (including already tagged), the process best-effort
+publishes NIP-09 `kind: 5` for the target and each **direct** child that has a
+non-empty `eventId` and a non-null `accountId`, signed with **that row's**
+custodial nsec (not the staff deleter). Relays are the durability space URL
+plus the public list (Damus / Primal / nos.lol) even when
+`NOSTR_PUBLISH` / `NOSTR_PUBLISH_PUBLIC` are unset. Gift-only rows
+(`eventId` null) and Damus-only rows (`accountId` null) are skipped. Then,
+when `CLOUDFLARE_ZONE_ID` and `CLOUDFLARE_API_TOKEN` are set and
+`PUBLIC_BASE_URL` resolves, it purges cached public photo/video URLs for
+those rows (Cloudflare `purge_cache` files, chunks of 30). Sign, publish, or
+purge failure logs `messages.delete.nostr_failed` / `messages.delete.purge_failed`
+/ `messages.delete.retract_failed` with `messageId` only (never nsec, token,
+or post text) and the HTTP status stays **204**. `POST /debug/messages/:id/restore`
+does not retract or un-purge.
+
 Missing/invalid/expired bearer → **Response** `401`:
 
 ```json

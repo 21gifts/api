@@ -456,6 +456,41 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listReplies('p-hide')).toEqual([]);
   });
 
+  it('listDirectChildren includes hidden, Damus-only, and gift-only in createdAt then id order', async () => {
+    const store = new InMemoryMessageStore();
+    const at = new Date('2026-09-01T00:00:00.000Z');
+    await store.create({ ...EARLY, id: 'parent', text: 'p' });
+    await store.create({
+      ...LATE,
+      id: 'z-gift',
+      parentId: 'parent',
+      text: '',
+      eventId: null,
+      nostrPublishState: 'skipped',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'a-damus',
+      parentId: 'parent',
+      accountId: null,
+      name: 'npub',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    });
+    await store.create({
+      ...LATE,
+      id: 'm-live',
+      parentId: 'parent',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    });
+    expect(await store.markDeleted('parent', at, 'staff')).toBe(true);
+    expect(await store.listDirectChildren('missing')).toEqual([]);
+    const listed = await store.listDirectChildren('parent');
+    expect(listed.map((row) => row.id)).toEqual(['a-damus', 'm-live', 'z-gift']);
+    expect(listed.every((row) => row.deletedAt?.toISOString() === at.toISOString())).toBe(true);
+    listed[0]!.text = 'mutated';
+    expect((await store.getById('a-damus'))?.text).toBe('first');
+  });
+
   it('markDeleted keeps original stamps on an already-tagged target and stamps live children', async () => {
     const firstAt = new Date('2026-08-01T00:00:00.000Z');
     const secondAt = new Date('2026-09-01T00:00:00.000Z');
@@ -2302,6 +2337,17 @@ describe('InMemoryMessageStore', () => {
 });
 
 describe('PostgresMessageStore', () => {
+  it('listDirectChildren selects every child of parent_id including hidden', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresMessageStore(sql).listDirectChildren('parent')).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(/SELECT /);
+    expect(sql.queries[0]?.text).toMatch(/FROM message WHERE parent_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['parent']);
+  });
+
   it('accountHasLivePost queries live message rows for the account', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);

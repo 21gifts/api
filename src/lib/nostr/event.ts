@@ -3,7 +3,8 @@
  *
  * Top-level kind:1 tags are frozen without `e`/`p`/`q` — member-forum posts
  * are top-level notes for discovery-feed virality. NIP-10 replies add `e`/`p`
- * on top of the frozen tags (never on top-level notes).
+ * on top of the frozen tags (never on top-level notes). NIP-09 kind:5
+ * retraction events are built by {@link buildKind5Event}.
  */
 
 import { locationHashtagName } from '@/lib/location';
@@ -280,6 +281,38 @@ export function buildKind1Event(
     kind: 1,
     content: body,
     tags,
+    created_at: createdAtUnix,
+  };
+}
+
+/**
+ * Build an unsigned NIP-09 kind:5 deletion event for one kind:1 id.
+ *
+ * `content` is empty (no staff name, no forum text). Tags are exactly one
+ * `e` tag for the deleted event id and `k=1` (kind of the deleted event).
+ * One event id per kind:5 — different authors cannot share one deletion
+ * event.
+ *
+ * @param eventId - Kind:1 event id to retract.
+ * @param createdAtUnix - Unix seconds from the hide clock.
+ * @returns Unsigned event fields for `finalizeEvent`.
+ */
+export function buildKind5Event(
+  eventId: string,
+  createdAtUnix: number,
+): {
+  kind: 5;
+  content: string;
+  tags: string[][];
+  created_at: number;
+} {
+  return {
+    kind: 5,
+    content: '',
+    tags: [
+      ['e', eventId],
+      ['k', '1'],
+    ],
     created_at: createdAtUnix,
   };
 }

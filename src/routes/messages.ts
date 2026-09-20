@@ -28,8 +28,10 @@ import type {
   MessageStore,
 } from '@/lib/message-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import type { NostrPublisher } from '@/lib/nostr/publish';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
+import { retractHiddenForumNotes } from '@/lib/nostr/retract';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
@@ -213,6 +215,16 @@ export interface MessagesRouteDeps {
   notificationStore?: NotificationStore;
   /** Optional inbox store; forum/zap payloads include listed unread when set. */
   conversationStore?: ConversationStore;
+  /**
+   * Optional Nostr publisher for staff-hide NIP-09. Omitted (or omitted
+   * `nostrKek`) → skip retract after `markDeleted`.
+   */
+  nostrPublisher?: NostrPublisher;
+  /**
+   * Optional env slice for retract relays, public media URLs, and Cloudflare
+   * purge. Omitted → `{}` on the DELETE retract path.
+   */
+  env?: Record<string, string | undefined>;
   /** Sleep between `sinceSats` polls (tests inject). */
   waitSatsSleep?: (ms: number) => Promise<void>;
   /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
@@ -613,7 +625,9 @@ const invoiceBody = z.object({
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
- * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide),
+ * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide
+ * plus best-effort NIP-09 and Cloudflare media purge when publisher+kek are
+ * set),
  * staff `GET /messages/hidden` (founder/moderator session log), public
  * `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
@@ -627,7 +641,7 @@ const invoiceBody = z.object({
  * when signed in).
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
- * `notificationStore` / `conversationStore`, and
+ * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`, and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
@@ -840,6 +854,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const tagged = await deps.store.markDeleted(id, new Date(deps.now()), account.id);
         if (!tagged) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (deps.nostrPublisher && deps.nostrKek) {
+          try {
+            await retractHiddenForumNotes(
+              {
+                store: deps.store,
+                authStore: deps.authStore,
+                publisher: deps.nostrPublisher,
+                kek: deps.nostrKek,
+                now: deps.now,
+                env: deps.env ?? {},
+                fetchImpl,
+              },
+              id,
+            );
+          } catch {
+            logEvent('messages.delete.retract_failed', { messageId: id });
+          }
         }
         logEvent('messages.deleted', {
           messageId: id,

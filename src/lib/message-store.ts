@@ -337,6 +337,16 @@ export interface MessageStore {
    */
   markUndeleted(id: string): Promise<boolean>;
 
+  /**
+   * Direct children of `parentId` (`parentId` match), including hidden,
+   * Damus-only (`accountId` null), and gift-only rows. Oldest `createdAt`
+   * then `id` first. Missing parent → `[]`.
+   *
+   * @param parentId - Parent message id.
+   * @returns Child row copies (caller-owned).
+   */
+  listDirectChildren(parentId: string): Promise<MessageRow[]>;
+
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
@@ -1916,6 +1926,27 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  /**
+   * Direct children of `parentId`, including hidden, Damus-only, and
+   * gift-only rows. Oldest `createdAt` then `id` first. Missing parent → `[]`.
+   *
+   * @param parentId - Parent message id.
+   * @returns Child row copies.
+   */
+  listDirectChildren(parentId: string): Promise<MessageRow[]> {
+    const children = this.#rows
+      .filter((row) => row.parentId === parentId)
+      .sort((a, b) => {
+        const byTime = a.createdAt.getTime() - b.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return a.id.localeCompare(b.id);
+      })
+      .map((row) => copyRow(row));
+    return Promise.resolve(children);
+  }
+
   #claim(
     predicate: (row: MessageRow) => boolean,
     limit: number,
@@ -2516,6 +2547,22 @@ export class PostgresMessageStore implements MessageStore {
       [id],
     );
     return rows[0] !== undefined;
+  }
+
+  /**
+   * Direct children of `parentId` (`parent_id = $1`), including hidden,
+   * Damus-only, and gift-only rows. Oldest `created_at` then `id` first.
+   * Missing parent → `[]`.
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @returns Mapped child rows.
+   */
+  async listDirectChildren(parentId: string): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE parent_id = $1 ORDER BY created_at ASC, id ASC`,
+      [parentId],
+    );
+    return rows.map((row) => mapMessageRow(row));
   }
 
   async getById(id: string): Promise<MessageRow | undefined> {

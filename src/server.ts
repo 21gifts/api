@@ -55,6 +55,7 @@ import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { NostrPublisher } from '@/lib/nostr/publish';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 
 /**
@@ -151,6 +152,16 @@ export interface AppDeps {
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
   nostrKek?: Uint8Array;
   /**
+   * Optional Nostr EVENT publisher. When set with `nostrKek`, staff hide
+   * publishes NIP-09 kind:5. Memory/unit boots may omit.
+   */
+  nostrPublisher?: NostrPublisher;
+  /**
+   * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
+   * Cloudflare). Default `process.env`.
+   */
+  env?: Record<string, string | undefined>;
+  /**
    * Private in-app contact mailbox (default: empty
    * {@link InMemoryContactStore}). Boot injects
    * {@link PostgresContactStore} when `DATABASE_URL` is set.
@@ -201,7 +212,7 @@ export interface AppDeps {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store, trust store,
- *   vapidPublicKey, nostrKek, WebAuthn RP, spend token, spend ping, and gift invoice store.
+ *   vapidPublicKey, nostrKek, nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -381,7 +392,9 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       conversationStore,
+      env: deps.env ?? process.env,
       ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
