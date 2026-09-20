@@ -1052,6 +1052,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 )`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -2430,6 +2431,7 @@ interface MessageSqlRow {
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
+  goal_sats?: string | number | null;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
   nostr_first_attempt_at?: Date | string | null;
@@ -2487,6 +2489,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
+    goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
@@ -2516,7 +2519,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM message_extra_photo e WHERE e.message_id = message.id), 0)) AS photo_count,
               video_content_type,
               parent_id, author_pubkey,
-              event_id, nostr_publish_state, sats,
+              event_id, nostr_publish_state, sats, goal_sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               deleted_at, deleted_by`;
 
@@ -2852,15 +2855,16 @@ export class PostgresMessageStore implements MessageStore {
       stored.eventId,
       stored.nostrEvent,
       contentFp,
+      stored.goalSats ?? null,
     ];
     try {
       if (stored.parentId !== null) {
         const inserted = await this.#sql.query<{ id: string }>(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
          )
-         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -2876,9 +2880,9 @@ export class PostgresMessageStore implements MessageStore {
         await this.#sql.execute(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
          )`,
           params,
         );

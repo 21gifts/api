@@ -95,7 +95,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(53);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(54);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -165,6 +165,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     ).toBe(true);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_top_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_reply_content_fp_uidx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint/,
+    );
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -1219,8 +1222,19 @@ describe('InMemoryMessageStore', () => {
     const created = await store.create(EARLY);
     expect(created.text).toBe('first');
     expect(created.hasPhoto).toBe(false);
+    expect(created.goalSats).toBeNull();
     expect(created).not.toBe(EARLY);
     expect((await store.listLatest(10))[0]?.id).toBe('a');
+  });
+
+  it('create round-trips a top-level goalSats and defaults null without one', async () => {
+    const store = new InMemoryMessageStore();
+    const withGoal = await store.create({ ...EARLY, id: 'goal', goalSats: 21000 });
+    expect(withGoal.goalSats).toBe(21000);
+    expect((await store.getById('goal'))?.goalSats).toBe(21000);
+    const without = await store.create({ ...LATE, id: 'nogoal' });
+    expect(without.goalSats).toBeNull();
+    expect((await store.getById('nogoal'))?.goalSats).toBeNull();
   });
 
   it('create with non-null parentId when the parent is missing throws and does not append', async () => {
@@ -3120,6 +3134,7 @@ describe('PostgresMessageStore', () => {
     const listed = await store.listLatest(50);
     expect(sql.queries[0]?.text).toMatch(/has_photo/);
     expect(sql.queries[0]?.text).toMatch(/event_id/);
+    expect(sql.queries[0]?.text).toMatch(/goal_sats/);
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL AND deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(/child\.deleted_at IS NULL/);
@@ -3133,6 +3148,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.hasPhoto).toBe(true);
     expect(listed[0]?.hasVideo).toBe(true);
     expect(listed[0]?.sats).toBe(0);
+    expect(listed[0]?.goalSats).toBeNull();
     expect(listed[0]?.replyCount).toBe(0);
     expect(listed[1]?.id).toBe('m2');
     expect(listed[1]?.hasPhoto).toBe(false);
@@ -3297,7 +3313,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.videoContentType).toBe('video/mp4');
   });
 
-  it('create binds fifteen params including content_fp, video_content_type, parent_id and author_pubkey', async () => {
+  it('create binds sixteen params including content_fp, video_content_type, parent_id, author_pubkey and goal_sats', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -3311,9 +3327,9 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
     );
-    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15/);
+    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15,\$16/);
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
       'm1',
@@ -3331,11 +3347,44 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(15);
+    expect(sql.executes[0]?.params).toHaveLength(16);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
+    expect(created.goalSats).toBeNull();
     expect(created).not.toBe(row);
+  });
+
+  it('create binds a positive goalSats and listLatest maps goal_sats', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'm-goal',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    const created = await store.create(row);
+    expect(sql.executes[0]?.params[15]).toBe(21000);
+    expect(created.goalSats).toBe(21000);
+    sql.nextRows = [
+      {
+        id: 'm-goal',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '21000',
+      },
+    ];
+    const listed = await store.listLatest(10);
+    expect(listed[0]?.goalSats).toBe(21000);
   });
 
   it('create with non-null parentId uses INSERT SELECT WHERE EXISTS on a live parent', async () => {
@@ -3355,10 +3404,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -3381,8 +3430,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(15);
+    expect(sql.queries[0]?.params).toHaveLength(16);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });

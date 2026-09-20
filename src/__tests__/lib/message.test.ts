@@ -349,6 +349,42 @@ describe('serializeMessage', () => {
     expect(serializeMessage(row, false, 'basis').photoCount).toBe(3);
   });
 
+  it('includes goalSats when the stored value is a positive integer', () => {
+    const row: MessageRow = {
+      id: 'msg-goal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    expect(serializeMessage(row, false, 'basis').goalSats).toBe(21000);
+  });
+
+  it('omits goalSats when unset, null, zero, or on a reply', () => {
+    const base: MessageRow = {
+      id: 'msg-nogoal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(base, false, 'basis')).not.toHaveProperty('goalSats');
+    expect(serializeMessage({ ...base, goalSats: null }, false, 'basis')).not.toHaveProperty(
+      'goalSats',
+    );
+    expect(serializeMessage({ ...base, goalSats: 0 }, false, 'basis')).not.toHaveProperty(
+      'goalSats',
+    );
+    expect(
+      serializeMessage({ ...base, parentId: 'msg-top', goalSats: 21000 }, false, 'basis'),
+    ).not.toHaveProperty('goalSats');
+  });
+
   it('stamps deletedAt / deletedBy and forces payable false when hidden is set', () => {
     const row: MessageRow = {
       id: 'msg-hidden-opt',
@@ -491,6 +527,38 @@ describe('serializeDebugMessage', () => {
       ...unsignedNostrDefaults(),
     };
     expect(serializeDebugMessage(row)['photoCount']).toBe(3);
+  });
+
+  it('includes goalSats when the stored value is a positive integer', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-goal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    expect(serializeDebugMessage(row)['goalSats']).toBe(21000);
+  });
+
+  it('omits goalSats when unset, null, zero, or on a reply', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-nogoal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)).not.toHaveProperty('goalSats');
+    expect(serializeDebugMessage({ ...row, goalSats: null })).not.toHaveProperty('goalSats');
+    expect(serializeDebugMessage({ ...row, goalSats: 0 })).not.toHaveProperty('goalSats');
+    expect(serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 })).not.toHaveProperty(
+      'goalSats',
+    );
   });
 });
 
@@ -651,6 +719,45 @@ describe('serializeHiddenMessage', () => {
       serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['photoCount'],
     ).toBe(3);
   });
+
+  it('includes goalSats when the stored value is a positive integer', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-goal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['goalSats'],
+    ).toBe(21000);
+  });
+
+  it('omits goalSats when unset, null, zero, or on a reply', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-nogoal',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const deletedBy = { id: null, name: null, role: null };
+    expect(serializeHiddenMessage(row, deletedBy)).not.toHaveProperty('goalSats');
+    expect(serializeHiddenMessage({ ...row, goalSats: null }, deletedBy)).not.toHaveProperty(
+      'goalSats',
+    );
+    expect(serializeHiddenMessage({ ...row, goalSats: 0 }, deletedBy)).not.toHaveProperty(
+      'goalSats',
+    );
+    expect(
+      serializeHiddenMessage({ ...row, parentId: 'msg-top', goalSats: 21000 }, deletedBy),
+    ).not.toHaveProperty('goalSats');
+  });
 });
 
 describe('unsignedNostrDefaults', () => {
@@ -661,6 +768,7 @@ describe('unsignedNostrDefaults', () => {
       eventId: null,
       nostrPublishState: 'pending',
       sats: 0,
+      goalSats: null,
     });
   });
 });

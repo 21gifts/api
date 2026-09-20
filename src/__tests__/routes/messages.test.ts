@@ -670,6 +670,7 @@ describe('POST /messages', () => {
     expect(created.payable).toBe(false);
     expect(created.role).toBe('basis');
     expect(created.accountId).toBe('acc');
+    expect(created).not.toHaveProperty('goalSats');
     expect(created.id.length).toBeGreaterThan(8);
     expect(created).not.toHaveProperty('via');
 
@@ -679,6 +680,33 @@ describe('POST /messages', () => {
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]).toEqual({ ...created, replyCount: 0 });
     expect(body.messages[0]).not.toHaveProperty('via');
+    expect(body.messages[0]).not.toHaveProperty('goalSats');
+  });
+
+  it('posts a top-level note with goalSats 21000', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000 }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { goalSats?: number };
+    expect(created.goalSats).toBe(21000);
+    const list = await app.request('/messages', { headers: AUTH });
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { messages: { goalSats?: number }[] };
+    expect(body.messages[0]?.goalSats).toBe(21000);
+  });
+
+  it('returns 400 when JSON goalSats is above the max', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 10_000_001 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
   });
 
   it('enqueues a forum push for other subscribed accounts, not the author', async () => {
@@ -927,6 +955,30 @@ describe('POST /messages', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]?.parentId).toBe(parentId);
     expect(replies[0]?.text).toBe('child');
+  });
+
+  it('returns 400 when a reply asks for a goal', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId, goalSats: 21000 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
   it('returns 403 when a basis account replies without paying', async () => {
@@ -5940,6 +5992,54 @@ describe('forum video', () => {
       body: empty,
     });
     expect(res.status).toBe(400);
+  });
+
+  it('posts a multipart note with a valid goalSats', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { goalSats?: number }).goalSats).toBe(21000);
+    const emptyGoal = new FormData();
+    emptyGoal.set('text', 'plain');
+    emptyGoal.set('goalSats', '');
+    const omitted = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: emptyGoal,
+    });
+    expect(omitted.status).toBe(200);
+    expect(await omitted.json()).not.toHaveProperty('goalSats');
+  });
+
+  it('rejects a multipart note with an invalid goalSats', async () => {
+    for (const goal of ['nope', '0', '10000001'] as const) {
+      const form = new FormData();
+      form.set('text', 'ask');
+      form.set('goalSats', goal);
+      const res = await mount(await namedStore('Ada')).request('/messages', {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Goal must be a positive whole-sat amount' });
+    }
+    const fileGoal = new FormData();
+    fileGoal.set('text', 'ask');
+    fileGoal.set('goalSats', new File([JPEG_BYTES], 'x.bin'));
+    const fileRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: fileGoal,
+    });
+    expect(fileRes.status).toBe(400);
+    expect(await fileRes.json()).toEqual({ error: 'Goal must be a positive whole-sat amount' });
   });
 
   it('ignores an empty poster part', async () => {

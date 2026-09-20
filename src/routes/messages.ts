@@ -95,6 +95,9 @@ function isPathNotFound(err: unknown): boolean {
 /** Placeholder author id when the message/author is unknown at persist time. */
 const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 
+/** Whole-sat ceiling for optional `goalSats` (`GIFT_INVOICE_MAX_MSAT / 1000`). */
+const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
+
 /** 400 body when the author's LNURL cannot mint a forum-creditable zap (`noZap` / `not_zap`). */
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
 
@@ -470,6 +473,8 @@ async function serveForumVideo(
  * @param photo - Optional decoded photo / poster.
  * @param video - Optional decoded video.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
+ * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
+ *   (no goal). Stored as `null` when `parentId` is set.
  * @returns 200 / 429 / 503.
  */
 async function persistForumPost(
@@ -483,6 +488,7 @@ async function persistForumPost(
   photo?: ForumPhoto,
   video?: ForumVideo,
   extraPhotos?: readonly ForumPhoto[],
+  goalSats: number | null = null,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -526,6 +532,7 @@ async function persistForumPost(
     videoContentType: video === undefined ? null : video.contentType,
     ...unsignedNostrDefaults(),
     parentId,
+    goalSats: parentId === null ? goalSats : null,
   };
   try {
     const created =
@@ -655,14 +662,42 @@ async function postMultipartMessage(
   if (text === '' && photo === undefined && video === undefined) {
     return c.json({ error: 'Text must be 1–500 characters or include a photo or video' }, 400);
   }
-  return persistForumPost(deps, postLimiter, c, account, authorName, text, null, photo, video);
+  const rawGoal = form.get('goalSats');
+  let goalSats: number | null = null;
+  if (rawGoal !== null && rawGoal !== '') {
+    if (typeof rawGoal !== 'string' || !/^\d+$/.test(rawGoal)) {
+      return c.json({ error: 'Goal must be a positive whole-sat amount' }, 400);
+    }
+    const parsedGoal = Number(rawGoal);
+    if (parsedGoal < 1 || parsedGoal > GOAL_SATS_MAX) {
+      return c.json({ error: 'Goal must be a positive whole-sat amount' }, 400);
+    }
+    goalSats = parsedGoal;
+  }
+  if (goalSats === null) {
+    return persistForumPost(deps, postLimiter, c, account, authorName, text, null, photo, video);
+  }
+  return persistForumPost(
+    deps,
+    postLimiter,
+    c,
+    account,
+    authorName,
+    text,
+    null,
+    photo,
+    video,
+    undefined,
+    goalSats,
+  );
 }
 
-/** Body schema for posting a forum message (text and/or photo; optional reply). */
+/** Body schema for posting a forum message (text and/or photo; optional reply / goal). */
 const postBody = z
   .object({
     text: z.string().optional(),
     inReplyTo: z.string().optional(),
+    goalSats: z.number().int().positive().max(GOAL_SATS_MAX).nullish(),
     photo: z
       .object({
         contentType: z.string(),
@@ -839,6 +874,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (text === '' && photo === undefined) {
         return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
       }
+      if (parsed.data.inReplyTo !== undefined && typeof parsed.data.goalSats === 'number') {
+        return c.json({ error: 'A reply cannot ask for a goal' }, 400);
+      }
       let parentId: string | null = null;
       if (parsed.data.inReplyTo !== undefined) {
         if (!MESSAGE_ID_RE.test(parsed.data.inReplyTo)) {
@@ -855,20 +893,38 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         parentId = parent.id;
       }
-      return extraPhotos.length > 0
-        ? persistForumPost(
-            deps,
-            postLimiter,
-            c,
-            account,
-            authorName,
-            text,
-            parentId,
-            photo,
-            undefined,
-            extraPhotos,
-          )
-        : persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
+      const goalSats = parsed.data.goalSats ?? null;
+      if (extraPhotos.length > 0) {
+        return persistForumPost(
+          deps,
+          postLimiter,
+          c,
+          account,
+          authorName,
+          text,
+          parentId,
+          photo,
+          undefined,
+          extraPhotos,
+          goalSats,
+        );
+      }
+      if (goalSats !== null) {
+        return persistForumPost(
+          deps,
+          postLimiter,
+          c,
+          account,
+          authorName,
+          text,
+          parentId,
+          photo,
+          undefined,
+          undefined,
+          goalSats,
+        );
+      }
+      return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
     })
     .get('/:id/photo/:file', (c) => {
       const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));
