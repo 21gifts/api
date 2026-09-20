@@ -5,7 +5,8 @@
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
  * `auth` is set) and `push_subscription` account ids, except skip, then
  * filtered by each recipient's `notificationLevel` when `auth` is set.
- * Targeted `moderator_appointed` does not fan out. Web Push is still only
+ * `GET /notifications` applies the same filter to stored rows. Targeted
+ * `moderator_appointed` does not fan out. Web Push is still only
  * for `push_subscription` rows. Member HTTP never exposes recipient or actor
  * account ids. Callers catch failures so persist still succeeds.
  */
@@ -24,8 +25,11 @@ import {
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
-/** Cap for `GET /notifications`. */
+/** Cap for `GET /notifications` after the owner's level filter. */
 export const NOTIFICATION_LIST_LIMIT = 200;
+
+/** Newest rows scanned before applying {@link notificationsMatchingLevel}. */
+export const NOTIFICATION_FILTER_SCAN_LIMIT = 1000;
 
 /** Persisted notification kind. */
 export type NotificationType = 'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed';
@@ -162,6 +166,48 @@ export function wantsNotification(args: {
     return true;
   }
   return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
+}
+
+/**
+ * Keep stored in-app rows that the owner's current {@link NotificationLevel}
+ * would still accept. `moderator_appointed` always stays (targeted, not
+ * living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
+ * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
+ * parent is unpaid and not personal. Zap `text` is the amount string.
+ *
+ * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
+ * @returns Matching rows in the same order.
+ */
+export function notificationsMatchingLevel(args: {
+  rows: readonly NotificationRow[];
+  level: NotificationLevel;
+  recipientAccountId: string;
+  accounts: readonly { id: string; role: string; isPlatform?: boolean }[];
+  parentById: ReadonlyMap<string, MessageRow>;
+}): NotificationRow[] {
+  if (args.level === 'all') {
+    return [...args.rows];
+  }
+  const staffById = new Map(
+    args.accounts.map((account) => [account.id, isStaffAccount(account)] as const),
+  );
+  return args.rows.filter((row) => {
+    if (row.type === 'moderator_appointed') {
+      return true;
+    }
+    const parent = args.parentById.get(row.parentId);
+    const amountSats = Number(row.text);
+    const zapAmount = row.type === 'zap' && Number.isFinite(amountSats) ? amountSats : 0;
+    const isActive = parent === undefined ? zapAmount > 0 : parent.sats > 0 || zapAmount > 0;
+    const mentionedAccountId = row.type === 'forum_post' ? null : (parent?.accountId ?? null);
+    return wantsNotification({
+      level: args.level,
+      actorIsStaff: staffById.get(row.actorAccountId) === true,
+      isActive,
+      mentionedAccountId,
+      recipientAccountId: args.recipientAccountId,
+    });
+  });
 }
 
 /** Fan-out match context shared by in-app rows and Web Push. */

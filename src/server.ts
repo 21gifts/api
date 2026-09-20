@@ -412,7 +412,12 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route(
     '/notifications',
-    notificationRoutes({ store: notificationStore, authStore: store, now }),
+    notificationRoutes({
+      store: notificationStore,
+      authStore: store,
+      messages: messageStore,
+      now,
+    }),
   );
   app.route(
     '/invoices',

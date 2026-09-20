@@ -1437,6 +1437,11 @@ test('Function: isStaffAccount — GET /me without bearer is 401', async ({ requ
 test('Function: wantsNotification — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
+test('Function: notificationsMatchingLevel — GET /notifications without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/notifications')).status()).toBe(401);
+});
 test('Function: migrateNotificationSchema — default boot has no DATABASE_URL', async ({
   request,
 }) => {

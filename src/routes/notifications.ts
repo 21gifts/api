@@ -2,8 +2,12 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
+import type { MessageStore } from '@/lib/message-store';
 import {
+  NOTIFICATION_FILTER_SCAN_LIMIT,
   NOTIFICATION_LIST_LIMIT,
+  notificationsMatchingLevel,
+  parseNotificationLevel,
   serializeNotification,
   type PublicNotification,
 } from '@/lib/notification';
@@ -21,6 +25,8 @@ export interface NotificationRouteDeps {
   store: NotificationStore;
   /** Shared auth persistence port. */
   authStore: AuthStore;
+  /** Forum notes for reconstructing Active/Mentions match on stored rows. */
+  messages: Pick<MessageStore, 'getById'>;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
 }
@@ -44,7 +50,7 @@ async function authedAccount(
  *
  * Mount `read-all` before `/:id/read` so `read-all` is not captured as an id.
  *
- * @param deps - Notification store, auth store, and clock.
+ * @param deps - Notification store, auth store, message store, and clock.
  * @returns A Hono app with list / mark-one / mark-all.
  */
 export function notificationRoutes(deps: NotificationRouteDeps): Hono {
@@ -55,11 +61,27 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {
-        const [rows, unreadCount] = await Promise.all([
-          deps.store.listByRecipient(account.id, NOTIFICATION_LIST_LIMIT),
-          deps.store.unreadCount(account.id),
-        ]);
-        const notifications: PublicNotification[] = rows.map(serializeNotification);
+        const rows = await deps.store.listByRecipient(account.id, NOTIFICATION_FILTER_SCAN_LIMIT);
+        const accounts = await deps.authStore.listAccounts();
+        const parentIds = [...new Set(rows.map((row) => row.parentId))];
+        const parentById = new Map();
+        for (const id of parentIds) {
+          const parent = await deps.messages.getById(id);
+          if (parent !== undefined) {
+            parentById.set(id, parent);
+          }
+        }
+        const matched = notificationsMatchingLevel({
+          rows,
+          level: parseNotificationLevel(account.notificationLevel),
+          recipientAccountId: account.id,
+          accounts,
+          parentById,
+        });
+        const notifications: PublicNotification[] = matched
+          .slice(0, NOTIFICATION_LIST_LIMIT)
+          .map(serializeNotification);
+        const unreadCount = matched.filter((row) => row.readAt === null).length;
         return c.json({ notifications, unreadCount }, 200);
       } catch {
         logEvent('notifications.list.failed');

@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` lists stored rows unfiltered, including `moderator_appointed`; a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
 
 ---
 
@@ -2381,8 +2381,8 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 actor, then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
-fan out. A self-reply skips only the actor. `GET /notifications` lists stored
-rows unfiltered.
+fan out. A self-reply skips only the actor. `GET /notifications` applies the
+same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
 notifies. Missing `pushStore` still writes in-app rows. Notification or
@@ -2510,8 +2510,8 @@ After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
 every account except the resolved payer, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). `GET /notifications` lists stored rows
-unfiltered. LNURL success with a non-NIP-57 invoice
+failure logs `push.enqueue.failed`). `GET /notifications` applies the same
+`notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
 `{ "error": "The author's wallet cannot receive this Bitcoin payment" }` with
@@ -3134,7 +3134,9 @@ Success → **Response** `200`:
 Bearer session required. Lists the recipient's notifications newest-first
 (cap **200**) plus the total unread count (not the page length). Fan-out
 already applied the owner's `notificationLevel` when the row was written;
-this list returns stored rows unfiltered. Each item `type` is
+this list applies the same `notificationLevel` filter to stored rows
+(`notificationsMatchingLevel` on the newest 1000, then cap **200**;
+`unreadCount` is matching unread in that scan). Each item `type` is
 `"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`. Member
 JSON never includes recipient or actor account ids.
 
