@@ -3615,6 +3615,26 @@ when set, otherwise the sender; there is no staff-as-platform shortcut.
 `hasPhoto` / `photoCount` (0–10) flag stills; bytes are never in this JSON.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
+### `GET /conversations/:id/messages/:messageId/photo`
+
+Bearer session required. Private photo 0 bytes after `getById` + `canAccess`.
+No Damus `.jpg` alias and no public CDN: success is raw image bytes with
+`Content-Type` jpeg/png/webp, `Content-Disposition: inline; filename="photo.{jpg|png|webp}"`,
+`Cache-Control: private, no-store`, and **no** `Access-Control-Allow-Origin`.
+Missing/forbidden thread → **404** `{ "error": "Not found" }`. Missing still,
+non-UUID message id, or a message in another thread → **404**
+`{ "error": "Photo not found" }`. No bearer → **401**. Store throw → **503**
+`{ "error": "Conversations are unavailable" }` (`conversations.photo.failed`).
+
+These routes register **before** `GET /conversations/:id`.
+
+### `GET /conversations/:id/messages/:messageId/photo/:file`
+
+Bearer session required. Extra stills 1–9. `:file` must match
+`^([1-9])\.(jpg|jpeg|png|webp)$`; else **404** `{ "error": "Photo not found" }`.
+There is **no** `/photo/0.jpg`. Same auth, belonging, private cache headers,
+and 401/404/503 JSON as photo 0.
+
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data" }, "photos"?: [{ "contentType", "data" }] }`
@@ -3638,16 +3658,24 @@ No such post → **200**, no ping, log `spend.ping.skipped` /
 `no_public_post`. Public post today but not funding-eligible → **200**, no
 ping, log `spend.ping.skipped` / `not_eligible`. Ping throw still **200**.
 Living-room lookup failure after persist is still **200**, no ping, log
-`spend.ping.skipped` / `posted_unreachable`. Empty or invalid text is
-**400** and does not ping. Verified, basis and the platform account **404**
+`spend.ping.skipped` / `posted_unreachable`. Empty or invalid text **without a still**
+is **400** and does not ping. Verified, basis and the platform account **404**
 on that id.
 
-Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
+Same 401 / 404 / 503 shapes as the list/get routes, plus
+**400** `{ "error": "Expected a JSON body with text and/or photo" }`,
+**400** `{ "error": "At most 10 photos" }`,
+**400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`,
+**400** `{ "error": "Photos are only allowed in the Moderators group" }`,
+**400** `{ "error": "Text must be 1–500 characters or include a photo" }`
+(moderator-group empty text without a still),
+**400** `{ "error": "Text must be 1–500 characters" }`,
 **400** `{ "error": "Set a name before posting" }` when the sending member
 has no display name.
 
 Success → **Response** `200` (one public conversation message, including
-optional `accountId` — actor for staff when set, otherwise sender). After persist, the api enqueues one Web Push
+`hasPhoto`, `photoCount` 0–10, and optional `accountId` — actor for staff
+when set, otherwise sender; never photo bytes). After persist, the api enqueues one Web Push
 (`type: conversation`, url `/messages?c=<conversationId>`) to each
 bell-subscribed counterpart. `unreadCount` on that payload (and on forum
 and zap payloads) is in-app notification unread plus listed inbox unread.
