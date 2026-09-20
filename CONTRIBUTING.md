@@ -165,7 +165,8 @@ api/
 │       │   ├── about-me.test.ts
 │       │   ├── account-activity.test.ts
 │       │   ├── message-store.test.ts
-│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, sign, rate-limit
+│       │   ├── cloudflare-purge.test.ts
+│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, retract, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
 │       │   ├── trust.test.ts
