@@ -217,6 +217,8 @@ export interface ConversationStore {
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
    * @returns The stored row (a copy) with `hasPhoto` / `photoCount` from
    *   stored stills. On duplicate id / eventId, the existing row.
+   * @throws When extras are present without photo 0, when extras exceed 9,
+   *   or when persistence fails.
    */
   appendMessage(
     row: ConversationMessageRow,
@@ -811,6 +813,7 @@ export class InMemoryConversationStore implements ConversationStore {
    * @returns A copy of the stored row with `hasPhoto` / `photoCount` from
    *   stored stills. Duplicate `id` / `eventId` returns the existing row
    *   without inserting extras.
+   * @throws When extras are present without photo 0 or extras exceed 9.
    */
   appendMessage(
     row: ConversationMessageRow,
@@ -1432,6 +1435,8 @@ export class PostgresConversationStore implements ConversationStore {
    * @returns The stored row with `hasPhoto` / `photoCount` from stored
    *   stills. Duplicate `id` / `eventId` returns the existing row without
    *   inserting extras.
+   * @throws When extras are present without photo 0, when extras exceed 9,
+   *   or when persistence fails.
    */
   async appendMessage(
     row: ConversationMessageRow,
