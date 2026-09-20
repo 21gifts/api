@@ -3,7 +3,8 @@
  *
  * Threads are member↔member, member↔platform, member↔Damus, or the closed
  * moderator_group singleton. Member HTTP may include optional counterpart/sender
- * `accountId` for 21.gifts accounts and never exposes event ids or npubs
+ * `accountId` for 21.gifts accounts, always includes `hasPhoto` / `photoCount`,
+ * and never exposes event ids, npubs, or photo bytes
  * (Damus-only display names may use truncated npubs via the routes layer).
  */
 
