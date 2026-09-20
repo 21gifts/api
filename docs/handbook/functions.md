@@ -310,14 +310,14 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`).
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`); adds nullable `username text`; `DROP INDEX IF EXISTS account_username_uidx` then `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx` on `lower(trim(username))` WHERE username IS NOT NULL AND trim(username) <> '' (expression unique index).
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
 
 - **Purpose:** Chooses in-memory vs Postgres AuthStore from `DATABASE_URL`.
 - **Inputs:** URL or blank/undefined; `createClient` factory required when the URL is set (boot supplies Bun SQL; tests inject a mock).
-- **Returns / side effects:** `InMemoryAuthStore` if unset; otherwise migrate then `PostgresAuthStore`. Throws if the URL is set without a factory.
+- **Returns / side effects:** `InMemoryAuthStore` if unset (no username backfill); otherwise migrate the auth schema, `backfillAccountUsernames`, then return `PostgresAuthStore`. Throws if the URL is set without a factory.
 - **Used by:** `openBootStores`.
 
 ## Function: openBootStores
@@ -845,7 +845,7 @@
 
 - **Purpose:** Hono sub-app for the public member forum. After Bearer auth, `requireAction` gates `GET /` (`forum.read` → rules), `POST /` (`forum.post` → rules + name + username + Lightning Address), and `POST /:id/invoice` (`forum.pay` → payer rules only). Bearer `GET /` lists **live top-level** notes only newest-first (cap 200, `hasPhoto`, `hasVideo`, `videoContentType`, `sats`, `payable`, live `role`, live `replyCount` of children with an account or a recorded zapper pubkey); soft-hidden rows are omitted; missing-file `hasVideo` rows are deleted (`messages.video.dropped`); `POST /` creates text/photo/video after parse/normalize/decode — JSON `photos` max 10, non-empty wins over singular `photo`, `photos.length > 10` is 400 `{ error: 'At most 10 photos' }`; `GET /:id/photo/:file` serves extras 1–9; identical live media from the same account+parent collapses to the existing row (200, no limiter, no second push); text-only still uses the 1/10s burst then inserts; unpaid replies from anyone except the parent author or `verified` are 403 `A reply needs a Bitcoin payment`; soft-hidden `inReplyTo` parents are 404; public `GET /:id` stays unauthenticated without `accountId` (a reply with null `accountId` is 200 with `via: 'nostr'` only when `authorPubkey` is set and recorded as a zapper (`isZapperPubkey`); otherwise (no `authorPubkey`, or one that is not yet a recorded zapper) it is 404; external top-level notes stay 200); optional `?sinceSats=` (non-negative integer) long-polls until `sats` is strictly greater (timeout still 200 with the current body; invalid value 400); soft-hidden rows still 404; public `GET /:id/replies` lists children with an account or a recorded zapper pubkey (optional Bearer for `accountId`; rows with neither identity are skipped); 404s soft-hidden/missing parents; a child whose author lookup or serialize throws (invalid `createdAt`, author lookup) is omitted and siblings still 200 `{ messages }`; 503 `messages.replies.failed` only for `getById` / `listReplies` throws and for `dropMissingVideoRow` store/I/O (non-ENOENT video I/O or `deleteById`); missing-file drop (`null` → omit) still 200; photo/video byte routes 404 soft-hidden ids; staff `DELETE /:id` soft-hides via `markDeleted` (moderator → 204; basis/verified → 403) then best-effort `retractHiddenForumNotes` when `nostrPublisher` and `nostrKek` are set (NIP-09 + optional Cloudflare purge; failure still 204); staff `GET /hidden` lists soft-hidden notes newest-hidden-first (moderator session, not `DEBUG_TOKEN`, no `forum.read`; 200 `{ messages }` via `listHidden` / `serializeHiddenMessage`; logs `messages.hidden.listed` with `count` only); invoice returns `{ pr, amountSats }` only for NIP-57 invoices and 404s soft-hidden notes (author LN / unsigned stay 400 resource errors, never 409 `lightning-address` for the payer). Optional `notificationStore` fans out via `notifyForumPost` / `notifyForumReply` to every account except the actor, then filtered by each account's `notificationLevel` (no inbox copy; missing `pushStore` still writes in-app rows; Web Push only to bell subscribers, same filter). Optional `spendPing`: after a **new** top-level persist the route POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with Bearer `SPEND_API_TOKEN` (fire-and-await, errors logged, POST still 200). Replies and media replays skip. Omitted `spendPing` skips. Notification or push failure still returns 200.
 - **External DELETE cascade:** When the target has `accountId === null` and a recorded `authorPubkey`, a successful `markDeleted` is followed by the single atomic `blockPubkeyAndHideRows` operation, which records the block and hides that pubkey's other live external rows. It logs `messages.external.blocked` with `{ messageId, hidden: cascaded + 1 }`; deleting a member row does not trigger this author-wide cascade.- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, optional `nostrPublisher`, optional `env` (relays / `PUBLIC_BASE_URL` / Cloudflare; default `{}` on the retract path), `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `spendPing`, optional `notificationStore`, optional `conversationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`).
-- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/DELETE/GET `/hidden`/invoice; 403 on DELETE and GET `/hidden` when not at least moderator and on unpaid `inReplyTo` from basis non-authors; 409 `{ error: 'missing_requirements', missing }` when action gates fail (GET `/hidden` has no `forum.read` gate); 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 200 staff hidden log `{ messages }` (no `forum.read`); 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`. Post and reply notify call `notifyForumPost` / `notifyForumReply` best-effort (in-app rows for every account except the actor, then filtered by each account's `notificationLevel`; Web Push for bell subscribers, same filter; failure still 200).>>>>>>> 80b929b (Document username on forum.post and contact.post.)
+- **Returns / side effects:** Hono app mounted at `/messages`. 401 without session on list/create/DELETE/GET `/hidden`/invoice; 403 on DELETE and GET `/hidden` when not at least moderator and on unpaid `inReplyTo` from basis non-authors; 409 `{ error: 'missing_requirements', missing }` when action gates fail (GET `/hidden` has no `forum.read` gate); 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures; 404 for bad `inReplyTo` / missing or soft-hidden rows; 204 empty body on successful DELETE; 200 staff hidden log `{ messages }` (no `forum.read`); 429 rate limits; 503 on store/KEK/sign failure. Signed-in list/replies/create may include `accountId`; public JSON never includes `accountId`, `deletedAt`, or `deletedBy`. Post and reply notify call `notifyForumPost` / `notifyForumReply` best-effort (in-app rows for every account except the actor, then filtered by each account's `notificationLevel`; Web Push for bell subscribers, same filter; failure still 200).
 - **Used by:** `createApp`.
 
 ## Function: contactRoutes
@@ -1326,23 +1326,23 @@
 
 ## Function: accountSetup
 
-- **Purpose:** Next owner wizard step from stored account fields. Skip timestamps count as completing that step. The api is the source of truth; clients only route.
+- **Purpose:** Next owner wizard step from stored account fields. Order is name → username (not skippable) → lightning-address → rules. Skip timestamps count as done for name and Lightning Address only. The api is the source of truth; clients only route.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
+- **Returns / side effects:** `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'username'` when username is null/undefined/blank (cannot skip), else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
 - **Used by:** `serializeOwnerAccount`.
 
 ## Function: accountMissing
 
 - **Purpose:** Factually unset account fields for action gates. Skip timestamps do not clear a field from this list.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `AccountMissingField[]` in order `name`, `lightning-address`, `rules` (only those that are null/blank or rules unset). No I/O.
+- **Returns / side effects:** `AccountMissingField[]` in order `name`, `username`, `lightning-address`, `rules` (only those that are null/blank or rules unset). No I/O.
 - **Used by:** `serializeOwnerAccount`, `requireAction`.
 
 ## Function: actionRequirements
 
 - **Purpose:** Declare which account fields an action needs before it may proceed.
 - **Inputs:** `AccountAction` (`forum.read` \| `forum.post` \| `contact.post` \| `forum.pay`).
-- **Returns / side effects:** Readonly list in 409 order: `forum.read` → `rules`; `forum.post` → `rules`, `name`, `lightning-address`; `contact.post` → `rules`, `name`; `forum.pay` → `rules`. No I/O.
+- **Returns / side effects:** Readonly list in 409 order: `forum.read` → `rules`; `forum.post` → `rules`, `name`, `username`, `lightning-address`; `contact.post` → `rules`, `name`, `username`; `forum.pay` → `rules`. No I/O.
 - **Used by:** `requireAction`.
 
 ## Function: requireAction
@@ -1361,14 +1361,14 @@
 
 ## Function: serializeAccount
 
-- **Purpose:** Project an account to the ten-field dump without `viewKey` or `isPlatform` (no Nostr fields).
+- **Purpose:** Project an account to the eleven-field dump without `viewKey` or `isPlatform` (no Nostr fields).
 - **Inputs:** `Account`.
-- **Returns / side effects:** Ten public fields (`id`, `linkingKey`, `role`, `name`, `location`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). `location` is `string | null` (never omitted, never `""`). No I/O. No Nostr key material.
+- **Returns / side effects:** Eleven public fields (`id`, `linkingKey`, `role`, `name`, `username`, `location`, `lightningAddress`, `lightningAddressVerified`, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`). `username` is `string | null` (LUD-16 / NIP-05 local-part). `location` is `string | null` (never omitted, never `""`). No I/O. No Nostr key material.
 - **Used by:** `serializeOwnerAccount` (member `/me`) and `serializeDebugAccount`.
 
 ## Function: serializeDebugAccount
 
-- **Purpose:** Operator account JSON: the ten public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Purpose:** Operator account JSON: the eleven public fields plus `isPlatform`. Never used by member `GET /me`.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
 - **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
@@ -1382,10 +1382,10 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the ten public fields (including location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel` (`all` / `active` / `mentions`, default `all`, owner-only), so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, About me photo display, and living-room notify filter. Used by `GET /me`, `/me` writes including `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, `POST /me/notification-level`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the eleven public fields (including username and location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel` (`all` / `active` / `mentions`, default `all`, owner-only), so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, About me photo display, and living-room notify filter. Used by `GET /me`, `/me` writes including `POST /me/username`, `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/location`, `POST /me/notification-level`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null` plus `aboutMeHasPhoto: boolean`.
-- **Returns / side effects:** `OwnerAccountResponse` (seventeen fields including `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`). No I/O. Does not expose `profileMessageId`.
-- **Used by:** `serializeOwnerAccountWithPosts`.
+- **Returns / side effects:** `OwnerAccountResponse` (eighteen fields: eleven public including username, plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`). No I/O. Does not expose `profileMessageId`.
+- **Used by:** `serializeOwnerAccountWithPosts` (`meRoutes` including `POST /me/username`).
 
 ## Function: serializeOwnerAccountWithPosts
 
@@ -1403,7 +1403,7 @@
 
 ## Function: serializeViewProfile
 
-- **Purpose:** Public profile card for the capability URL. Eight fields (`name`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `location` is `string | null` (never omitted, never `""`).
+- **Purpose:** Public profile card for the capability URL. Nine fields (`name`, `username`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`). Omits `id`, `linkingKey`, `role`, and `viewKey`. `username` is `string | null` (LUD-16 / NIP-05 local-part). `location` is `string | null` (never omitted, never `""`).
 - **Inputs:** `Account`, `hasPasskey: boolean`, `aboutMe: string | null`, `aboutMeHasPhoto: boolean`.
 - **Returns / side effects:** `ViewProfileResponse`. No I/O.
 - **Used by:** `viewRoutes`.
@@ -1903,7 +1903,7 @@
 
 - **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest; passes through the linked Wallet of Satoshi JSON so settlement stays there).
 - **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`).
-- **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is unknown or unlinked; 502 when WoS is unreachable.
+- **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo

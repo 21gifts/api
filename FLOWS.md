@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-16.
+**Status**: living document. Last revised 2026-09-20.
 
 ---
 
@@ -47,21 +47,29 @@ clears the token; a transient failure does not.
 Login is passkey-only. LNURL-auth has been removed.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a name form, a Lightning Address form, and
-**Sign out**. Name and Lightning Address are each skippable via
-`POST /me/setup/skip`; living-room rules stay required.
+`/profile` route yet. It shows a name form, a username form, a Lightning
+Address form, and **Sign out**. Name and Lightning Address are each
+skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
+the handle with `POST /me/username`. Living-room rules stay required.
 
-After name/skip and address/skip, the app records living-room rules agreement
-via `POST /me/rules-agreement`. `GET /me` carries `setup` (wizard; skip counts
-as done), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch ms of
-the first agreement, or `null`).
+`GET /me` `setup` order is name, then username (unskippable), then
+lightning-address, then rules. When username is still blank,
+`POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
+free; a collision or uniqueness race leaves username null and `setup` at
+username.
+
+After name/skip, username, and address/skip, the app records living-room
+rules agreement via `POST /me/rules-agreement`. `GET /me` carries
+`setup` (wizard; skip counts as done for name and Lightning Address, not
+username), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch
+ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
 account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/setup/skip`, `/me/name`, `/me/rules-agreement`.
+`/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
 
 ---
 

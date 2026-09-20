@@ -152,7 +152,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a live top-level non-profile forum post                                   |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                                                          |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                                                          |>>>>>>> 7f4bd8b (Keep the display name when username auto-assign races.)
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -197,6 +197,39 @@ Service identity for clients. Does not expose runtime configuration.
   "repository": "https://github.com/21gifts/api"
 }
 ```
+
+### `GET /.well-known/lnurlp/:username`
+
+Public LUD-16 payRequest for `username@21.gifts`. No auth. Looks up the
+stored username via `getAccountByUsername` after `normalizeUsername` on
+the path param. Passes through the linked Wallet of Satoshi LNURL-pay
+JSON unchanged (`resolveLnurlpDocument`; `c.json(resolved.body, 200,
+WELL_KNOWN_CORS)`). The callback stays on Wallet of Satoshi. 21.gifts
+does not mint invoices. Settlement stays on the linked Wallet of Satoshi
+address.
+
+CORS is the same `WELL_KNOWN_CORS` as `/.well-known/nostr.json`:
+`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`,
+`Cache-Control: public, max-age=60`.
+
+Username invalid (`normalizeUsername` returns null), unknown
+(`getAccountByUsername` undefined), or unlinked (no non-blank
+`lightningAddress`) → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
+**Response** `502`:
+
+```json
+{ "error": "Lightning Address could not be resolved" }
+```
+
+Success → **Response** `200` with the provider payRequest JSON passed
+through unchanged. This service does not invent or rewrite Wallet of
+Satoshi fields.
 
 ### `GET /favicon.ico`
 
@@ -295,6 +328,7 @@ ID).
     "linkingKey": null,
     "role": "basis",
     "name": null,
+    "username": null,
     "location": null,
     "lightningAddress": null,
     "lightningAddressVerified": false,
@@ -303,7 +337,7 @@ ID).
     "createdAt": 0,
     "rulesAgreedAt": null,
     "setup": "name",
-    "missing": ["name", "lightning-address", "rules"],
+    "missing": ["name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
@@ -350,6 +384,7 @@ Missing or invalid bearer → **Response** `401`:
   "linkingKey": "<hex>",
   "role": "basis",
   "name": null,
+  "username": null,
   "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
@@ -358,7 +393,7 @@ Missing or invalid bearer → **Response** `401`:
   "createdAt": 0,
   "rulesAgreedAt": null,
   "setup": "name",
-  "missing": ["name", "lightning-address", "rules"],
+  "missing": ["name", "username", "lightning-address", "rules"],
   "hasPosted": false,
   "aboutMe": null,
   "aboutMeHasPhoto": false,
@@ -445,7 +480,8 @@ Bearer required. `:accountId` must be a UUID. After auth,
 `requireAction(caller, 'forum.read')` — missing rules → **409**
 `{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
-Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
+Success → live `id` / `name` / `username` (`string | null` LUD-16 / NIP-05
+local-part) / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
 `replyCount`, or `null`), derived `aboutMe` (profile-note text when it
 is a real bio, else `null` when the profile note is missing or
@@ -679,11 +715,13 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (eight fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (nine fields including `username` (`string | null`);
+omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
   "name": null,
+  "username": null,
   "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
@@ -736,13 +774,59 @@ control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 ```
 
 Success → **Response** `200` with the updated account (same shape as
-`GET /me`). The stored value is trimmed. Names are not unique. When a
-non-blank Lightning Address is already linked, the first persisted
-non-empty name also creates exactly one top-level profile forum note and
-claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not on owner JSON). Without a Lightning
-Address the name is stored and no profile note is inserted (linking the
-address later creates it). Rename does not create a second note and does
-not change the note text.
+`GET /me`). The stored value is trimmed. Names are not unique. The name
+is written without changing username. When username is still blank, a
+follow-up write stores `usernameFromDisplayName` if that handle is free.
+Collision or a uniqueness race leaves username null (setup stays
+`username`) and still returns 200; the display-name write is not rolled
+back. `POST /me/name` does not 409 for a taken handle (`POST /me/username`
+does). When a non-blank Lightning Address is already linked, the first
+persisted non-empty name also creates exactly one top-level profile
+forum note and claims `profileMessageId` via `claimProfileMessageId`
+(set only while the pointer still matches the missing/hidden read; not
+on owner JSON). Without a Lightning Address the name is stored and no
+profile note is inserted (linking the address later creates it). Rename
+does not create a second note and does not change the note text.
+
+### `POST /me/username`
+
+Set the unique LUD-16 / NIP-05 local-part. Body:
+
+```json
+{ "username": "ada" }
+```
+
+Charset is lowercase `a-z0-9-_.`, 1–32 characters, leading letter or
+digit. Cannot skip (no `POST /me/setup/skip` step for username; skip
+body is only `"name" | "lightning-address"`). Same handle on the same
+account is idempotent **200**.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `username` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"username\" string" }
+```
+
+`normalizeUsername` fails (invalid charset / length / leading character /
+`_` alone) → **Response** `400`:
+
+```json
+{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }
+```
+
+Another account owns the handle, including a unique-index race
+(re-read after `updateAccount`: if the stored username lower/trim is
+not the requested handle) → **Response** `409`:
+
+```json
+{ "error": "Username is already in use" }
+```
+
+Success → **Response** `200` with the owner JSON (same shape as
+`GET /me`) via `serializeOwnerAccountWithPosts`. Logs
+`account.username.set`.
 
 ### `POST /me/location`
 
@@ -1168,6 +1252,7 @@ Success → **Response** `200`:
       "linkingKey": "<hex>",
       "role": "basis",
       "name": null,
+      "username": null,
       "location": null,
       "lightningAddress": null,
       "lightningAddressVerified": false,
@@ -1180,7 +1265,7 @@ Success → **Response** `200`:
 }
 ```
 
-The listing uses `serializeDebugAccount` (the ten public fields plus
+The listing uses `serializeDebugAccount` (the eleven public fields plus
 `isPlatform`) and never includes `viewKey`. Member `GET /me` does not
 include `isPlatform`.
 
@@ -2515,12 +2600,12 @@ Missing/invalid/expired bearer → **Response** `401`:
 Missing required fields → **Response** `409`:
 
 ```json
-{ "error": "missing_requirements", "missing": ["rules", "name", "lightning-address"] }
+{ "error": "missing_requirements", "missing": ["rules", "name", "username", "lightning-address"] }
 ```
 
-(`missing` is never empty; order is `rules`, then `name`, then
-`lightning-address`. A named, rules-agreed account with null LN yields
-`["lightning-address"]` only.)
+(`missing` is never empty; order is `rules`, then `name`, then `username`,
+then `lightning-address`. A named, rules-agreed, username-set account with
+null LN yields `["lightning-address"]` only.)
 
 Body is not JSON with `text` and/or `photo` → **Response** `400`:
 

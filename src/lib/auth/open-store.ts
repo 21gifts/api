@@ -7,9 +7,11 @@ import { backfillAccountUsernames } from '@/lib/username';
  * Factory for the process AuthStore.
  *
  * Blank or unset `DATABASE_URL` yields the in-memory adapter (tests, local
- * boots without Postgres). A set URL migrates the auth schema and returns
- * the Postgres adapter. The SQL client factory is required when a URL is set
- * so unit tests never import the Bun SQL runtime.
+ * boots without Postgres). The in-memory path does not backfill usernames.
+ * A set URL migrates the auth schema, backfills account usernames
+ * ({@link backfillAccountUsernames}), then returns the Postgres adapter.
+ * The SQL client factory is required when a URL is set so unit tests never
+ * import the Bun SQL runtime.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL client factory; required when `databaseUrl` is set.

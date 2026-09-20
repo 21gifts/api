@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { VERIFICATION_TTL_MS } from '@/lib/config';
@@ -754,9 +754,59 @@ describe('POST /me/name', () => {
       body: JSON.stringify({ name: 'Ada' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { username: string | null; setup: string };
+    const body = (await res.json()) as {
+      name: string | null;
+      username: string | null;
+      setup: string;
+    };
+    expect(body.name).toBe('Ada');
     expect(body.username).toBeNull();
     expect(body.setup).toBe('username');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
+    expect((await store.getAccount('acc'))?.username ?? null).toBeNull();
+  });
+
+  it('keeps the display name when a uniqueness race no-ops the username write', async () => {
+    const store = await seededStore();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      username: 'ada',
+      location: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const applyUpdate = store.updateAccount.bind(store);
+    vi.spyOn(store, 'getAccountByUsername').mockResolvedValue(undefined);
+    vi.spyOn(store, 'updateAccount').mockImplementation(async (account: Account) => {
+      const handle = account.username;
+      if (handle !== null && handle !== undefined && handle.trim() !== '') {
+        return;
+      }
+      await applyUpdate(account);
+    });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      name: string | null;
+      username: string | null;
+      setup: string;
+    };
+    expect(body.name).toBe('Ada');
+    expect(body.username).toBeNull();
+    expect(body.setup).toBe('username');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
+    expect((await store.getAccount('acc'))?.username ?? null).toBeNull();
   });
 });
 

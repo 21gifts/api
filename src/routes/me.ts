@@ -265,7 +265,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (live === null || live === undefined) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const named: Account = { ...live, name };
+      await deps.store.updateAccount({ ...live, name });
+      const named = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (named === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       const usernameBlank =
         named.username === null || named.username === undefined || named.username.trim() === '';
       if (usernameBlank) {
@@ -273,13 +278,22 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         if (derived !== null) {
           const owner = await deps.store.getAccountByUsername(derived);
           if (owner === undefined || owner.id === named.id) {
-            named.username = derived;
+            const latest = await storedAccount(deps, named.id);
+            /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+            if (latest === null) {
+              return c.json({ error: 'Unauthorized' }, 401);
+            }
+            await deps.store.updateAccount({ ...latest, username: derived });
           }
         }
       }
-      await deps.store.updateAccount(named);
+      const stored = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (stored === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(named, deps.messages), 200);
+      return c.json(await serializeOwnerAccountWithPosts(stored, deps.messages), 200);
     })
     .post('/username', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
