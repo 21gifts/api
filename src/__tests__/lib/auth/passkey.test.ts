@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
@@ -10,9 +10,11 @@ import {
   startPasskeyClaim,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
 const T0 = 1_000_000;
+const LISTED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
 const CONFIG: WebAuthnRuntimeConfig = {
   rpId: 'localhost',
   rpName: '21.gifts',
@@ -175,6 +177,25 @@ describe('passkey registration', () => {
     const pending = await store.getPasskeyChallenge(begin.challengeId);
     expect(pending?.accountId).toEqual(expect.any(String));
     expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
+  });
+
+  it('refuses a listed new account before issuing a session', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'test-challenge',
+      accountId: LISTED_ID,
+      consumed: false,
+      createdAt: T0,
+    });
+    const createSession = vi.spyOn(store, 'createSession');
+    const finish = await finishPasskeyRegistration(store, ceremony, CONFIG, T0, ORIGIN, 'ch', {
+      test: 'ok',
+    });
+    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
+    expect(createSession).not.toHaveBeenCalled();
   });
 });
 
@@ -422,6 +443,43 @@ describe('passkey claim', () => {
     expect(finish.ok).toBe(true);
     expect(await store.getNostrPublicKey('provisioned')).toBeUndefined();
   });
+
+  it('refuses a listed existing account before issuing a session', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: LISTED_ID,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'test-challenge',
+      accountId: LISTED_ID,
+      consumed: false,
+      createdAt: T0,
+    });
+    const createSession = vi.spyOn(store, 'createSession');
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      'ch',
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
+    expect(createSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('passkey authentication', () => {
@@ -617,5 +675,43 @@ describe('passkey authentication', () => {
       { test: 'ok', id: 'cred-1' },
     );
     expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
+  });
+
+  it('refuses a listed account before issuing a session', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    await store.createAccount({
+      id: LISTED_ID,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId: LISTED_ID,
+      createdAt: T0,
+    });
+    const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    const createSession = vi.spyOn(store, 'createSession');
+    const finish = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok', id: 'cred-1' },
+    );
+    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
+    expect(createSession).not.toHaveBeenCalled();
   });
 });

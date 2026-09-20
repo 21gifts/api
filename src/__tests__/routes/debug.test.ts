@@ -7,6 +7,7 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -420,6 +421,44 @@ describe('debugRoutes', () => {
       headers: { authorization: 'Bearer secret' },
     });
     expect(again.status).toBe(200);
+  });
+
+  it('POST /:id/session refuses a listed account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const createSession = vi.spyOn(store, 'createSession');
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const res = await app.request(`/debug/accounts/${id}/session`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted'),
+    ).toBe(false);
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {

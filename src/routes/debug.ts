@@ -7,6 +7,7 @@ import { randomHex } from '@/lib/auth/hex';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -398,6 +399,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const existing = await deps.store.getAccount(c.req.param('id'));
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
+      }
+      if (isWrongAccount(existing.id)) {
+        return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
       const now = deps.now ?? Date.now;
       const minted = await issueSession(deps.store, now(), existing);

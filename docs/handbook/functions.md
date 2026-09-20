@@ -1279,9 +1279,9 @@
 
 ## Function: resolveSession
 
-- **Purpose:** Looks up a bearer session; rejects expired.
+- **Purpose:** Looks up a bearer session; rejects expired and listed duplicate ids (`isWrongAccount`).
 - **Inputs:** `store`, `now`, `token`.
-- **Returns / side effects:** `Account` or `null`.
+- **Returns / side effects:** `Account` or `null` when unknown, expired, or listed.
 - **Used by:** `meRoutes`.
 
 ## Function: startVerification
@@ -1307,23 +1307,30 @@
 
 ## Function: finishPasskeyAuthentication
 
-- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds. Optional `nostr` best-effort backfills a missing nsec.
+- **Purpose:** Verifies a discoverable-credential assertion, CAS-updates signCount, issues a session only when the CAS succeeds. Optional `nostr` best-effort backfills a missing nsec. After the account is loaded, a listed duplicate id returns `{ ok: false, error }` with the wrong-account copy and never issues a token.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. CAS failure is `{ ok: false, error: 'Invalid passkey' }`. Listed duplicate: `{ ok: false, error: 'You signed in with the wrong account. Please try again with the correct account.' }`.
 - **Used by:** `POST /auth/passkey/authenticate/finish`.
 
 ## Function: finishPasskeyRegistration
 
-- **Purpose:** Verifies an attestation and issues a session. When the challenge account id already exists (claim path), binds the credential to that provisioned row without `createAccount` and never `deleteAccount` on failure. When the account is new, creates a `linkingKey: null` account plus credential; optional `nostr` mints a custodial nsec (rollback on keygen failure) and a duplicate credential id rolls the new account back.
+- **Purpose:** Verifies an attestation and issues a session. When the challenge account id already exists (claim path), binds the credential to that provisioned row without `createAccount` and never `deleteAccount` on failure. When the account is new, creates a `linkingKey: null` account plus credential; optional `nostr` mints a custodial nsec (rollback on keygen failure) and a duplicate credential id rolls the new account back. A listed duplicate id is refused before each `issueSession` call.
 - **Inputs:** store, ceremony, config, now, Origin, challengeId, credential, optional `nostr`.
-- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. Claim-path credential race → `{ ok: false, error: 'Invalid passkey' }` with the provisioned account left intact. Nostr keygen failure on claim is best-effort (same as authenticate): session still issues.
+- **Returns / side effects:** `{ ok: true, value: { token, account } }` or `{ ok: false, error }`. Claim-path credential race → `{ ok: false, error: 'Invalid passkey' }` with the provisioned account left intact. Nostr keygen failure on claim is best-effort (same as authenticate): session still issues. Listed duplicate: `{ ok: false, error: 'You signed in with the wrong account. Please try again with the correct account.' }` and no bearer.
 - **Used by:** `POST /auth/passkey/register/finish`.
+
+## Function: isWrongAccount
+
+- **Purpose:** Whether an account id is listed as a duplicate that must not receive a session.
+- **Inputs:** `accountId` string.
+- **Returns / side effects:** `true` when the id is in `WRONG_ACCOUNT_IDS`. No I/O.
+- **Used by:** `issueSession`, `resolveSession`, `finishPasskeyAuthentication`, `finishPasskeyRegistration`, `GET /me`, `POST /debug/accounts/:id/session`.
 
 ## Function: issueSession
 
-- **Purpose:** Mints a bearer session token for an already-authenticated account.
+- **Purpose:** Mints a bearer session token for an already-authenticated account. Listed duplicate ids (`isWrongAccount`) throw `Error` whose message is the wrong-account copy and do not write a session row.
 - **Inputs:** `store`, `now`, `account`.
-- **Returns / side effects:** `{ token, account }`; writes the session row.
+- **Returns / side effects:** `{ token, account }`; writes the session row. Throws `Error` with message `You signed in with the wrong account. Please try again with the correct account.` when listed.
 - **Used by:** passkey finish paths and `POST /debug/accounts/:id/session`.
 
 ## Function: normalizeWebAuthnRpId

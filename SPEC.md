@@ -320,6 +320,7 @@ ID).
 | 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                                         |
 | 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                                      |
 | 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential                   |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Listed duplicate account; no bearer is persisted                    |
 
 **Response** `200`:
 
@@ -366,8 +367,10 @@ issues a session. A non-increasing `signCount` is refused as
 `{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
 Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
-not stored. Success body matches register finish (`linkingKey` is whatever
-the account currently has).
+not stored. A listed duplicate account is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+and does not persist a bearer. Success body matches register finish
+(`linkingKey` is whatever the account currently has).
 
 ### `GET /me`
 
@@ -377,6 +380,12 @@ Missing or invalid bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+A listed duplicate account with a still-valid minted token → **Response** `403`:
+
+```json
+{ "error": "You signed in with the wrong account. Please try again with the correct account." }
 ```
 
 **Response** `200`:
@@ -1407,9 +1416,12 @@ token or the previous address). Platform changes log
 
 Operator mint of a member bearer for the given account id. Authenticated
 with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
-Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
-the other debug account routes. Not a member login path; for e2e and
-operator debugging.
+Unknown account id → **404** `{ "error": "Not found" }`. A listed duplicate
+account is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+with no minted bearer and no `debug.accounts.session_minted` log. Same
+503/401 gate as the other debug account routes. Not a member login path;
+for e2e and operator debugging.
 
 ### `POST /debug/trust-edges`
 

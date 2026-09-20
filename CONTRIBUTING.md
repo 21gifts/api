@@ -122,6 +122,7 @@ api/
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
+│   │       ├── wrong-account.ts  # listed ids that must not receive a session
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL

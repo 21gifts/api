@@ -1,13 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { SESSION_TTL_MS } from '@/lib/config';
 import { issueSession, resolveSession } from '@/lib/auth/service';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 
 const T0 = 1_000_000;
+const LISTED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
 
-async function seedAccount(store: InMemoryAuthStore): Promise<void> {
+async function seedAccount(store: InMemoryAuthStore, id = 'acc'): Promise<void> {
   await store.createAccount({
-    id: 'acc',
+    id,
     linkingKey: null,
     role: 'basis',
     name: null,
@@ -34,6 +36,18 @@ describe('issueSession', () => {
     expect(issued.account.id).toBe('acc');
     expect((await store.getSession(issued.token))?.accountId).toBe('acc');
   });
+
+  it('throws and does not persist a session for a listed account', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store, LISTED_ID);
+    const account = await store.getAccount(LISTED_ID);
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    const createSession = vi.spyOn(store, 'createSession');
+    await expect(issueSession(store, T0, account)).rejects.toThrow(WRONG_ACCOUNT_ERROR);
+    expect(createSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveSession', () => {
@@ -53,5 +67,12 @@ describe('resolveSession', () => {
     await seedAccount(store);
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
     expect((await resolveSession(store, T0, 'tok'))?.id).toBe('acc');
+  });
+
+  it('returns null for a listed account', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store, LISTED_ID);
+    await store.createSession({ token: 'tok', accountId: LISTED_ID, createdAt: T0 });
+    expect(await resolveSession(store, T0, 'tok')).toBeNull();
   });
 });

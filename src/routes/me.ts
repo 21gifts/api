@@ -6,6 +6,8 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import { SESSION_TTL_MS } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -178,9 +180,22 @@ export function meRoutes(deps: MeRouteDeps): Hono {
 
   return new Hono()
     .get('/', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
+      const token = bearerToken(c.req.header('authorization'));
+      if (token === null) {
         return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const now = deps.now();
+      const session = await deps.store.getSession(token);
+      if (session === undefined || now - session.createdAt > SESSION_TTL_MS) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await deps.store.getAccount(session.accountId);
+      /* v8 ignore next 3 -- a session always references an existing account in-memory */
+      if (account === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (isWrongAccount(account.id)) {
+        return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
       return c.json(await serializeOwnerAccountWithPosts(account, deps.messages), 200);
     })
