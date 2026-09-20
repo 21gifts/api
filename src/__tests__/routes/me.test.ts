@@ -160,12 +160,13 @@ describe('GET /me', () => {
       id: string;
       role: string;
       name: string | null;
+      username: string | null;
       location: string | null;
       lightningAddress: string | null;
       lightningAddressVerified: boolean;
       viewKey: string;
       rulesAgreedAt: number | null;
-      setup: 'name' | 'lightning-address' | 'rules' | null;
+      setup: 'name' | 'username' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
@@ -173,13 +174,14 @@ describe('GET /me', () => {
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
     expect(body.name).toBeNull();
+    expect(body.username).toBeNull();
     expect(body.location).toBeNull();
     expect(body.lightningAddress).toBeNull();
     expect(body.lightningAddressVerified).toBe(false);
     expect(body.viewKey).toBe(VIEW_KEY);
     expect(body.rulesAgreedAt).toBeNull();
     expect(body.setup).toBe('name');
-    expect(body.missing).toEqual(['name', 'lightning-address', 'rules']);
+    expect(body.missing).toEqual(['name', 'username', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
   });
@@ -250,7 +252,7 @@ describe('POST /me/setup/skip', () => {
     expect(bad.status).toBe(400);
   });
 
-  it('skips name then GET /me advances setup to lightning-address', async () => {
+  it('skips name then GET /me advances setup to username', async () => {
     const store = await seededStore();
     const res = await mount(store).request('/me/setup/skip', {
       method: 'POST',
@@ -263,9 +265,10 @@ describe('POST /me/setup/skip', () => {
       missing: string[];
       name: string | null;
     };
-    expect(body.setup).toBe('lightning-address');
+    expect(body.setup).toBe('username');
     expect(body.name).toBeNull();
     expect(body.missing).toContain('name');
+    expect(body.missing).toContain('username');
     expect((await store.getAccount('acc'))?.nameSkippedAt).toBe(now());
     expect(
       parsedEvents(warn).some(
@@ -276,7 +279,17 @@ describe('POST /me/setup/skip', () => {
       ),
     ).toBe(true);
     const me = await mount(store).request('/me', { headers: AUTH });
-    expect(((await me.json()) as { setup: string }).setup).toBe('lightning-address');
+    expect(((await me.json()) as { setup: string }).setup).toBe('username');
+  });
+
+  it('rejects skipping username', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'username' }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('skips lightning-address', async () => {
@@ -286,7 +299,7 @@ describe('POST /me/setup/skip', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await store.updateAccount({ ...account, name: 'Ada' });
+    await store.updateAccount({ ...account, name: 'Ada', username: 'ada' });
     const res = await mount(store).request('/me/setup/skip', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -704,6 +717,138 @@ describe('POST /me/name', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { name: string }).name).toBe('Bob');
     expect((await store.getAccount('acc'))?.name).toBe('Bob');
+  });
+
+  it('auto-assigns a free username from the display name', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada Lovelace' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { username: string | null; setup: string };
+    expect(body.username).toBe('ada-lovelace');
+    expect(body.setup).toBe('lightning-address');
+  });
+
+  it('leaves username unset when the derived handle is taken', async () => {
+    const store = await seededStore();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      username: 'ada',
+      location: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { username: string | null; setup: string };
+    expect(body.username).toBeNull();
+    expect(body.setup).toBe('username');
+  });
+});
+
+describe('POST /me/username', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/username', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 400 without a username string', async () => {
+    const res = await mount(await seededStore()).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a "username" string',
+    });
+  });
+
+  it('returns 400 for an invalid username', async () => {
+    const res = await mount(await seededStore()).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'Ada Lovelace' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+    });
+  });
+
+  it('sets a username and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { username: string };
+    expect(body.username).toBe('ada');
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 409 when another account owns the username', async () => {
+    const store = await seededStore();
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      username: 'ada',
+      location: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Username is already in use' });
+  });
+
+  it('allows keeping the same username', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, username: 'ada' });
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { username: string }).username).toBe('ada');
   });
 });
 
@@ -1259,6 +1404,7 @@ describe('DELETE /me/lightning-address', () => {
     await store.updateAccount({
       ...existing!,
       name: 'Ada',
+      username: 'ada',
       lightningAddressSkippedAt: 99,
     });
     await store.putVerification({
@@ -1274,7 +1420,7 @@ describe('DELETE /me/lightning-address', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       lightningAddress: string | null;
-      setup: 'name' | 'lightning-address' | 'rules' | null;
+      setup: 'name' | 'username' | 'lightning-address' | 'rules' | null;
     };
     expect(body.lightningAddress).toBeNull();
     expect(body.setup).toBe('lightning-address');

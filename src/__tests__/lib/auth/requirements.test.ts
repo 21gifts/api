@@ -24,8 +24,13 @@ const base: Account = {
 describe('actionRequirements', () => {
   it('lists fields for each action', () => {
     expect(actionRequirements('forum.read')).toEqual(['rules']);
-    expect(actionRequirements('forum.post')).toEqual(['rules', 'name', 'lightning-address']);
-    expect(actionRequirements('contact.post')).toEqual(['rules', 'name']);
+    expect(actionRequirements('forum.post')).toEqual([
+      'rules',
+      'name',
+      'username',
+      'lightning-address',
+    ]);
+    expect(actionRequirements('contact.post')).toEqual(['rules', 'name', 'username']);
     expect(actionRequirements('forum.pay')).toEqual(['rules']);
   });
 });
@@ -35,6 +40,7 @@ describe('requireAction', () => {
     const account: Account = {
       ...base,
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'ada@walletofsatoshi.com',
       rulesAgreedAt: 2,
     };
@@ -50,23 +56,23 @@ describe('requireAction', () => {
       lightningAddressSkippedAt: 11,
       rulesAgreedAt: 12,
     };
-    expect(accountMissing(account)).toEqual(['name', 'lightning-address']);
+    expect(accountMissing(account)).toEqual(['name', 'username', 'lightning-address']);
     expect(requireAction(account, 'forum.post')).toEqual({
       ok: false,
-      missing: ['name', 'lightning-address'],
+      missing: ['name', 'username', 'lightning-address'],
     });
   });
 
-  it('orders 409 missing as rules, name, then lightning-address', () => {
+  it('orders 409 missing as rules, name, username, then lightning-address', () => {
     const account: Account = { ...base };
     expect(requireAction(account, 'forum.post')).toEqual({
       ok: false,
-      missing: ['rules', 'name', 'lightning-address'],
+      missing: ['rules', 'name', 'username', 'lightning-address'],
     });
     expect(MISSING_REQUIREMENTS_ERROR).toBe('missing_requirements');
   });
 
-  it('returns only lightning-address when name and rules are set', () => {
+  it('returns username and lightning-address when name and rules are set', () => {
     const account: Account = {
       ...base,
       name: 'Ada',
@@ -74,7 +80,7 @@ describe('requireAction', () => {
     };
     expect(requireAction(account, 'forum.post')).toEqual({
       ok: false,
-      missing: ['lightning-address'],
+      missing: ['username', 'lightning-address'],
     });
   });
 

@@ -46,6 +46,11 @@ export interface Account {
   /** Display name, or `null` until the user sets one. */
   name: string | null;
   /**
+   * LUD-16 / NIP-05 local-part, or null until set. Optional on the type so
+   * fixtures stay valid.
+   */
+  username?: string | null;
+  /**
    * Free-text location set by the owner, or `null` when unset.
    * Not unique. Not a setup step. Public on member and view cards.
    */
@@ -155,10 +160,10 @@ export interface AuthStore {
   /** Persist a new account. */
   createAccount(account: Account): Promise<void>;
   /**
-   * Overwrite a stored account. A `viewKey`, non-null `linkingKey`, or
-   * `lightningAddress` (`lower(trim)`) owned by another id is refused
-   * (in-memory no-op; Postgres via `UPDATE` matching no row or swallowed
-   * unique_violation).
+   * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
+   * `lightningAddress` (`lower(trim)`), or `username` (`lower(trim)`) owned
+   * by another id is refused (in-memory no-op; Postgres via `UPDATE`
+   * matching no row or swallowed unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
   /**
@@ -203,6 +208,12 @@ export interface AuthStore {
    * in Postgres; in-memory create/update refuse a taken address).
    */
   getAccountByLightningAddress(address: string): Promise<Account | undefined>;
+  /**
+   * Look up an account by username (`lower(trim)` match). Rows with a
+   * null/undefined/blank `username` are skipped. At most one row matches
+   * (unique index in Postgres; in-memory create/update refuse a taken handle).
+   */
+  getAccountByUsername(username: string): Promise<Account | undefined>;
   /**
    * Look up an account by custodial Nostr pubkey (case-insensitive hex).
    * Unique index in Postgres; in-memory scans `#nostrKeys`.
@@ -315,6 +326,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
+    if (this.#usernameTaken(account.username, account.id)) {
+      return;
+    }
     if (account.isPlatform === true) {
       this.#clearPlatformExcept(account.id);
     }
@@ -337,6 +351,9 @@ export class InMemoryAuthStore implements AuthStore {
       return;
     }
     if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
+      return;
+    }
+    if (this.#usernameTaken(account.username, account.id)) {
       return;
     }
     if (account.isPlatform === true) {
@@ -431,6 +448,25 @@ export class InMemoryAuthStore implements AuthStore {
     return false;
   }
 
+  #usernameTaken(username: string | null | undefined, accountId: string): boolean {
+    if (username === null || username === undefined) {
+      return false;
+    }
+    const needle = username.trim().toLowerCase();
+    if (needle === '') {
+      return false;
+    }
+    for (const other of this.#accounts.values()) {
+      if (other.id === accountId || other.username === null || other.username === undefined) {
+        continue;
+      }
+      if (other.username.trim().toLowerCase() === needle) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
     const needle = address.trim().toLowerCase();
     for (const account of this.#accounts.values()) {
@@ -438,6 +474,26 @@ export class InMemoryAuthStore implements AuthStore {
         continue;
       }
       if (account.lightningAddress.trim().toLowerCase() === needle) {
+        return account;
+      }
+    }
+    return undefined;
+  }
+
+  async getAccountByUsername(username: string): Promise<Account | undefined> {
+    const needle = username.trim().toLowerCase();
+    if (needle === '') {
+      return undefined;
+    }
+    for (const account of this.#accounts.values()) {
+      if (account.username === null || account.username === undefined) {
+        continue;
+      }
+      const other = account.username.trim().toLowerCase();
+      if (other === '') {
+        continue;
+      }
+      if (other === needle) {
         return account;
       }
     }

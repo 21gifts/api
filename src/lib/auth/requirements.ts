@@ -20,8 +20,8 @@ export interface MissingRequirementsBody {
 /** Action → required fields. Order is the 409 `missing` order. */
 const ACTION_NEEDS: Record<AccountAction, readonly AccountMissingField[]> = {
   'forum.read': ['rules'],
-  'forum.post': ['rules', 'name', 'lightning-address'],
-  'contact.post': ['rules', 'name'],
+  'forum.post': ['rules', 'name', 'username', 'lightning-address'],
+  'contact.post': ['rules', 'name', 'username'],
   'forum.pay': ['rules'],
 };
 

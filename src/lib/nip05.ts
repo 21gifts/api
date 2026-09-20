@@ -95,10 +95,46 @@ export function allocateNip05Local(name: string, accountId: string, taken: Set<s
 }
 
 /**
- * Build the NIP-05 identifier for one named account, matching `nostr.json`.
+ * Stored LUD-16 / NIP-05 local-part after trim/lower, or `null` when blank.
  *
- * @param account - Named account.
- * @param namedOldestFirst - All named accounts, oldest first.
+ * @param account - Stored account.
+ * @returns Normalised stored username, or `null`.
+ */
+function storedUsername(account: Account): string | null {
+  const raw = account.username;
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const needle = raw.trim().toLowerCase();
+  /* v8 ignore next -- stored username is normalised before write */
+  return needle === '' ? null : needle;
+}
+
+/**
+ * Seed collision set with every non-blank stored username in this pass.
+ *
+ * @param accounts - Accounts considered for NIP-05 locals.
+ * @returns Locals already reserved by stored usernames.
+ */
+function seedTakenUsernames(accounts: readonly Account[]): Set<string> {
+  const taken = new Set<string>();
+  for (const row of accounts) {
+    const local = storedUsername(row);
+    if (local !== null) {
+      taken.add(local);
+    }
+  }
+  return taken;
+}
+
+/**
+ * Build the NIP-05 identifier for one account, matching `nostr.json`.
+ *
+ * Prefers a non-blank stored username. Otherwise allocates from the
+ * display name like {@link listNip05Entries}.
+ *
+ * @param account - Account to identify.
+ * @param namedOldestFirst - Accounts in this pass, oldest first.
  * @param domain - Hostname (e.g. `21.gifts`).
  * @returns `local@domain`.
  */
@@ -107,8 +143,15 @@ export function nip05Identifier(
   namedOldestFirst: readonly Account[],
   domain: string,
 ): string {
-  const taken = new Set<string>();
+  const taken = seedTakenUsernames(namedOldestFirst);
+  const own = storedUsername(account);
+  if (own !== null) {
+    return `${own}@${domain}`;
+  }
   for (const row of namedOldestFirst) {
+    if (storedUsername(row) !== null) {
+      continue;
+    }
     if (row.name === null || row.name.trim() === '') {
       continue;
     }
@@ -123,30 +166,43 @@ export function nip05Identifier(
 }
 
 /**
- * Load named accounts that already have a Nostr pubkey, oldest first.
+ * Load accounts that already have a Nostr pubkey, oldest first.
+ *
+ * Stored usernames win over display-name slugs. Accounts with a stored
+ * username and a skipped/blank name are included. Nameless accounts
+ * without a username are skipped.
  *
  * @param auth - Auth store.
  * @returns Directory rows.
  */
 export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
   const accounts = await auth.listAccounts();
-  const named = accounts
-    .filter((row): row is Account & { name: string } => row.name !== null && row.name.trim() !== '')
+  const eligible = accounts
+    .filter((row) => storedUsername(row) !== null || (row.name !== null && row.name.trim() !== ''))
     .sort((left, right) => {
       const byTime = left.createdAt - right.createdAt;
       /* v8 ignore next -- same createdAt, sort by id */
       return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
     });
-  const taken = new Set<string>();
+  const taken = seedTakenUsernames(eligible);
   const entries: Nip05Entry[] = [];
-  for (const account of named) {
-    const local = allocateNip05Local(account.name, account.id, taken);
-    taken.add(local);
+  for (const account of eligible) {
+    const stored = storedUsername(account);
+    const local =
+      stored !== null
+        ? stored
+        : /* v8 ignore next -- eligible rows always have a non-blank name */
+          allocateNip05Local(account.name ?? 'user', account.id, taken);
+    if (stored === null) {
+      taken.add(local);
+    }
     const pubkey = await auth.getNostrPublicKey(account.id);
     if (pubkey === undefined) {
       continue;
     }
-    entries.push({ accountId: account.id, name: account.name, pubkey, local });
+    /* v8 ignore next -- stored-username rows may still have a blank display name */
+    const name = account.name !== null && account.name.trim() !== '' ? account.name : local;
+    entries.push({ accountId: account.id, name, pubkey, local });
   }
   return entries;
 }

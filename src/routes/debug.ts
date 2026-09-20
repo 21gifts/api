@@ -13,6 +13,8 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
+import { allocateNip05Local } from '@/lib/nip05';
+import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -73,6 +75,57 @@ function profileEnsureArgs(
     /* v8 ignore next -- createApp always injects conversationStore */
     ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
   };
+}
+
+/**
+ * Pick a unique provision username from the display name.
+ *
+ * Prefers {@link usernameFromDisplayName} when free; otherwise
+ * {@link allocateNip05Local} then {@link normalizeUsername}. Returns
+ * `null` when normalisation fails (create/update still proceeds).
+ *
+ * @param name - Display name already stored or about to be stored.
+ * @param id - Account id.
+ * @param taken - Usernames reserved in this pass.
+ * @returns A valid handle, or `null`.
+ */
+function provisionUsername(name: string, id: string, taken: Set<string>): string | null {
+  const derived = usernameFromDisplayName(name);
+  if (derived !== null && !taken.has(derived)) {
+    return derived;
+  }
+  return normalizeUsername(allocateNip05Local(name, id, taken));
+}
+
+/**
+ * Set a username on an existing provisioned row when it is still blank.
+ *
+ * @param store - Auth persistence.
+ * @param account - Row after the name write.
+ * @param name - Display name.
+ * @param taken - Usernames reserved in this pass.
+ * @returns The account, possibly with username set.
+ */
+async function maybeSetProvisionUsername(
+  store: AuthStore,
+  account: Account,
+  name: string,
+  taken: Set<string>,
+): Promise<Account> {
+  const raw = account.username;
+  if (raw !== null && raw !== undefined && raw.trim() !== '') {
+    taken.add(raw.trim().toLowerCase());
+    return account;
+  }
+  const username = provisionUsername(name, account.id, taken);
+  /* v8 ignore next 3 -- allocateNip05Local locals always pass normalizeUsername */
+  if (username === null) {
+    return account;
+  }
+  const updated: Account = { ...account, username };
+  await store.updateAccount(updated);
+  taken.add(username);
+  return updated;
 }
 
 /** Body schema for operator role, Lightning Address unlink, and platform flag. */
@@ -193,6 +246,17 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         created: boolean;
       }> = [];
       const clock = deps.now ?? Date.now;
+      const taken = new Set<string>();
+      for (const existing of await deps.store.listAccounts()) {
+        const raw = existing.username;
+        if (raw === null || raw === undefined) {
+          continue;
+        }
+        const needle = raw.trim().toLowerCase();
+        if (needle !== '') {
+          taken.add(needle);
+        }
+      }
       for (const row of classified) {
         if (row.existing !== undefined) {
           const named = await deps.store.updateAccountNameByLightningAddress(
@@ -202,23 +266,29 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
           }
+          const withUsername = await maybeSetProvisionUsername(deps.store, named, row.name, taken);
           if (deps.messageStore !== undefined) {
             await ensureProfileMessage(
-              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, withUsername, clock),
             );
           }
           updated += 1;
           results.push({
-            name: named.name,
-            lightningAddress: named.lightningAddress ?? row.lightningAddress,
-            viewKey: named.viewKey,
+            name: row.name,
+            lightningAddress: withUsername.lightningAddress ?? row.lightningAddress,
+            viewKey: withUsername.viewKey,
             created: false,
           });
           continue;
         }
         const viewKey = randomHex(32);
+        const id = crypto.randomUUID();
+        const username = provisionUsername(row.name, id, taken);
+        if (username !== null) {
+          taken.add(username);
+        }
         await deps.store.createAccount({
-          id: crypto.randomUUID(),
+          id,
           linkingKey: null,
           role: 'basis',
           name: row.name,
@@ -232,6 +302,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           nameSkippedAt: null,
           lightningAddressSkippedAt: null,
           profileMessageId: null,
+          username,
         });
         const stored = await deps.store.getAccountByLightningAddress(row.lightningAddress);
         if (stored === undefined) {
@@ -259,16 +330,17 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           if (named === undefined || named.name !== row.name) {
             return c.json({ error: 'Could not save the account' }, 500);
           }
+          const withUsername = await maybeSetProvisionUsername(deps.store, named, row.name, taken);
           if (deps.messageStore !== undefined) {
             await ensureProfileMessage(
-              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, withUsername, clock),
             );
           }
           updated += 1;
           results.push({
-            name: named.name,
-            lightningAddress: named.lightningAddress ?? row.lightningAddress,
-            viewKey: named.viewKey,
+            name: row.name,
+            lightningAddress: withUsername.lightningAddress ?? row.lightningAddress,
+            viewKey: withUsername.viewKey,
             created: false,
           });
         }

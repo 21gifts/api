@@ -1,6 +1,7 @@
 import { InMemoryAuthStore, type AuthStore } from '@/lib/auth/store';
 import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
+import { backfillAccountUsernames } from '@/lib/username';
 
 /**
  * Factory for the process AuthStore.
@@ -27,5 +28,7 @@ export async function openAuthStore(
   }
   const sql = createClient(databaseUrl.trim());
   await migrateAuthSchema(sql);
-  return new PostgresAuthStore(sql);
+  const store = new PostgresAuthStore(sql);
+  await backfillAccountUsernames(store);
+  return store;
 }

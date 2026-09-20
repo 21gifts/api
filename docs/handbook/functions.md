@@ -829,7 +829,7 @@
 
 ## Function: meRoutes
 
-- **Purpose:** Authenticated account routes (`GET /`, `GET /activity`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), PUT `/about` About me on the profile note (`{ text, photo? }`: omitted photo keeps, `null` clears, object sets the same JPEG/PNG/WebP as a forum post; creates without LN, including photo-only empty text), `GET /about/photo` (Bearer profile-note bytes), forum-laws dismiss, `POST /notification-level` (`{ level: all|active|mentions }`, 200 owner JSON, log `account.notification_level.set`), living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address. `GET /activity` is Bearer-only (no rules gate) and returns given/received sats for the session account.
+- **Purpose:** Authenticated account routes (`GET /`, `GET /activity`, `POST /setup/skip`, name with `ensureProfileMessage` (no-op without LN) and username auto-assign from the display name when the handle is blank and free, `POST /username` (LUD-16 local-part, 409 when taken), `POST /location` (optional free-text; empty/whitespace stores `null`; does not call `ensureProfileMessage`), PUT `/about` About me on the profile note (`{ text, photo? }`: omitted photo keeps, `null` clears, object sets the same JPEG/PNG/WebP as a forum post; creates without LN, including photo-only empty text), `GET /about/photo` (Bearer profile-note bytes), forum-laws dismiss, `POST /notification-level` (`{ level: all|active|mentions }`, 200 owner JSON, log `account.notification_level.set`), living-room rules agreement, Lightning Address link with live LNURL resolve + zap metadata check then NIP-57 mint probe `probeNip57Mint` then `ensureProfileMessage`, verification). Unlink clears `lightningAddressSkippedAt`. `POST /lightning-address` returns 409 `{ error: 'Lightning Address is already in use' }` when another account owns the address. `GET /activity` is Bearer-only (no rules gate) and returns given/received sats for the session account.
 - **Inputs:** `MeRouteDeps` store, `messages`, now, payer, fetchImpl, optional `pushStore`, optional `notificationStore` (profile-note `notifyForumPost`), optional `conversationStore` (inbox unread on profile-note push), optional `nostrKek` (required to sign the mint probe), optional `giftStore`, `rates`, and `fiatRates` (defaults empty in-memory; used by `GET /activity`; missing fiat never 503).
 - **Returns / side effects:** Hono at `/me`. Owner JSON includes `setup` + `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`. `GET /activity` is 200 activity JSON (zeros without Coinbase / Frankfurter when empty) or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Successful `POST /lightning-address` needs zap metadata (`allowsNostr` + non-empty `nostrPubkey`) plus KEK + `ensureAccountNostrKey` + probe `ok`. Probe `not_zap` → 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }`; probe `unreachable` (and missing zap metadata) → 400 `{ error: 'Lightning Address could not be resolved' }`; missing/malformed KEK or key ensure failure → 503 with the same resolve string (account unchanged). Logs `account.setup.skipped` with `{ accountId, step }`. Logs `account.about.set` / `account.about.failed` on PUT `/about`; `GET /about/photo` 503 logs `account.about.photo.failed`. A won PUT `/about` inline claim create calls `notifyForumPost` after the text/photo writes (best-effort). PUT `/about` does not call `ensureProfileMessage`. Updating an already-live note does not notify. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`.
 - **Used by:** `createApp`.
@@ -876,6 +876,27 @@
 - **Inputs:** `raw` string.
 - **Returns / side effects:** Trimmed name or `null`.
 - **Used by:** `POST /me/name`.
+
+## Function: normalizeUsername
+
+- **Purpose:** Trim, lowercase, and validate a LUD-16 / NIP-05 local-part (`a-z0-9-_.`, 1–32 characters, must start with a letter or digit). Rejects `_` because LUD-16 uses it as the default identifier. Does not allow `+` (tags are not stored).
+- **Inputs:** `raw` string.
+- **Returns / side effects:** Normalised username or `null`. No I/O.
+- **Used by:** `POST /me/username`, `usernameFromDisplayName`, `backfillAccountUsernames`, debug provision.
+
+## Function: usernameFromDisplayName
+
+- **Purpose:** Derive a username from a display name via `nip05Slug`. Returns `null` when the slug is the punctuation fallback `user` or fails `normalizeUsername`. Does not add collision suffixes.
+- **Inputs:** Display `name` string.
+- **Returns / side effects:** Normalised handle or `null`. No I/O.
+- **Used by:** `POST /me/name` auto-assign, debug provision.
+
+## Function: backfillAccountUsernames
+
+- **Purpose:** Assign unique usernames to named accounts that still have none, oldest first, using `allocateNip05Local` so existing NIP-05 locals including suffixes stay stable. Nameless accounts stay unset. Logs `account.username.backfill` with `{ count }`.
+- **Inputs:** `AuthStore`.
+- **Returns / side effects:** Number of accounts updated. Writes via `updateAccount`.
+- **Used by:** `openAuthStore` after auth schema migrate on Postgres boots.
 
 ## Function: normalizeLocation
 
@@ -1205,6 +1226,13 @@
 - **Inputs:** address + fetchImpl.
 - **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or error.
 - **Used by:** `lightningAddressRoutes`, `POST /me/lightning-address` (`meRoutes`), `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
+
+## Function: resolveLnurlpDocument
+
+- **Purpose:** Same well-known fetch as `resolveLnurlp`, but returns the provider JSON object so `GET /.well-known/lnurlp/:username` can pass Wallet of Satoshi through unchanged (invoice hashes stay valid; settlement stays at WoS).
+- **Inputs:** address + fetchImpl.
+- **Returns / side effects:** `{ ok: true, body }` or `{ ok: false, reason: 'unreachable' }`. No I/O besides the injected fetch.
+- **Used by:** `wellKnownRoutes`.
 
 ## Function: resolveSession
 
@@ -1874,9 +1902,9 @@
 
 ## Function: wellKnownRoutes
 
-- **Purpose:** Hono `GET /nostr.json` (CORS `*`).
-- **Inputs:** auth store, env.
-- **Returns / side effects:** Hono app mounted at `/.well-known`.
+- **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest; passes through the linked Wallet of Satoshi JSON so settlement stays there).
+- **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`).
+- **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is unknown or unlinked; 502 when WoS is unreachable.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo

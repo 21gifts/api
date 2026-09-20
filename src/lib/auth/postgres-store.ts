@@ -32,9 +32,10 @@ interface AccountRow {
   lightning_address_skipped_at?: Date | string | null;
   profile_message_id?: string | null;
   notification_level?: string | null;
+  username?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -104,8 +105,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -124,6 +125,7 @@ export class PostgresAuthStore implements AuthStore {
           account.profileMessageId ?? null,
           account.location,
           account.notificationLevel ?? 'all',
+          account.username ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -153,7 +155,8 @@ export class PostgresAuthStore implements AuthStore {
              lightning_address_skipped_at = to_timestamp($13::double precision / 1000.0),
              profile_message_id = $14,
              location = $15,
-             notification_level = $16
+             notification_level = $16,
+             username = $17
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -179,6 +182,7 @@ export class PostgresAuthStore implements AuthStore {
           account.profileMessageId ?? null,
           account.location,
           account.notificationLevel ?? 'all',
+          account.username ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -245,6 +249,16 @@ export class PostgresAuthStore implements AuthStore {
       `SELECT ${ACCOUNT_SELECT_COLUMNS}
        FROM account WHERE lower(trim(lightning_address)) = lower(trim($1))`,
       [address],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async getAccountByUsername(username: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS}
+       FROM account WHERE username IS NOT NULL AND lower(trim(username)) = lower(trim($1))`,
+      [username],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
@@ -555,6 +569,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
+    username: row.username ?? null,
   };
 }
 

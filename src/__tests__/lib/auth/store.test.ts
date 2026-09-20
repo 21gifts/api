@@ -784,6 +784,56 @@ describe('InMemoryAuthStore', () => {
     ).toBeUndefined();
   });
 
+  it('refuses createAccount and updateAccount when the username is taken', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada',
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'a',
+      username: 'ada',
+      viewKey: 'a'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'b',
+      name: 'Bob',
+      username: '  Ada  ',
+      lightningAddress: 'bob@walletofsatoshi.com',
+      viewKey: 'b'.repeat(64),
+    });
+    expect(await store.getAccount('b')).toBeUndefined();
+    await store.createAccount({
+      ...base,
+      id: 'c',
+      name: 'Cara',
+      username: 'cara',
+      lightningAddress: 'cara@walletofsatoshi.com',
+      viewKey: 'c'.repeat(64),
+    });
+    expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
+    await store.updateAccount({
+      ...(await store.getAccount('c'))!,
+      username: 'ada',
+    });
+    expect((await store.getAccount('c'))?.username).toBe('cara');
+    expect(await store.getAccountByUsername('   ')).toBeUndefined();
+    await store.updateAccount({
+      ...(await store.getAccount('c'))!,
+      username: '   ',
+    });
+    expect(await store.getAccountByUsername('cara')).toBeUndefined();
+  });
+
   it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
     const store = new InMemoryAuthStore();
     const base = {

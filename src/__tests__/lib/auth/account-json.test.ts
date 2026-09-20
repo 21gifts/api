@@ -15,6 +15,7 @@ const account: Account = {
   linkingKey: null,
   role: 'basis',
   name: 'Ada',
+  username: 'ada',
   lightningAddress: 'ada@walletofsatoshi.com',
   lightningAddressVerified: false,
   forumLawsDismissed: false,
@@ -37,13 +38,14 @@ function note(text: string, hasPhoto = false): MessageRow {
 }
 
 describe('serializeAccount', () => {
-  it('emits only the ten public fields without viewKey', () => {
+  it('emits only the eleven public fields without viewKey', () => {
     const json = serializeAccount(account);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
@@ -55,7 +57,7 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
-    expect(Object.keys(json)).toHaveLength(10);
+    expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
 });
@@ -73,13 +75,14 @@ describe('serializeDebugAccount', () => {
 });
 
 describe('serializeOwnerAccount', () => {
-  it('includes viewKey, setup, missing, hasPosted, and aboutMe alongside the ten public fields', () => {
+  it('includes viewKey, setup, missing, hasPosted, and aboutMe alongside the eleven public fields', () => {
     const json = serializeOwnerAccount(account, false, null, false);
     expect(json).toEqual({
       id: 'acc',
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
@@ -306,10 +309,11 @@ describe('serializeOwnerAccountWithPosts', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly eight public profile fields', () => {
+  it('emits exactly nine public profile fields', () => {
     const json = serializeViewProfile(account, false, null, false);
     expect(json).toEqual({
       name: 'Ada',
+      username: 'ada',
       location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: false,
@@ -325,7 +329,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
-    expect(Object.keys(json)).toHaveLength(8);
+    expect(Object.keys(json)).toHaveLength(9);
   });
 
   it('passes through hasPasskey and aboutMe', () => {

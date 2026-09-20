@@ -132,6 +132,9 @@ describe('openBootStores', () => {
         if (text.includes('nostr_zap_ingest')) {
           return [] as T[];
         }
+        if (text.includes('FROM account')) {
+          return [] as T[];
+        }
         return [
           {
             paid_at: '2026-06-01T12:00:00.000Z',

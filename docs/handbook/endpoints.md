@@ -49,6 +49,13 @@
 - **Used by:** Damus verification; app proxies this from the site apex.
 - **Auth:** none.
 
+## Endpoint: GET /.well-known/lnurlp/:username
+
+- **Purpose:** LUD-16 payRequest for `username@21.gifts`. Looks up the stored username, then returns the linked Wallet of Satoshi LNURL-pay JSON (callback stays on WoS so gifts still settle there). CORS `*`.
+- **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, unknown, or has no linked address; 502 `{ error: 'Lightning Address could not be resolved' }` when WoS is unreachable or the store throws.
+- **Used by:** Lightning wallets paying `username@21.gifts`; app proxies this from the site apex.
+- **Auth:** none.
+
 ## Endpoint: GET /apple-touch-icon.png
 
 - **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.
@@ -318,7 +325,7 @@
 
 ## Endpoint: GET /members/:accountId
 
-- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress`, ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), and `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges). Soft-hide does **not** clear `account.profileMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -541,10 +548,17 @@
 
 ## Endpoint: POST /me/name
 
-- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
+- **Purpose:** Bearer required. Body `{ name }`. Stores the trimmed display name on the account (1–80 characters, no C0/DEL control characters). When username is still blank, also stores `usernameFromDisplayName(name)` if that handle is free. When a non-blank Lightning Address is already linked, the first persisted non-empty name also creates exactly one top-level profile forum note (`ensureProfileMessage`) and claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not exposed on owner JSON); without LN the name is stored and no note is inserted. Rename does not create a second note and does not change the note text.
 - **Errors:** 401 without session; 400 if the body is not `{ name: string }` or the name fails validation.
 - **Used by:** App `setName`.
 - **Auth:** See Purpose — Bearer where stated, else public.
+
+## Endpoint: POST /me/username
+
+- **Purpose:** Bearer required. Body `{ username }`. Stores a unique LUD-16 / NIP-05 local-part (lowercase `a-z0-9-_.`, 1–32 characters, leading letter or digit). Cannot be skipped. Same handle on the same account is 200. Logs `account.username.set`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "username" string' }`; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }`; 409 `{ error: 'Username is already in use' }` when another account owns it, including a unique-index race.
+- **Used by:** App username onboarding and profile.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/location
 

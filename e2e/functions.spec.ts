@@ -238,6 +238,27 @@ test('Function: normalizeDisplayName — POST /me/name without bearer is 401', a
   expect(res.status()).toBe(401);
 });
 
+test('Function: normalizeUsername — POST /me/username without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/username', { data: { username: 'ada' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: usernameFromDisplayName — POST /me/name without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/name', { data: { name: 'Ada Lovelace' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: backfillAccountUsernames — GET /healthz is ok after boot backfill', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: normalizeLocation — POST /me/location without bearer is 401', async ({
   request,
 }) => {
@@ -294,6 +315,13 @@ test('Function: lightningAddressRoutes — GET with a public address is 502 when
 }) => {
   const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(res.status()).toBe(502);
+});
+
+test('Function: resolveLnurlpDocument — GET /.well-known/lnurlp/missing is 404', async ({
+  request,
+}) => {
+  const res = await request.get('/.well-known/lnurlp/missing');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
