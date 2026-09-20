@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-17 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
 
 ---
 
@@ -3132,13 +3132,14 @@ Success → **Response** `200`:
 ### `GET /notifications`
 
 Bearer session required. Lists the recipient's notifications newest-first
-(cap **200**) plus the total unread count (not the page length). Fan-out
-already applied the owner's `notificationLevel` when the row was written;
-this list applies the same `notificationLevel` filter to stored rows
-(`notificationsMatchingLevel` on the newest 1000, then cap **200**;
-`unreadCount` is matching unread in that scan). Each item `type` is
-`"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`. Member
-JSON never includes recipient or actor account ids.
+(cap **200**) plus `unreadCount` for matching unread in the newest 1000
+(not the unfiltered store count, and not necessarily the page length).
+Fan-out already applied the owner's `notificationLevel` when the row was
+written; this list applies the same `notificationLevel` filter to stored
+rows (`notificationsMatchingLevel` on the newest 1000, then cap **200**).
+Each item `type` is `"forum_post"`, `"forum_reply"`, `"zap"`, or
+`"moderator_appointed"`. Member JSON never includes recipient or actor
+account ids.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -3172,7 +3173,9 @@ Success → **Response** `200`:
 }
 ```
 
-`unreadCount` is the total unread, not the page length.
+`unreadCount` is matching unread in the newest 1000 after
+`notificationsMatchingLevel`, not `store.unreadCount()`. It is not the
+page length and may exceed the 200 list cap.
 
 ### `POST /notifications/read-all`
 
