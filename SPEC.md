@@ -515,8 +515,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
-`parentId` when set; omits `replyCount`. Top-level notes by that member
-are not listed.
+`parentId` when set; omits `replyCount`. Replies never include `goalSats`.
+Top-level notes by that member are not listed.
 
 ### `GET /members/:accountId/activity`
 
@@ -2980,7 +2980,7 @@ public message JSON (`photoCount` 0–10 always present;
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
-pubkey.
+pubkey. Replies never include `goalSats`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
