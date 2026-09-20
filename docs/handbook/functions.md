@@ -435,7 +435,7 @@
 
 ## Function: PostgresNotificationStore
 
-- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only, and `deleteByMessageIds` (`parent_id` or `reply_id` in the id list).
+- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only, and `deleteByMessageIds` (`parent_id` or `reply_id` in the id list; the ids are bound as one `uuid[]` array-literal string built from well-formed UUIDs only, because the driver does not encode a JavaScript array for `$1::uuid[]`).
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migrateNotificationSchema`).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `NotificationRow`. Unique violation re-selects the existing row. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.

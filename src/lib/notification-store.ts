@@ -8,6 +8,9 @@
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type { NotificationRow, NotificationType } from '@/lib/notification';
 
+/** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Persistence port for in-app notifications.
  */
@@ -412,16 +415,21 @@ export class PostgresNotificationStore implements NotificationStore {
   /**
    * Delete rows whose `parent_id` or `reply_id` is in `ids`.
    *
-   * @param ids - Forum message ids (`$1::uuid[]`).
-   * @returns Removed count (`0` when `ids` is empty; skips SQL).
+   * The driver does not encode a JavaScript array for `$1::uuid[]` (Postgres
+   * answers `malformed array literal`), so the ids travel as one array-literal
+   * string `{a,b}`. Only well-formed UUIDs go into the literal.
+   *
+   * @param ids - Forum message ids.
+   * @returns Removed count (`0` when no well-formed id is given; skips SQL).
    */
   async deleteByMessageIds(ids: readonly string[]): Promise<number> {
-    if (ids.length === 0) {
+    const uuids = ids.filter((id) => UUID_RE.test(id));
+    if (uuids.length === 0) {
       return 0;
     }
     const rows = await this.#sql.query<{ id: string }>(
       `DELETE FROM notification WHERE parent_id = ANY($1::uuid[]) OR reply_id = ANY($1::uuid[]) RETURNING id`,
-      [ids],
+      [`{${uuids.join(',')}}`],
     );
     return rows.length;
   }

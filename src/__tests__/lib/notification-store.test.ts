@@ -418,6 +418,12 @@ describe('PostgresNotificationStore', () => {
     expect(sql.executes[0]?.params).toEqual(['parent', READ_AT]);
   });
 
+  it('deleteByMessageIds skips SQL when no id is a well-formed UUID', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresNotificationStore(sql).deleteByMessageIds(['p-1', "x'}"])).toBe(0);
+    expect(sql.queries).toEqual([]);
+  });
+
   it('deleteByMessageIds skips SQL when ids is empty', async () => {
     const sql = new MockSql();
     expect(await new PostgresNotificationStore(sql).deleteByMessageIds([])).toBe(0);
@@ -428,13 +434,20 @@ describe('PostgresNotificationStore', () => {
   it('deleteByMessageIds deletes by parent_id or reply_id without inspecting type', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ id: 'n-1' }, { id: 'n-2' }];
-    const removed = await new PostgresNotificationStore(sql).deleteByMessageIds(['p-1', 'r-2']);
+    const removed = await new PostgresNotificationStore(sql).deleteByMessageIds([
+      '11111111-1111-4111-8111-111111111111',
+      'not-a-uuid',
+      '22222222-2222-4222-8222-222222222222',
+    ]);
     expect(removed).toBe(2);
     expect(sql.queries[0]?.text).toBe(
       `DELETE FROM notification WHERE parent_id = ANY($1::uuid[]) OR reply_id = ANY($1::uuid[]) RETURNING id`,
     );
     expect(sql.queries[0]?.text).not.toMatch(/type/);
-    expect(sql.queries[0]?.params).toEqual([['p-1', 'r-2']]);
+    // One array-literal string: the driver cannot encode a JS array for uuid[].
+    expect(sql.queries[0]?.params).toEqual([
+      '{11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222}',
+    ]);
     expect(sql.executes).toEqual([]);
   });
 });
