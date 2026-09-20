@@ -16,14 +16,14 @@
 
 ## Endpoint: GET /messages/:id/video.webm
 
-- **Purpose:** Same as `video.mp4` for WebM posts (sized body + Range; WebM is not remuxed). Public: hidden still 404. Staff Bearer: serve bytes as if live (keep Range / `Content-Length` / CORS).
+- **Purpose:** Same as `video.mp4` for WebM posts (sized body + Range; WebM is not remuxed). Public: hidden still 404. Staff Bearer: serve hidden-row bytes (keep Range / `Content-Length` / CORS) with `Cache-Control: private, no-store` and `Vary: Authorization`.
 - **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal/Safari.
 - **Auth:** none for live public GET; founder/moderator Bearer for a hidden row.
 
 ## Endpoint: GET /messages/:id/video.mov
 
-- **Purpose:** Same as `video.mp4` for QuickTime posts (sized body + Range + faststart). Public: hidden still 404. Staff Bearer: serve bytes as if live (keep Range / `Content-Length` / CORS).
+- **Purpose:** Same as `video.mp4` for QuickTime posts (sized body + Range + faststart). Public: hidden still 404. Staff Bearer: serve hidden-row bytes (keep Range / `Content-Length` / CORS) with `Cache-Control: private, no-store` and `Vary: Authorization`.
 - **Errors:** Same 404 / 416 / 503.
 - **Used by:** Damus/Primal/Safari.
 - **Auth:** none for live public GET; founder/moderator Bearer for a hidden row.
@@ -464,7 +464,7 @@
 
 ## Endpoint: GET /notifications
 
-- **Purpose:** Bearer required. List `{ notifications, unreadCount }` cap 200 newest-first after the owner's `notificationLevel` filter (`notificationsMatchingLevel` on the newest 1000 stored rows). Then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_post` / `zap` / `forum_reply`); `forum_reply` also drops when the child `replyId` message is missing or hidden. A `zap` `replyId` is a receipt-derived UUID, not a message id — it is not looked up and is never added to the purge set. Then best-effort `deleteByMessageIds` of those **message** ids (`notifications.hidden.purged`; throw logs `notifications.hidden.purge_failed` and is not 503). Never drops `moderator_appointed` in the hidden filter (those rows stay in `{ notifications }`). Appointed `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. `unreadCount` is matching unread among kept rows in that scan, not the unfiltered store count (if purge throws, still count kept unread; do not 503 the list). Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`. No account ids. `moderator_appointed` always stays through the level filter.
+- **Purpose:** Bearer required. List `{ notifications, unreadCount }`. Apply the owner's `notificationLevel` filter (`notificationsMatchingLevel` on the newest 1000 stored rows), then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_post` / `zap` / `forum_reply`); `forum_reply` also drops when the child `replyId` message is missing or hidden. A `zap` `replyId` is a receipt-derived UUID, not a message id — it is not looked up and is never added to the purge set. Then cap the kept list at 200 newest-first. Then best-effort `deleteByMessageIds` of those **message** ids (`notifications.hidden.purged`; throw logs `notifications.hidden.purge_failed` and is not 503). Never drops `moderator_appointed` in the hidden filter (those rows stay in `{ notifications }`). Appointed `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not the unfiltered store count (if purge throws, still count kept unread; do not 503 the list). Each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`. No account ids. `moderator_appointed` always stays through the level filter.
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.list.failed`).
 - **Used by:** App in-app notification list.
 - **Auth:** Bearer session.

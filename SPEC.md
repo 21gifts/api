@@ -157,7 +157,6 @@ Public base URLs used in examples:
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
-
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 ## Role hierarchy
@@ -3482,19 +3481,19 @@ Success → **Response** `200`:
 ### `GET /notifications`
 
 Bearer session required. Lists the recipient's notifications newest-first
-(cap **200**) plus `unreadCount` for matching unread in the newest 1000
-(not the unfiltered store count, and not necessarily the page length).
-Fan-out already applied the owner's `notificationLevel` when the row was
-written; this list applies the same `notificationLevel` filter to stored
-rows (`notificationsMatchingLevel` on the newest 1000, then cap **200**).
-Each item `type` is `"forum_post"`, `"forum_reply"`, `"zap"`, or
-`"moderator_appointed"`. Member JSON never includes recipient or actor
-account ids. After the level filter, drop `forum_post` / `forum_reply`
-whose parent message is missing or hidden; also drop `forum_reply` when
-the child (`replyId`) is missing or hidden. Never drop
+plus `unreadCount`. Fan-out already applied the owner's
+`notificationLevel` when the row was written; this list applies the same
+`notificationLevel` filter to stored rows (`notificationsMatchingLevel`
+on the newest 1000). After the level filter, drop `forum_post` /
+`forum_reply` whose parent message is missing or hidden; also drop
+`forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed`. Zap only checks the parent (`replyId` is a
 receipt-derived UUID, not a message id). Best-effort purge of those
-message ids.
+message ids. Then cap the kept list at **200**. `unreadCount` is unread
+among kept rows after the hidden filter (not the unfiltered matching
+unread of the 1000, and not necessarily the page length). Member JSON
+never includes recipient or actor account ids. Each item `type` is
+`"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
