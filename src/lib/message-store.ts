@@ -614,16 +614,7 @@ export interface MessageStore {
    * @param limit - Maximum rows.
    * @returns Receipt JSON rows.
    */
-  listZapReceipts?(limit: number): Promise<
-    Array<{
-      eventId: string;
-      messageId: string;
-      sats: number;
-      payerAccountId: string | null;
-      giftReplyId: string | null;
-      comment: string;
-    }>
-  >;
+  listZapReceipts?(limit: number): Promise<ZapReceiptDumpRow[]>;
 
   /**
    * Zap payment-hash tombstones newest-first, capped at `limit`.
@@ -876,6 +867,26 @@ export interface ZapReceiptGiftRow {
 }
 
 /** External pubkey entitled by its first verified zap. */
+/** Operator dump of one `nostr_zap_receipt` row. */
+export interface ZapReceiptDumpRow {
+  /** Kind:9735 event id. */
+  eventId: string;
+  /** Credited forum note id. */
+  messageId: string;
+  /** Whole sats. */
+  sats: number;
+  /** 21.gifts payer account id, or `null`. */
+  payerAccountId: string | null;
+  /** External payer pubkey, or `null`. */
+  payerPubkey: string | null;
+  /** Zap-request event id, or `null`. */
+  zapRequestId: string | null;
+  /** Gift-reply message id, or `null`. */
+  giftReplyId: string | null;
+  /** Normalised zap comment. */
+  comment: string;
+}
+
 export interface NostrZapperRow {
   /** Lowercase external pubkey. */
   pubkey: string;
@@ -2144,25 +2155,26 @@ export class InMemoryMessageStore implements MessageStore {
         });
       });
     }
+    rows.sort((a, b) => {
+      const parentA = this.#rows.find((row) => row.id === a.messageId)?.createdAt.getTime();
+      const parentB = this.#rows.find((row) => row.id === b.messageId)?.createdAt.getTime();
+      if (parentA !== undefined && parentB !== undefined && parentA !== parentB) {
+        return parentB - parentA;
+      }
+      return a.idx - b.idx || a.messageId.localeCompare(b.messageId);
+    });
     return Promise.resolve(rows.slice(0, limit));
   }
 
-  listZapReceipts(limit: number): Promise<
-    Array<{
-      eventId: string;
-      messageId: string;
-      sats: number;
-      payerAccountId: string | null;
-      giftReplyId: string | null;
-      comment: string;
-    }>
-  > {
+  listZapReceipts(limit: number): Promise<ZapReceiptDumpRow[]> {
     const rows = [...this.#receipts.entries()]
       .map(([eventId, receipt]) => ({
         eventId,
         messageId: receipt.messageId,
         sats: receipt.sats,
         payerAccountId: receipt.payerAccountId,
+        payerPubkey: receipt.payerPubkey,
+        zapRequestId: receipt.zapRequestId,
         giftReplyId: receipt.giftReplyId,
         comment: receipt.comment,
       }))
@@ -2173,11 +2185,19 @@ export class InMemoryMessageStore implements MessageStore {
   listZapPayments(
     limit: number,
   ): Promise<Array<{ paymentHash: string; receiptEventId: string; createdAt: string }>> {
-    const rows = [...this.#zapPayments.entries()].map(([paymentHash, row]) => ({
-      paymentHash,
-      receiptEventId: row.receiptEventId,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    const rows = [...this.#zapPayments.entries()]
+      .map(([paymentHash, row]) => ({
+        paymentHash,
+        receiptEventId: row.receiptEventId,
+        createdAt: row.createdAt.toISOString(),
+      }))
+      .sort((a, b) => {
+        const byTime = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.paymentHash.localeCompare(a.paymentHash);
+      });
     return Promise.resolve(rows.slice(0, limit));
   }
 
@@ -2656,6 +2676,7 @@ interface MessageSqlRow {
   nostr_first_attempt_at?: Date | string | null;
   nostr_publish_epoch?: string | null;
   nostr_attempts?: number | null;
+  content_fp?: string | null;
   deleted_at?: Date | string | null;
   deleted_by?: string | null;
   reply_count?: string | number | null;
@@ -2714,6 +2735,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
     nostrPublishEpoch: row.nostr_publish_epoch ?? defaults.nostrPublishEpoch,
     nostrAttempts: row.nostr_attempts ?? defaults.nostrAttempts,
+    contentFp: row.content_fp ?? null,
     deletedAt:
       row.deleted_at === null || row.deleted_at === undefined
         ? null
@@ -2740,7 +2762,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats, goal_sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
-              deleted_at, deleted_by`;
+              content_fp, deleted_at, deleted_by`;
 
 /**
  * Durable {@link MessageStore} backed by Postgres.
@@ -3731,7 +3753,8 @@ export class PostgresMessageStore implements MessageStore {
     }>(
       `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes
        FROM message_extra_photo
-       ORDER BY message_id, idx
+       ORDER BY (SELECT created_at FROM message m WHERE m.id = message_extra_photo.message_id) DESC NULLS LAST,
+                idx ASC
        LIMIT $1`,
       [limit],
     );
@@ -3743,25 +3766,19 @@ export class PostgresMessageStore implements MessageStore {
     }));
   }
 
-  async listZapReceipts(limit: number): Promise<
-    Array<{
-      eventId: string;
-      messageId: string;
-      sats: number;
-      payerAccountId: string | null;
-      giftReplyId: string | null;
-      comment: string;
-    }>
-  > {
+  async listZapReceipts(limit: number): Promise<ZapReceiptDumpRow[]> {
     const rows = await this.#sql.query<{
       event_id: string;
       message_id: string;
       sats: number | string;
       payer_account_id: string | null;
+      payer_pubkey: string | null;
+      zap_request_id: string | null;
       gift_reply_id: string | null;
       comment: string | null;
     }>(
-      `SELECT event_id, message_id, sats, payer_account_id, gift_reply_id, comment
+      `SELECT event_id, message_id, sats, payer_account_id, payer_pubkey, zap_request_id,
+              gift_reply_id, comment
        FROM nostr_zap_receipt
        ORDER BY event_id DESC
        LIMIT $1`,
@@ -3772,6 +3789,8 @@ export class PostgresMessageStore implements MessageStore {
       messageId: row.message_id,
       sats: Number(row.sats),
       payerAccountId: row.payer_account_id,
+      payerPubkey: row.payer_pubkey,
+      zapRequestId: row.zap_request_id,
       giftReplyId: row.gift_reply_id,
       comment: row.comment ?? '',
     }));

@@ -349,11 +349,47 @@ describe('debugMessagesRoutes', () => {
     expect(body['accountId']).toBeNull();
     expect(body['nostrEvent']).toBeNull();
     expect(body['contentFp']).toBeNull();
+    expect(body['photoBytes']).toBe(0);
+    expect(body['extraPhotos']).toEqual([]);
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'debug.messages.get' && e['messageId'] === HIDDEN_ID,
       ),
     ).toBe(true);
+  });
+
+  it('GET list and GET by id include photo MIME and byte lengths', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(
+      forumRow({ id: HIDDEN_PHOTO_ID, hasPhoto: true, text: 'still' }),
+      JPEG,
+      undefined,
+      [JPEG2],
+    );
+    const app = mount(store, 'secret');
+    const listed = await app.request('/debug/messages', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(listed.status).toBe(200);
+    const listBody = (await listed.json()) as { messages: Array<Record<string, unknown>> };
+    expect(listBody.messages[0]).toEqual(
+      expect.objectContaining({
+        id: HIDDEN_PHOTO_ID,
+        photoContentType: 'image/jpeg',
+        photoBytes: JPEG.bytes.byteLength,
+        extraPhotos: [{ idx: 1, photoContentType: 'image/jpeg', bytes: JPEG2.bytes.byteLength }],
+      }),
+    );
+    const one = await app.request(`/debug/messages/${HIDDEN_PHOTO_ID}`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(one.status).toBe(200);
+    expect(await one.json()).toEqual(
+      expect.objectContaining({
+        photoBytes: JPEG.bytes.byteLength,
+        extraPhotos: [{ idx: 1, photoContentType: 'image/jpeg', bytes: JPEG2.bytes.byteLength }],
+      }),
+    );
   });
 
   it('returns 404 for an unknown UUID on GET by id', async () => {

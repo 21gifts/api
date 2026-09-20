@@ -157,14 +157,48 @@ describe('loadDebugTables', () => {
         bytes: new Uint8Array([1, 2, 3]),
       },
       undefined,
-      [{ contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) }],
+      [
+        { contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) },
+        { contentType: 'image/png', bytes: new Uint8Array([6]) },
+      ],
+    );
+    await messages.create(
+      {
+        id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
+        accountId,
+        name: 'Ada',
+        text: 'plain',
+        createdAt: new Date('2026-09-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        contentType: 'image/jpeg',
+        bytes: new Uint8Array([7]),
+      },
+      undefined,
+      [{ contentType: 'image/webp', bytes: new Uint8Array([8, 9]) }],
+    );
+    await messages.create(
+      {
+        id: 'ffffffff-ffff-4fff-8fff-fffffffffffd',
+        accountId,
+        name: 'Ada',
+        text: 'later extra',
+        createdAt: new Date('2026-09-01T00:02:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([10]) },
+      undefined,
+      [{ contentType: 'image/jpeg', bytes: new Uint8Array([11]) }],
     );
     await messages.create({
-      id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
+      id: 'ffffffff-ffff-4fff-8fff-fffffffffffc',
       accountId,
       name: 'Ada',
-      text: 'plain',
-      createdAt: new Date('2026-09-01T00:01:00.000Z'),
+      text: 'bare',
+      createdAt: new Date('2026-09-01T00:03:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
@@ -219,6 +253,17 @@ describe('loadDebugTables', () => {
       receipt: {},
     });
     await messages.recordZapReceipt('receipt-event', 'ffffffff-ffff-4fff-8fff-ffffffffffff', 21);
+    await messages.recordZapper(
+      'aa'.repeat(32),
+      'receipt-event',
+      new Date('2026-09-01T00:00:00.000Z'),
+    );
+    await messages.blockPubkeyAndHideRows(
+      'bb'.repeat(32),
+      new Date('2026-09-01T00:00:00.000Z'),
+      accountId,
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    );
     await messages.claimZapPayment(
       'aa'.repeat(32),
       'receipt-event',
@@ -275,6 +320,20 @@ describe('loadDebugTables', () => {
       p256dh: 'p256',
       auth: 'auth',
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    });
+    await push.upsertSubscription({
+      endpoint: 'https://push.example/2',
+      accountId,
+      p256dh: 'p256b',
+      auth: 'authb',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    });
+    await push.upsertSubscription({
+      endpoint: 'https://push.example/0',
+      accountId,
+      p256dh: 'p256c',
+      auth: 'authc',
+      createdAt: new Date('2026-09-02T00:00:00.000Z'),
     });
     await push.enqueue({
       id: 'outbox-1',
@@ -377,11 +436,29 @@ describe('loadDebugTables', () => {
         expect.objectContaining({
           id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
           photoBytes: 3,
-          extraPhotos: [expect.objectContaining({ idx: 1, bytes: 2 })],
+          extraPhotos: [
+            expect.objectContaining({ idx: 1, bytes: 2 }),
+            expect.objectContaining({ idx: 2, bytes: 1 }),
+          ],
+        }),
+        expect.objectContaining({
+          id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
+          photoBytes: 1,
+        }),
+        expect.objectContaining({
+          id: 'ffffffff-ffff-4fff-8fff-fffffffffffc',
+          photoBytes: 0,
+          photoContentType: null,
         }),
       ]),
     );
-    expect(tables.message_extra_photo).toEqual([expect.objectContaining({ idx: 1, bytes: 2 })]);
+    expect(tables.message_extra_photo).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ idx: 1, bytes: 2 }),
+        expect.objectContaining({ idx: 2, bytes: 1 }),
+        expect.objectContaining({ idx: 1, bytes: 2, photoContentType: 'image/webp' }),
+      ]),
+    );
     expect(tables.message_invoice).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -398,6 +475,19 @@ describe('loadDebugTables', () => {
     );
     expect(tables.nostr_zap_ingest).toHaveLength(1);
     expect(tables.nostr_zap_receipt).toHaveLength(1);
+    expect(tables.nostr_zap_receipt[0]).toEqual(
+      expect.objectContaining({ payerPubkey: null, zapRequestId: null }),
+    );
+    expect(tables.nostr_zapper).toEqual([
+      expect.objectContaining({ pubkey: 'aa'.repeat(32), receiptEventId: 'receipt-event' }),
+    ]);
+    expect(tables.nostr_blocked_pubkey).toEqual([
+      expect.objectContaining({
+        pubkey: 'bb'.repeat(32),
+        blockedBy: accountId,
+        messageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      }),
+    ]);
     expect(tables.notification).toHaveLength(3);
     expect(tables.notification).toEqual(
       expect.arrayContaining([
@@ -407,17 +497,8 @@ describe('loadDebugTables', () => {
         }),
       ]),
     );
-    expect(tables.message).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
-          photoBytes: 0,
-          photoContentType: null,
-        }),
-      ]),
-    );
     expect(tables.trust_edge[0]).toEqual(expect.objectContaining({ id: 'edge-0' }));
-    expect(tables.push_subscription).toHaveLength(1);
+    expect(tables.push_subscription).toHaveLength(3);
     expect(tables.push_outbox).toHaveLength(3);
     expect(tables.trust_edge).toHaveLength(3);
     expect(tables.gift[0]).toEqual(
@@ -470,5 +551,43 @@ describe('loadDebugTables', () => {
       contacts: new InMemoryContactStore(),
     });
     expect(capped.auth_session).toHaveLength(MESSAGE_LIST_LIMIT);
+    const rates = await loadDebugTables(
+      {
+        auth: new InMemoryAuthStore(),
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+        listBtcUsdDaily: async () => [{ day: '2026-09-01', usdPerBtc: '100000' }],
+        listUsdFiatDaily: async () => [{ day: '2026-09-01', quote: 'CHF', rate: '0.8' }],
+        listDbChange: async () => [{ id: 1, op: 'INSERT' }],
+      },
+      'btc_usd_daily',
+    );
+    expect(rates.btc_usd_daily).toEqual([{ day: '2026-09-01', usdPerBtc: '100000' }]);
+    expect(
+      (
+        await loadDebugTables(
+          {
+            auth: new InMemoryAuthStore(),
+            messages: new InMemoryMessageStore(),
+            contacts: new InMemoryContactStore(),
+            listUsdFiatDaily: async () => [{ day: '2026-09-01', quote: 'CHF', rate: '0.8' }],
+          },
+          'usd_fiat_daily',
+        )
+      ).usd_fiat_daily,
+    ).toEqual([{ day: '2026-09-01', quote: 'CHF', rate: '0.8' }]);
+    expect(
+      (
+        await loadDebugTables(
+          {
+            auth: new InMemoryAuthStore(),
+            messages: new InMemoryMessageStore(),
+            contacts: new InMemoryContactStore(),
+            listDbChange: async () => [{ id: 1, op: 'INSERT' }],
+          },
+          'db_change',
+        )
+      ).db_change,
+    ).toEqual([{ id: 1, op: 'INSERT' }]);
   });
 });

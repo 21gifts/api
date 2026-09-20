@@ -197,6 +197,13 @@
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/notification.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migratePushSchema` and before `migrateDbChangeSchema`.
 
+## Function: listDbChanges
+
+- **Purpose:** Operator dump of `db_change` newest `at` then `id` first (cap applied by the caller).
+- **Inputs:** `SqlClient` and maximum row count.
+- **Returns / side effects:** Rows with `id`, ISO `at`, `txid` string, `tableName`, `op`, `before`, `after`. No writes.
+- **Used by:** `openBootStores` → `createApp` dump table `db_change`.
+
 ## Function: migrateDbChangeSchema
 
 - **Purpose:** Applies `DB_CHANGE_SCHEMA_SQL` in order so durable Postgres row changes are append-logged in `db_change` via AFTER INSERT/UPDATE/DELETE triggers (not from application store methods). On UPDATE, every bytea column (found via `pg_attribute` on `TG_RELID`) whose value is unchanged and was not hashed by `db_change_redact` is stored in both `before` and `after` as an object with `unchanged` true, `sha256` as the hex digest of the column text, and `bytes` as the `octet_length` of that text; INSERT, DELETE and the UPDATE that changes the bytes keep the full value, so any row state is reconstructable by chaining to the latest earlier full image; secret columns keep their sha256 hash; the no-op comparison still happens on the raw images before redaction.

@@ -103,6 +103,30 @@ describe('debugCatalogRoutes', () => {
     expect(body.tables['auth_session']).toEqual([]);
   });
 
+  it('dumps wired rate and db_change list ports', async () => {
+    const res = await new Hono()
+      .route(
+        '/debug/dump',
+        debugCatalogRoutes({
+          auth: new InMemoryAuthStore(),
+          messages: new InMemoryMessageStore(),
+          contacts: new InMemoryContactStore(),
+          debugToken: 'secret',
+          listBtcUsdDaily: async () => [{ day: '2026-09-01' }],
+          listUsdFiatDaily: async () => [{ quote: 'CHF' }],
+          listDbChange: async () => [{ id: 1 }],
+        }),
+      )
+      .request('/debug/dump/btc_usd_daily', {
+        headers: { authorization: 'Bearer secret' },
+      });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      table: 'btc_usd_daily',
+      rows: [{ day: '2026-09-01' }],
+    });
+  });
+
   it('returns 503 when a store throw escapes the dump', async () => {
     const auth = new InMemoryAuthStore();
     vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('boom'));

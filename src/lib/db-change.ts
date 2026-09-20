@@ -169,3 +169,50 @@ export async function migrateDbChangeSchema(sql: SqlClient): Promise<void> {
     await sql.execute(statement);
   }
 }
+
+/**
+ * Operator dump of `db_change`, newest `at` then `id` first.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @param limit - Maximum rows.
+ * @returns Stored log rows (`txid` as string).
+ */
+export async function listDbChanges(
+  sql: SqlClient,
+  limit: number,
+): Promise<
+  Array<{
+    id: number;
+    at: string;
+    txid: string;
+    tableName: string;
+    op: string;
+    before: unknown;
+    after: unknown;
+  }>
+> {
+  const rows = await sql.query<{
+    id: number | string;
+    at: Date | string;
+    txid: string | number;
+    table_name: string;
+    op: string;
+    before: unknown;
+    after: unknown;
+  }>(
+    `SELECT id, at, txid::text AS txid, table_name, op, before, after
+     FROM db_change
+     ORDER BY at DESC, id DESC
+     LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => ({
+    id: Number(row.id),
+    at: row.at instanceof Date ? row.at.toISOString() : new Date(row.at).toISOString(),
+    txid: String(row.txid),
+    tableName: row.table_name,
+    op: row.op,
+    before: row.before,
+    after: row.after,
+  }));
+}

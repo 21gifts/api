@@ -21,9 +21,9 @@ import {
   migrateFiatSchema,
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
-import { migrateDbChangeSchema } from '@/lib/db-change';
+import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
-import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { QueryGiftStore, type GiftDebugRow, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
 import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
@@ -102,6 +102,8 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   fundingStore: FundingStore | undefined;
+  /** Operator dump of `db_change`, or `undefined` on memory boots. */
+  listDbChange: ((limit: number) => Promise<unknown[]>) | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -203,8 +205,10 @@ export async function openBootStores(
       pushStore: undefined,
       trustStore: undefined,
       fundingStore: undefined,
+      listDbChange: undefined,
     };
   }
+  const sql: SqlClient = sqlClient;
 
   const nostrKek = parseNostrKek(process.env['NOSTR_NSEC_KEK']);
 
@@ -240,19 +244,63 @@ export async function openBootStores(
   }
 
   const giftSql = sqlClient;
-  const giftStore = new QueryGiftStore(async () => {
-    const rows = await giftSql.query<{
-      paid_at: Date | string;
-      amount_sats: number | string | bigint;
-      recipient_wos_user: string;
-    }>(
-      `SELECT paid_at, amount_sats, recipient_wos_user
+  const giftStore = new QueryGiftStore(
+    async () => {
+      const rows = await giftSql.query<{
+        paid_at: Date | string;
+        amount_sats: number | string | bigint;
+        recipient_wos_user: string;
+      }>(
+        `SELECT paid_at, amount_sats, recipient_wos_user
              FROM gift
              WHERE direction = 'outbound'
              ORDER BY paid_at ASC`,
-    );
-    return rows.map((row) => mapGiftQueryRow(row));
-  });
+      );
+      return rows.map((row) => mapGiftQueryRow(row));
+    },
+    async () => {
+      const rows = await giftSql.query<{
+        id: number | string;
+        paid_at: Date | string;
+        direction: string;
+        currency: string;
+        amount_sats: number | string | bigint;
+        fee_sats: number | string | bigint;
+        recipient_wos_user: string;
+        lightning_invoice: string;
+        wos_transaction_id: string | null;
+        description: string;
+        point_of_sale: boolean;
+        wos_status: string | null;
+        source_wallet: string;
+        imported_at: Date | string;
+      }>(
+        `SELECT id, paid_at, direction, currency, amount_sats, fee_sats, recipient_wos_user,
+                lightning_invoice, wos_transaction_id, description, point_of_sale, wos_status,
+                source_wallet, imported_at
+         FROM gift
+         ORDER BY paid_at DESC, id DESC`,
+      );
+      const iso = (value: Date | string): string =>
+        value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+      return rows.map((row): GiftDebugRow => ({
+        id: Number(row.id),
+        paidAt: iso(row.paid_at),
+        direction: row.direction,
+        currency: row.currency,
+        amountSats: Number(row.amount_sats),
+        feeSats: Number(row.fee_sats),
+        recipientWosUser: row.recipient_wos_user,
+        lightningInvoice: row.lightning_invoice,
+        wosTransactionId: row.wos_transaction_id,
+        description: row.description,
+        pointOfSale: row.point_of_sale === true,
+        wosStatus: row.wos_status,
+        sourceWallet: row.source_wallet,
+        importedAt: iso(row.imported_at),
+      }));
+    },
+  );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
   await backfillZapPayments(messageStore);
@@ -289,5 +337,6 @@ export async function openBootStores(
     pushStore,
     trustStore,
     fundingStore,
+    listDbChange: (limit) => listDbChanges(sql, limit),
   };
 }

@@ -96,6 +96,21 @@ describe('createApp', () => {
     expect(res.status).toBe(503);
   });
 
+  it('dumps rate tables on GET /debug/dump', async () => {
+    const app = createApp({
+      debugToken: 'secret',
+      listDbChange: async () => [{ id: 1 }],
+      btcUsdRates: { ensureDays: async () => new Map() },
+    });
+    const res = await app.request('/debug/dump', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tables: Record<string, unknown[]> };
+    expect(Array.isArray(body.tables['btc_usd_daily'])).toBe(true);
+    expect(body.tables['db_change']).toEqual([{ id: 1 }]);
+  });
+
   it('reads VAPID public key from the environment when createApp omits it', async () => {
     process.env['VAPID_PUBLIC_KEY'] = VAPID_PUBLIC_KEY;
     process.env['VAPID_PRIVATE_KEY'] = VAPID_PRIVATE_KEY;

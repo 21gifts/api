@@ -161,6 +161,8 @@ Public base URLs used in examples:
 | POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                         |
 | DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                         |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                       |
+| GET    | `/debug/dump`                                | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                    |
+| GET    | `/debug/dump/:table`                         | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                       |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
@@ -1337,14 +1339,24 @@ Success → **Response** `200`:
       "createdAt": 0,
       "rulesAgreedAt": null,
       "isPlatform": false,
-      "sessionRefused": false
+      "sessionRefused": false,
+      "viewKey": "<64-hex>",
+      "nameSkippedAt": null,
+      "lightningAddressSkippedAt": null,
+      "profileMessageId": null,
+      "notificationLevel": "all",
+      "nostrPubkey": "<64-hex>",
+      "nostrNsecCiphertext": "<envelope-hex>",
+      "nostrKekId": 1,
+      "nostrKeyCustody": "custodial",
+      "nostrKeyCreatedAt": 0
     }
   ]
 }
 ```
 
-The listing uses `serializeDebugAccount` (the eleven public fields plus
-`isPlatform` and `sessionRefused`) and never includes `viewKey`. Member `GET /me` does not
+The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
+`sessionRefused`, `viewKey`, and Nostr debug fields). Member `GET /me` does not
 include `isPlatform` or `sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
@@ -1356,6 +1368,14 @@ Environment:
 | -------------- | ----------------------------------------------------------------------- |
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
+
+### `GET /debug/accounts/:id`
+
+Operator detail of one account via `serializeDebugAccountDetail`: every
+account column plus nested `passkeys`, `sessions`, `addressVerification`,
+and matching `passkeyChallenges`. Session tokens are plaintext. nsec is
+envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.
+Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
 
 ### `POST /debug/accounts`
 
@@ -1488,6 +1508,25 @@ Unknown account id → **404** `{ "error": "Not found" }`. An account with
 with no minted bearer and no `debug.accounts.session_minted` log. Same
 503/401 gate as the other debug account routes. Not a member login path;
 for e2e and operator debugging.
+
+### `GET /debug/trust-edges`
+
+Operator listing of every stored trust edge (`serializeTrustEdge`), newest
+`createdAt` then `id` descending. Same `DEBUG_TOKEN` gate as the other
+debug routes.
+
+### `GET /debug/dump`
+
+Operator catalog of every allowlisted table as camelCase JSON (cap 200 per
+table). Media bytes stay off JSON. `nostrNsecCiphertext` is envelope hex.
+`btc_usd_daily`, `usd_fiat_daily`, and `db_change` dump stored rows when
+those list ports are wired (in-memory boots dump `[]` for `db_change`).
+Same `DEBUG_TOKEN` gate as the other debug routes.
+
+### `GET /debug/dump/:table`
+
+Same catalog for one allowlisted table. Response `{ "table", "rows" }`.
+Unknown table → **Response** `404`. Same `DEBUG_TOKEN` gate.
 
 ### `POST /debug/trust-edges`
 
@@ -1723,8 +1762,8 @@ Success → **Response** `200`:
 
 `lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
 was stored. Rows are newest-first, capped at **200**. Never includes nsec.
-`serializeInvoice` omits `conversationId` and `conversationMessageId` even
-when the row is a conversation invoice.
+`serializeInvoice` includes `conversationId` and `conversationMessageId`
+(`null` on forum invoices).
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is

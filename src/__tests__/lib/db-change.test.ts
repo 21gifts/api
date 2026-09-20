@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
-import { DB_CHANGE_SCHEMA_SQL, migrateDbChangeSchema } from '@/lib/db-change';
+import { DB_CHANGE_SCHEMA_SQL, listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   failAt: number | undefined;
+  nextRows: unknown[] = [];
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
-    return [];
+    return this.nextRows as T[];
   }
 
   async execute(text: string, params: readonly unknown[] = []): Promise<void> {
@@ -100,5 +101,52 @@ describe('migrateDbChangeSchema', () => {
     const sql = new MockSql();
     sql.failAt = 2;
     await expect(migrateDbChangeSchema(sql)).rejects.toThrow(/ddl failed/);
+  });
+});
+
+describe('listDbChanges', () => {
+  it('maps newest log rows', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: '1',
+        at: new Date('2026-09-01T00:00:00.000Z'),
+        txid: 9,
+        table_name: 'account',
+        op: 'INSERT',
+        before: null,
+        after: { id: 'a' },
+      },
+      {
+        id: 2,
+        at: '2026-09-01T01:00:00.000Z',
+        txid: '10',
+        table_name: 'account',
+        op: 'UPDATE',
+        before: { id: 'a' },
+        after: { id: 'b' },
+      },
+    ];
+    expect(await listDbChanges(sql, 10)).toEqual([
+      {
+        id: 1,
+        at: '2026-09-01T00:00:00.000Z',
+        txid: '9',
+        tableName: 'account',
+        op: 'INSERT',
+        before: null,
+        after: { id: 'a' },
+      },
+      {
+        id: 2,
+        at: '2026-09-01T01:00:00.000Z',
+        txid: '10',
+        tableName: 'account',
+        op: 'UPDATE',
+        before: { id: 'a' },
+        after: { id: 'b' },
+      },
+    ]);
+    expect(sql.queries[0]?.text).toContain('ORDER BY at DESC, id DESC');
   });
 });

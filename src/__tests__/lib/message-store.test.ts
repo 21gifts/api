@@ -1717,6 +1717,16 @@ describe('InMemoryMessageStore', () => {
     await store.recordZapReceipt('bb', 'a', 2);
     expect((await store.listZapReceipts(10)).map((row) => row.eventId)).toEqual(['cc', 'bb', 'aa']);
     expect(await store.listZapReceipts(2)).toHaveLength(2);
+    const older = new Date('2026-09-01T00:00:00.000Z');
+    const newer = new Date('2026-09-02T00:00:00.000Z');
+    expect(await store.claimZapPayment('aa'.repeat(32), 'aa', older)).toBe(true);
+    expect(await store.claimZapPayment('bb'.repeat(32), 'bb', newer)).toBe(true);
+    expect(await store.claimZapPayment('cc'.repeat(32), 'cc', newer)).toBe(true);
+    expect((await store.listZapPayments(10)).map((row) => row.paymentHash)).toEqual([
+      'cc'.repeat(32),
+      'bb'.repeat(32),
+      'aa'.repeat(32),
+    ]);
   });
 
   it('tracks gift-reply receipts and finds ok invoices', async () => {
@@ -3357,6 +3367,8 @@ describe('PostgresMessageStore', () => {
         message_id: 'm1',
         sats: 21,
         payer_account_id: null,
+        payer_pubkey: null,
+        zap_request_id: null,
         gift_reply_id: null,
         comment: null,
       },
@@ -3367,6 +3379,8 @@ describe('PostgresMessageStore', () => {
         messageId: 'm1',
         sats: 21,
         payerAccountId: null,
+        payerPubkey: null,
+        zapRequestId: null,
         giftReplyId: null,
         comment: '',
       },

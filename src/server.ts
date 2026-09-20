@@ -117,6 +117,10 @@ export interface AppDeps {
    * {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
+  /**
+   * Operator dump of `db_change`. Unset → dump table `db_change` is `[]`.
+   */
+  listDbChange?: (limit: number) => Promise<unknown[]>;
   /** Raw `WEBAUTHN_RP_ID` (default: `process.env.WEBAUTHN_RP_ID`). */
   webAuthnRpId?: string;
   /** Raw `WEBAUTHN_RP_NAME` (default: `process.env.WEBAUTHN_RP_NAME`). */
@@ -235,6 +239,11 @@ export interface AppDeps {
  *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
+function debugList(store: object, limit: number): Promise<unknown[]> {
+  const list = (store as { listDebug?: (n: number) => Promise<unknown[]> }).listDebug;
+  return list === undefined ? Promise.resolve([]) : list.call(store, limit);
+}
+
 export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;
@@ -403,6 +412,9 @@ export function createApp(deps: AppDeps = {}): Hono {
       push: pushStore,
       trust: trustStore,
       gifts: giftStore,
+      listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
+      listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
+      ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
       debugToken,
     }),
   );

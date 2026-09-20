@@ -30,6 +30,12 @@ export interface DebugCatalogRouteDeps {
   trust?: TrustStore;
   /** Optional house gifts. */
   gifts?: GiftStore;
+  /** Optional BTC-USD daily dump. */
+  listBtcUsdDaily?: (limit: number) => Promise<unknown[]>;
+  /** Optional USD-fiat daily dump. */
+  listUsdFiatDaily?: (limit: number) => Promise<unknown[]>;
+  /** Optional db_change dump. */
+  listDbChange?: (limit: number) => Promise<unknown[]>;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -67,6 +73,15 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
   }
   if (deps.gifts !== undefined) {
     catalog.gifts = deps.gifts;
+  }
+  if (deps.listBtcUsdDaily !== undefined) {
+    catalog.listBtcUsdDaily = deps.listBtcUsdDaily;
+  }
+  if (deps.listUsdFiatDaily !== undefined) {
+    catalog.listUsdFiatDaily = deps.listUsdFiatDaily;
+  }
+  if (deps.listDbChange !== undefined) {
+    catalog.listDbChange = deps.listDbChange;
   }
   return catalog;
 }

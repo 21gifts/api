@@ -161,6 +161,7 @@ api/
 │       │   ├── gift-recorder.test.ts
 │       │   ├── verification.test.ts
 │       │   ├── debug-token.test.ts
+│       │   ├── debug-catalog.test.ts
 │       │   ├── boot-stores.test.ts
 │       │   ├── money.test.ts
 │       │   ├── btc-usd-candles.test.ts
@@ -240,6 +241,7 @@ api/
 │           ├── push.test.ts
 │           ├── debug-push.test.ts
 │           ├── debug-trust.test.ts
+│           ├── debug-catalog.test.ts
 │           ├── trust-chain.test.ts
 │           ├── trust.test.ts
 │           ├── funding.test.ts
@@ -264,7 +266,7 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
+│   └── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount

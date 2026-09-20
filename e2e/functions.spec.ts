@@ -825,6 +825,11 @@ test('Function: debugPushRoutes — POST /debug/push-ping without bearer is 401'
   expect((await request.post('/debug/push-ping')).status()).toBe(401);
 });
 
+test('Function: listDbChanges — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

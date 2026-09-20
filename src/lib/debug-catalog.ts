@@ -36,6 +36,8 @@ export const DEBUG_CATALOG_TABLES = [
   'nostr_zap_ingest',
   'nostr_zap_receipt',
   'nostr_zap_payment',
+  'nostr_zapper',
+  'nostr_blocked_pubkey',
   'notification',
   'push_subscription',
   'push_outbox',
@@ -77,8 +79,14 @@ export interface DebugCatalogDeps {
   push?: PushStore;
   /** Trust edges. */
   trust?: TrustStore;
-  /** Outbound house gifts (public GiftRow plus SQL-default extras). */
+  /** Outbound house gifts (full gift columns when listDebug is wired). */
   gifts?: GiftStore;
+  /** Optional BTC-USD daily dump. */
+  listBtcUsdDaily?: (limit: number) => Promise<unknown[]>;
+  /** Optional USD-fiat daily dump. */
+  listUsdFiatDaily?: (limit: number) => Promise<unknown[]>;
+  /** Optional db_change dump. */
+  listDbChange?: (limit: number) => Promise<unknown[]>;
 }
 
 function cap<T>(rows: T[]): T[] {
@@ -218,6 +226,19 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
       return (await deps.messages.listZapReceipts?.(MESSAGE_LIST_LIMIT)) ?? [];
     case 'nostr_zap_payment':
       return (await deps.messages.listZapPayments?.(MESSAGE_LIST_LIMIT)) ?? [];
+    case 'nostr_zapper':
+      return (await deps.messages.listZappers(MESSAGE_LIST_LIMIT)).map((row) => ({
+        pubkey: row.pubkey,
+        receiptEventId: row.receiptEventId,
+        createdAt: row.createdAt.toISOString(),
+      }));
+    case 'nostr_blocked_pubkey':
+      return (await deps.messages.listBlockedPubkeyRows(MESSAGE_LIST_LIMIT)).map((row) => ({
+        pubkey: row.pubkey,
+        blockedAt: row.blockedAt.toISOString(),
+        blockedBy: row.blockedBy,
+        messageId: row.messageId,
+      }));
     case 'notification': {
       const rows = (await deps.notifications?.listAll(MESSAGE_LIST_LIMIT)) ?? [];
       return rows.map((row) => ({
@@ -264,29 +285,14 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
       );
       return cap(edges).map(serializeTrustEdge);
     }
-    case 'gift': {
-      const rows = (await deps.gifts?.listOutbound()) ?? [];
-      return cap(rows).map((row) => ({
-        id: null,
-        paidAt: row.paidAt.toISOString(),
-        direction: 'outbound',
-        currency: null,
-        amountSats: row.amountSats,
-        feeSats: null,
-        recipientWosUser: row.recipientWosUser,
-        lightningInvoice: null,
-        wosTransactionId: null,
-        description: null,
-        pointOfSale: false,
-        wosStatus: null,
-        sourceWallet: null,
-        importedAt: null,
-      }));
-    }
+    case 'gift':
+      return (await deps.gifts?.listDebug?.(MESSAGE_LIST_LIMIT)) ?? [];
     case 'btc_usd_daily':
+      return (await deps.listBtcUsdDaily?.(MESSAGE_LIST_LIMIT)) ?? [];
     case 'usd_fiat_daily':
+      return (await deps.listUsdFiatDaily?.(MESSAGE_LIST_LIMIT)) ?? [];
     case 'db_change':
-      return [];
+      return (await deps.listDbChange?.(MESSAGE_LIST_LIMIT)) ?? [];
   }
 }
 

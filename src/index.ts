@@ -99,6 +99,7 @@ if (import.meta.main) {
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
+    ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
     vapidPublicKey: vapidPublicKey ?? '',
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });

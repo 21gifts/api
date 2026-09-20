@@ -27,11 +27,52 @@ describe('InMemoryGiftStore', () => {
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryGiftStore().listOutbound()).toEqual([]);
   });
+
+  it('dumps stored gift fields newest-first', async () => {
+    const listed = await new InMemoryGiftStore([EARLY, LATE]).listDebug(10);
+    expect(listed.map((row) => row.amountSats)).toEqual([2, 1]);
+    expect(listed[0]).toEqual(
+      expect.objectContaining({
+        direction: 'outbound',
+        recipientWosUser: 'b',
+        paidAt: EARLY.paidAt.toISOString(),
+      }),
+    );
+  });
 });
 
 describe('QueryGiftStore', () => {
   it('returns the injected query result', async () => {
     const store = new QueryGiftStore(async () => [LATE]);
     expect(await store.listOutbound()).toEqual([LATE]);
+    const dumped = await store.listDebug(10);
+    expect(dumped[0]).toEqual(expect.objectContaining({ amountSats: 1, direction: 'outbound' }));
+  });
+
+  it('uses the injected full-column debug query', async () => {
+    const store = new QueryGiftStore(
+      async () => [LATE],
+      async () => [
+        {
+          id: 7,
+          paidAt: LATE.paidAt.toISOString(),
+          direction: 'outbound',
+          currency: 'BTC',
+          amountSats: 1,
+          feeSats: 0,
+          recipientWosUser: 'a',
+          lightningInvoice: 'lnbc1',
+          wosTransactionId: null,
+          description: 'gift',
+          pointOfSale: false,
+          wosStatus: null,
+          sourceWallet: 'house',
+          importedAt: LATE.paidAt.toISOString(),
+        },
+      ],
+    );
+    expect(await store.listDebug(10)).toEqual([
+      expect.objectContaining({ id: 7, lightningInvoice: 'lnbc1', currency: 'BTC' }),
+    ]);
   });
 });

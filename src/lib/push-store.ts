@@ -311,7 +311,17 @@ export class InMemoryPushStore implements PushStore {
   }
 
   listAllSubscriptions(): Promise<PushSubscriptionRecord[]> {
-    return Promise.resolve([...this.#subs.values()].map((row) => copySub(row)));
+    return Promise.resolve(
+      [...this.#subs.values()]
+        .sort((a, b) => {
+          const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+          if (byTime !== 0) {
+            return byTime;
+          }
+          return b.endpoint.localeCompare(a.endpoint);
+        })
+        .map((row) => copySub(row)),
+    );
   }
 
   listAllOutbox(limit: number): Promise<PushOutboxRow[]> {
@@ -577,7 +587,8 @@ export class PostgresPushStore implements PushStore {
 
   async listAllSubscriptions(): Promise<PushSubscriptionRecord[]> {
     const rows = await this.#sql.query<PushSubSqlRow>(
-      `SELECT endpoint, account_id, p256dh, auth, created_at FROM push_subscription`,
+      `SELECT endpoint, account_id, p256dh, auth, created_at FROM push_subscription
+       ORDER BY created_at DESC, endpoint DESC`,
     );
     return rows.map((row) => mapSub(row));
   }
