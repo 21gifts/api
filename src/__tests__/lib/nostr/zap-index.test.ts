@@ -1357,6 +1357,116 @@ describe('manual invoice settlement', () => {
     expect(warn.mock.calls.flat().join(' ')).not.toContain(preimage);
   });
 
+  it('turns a platform-note zap comment into a top-level post', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const preimage = '12'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: 'Hello from Ada' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose fee',
+      preimage,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    const created = (await store.listLatest(20)).find((row) => row.text === 'Hello from Ada');
+    expect(created?.parentId).toBeNull();
+    expect(created?.accountId).toBe('manual-payer');
+  });
+
+  it('turns a platform-note inReplyTo comment into a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const feeId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const parentId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    await store.create({
+      id: parentId,
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: feeId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const preimage = '13'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: `inReplyTo:${parentId}\nThanks` },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose reply fee',
+      preimage,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.listReplies(parentId))[0]?.text).toBe('Thanks');
+  });
+
   it('settles without preimage when the payer is missing', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

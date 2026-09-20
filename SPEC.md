@@ -2862,14 +2862,15 @@ non-empty `photos`) is required. Optional `inReplyTo`
 is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
-null) → **404** `{ "error": "Not found" }`. A valid parent where the
-caller is neither the parent author nor `verified` → **403**
-`{ "error": "A reply needs a Bitcoin payment" }` (pay via
-`POST /messages/:id/invoice` instead). Optional `goalSats` omitted, JSON
-`null`, or a missing/empty multipart field means no goal. Multipart accepts
-`goalSats` as a decimal digit string. A positive `goalSats` together with
-`inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`. An
-invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
+null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
+(including the parent author) → **403** `{ "error": "A post needs a
+Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
+for `inReplyTo`. Pay 1 sat to 21.gifts first (`GET /messages/compose-target`
+then `POST /messages/:id/invoice` on that platform profile note). Optional
+`goalSats` omitted, JSON `null`, or a missing/empty multipart field means
+no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
+`goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
+An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -2973,8 +2974,14 @@ is itself a reply →
 { "error": "Not found" }
 ```
 
-Valid parent, but the caller is not the parent author and not
-`verified` →
+Anyone below `verified` posting a top-level note →
+**Response** `403`:
+
+```json
+{ "error": "A post needs a Bitcoin payment" }
+```
+
+Anyone below `verified` posting a reply (`inReplyTo`) →
 **Response** `403`:
 
 ```json

@@ -1051,6 +1051,119 @@ describe('GET /messages', () => {
   });
 });
 
+describe('GET /messages/compose-target', () => {
+  async function withPlatform(
+    authStore: InMemoryAuthStore,
+    overrides: { name?: string | null; lightningAddress?: string | null } = {},
+  ): Promise<void> {
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'basis',
+      name: overrides.name === undefined ? '21.gifts' : overrides.name,
+      lightningAddress:
+        overrides.lightningAddress === undefined
+          ? 'gifts@walletofsatoshi.com'
+          : overrides.lightningAddress,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: now(),
+      isPlatform: true,
+    });
+  }
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages/compose-target');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when forum.post requirements are missing', async () => {
+    const res = await mount(await seededStore()).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 503 when the platform account is missing', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 503 when the platform profile note is missing', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore, { name: null, lightningAddress: null });
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 400 when the platform profile note is not payable', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
+  it('returns the platform profile note when it is payable', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    expect(platform).toBeDefined();
+    const noteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'plat',
+      name: '21.gifts',
+      text: '21.gifts',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messageId: noteId, sats: 0 });
+  });
+
+  it('returns 503 when listing accounts throws', async () => {
+    const authStore = await namedStore('Ada');
+    authStore.listAccounts = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 503 when the stored profile row is gone', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    expect(platform).toBeDefined();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    messageStore.getById = async () => undefined;
+    const res = await mount(authStore, messageStore).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+  });
+});
+
 describe('POST /messages', () => {
   it('returns 403 when a basis account posts without paying', async () => {
     const store = await namedStore('Ada');

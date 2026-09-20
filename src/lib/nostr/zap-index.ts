@@ -1852,7 +1852,8 @@ async function insertGiftReply(
   await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
 }
 
-const COMPOSE_REPLY_PREFIX = /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n/i;
+const COMPOSE_REPLY_PREFIX =
+  /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n/i;
 
 function parsePlatformCompose(
   text: string,
@@ -1868,6 +1869,7 @@ function parsePlatformCompose(
   if (match === null) {
     return { parentId: null, body: text };
   }
+  /* v8 ignore next -- the UUID capture is always set when the prefix matches */
   return { parentId: match[1] ?? null, body: text.slice(match[0].length) };
 }
 
