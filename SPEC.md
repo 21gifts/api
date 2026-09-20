@@ -908,8 +908,9 @@ creates a new live note even without a Lightning Address and claims
 `profileMessageId` via `claimProfileMessageId` only while the pointer
 still matches the missing/hidden read (not on owner JSON); a lost claim
 deletes the insert and adopts a live winner. A won inline create calls
-`notifyForumPost` after the writes (best-effort; enqueue failure still
-200). Updating an already-live note does not notify. The hidden row
+`notifyForumPost` after the writes (best-effort; no-op when the actor is
+the official platform account; enqueue failure still 200). Updating an
+already-live note does not notify. The hidden row
 stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
 so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
