@@ -898,6 +898,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           );
           logEvent('messages.external.blocked', { messageId: id, hidden: cascaded + 1 });
         }
+        if (deps.nostrPublisher && deps.nostrKek) {
+          try {
+            await retractHiddenForumNotes(
+              {
+                store: deps.store,
+                authStore: deps.authStore,
+                publisher: deps.nostrPublisher,
+                kek: deps.nostrKek,
+                now: deps.now,
+                env: deps.env ?? {},
+                fetchImpl,
+              },
+              id,
+            );
+          } catch {
+            logEvent('messages.delete.retract_failed', { messageId: id });
+          }
+        }
         logEvent('messages.deleted', {
           messageId: id,
           accountId: account.id,
