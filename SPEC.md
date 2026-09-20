@@ -3371,6 +3371,10 @@ verified, basis and the platform account get **404**
 `{ "error": "Not found" }` on that id (no existence leak). A moderator
 (`isModeratorGroupMember`) gets **200**.
 
+A platform stipend row in `moderator_group` (`POST /invoices/proof` with
+`groupMessageId`) has no actor and the platform account as sender, so it is
+`fromMe: false` and inbound for every member.
+
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
 messages (the id may be absent). Invalid value → **400**

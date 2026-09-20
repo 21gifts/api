@@ -2366,6 +2366,10 @@ describe('POST /invoices/proof', () => {
     expect(attached?.sats).toBe(Math.floor(unpaid().amountMsat / 1000));
     expect(attached?.text).toBe('21gifts moderator · Ada');
     expect(attached?.createdAt.getTime()).toBe(100);
+    expect(attached?.nostrPublishState).toBe('skipped');
+    expect(attached?.eventId).toBeNull();
+    expect(attached?.nostrEvent).toBeNull();
+    expect(attached?.claimedUntil).toBeNull();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'invoice.group_gift.attached' && e['id'] === unpaid().id,
