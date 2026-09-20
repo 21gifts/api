@@ -1028,6 +1028,41 @@ describe('InMemoryMessageStore', () => {
     expect(popularMismatchedKind.map((row) => row.id)).toEqual(['pop-high', 'paid', 'pop-low']);
   });
 
+  it('listFeed replyCount includes zapper children like listLatest', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-member',
+      parentId: 'a',
+      text: 'member child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-external',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: 'cc'.repeat(32),
+      text: 'external reply',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-orphan',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: null,
+      text: 'unattributed reply',
+    });
+    await store.recordZapper('cc'.repeat(32), 'receipt-cc', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: new Set(),
+    });
+    expect(listed.map((row) => row.id)).toEqual(['a']);
+    expect(listed[0]?.replyCount).toBe(2);
+  });
+
   it('lists only top-level notes with replyCount and lists replies oldest-first', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({

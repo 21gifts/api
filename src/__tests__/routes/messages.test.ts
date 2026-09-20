@@ -337,7 +337,7 @@ describe('GET /messages', () => {
     expect(await messageStore.getById(liveId)).toBeDefined();
   });
 
-  it('lists a live parent with replyCount after dropping a missing-file video reply', async () => {
+  it('keeps replyCount of live attributed children without dropping missing-file video replies on the list path', async () => {
     const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce085';
     const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce086';
     const keptChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce087';
