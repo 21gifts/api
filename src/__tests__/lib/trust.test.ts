@@ -33,7 +33,7 @@ function edge(
 }
 
 describe('isStaffRole', () => {
-  it('is true for founder and moderator only', () => {
+  it('is true from moderator upwards only', () => {
     const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'founder'];
     expect(roles.filter(isStaffRole)).toEqual(['moderator', 'founder']);
   });

@@ -1353,7 +1353,7 @@ describe('GET /trust/proposals', () => {
     expect(await res.json()).toEqual({ error: 'Forbidden' });
   });
 
-  it('returns 200 with an empty list for founder and moderator', async () => {
+  it('returns 200 with an empty list from moderator upwards', async () => {
     const { authStore, trustStore } = await staffed();
     const app = mount(authStore, trustStore);
     for (const token of ['founder', 'mod'] as const) {

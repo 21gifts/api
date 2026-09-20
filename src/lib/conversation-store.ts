@@ -39,7 +39,7 @@ export interface ConversationStore {
    * `id` descending, capped at `limit`.
    *
    * @param accountId - Session account.
-   * @param staff - Founder/moderator (sees all platform threads).
+   * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
    * @param limit - Maximum rows.
    * @param moderator - When true, include `moderator_group`. Default false.
@@ -59,7 +59,7 @@ export interface ConversationStore {
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
-   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param staff - Moderator (platform sends count as fromMe).
    * @param platformId - Official platform account id, or `null` when none.
    * @returns Whether any stored message is inbound for that viewer.
    */
@@ -78,7 +78,7 @@ export interface ConversationStore {
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
-   * @param staff - Founder/moderator (platform sends count as fromMe).
+   * @param staff - Moderator (platform sends count as fromMe).
    * @param platformId - Official platform account id, or `null` when none.
    * @returns Whether the viewer has unread inbound messages in that thread.
    */
@@ -97,7 +97,7 @@ export interface ConversationStore {
    * at `CONVERSATION_LIST_LIMIT`.
    *
    * @param accountId - Session account.
-   * @param staff - Founder/moderator (sees all platform threads).
+   * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
    * @param moderator - When true, include `moderator_group` (same as GET list).
    * @returns Number of listed unread threads.
@@ -491,7 +491,7 @@ export class InMemoryConversationStore implements ConversationStore {
    * Count listed unread threads for this viewer (GET list rules).
    *
    * @param accountId - Session account.
-   * @param staff - Founder/moderator.
+   * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
    * @param moderator - When true, include `moderator_group` (same as GET list).
    * @returns Listed unread count.
@@ -914,7 +914,7 @@ export class PostgresConversationStore implements ConversationStore {
    * Count listed unread threads for this viewer (GET list rules).
    *
    * @param accountId - Session account.
-   * @param staff - Founder/moderator.
+   * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
    * @param moderator - When true, include `moderator_group` (same as GET list).
    * @returns Listed unread count.

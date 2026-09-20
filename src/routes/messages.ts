@@ -628,7 +628,7 @@ const invoiceBody = z.object({
  * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide
  * plus best-effort NIP-09 and Cloudflare media purge when publisher+kek are
  * set),
- * staff `GET /messages/hidden` (founder/moderator session log), public
+ * staff `GET /messages/hidden` (moderator session log), public
  * `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
  * the current body; invalid value 400), and `POST /messages/:id/invoice`.
@@ -648,7 +648,7 @@ const invoiceBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
  * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
  * public `GET /:id/replies` (optional Bearer for `accountId`), `DELETE /:id`,
- * staff `GET /hidden` (founder/moderator session; no `forum.read`),
+ * staff `GET /hidden` (moderator session; no `forum.read`),
  * public `GET /:id` (optional `?sinceSats=`), and `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {

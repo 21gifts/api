@@ -251,7 +251,7 @@ describe('inboxUnreadCountFor', () => {
     const unreadOf = inboxUnreadCountFor(conversations, auth);
     expect(await unreadOf('mod')).toBe(1);
     expect(await unreadOf('founder')).toBe(1);
-    // A staff-room message from someone else counts for every group member, founder included.
+    // A staff-room message from someone else counts for every group member.
     const group = await conversations.ensureModeratorGroup('plat', NOW);
     await conversations.appendMessage(
       message({

@@ -166,7 +166,7 @@ export function wantsNotification(args: {
 
 /** Fan-out match context shared by in-app rows and Web Push. */
 interface NotificationMatch {
-  /** True when the actor/payer is founder, moderator, or platform. */
+  /** True when the actor/payer is at least moderator, or platform. */
   actorIsStaff: boolean;
   /** True when the related top-level post is in the Active feed, or a zap has amount. */
   isActive: boolean;

@@ -188,8 +188,8 @@ the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 validated kind:9735 is indexed, a payer gift-reply is inserted only when the
 paid row is top-level (`parentId` null). A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies from `basis` (not the parent author) are **403**; `verified` /
-`moderator` / `founder` stay unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
+replies from `basis` (not the parent author) are **403**; `verified` stays
+unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. Inbox threads have per-viewer unread

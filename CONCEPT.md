@@ -141,9 +141,9 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 One exclusive `account.role` per account. Roles form a strict hierarchy
 `founder > moderator > verified > basis`: a higher role can always do and
 see everything a lower role can. New passkey accounts are **Basis**.
-`verified` is a founder or moderator confirming this person in real life
+`verified` is a moderator confirming this person in real life
 (forum badge), not Lightning-Address proof. A **moderator** is proposed by
-an existing moderator or founder and confirmed by a **different** staff
+an existing moderator and confirmed by a **different** staff
 member, or appointed directly by a founder. Those grants persist as trust
 edges (`POST /trust/verify`, `POST /trust/propose-moderator`,
 `POST /trust/confirm-moderator`, `POST /trust/appoint-moderator`).
@@ -158,7 +158,7 @@ without changing `role`.
 | Role      | Capabilities                                                                                                                                                                            |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                                      |
-| Verified  | Everything Basis can, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment.                 |
+| Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment.                            |
 | Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose or confirm a moderator). Forum tag. |
 | Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                               |
 
@@ -400,7 +400,7 @@ reputation (who follows / vouches for whom).
 identities are custodial, server-held. Proof of Lightning-Address control is
 the account flag `lightningAddressVerified` via micro-payment nonce, see
 "Receiver address verification". That flag is not the forum role **Verified**,
-which means a founder or moderator physically met the person (`account.role`,
+which means a moderator physically met the person (`account.role`,
 via `POST /trust/verify` or an edge-less operator `PATCH /debug/accounts/:id`).)
 
 The website is **not a gatekeeper** — it's a curator with transparent rules. If
@@ -514,7 +514,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   the spend worker)
 - Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
   official platform account; `Account.isPlatform`; `moderator_group` is a
-  closed HTTP group for moderator or founder with no Nostr)
+  closed HTTP group for moderators with no Nostr)
 - Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
   `GET /messages/:id`
 - NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
@@ -530,7 +530,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Non-custodial donor spending (replaces the v1 spend worker)
 - Non-custodial client-side DMs (v1 ships a custodial PN channel on
   `/conversations`: NIP-17 + kind:4, official platform account;
-  `moderator_group` is a closed HTTP group for moderator or founder with
+  `moderator_group` is a closed HTTP group for moderators with
   no Nostr)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
@@ -836,7 +836,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-17 | Inbox last-read is per (account, conversation). `GET /conversations` adds per-row `unread` and list `unreadCount`; `POST /conversations/:id/read` stamps last-read. Does not copy DMs into Notifications.                                                                                                                                                                                                                                                                                                                                          |
 | 2026-09-17 | Inbound private messages enqueue Web Push (`type: conversation`, url `/messages?c=<id>`, tag `conversation:<id>`) to bell subscribers only. No in-app Notification rows for DMs. Every outbox `unreadCount` (forum, zap, conversation) is notification unread plus listed inbox unread. Push failure does not fail HTTP 200 or Nostr ingest.                                                                                                                                                                                                       |
 | 2026-09-17 | A living-room note may carry up to 10 JPEG/PNG/WebP stills. Photo 0 stays on `message.photo` (Damus `/photo.jpg` unchanged). Extras 1–9 live in `message_extra_photo` and are served at `/messages/:id/photo/1.jpg` … `/photo/9.webp`. Public JSON includes `photoCount` (0–10). POST accepts `photos[]` (max 10) and still accepts singular `photo`. Video stays exclusive (poster = photo 0, no extras).                                                                                                                                         |
-| 2026-09-20 | Roles are a strict hierarchy founder > moderator > verified > basis; every permission is a minimum role (roleAtLeast). The closed Moderators group is open to founders.                                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-09-20 | Roles are a strict hierarchy founder > moderator > verified > basis; every permission is a minimum role (roleAtLeast), and text names only that minimum role. The closed Moderators group follows the same rule.                                                                                                                                                                                                                                                                                                                                   |
 | 2026-09-20 | Staff `DELETE /messages/:id` still only soft-hides on 21.gifts, then best-effort publishes NIP-09 `kind: 5` (author nsec, durability relay plus Damus/Primal/nos.lol, not gated on `NOSTR_PUBLISH*`) and purges cached public photo/video URLs at Cloudflare when `CLOUDFLARE_ZONE_ID` + `CLOUDFLARE_API_TOKEN` are set. Failure still 204. Debug restore does not undelete Nostr. **Supersedes** the 2026-09-12 “soft-hide remains a public-API filter only” note.                                                                                |
 
 ## Next Steps

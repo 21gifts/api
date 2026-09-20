@@ -22,11 +22,12 @@ import type { PushOutboxRow, PushStore } from '@/lib/push-store';
  *
  * Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the
  * `moderator` flag from `isModeratorGroupMember` (at least moderator and not
- * the platform account), so founder and moderator are identical. GET
- * `/conversations` never lists `moderator_group` (fifth argument always
- * false); this helper still pins that thread in the badge unread count for
- * every group member. Platform id from `listAccounts` / `isPlatform`. Lookup
- * failure yields staff false, `moderator` false, and `platformId` null.
+ * the platform account), so any account that is at least a moderator is
+ * treated alike. GET `/conversations` never lists `moderator_group` (fifth
+ * argument always false); this helper still pins that thread in the badge
+ * unread count for every group member. Platform id from `listAccounts` /
+ * `isPlatform`. Lookup failure yields staff false, `moderator` false, and
+ * `platformId` null.
  *
  * @param conversations - Conversation store.
  * @param auth - Account lookup.

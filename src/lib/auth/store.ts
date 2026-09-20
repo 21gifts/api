@@ -14,7 +14,7 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * write `role` plus a trust edge; `POST /trust/propose-moderator` writes
  * the propose edge only. `PATCH /debug/accounts/:id` may still set `role`
  * and does not write edges. New passkey accounts stay `basis`.
- * `verified` is a founder or moderator confirming this person in real
+ * `verified` is a moderator confirming this person in real
  * life (forum badge), not `lightningAddressVerified`.
  */
 export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';

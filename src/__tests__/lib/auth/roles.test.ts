@@ -49,7 +49,7 @@ describe('roleAtLeast', () => {
 });
 
 describe('isModeratorGroupMember', () => {
-  it('admits moderators and founders', () => {
+  it('admits every account that is at least a moderator', () => {
     expect(isModeratorGroupMember({ role: 'moderator' })).toBe(true);
     expect(isModeratorGroupMember({ role: 'founder' })).toBe(true);
     expect(isModeratorGroupMember({ role: 'founder', isPlatform: false })).toBe(true);
