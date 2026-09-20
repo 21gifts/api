@@ -269,6 +269,24 @@ async function defaultWaitSatsSleep(ms: number): Promise<void> {
 }
 
 /**
+ * Whether a live row is withheld from the public read paths (`GET /:id`,
+ * photo and video bytes). A reply without an account is public only while
+ * its author pubkey holds a zapper entitlement; a reply with neither an
+ * account nor an author pubkey is never public. Top-level notes and rows
+ * with an account are always public.
+ *
+ * @param deps - Message store.
+ * @param row - Live message row.
+ * @returns `true` when the row must answer 404 on a public read.
+ */
+async function withheldFromPublic(deps: MessagesRouteDeps, row: MessageRow): Promise<boolean> {
+  if (row.parentId === null || row.accountId !== null) {
+    return false;
+  }
+  return row.authorPubkey === null || !(await deps.store.isZapperPubkey(row.authorPubkey));
+}
+
+/**
  * Public photo bytes for Nostr clients. Same handler for `/photo` and
  * `/photo.jpg` (Damus only embeds URLs with an image extension). Extra stills
  * (indices 1–9) use `/photo/1.jpg` … `/photo/9.webp`.
@@ -288,7 +306,7 @@ async function serveForumPhoto(
   }
   try {
     const row = await deps.store.getById(id);
-    if (row === undefined || row.deletedAt !== null) {
+    if (row === undefined || row.deletedAt !== null || (await withheldFromPublic(deps, row))) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
     const photo =
@@ -331,7 +349,13 @@ async function serveForumVideo(
   try {
     const row = await deps.store.getById(id);
     const mime = row?.videoContentType ?? null;
-    if (row === undefined || row.deletedAt !== null || row.hasVideo !== true || mime === null) {
+    if (
+      row === undefined ||
+      row.deletedAt !== null ||
+      row.hasVideo !== true ||
+      mime === null ||
+      (await withheldFromPublic(deps, row))
+    ) {
       return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     if (forumVideoExt(mime) !== ext) {
@@ -635,10 +659,17 @@ const invoiceBody = z.object({
  * Photo, video, replies, DELETE, and `GET /hidden` register before the public
  * single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on reads; `getById` still returns them for workers. Public
- * `GET /:id` of a live Damus-only reply (`parentId` set, `accountId` null) is
- * 404; top-level Damus-only notes stay 200. Public `GET /:id/replies` lists
- * 21.gifts-author children only; Bearer is optional (`accountId` present only
- * when signed in).
+ * `GET /:id` of a live reply with `accountId` null returns 200 with
+ * `via: 'nostr'` only while its `authorPubkey` holds a zapper entitlement
+ * (`isZapperPubkey`); without the entitlement, or with neither an account
+ * nor an author pubkey, it is 404, and the photo and video routes answer
+ * 404 for the same rows. Top-level Damus-only notes stay 200. Public
+ * `GET /:id/replies` lists live children with either an account or an
+ * author pubkey that is a recorded zapper; Bearer is optional (`accountId`
+ * present only when signed in). Deleting an external row (`accountId` null
+ * with `authorPubkey` set) also blocks that pubkey, soft-hides its other live
+ * external rows, and logs `messages.external.blocked` with the target
+ * `messageId` and total `hidden` count.
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
  * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`, and
@@ -815,17 +846,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          if (row.accountId === null) {
-            continue;
-          }
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
             continue;
           }
           try {
-            const author = await deps.authStore.getAccount(row.accountId);
-            const role = author?.role ?? 'basis';
-            const payable = payableOf(kept, author);
+            const author =
+              row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+            const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+            const payable = row.accountId === null ? false : payableOf(kept, author);
             messages.push(serializeMessage(kept, payable, role, undefined, includeAccountId));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -851,9 +880,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       try {
-        const tagged = await deps.store.markDeleted(id, new Date(deps.now()), account.id);
+        const target = await deps.store.getById(id);
+        if (target === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const at = new Date(deps.now());
+        const tagged = await deps.store.markDeleted(id, at, account.id);
         if (!tagged) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (target.accountId === null && target.authorPubkey !== null) {
+          const cascaded = await deps.store.blockPubkeyAndHideRows(
+            target.authorPubkey,
+            at,
+            account.id,
+            id,
+          );
+          logEvent('messages.external.blocked', { messageId: id, hidden: cascaded + 1 });
         }
         if (deps.nostrPublisher && deps.nostrKek) {
           try {
@@ -938,7 +981,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (
             row === undefined ||
             row.deletedAt !== null ||
-            (row.parentId !== null && row.accountId === null)
+            (await withheldFromPublic(deps, row))
           ) {
             return c.json({ error: 'Not found' }, 404);
           }
@@ -952,7 +995,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = payableOf(row, author);
+          const payable = row.accountId === null ? false : payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {

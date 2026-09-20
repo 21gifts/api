@@ -191,6 +191,80 @@ reply and does not nest a gift-reply. Gift-only (empty text) replies are not pub
 replies from `basis` (not the parent author) are **403**; `verified` stays
 unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
 
+**External zap → gift reply.** A kind:9735 first credits the addressed member
+note under the existing receipt and payment-hash checks. If its embedded
+kind:9734 belongs to no account, the api additionally requires the exact
+BOLT11 description hash, matching `e` tag, matching optional msat `amount`,
+and a valid signature. At least 1 sat records permanent zapper entitlement.
+Later zaps from the same pubkey skip the repeated entitlement write through a
+per-store process-local lowercase-pubkey memo while keeping the rest of the flow.
+Attribution happens before the block check; a blocked payer is then durably
+dequeued while retaining the request id. Sats stay credited, nothing is shown,
+a later unblock does not resurrect zaps made while blocked. An unblocked,
+unreplayed request on a live top-level note then becomes a visible gift-reply
+with the external profile-name snapshot, comment, sats, `accountId: null`,
+`via: "nostr"`, and no platform Nostr publication. Immediately before creating
+that row, after both the account list and relay profile-name lookups resolve,
+the payer pubkey is checked again. A block added during either lookup still
+wins: the payer is cleared, sats remain credited, and no row is created even
+though the post-attribution check passed. Zaps on replies or hidden notes keep
+the sats and entitlement but create no row. Replayed requests and receipts
+below the external minimum are remembered process-locally per message store,
+capped at 10,000 receipt ids by dropping the oldest, so later ticks do not
+re-verify their embedded kind:9734 or repeat writes.
+
+On Postgres boot, historical indexed receipts that still lack any payer,
+request, or gift-reply attribution are scanned newest-first in 200-row pages.
+The scan continues through older receipts with a strict keyset cursor that
+advances past every returned row using the last row's immutable ingest
+`createdAt` and receipt `eventId`, whether or not the row becomes attributed;
+changing membership cannot cause offset-style skips or repeats. It stops after
+a short page or a hard 10,000-row ceiling. Equal ingest timestamps are ordered
+by receipt event id descending in both message-store implementations. It is
+idempotent, and its failure is logged without stopping the rest of boot.
+
+**External reply → visible after first zap.** The inbound reply REQ deliberately
+has no `since`. Before entitlement, a kind:1 reply from an unknown pubkey is
+silently skipped. Membership, or zapper entitlement plus not-blocked status, is
+decided before the event signature check and before event-specific store reads.
+On the first worker tick after that pubkey's first verified zap, the same older
+event is queried again. A per-store in-flight event-id guard prevents overlapping
+ticks from storing it concurrently. Only signed kind:0 profiles up to 64 KiB
+can supply its name. Control characters, explicit bidirectional controls, names
+without a letter or digit, names mixing more than one of the Latin, Cyrillic
+and Greek scripts, names containing a default-ignorable code point (checked on
+both the name and its NFKD form), except the ZWNJ/ZWJ joiners and the emoji
+variation selectors, which stay allowed, and member or reserved-identity
+confusables (by glyph, or by sound for Cyrillic) fall back to the truncated
+pubkey. Member-name fold
+comparisons require every candidate letter to be ASCII or mapped by the
+respective table, so unmapped non-Latin letters do not spuriously collide;
+eligible pure non-Latin names remain visible. Name resolution precedes a fresh
+single-pubkey block check inside the in-flight guard. A block added
+during profile lookup wins before limiter acquisition, consumes no budget, and
+the event id is still released.
+Per-pubkey and global budget is consumed immediately before the row write and
+released if that write fails. It is listed and counted like a member reply, but
+public JSON exposes only `via: "nostr"`, never the pubkey. This same
+recorded-zapper check also gates every read of an existing row (list, count,
+and single-fetch), not just the ingest-time decision to persist a new one —
+so a reply row that predates this pubkey's zapper entitlement, or a row from a
+pubkey that has never zapped, stays invisible until that check passes, and
+`GET /messages/hidden` (staff moderation) is exempt from this read gate. Only
+the parent's member author is notified, and only for a numeric event time no
+more than one hour old and no more than ten minutes in the future. Missing/non-numeric and
+farther-future event times still persist with the existing ingest-time storage
+fallback/clamp but do not notify.
+
+**Staff hide → block.** Moderator `DELETE /messages/:id` keeps the
+normal target-and-direct-reply soft-hide. When the target itself is external,
+it also writes the pubkey kill switch and soft-hides that pubkey's other live
+rows. Future external gift-replies and inbound replies are skipped while sats
+and zapper entitlement remain. Operator restore removes the block only when
+restoring its source message; rows hidden elsewhere by the author-wide cascade
+are restored individually. Operator zapper and block lists use timestamp
+descending, then pubkey descending, in both memory and Postgres.
+
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. Inbox threads have per-viewer unread
 via `GET /conversations` (`unread` / `unreadCount`) and
@@ -234,13 +308,15 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-The api writes one in-app row to every account except the actor, then
-filters recipients by each account's `notificationLevel`, and
-enqueues (does not send inline) one Web Push to every remaining bell subscriber
-(an account with at least one `push_subscription`) except the actor:
+For member-authored living-room events, the api writes one in-app row to every
+account except the actor, then filters recipients by each account's
+`notificationLevel`, and enqueues (does not send inline) one Web Push to every
+remaining bell subscriber (an account with at least one `push_subscription`)
+except the actor. External replies use the targeted exception below:
 
 - a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
 - a **reply** payload when someone replies (`title` New reply on 21.gifts, `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
+- an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor is the generic "Someone", not the reply's own name. The persisted row remains visible in every suppressed-notification case.
 - a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer.
 
 Missing `pushStore` still writes in-app rows. If persist or enqueue
@@ -255,7 +331,7 @@ notification unread plus listed inbox unread.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip
-a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = staff/platform actor or reply/zap on the recipient's own note). Filter applies to in-app and Web Push. GET /notifications lists stored rows unfiltered.
+a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = staff/platform actor or reply/zap on the recipient's own note). Filter applies to in-app writes, Web Push, and `GET /notifications` (list + unreadCount).
 
 HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
 `/notifications`, `/notifications/read-all`, `/notifications/:id/read`.

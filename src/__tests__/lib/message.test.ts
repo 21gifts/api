@@ -528,6 +528,7 @@ describe('serializeHiddenMessage', () => {
       hasPhoto: false,
       contentFp: 'ab'.repeat(32),
       ...unsignedNostrDefaults(),
+      authorPubkey: 'aa'.repeat(32),
       eventId: 'ee'.repeat(32),
       nostrEvent: { id: 'ee'.repeat(32) },
       claimedUntil: 1,
@@ -545,6 +546,29 @@ describe('serializeHiddenMessage', () => {
     expect(body).not.toHaveProperty('contentFp');
     expect(body).not.toHaveProperty('authorPubkey');
     expect(body).not.toHaveProperty('nsec');
+    expect(body).not.toHaveProperty('via');
+  });
+
+  it('marks external Nostr authors without exposing their pubkey', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-external',
+      accountId: null,
+      name: 'External',
+      text: 'hidden',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'aa'.repeat(32),
+      deletedAt: new Date('2026-09-01T12:00:00.000Z'),
+      deletedBy: 'staff',
+    };
+    const body = serializeHiddenMessage(row, {
+      id: 'staff',
+      name: 'Mod',
+      role: 'moderator',
+    });
+    expect(body).toHaveProperty('via', 'nostr');
+    expect(body).not.toHaveProperty('authorPubkey');
   });
 
   it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {

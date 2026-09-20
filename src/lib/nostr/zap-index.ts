@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { paymentHashFromReceipt } from '@/lib/account-activity';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { decodeBolt11 } from '@/lib/bolt11';
+import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -18,6 +18,12 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
+import {
+  EXTERNAL_ZAPPER_MIN_SATS,
+  externalDisplayName,
+  resolveExternalProfileName,
+  verifiedExternalZapRequest,
+} from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { notifyZap } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -44,6 +50,8 @@ interface ProviderCacheRow {
 }
 
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
+const EXTERNAL_ZAPPER_BACKFILL_CEILING = 10_000;
+const NO_EXTERNAL_GIFT_REPLY_LIMIT = 10_000;
 
 type SettleInvoiceResult =
   | { ok: true; receiptId: string; messageId: string; amountSats: number; resumed: boolean }
@@ -110,6 +118,112 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
 }
 
 /**
+ * Backfill external-zapper attribution from stored indexed receipt frames.
+ *
+ * The scan pages through unattributed receipts in newest-first batches and is
+ * capped at 10,000 rows per boot. Account-owned pubkeys are kept on the member
+ * path, while malformed, synthetic, replayed, or otherwise unverifiable frames
+ * remain unattributed for a later bounded boot scan. A strict cursor advances
+ * past every row seen, using immutable ingest creation time and receipt event
+ * id keys so attribution changes between pages cannot skip or repeat rows.
+ *
+ * @param store - Message store containing indexed receipt frames.
+ * @param deps - Auth, profile querier, relays, timeout, and clock.
+ * @returns Number of verified external zappers encountered in this scan.
+ * @throws Propagates store failures; relay profile failures are suppressed by
+ *   {@link resolveExternalProfileName}.
+ */
+export async function backfillExternalZappers(
+  store: MessageStore,
+  deps: {
+    auth: AuthStore;
+    querier: NostrQuerier;
+    urls: readonly string[];
+    timeoutMs: number;
+    now: () => number;
+  },
+): Promise<number> {
+  let verified = 0;
+  let attributed = 0;
+  let gifts = 0;
+  let scanned = 0;
+  let before: { createdAt: Date; eventId: string } | undefined;
+  while (scanned < EXTERNAL_ZAPPER_BACKFILL_CEILING) {
+    const batchLimit = Math.min(MESSAGE_LIST_LIMIT, EXTERNAL_ZAPPER_BACKFILL_CEILING - scanned);
+    const rows = await store.listUnattributedIndexedReceipts(batchLimit, before);
+    scanned += rows.length;
+    for (const row of rows) {
+      const event = storedReceiptFrame(row.receipt);
+      if (event === null || event.id !== row.receiptEventId) {
+        continue;
+      }
+      const noteEventId = event.tags.find((tag) => tag[0] === 'e')?.[1];
+      const bolt11 = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+      if (typeof noteEventId !== 'string' || noteEventId === '' || typeof bolt11 !== 'string') {
+        continue;
+      }
+      const decoded = decodeBolt11(bolt11);
+      const inspected = inspectBolt11(bolt11);
+      if (
+        decoded === null ||
+        inspected === null ||
+        Math.floor(decoded.amountMsat / 1000) < EXTERNAL_ZAPPER_MIN_SATS
+      ) {
+        continue;
+      }
+      const request = verifiedExternalZapRequest({
+        tags: event.tags,
+        descriptionHash: inspected.descriptionHash,
+        amountMsat: decoded.amountMsat,
+        noteEventId,
+      });
+      if (request === null || (await deps.auth.getAccountByPubkey(request.pubkey)) !== undefined) {
+        continue;
+      }
+      verified += 1;
+      const result = await persistExternalGiftReply({
+        store,
+        auth: deps.auth,
+        querier: deps.querier,
+        urls: deps.urls,
+        timeoutMs: deps.timeoutMs,
+        now: deps.now,
+        receiptEventId: row.receiptEventId,
+        parent: await store.getById(row.messageId),
+        amountSats: row.sats,
+        payerPubkey: request.pubkey,
+        zapRequestId: request.requestId,
+        text: request.content,
+        receiptCreatedAt: receiptCreatedAt(event, row.createdAt.getTime()),
+      });
+      if (result.attributed) {
+        attributed += 1;
+      }
+      if (result.gift) gifts += 1;
+    }
+    const lastRow = rows[rows.length - 1];
+    if (lastRow !== undefined) {
+      before = { createdAt: lastRow.createdAt, eventId: lastRow.receiptEventId };
+    }
+    if (rows.length < batchLimit) {
+      break;
+    }
+  }
+  if (scanned === EXTERNAL_ZAPPER_BACKFILL_CEILING) {
+    logEvent('nostr.zapper.backfill.ceiling', {
+      ceiling: EXTERNAL_ZAPPER_BACKFILL_CEILING,
+    });
+  }
+  logEvent('nostr.zapper.backfill.done', {
+    scanned,
+    verified,
+    attributed,
+    gifts,
+  });
+  return verified;
+}
+
+/**
  * Last persisted ingest `outcome:reason` per receipt id, keyed by message store.
  * Empty after process restart; the first tick may then re-persist a forgotten
  * decision, but only for the receipts that tick still queries. A receipt is
@@ -120,9 +234,24 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
  * the receipt id when the message goes away and would record it again, but this
  * map does not, so a terminal decision here keeps suppressing ingest persist
  * until the process restarts. Terminal receipts still run `verifyReceipt` then
- * `tryEnsureGiftReply`.
+ * `tryEnsureGiftReply`, whose separate terminal-outcome memo can stop before
+ * external request verification.
  */
 const zapDecisions = new WeakMap<MessageStore, Map<string, string>>();
+
+/**
+ * Receipt ids whose verified external path cannot produce a gift-reply.
+ * This process-local, per-store memory covers replayed request ids and amounts
+ * below the external minimum. Oldest entries are evicted above the fixed cap.
+ */
+const noExternalGiftReplyReceipts = new WeakMap<MessageStore, Set<string>>();
+
+/**
+ * Lowercase pubkeys whose durable zapper entitlement this process recorded.
+ * This per-store set is intentionally unbounded: distinct entitled pubkeys
+ * are limited by the real-world zapper population, not receipt-count churn.
+ */
+const knownExternalZapperPubkeys = new WeakMap<MessageStore, Set<string>>();
 
 /**
  * Get-or-create the per-store map of last persisted ingest decisions.
@@ -138,6 +267,38 @@ function decisionsFor(store: MessageStore): Map<string, string> {
   const created = new Map<string, string>();
   zapDecisions.set(store, created);
   return created;
+}
+
+/** Get-or-create the per-store terminal external gift-reply receipt set. */
+function noExternalGiftReplyReceiptsFor(store: MessageStore): Set<string> {
+  const existing = noExternalGiftReplyReceipts.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Set<string>();
+  noExternalGiftReplyReceipts.set(store, created);
+  return created;
+}
+
+/** Get-or-create the per-store set of already-recorded zapper pubkeys. */
+function knownExternalZapperPubkeysFor(store: MessageStore): Set<string> {
+  const existing = knownExternalZapperPubkeys.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Set<string>();
+  knownExternalZapperPubkeys.set(store, created);
+  return created;
+}
+
+/** Remember a terminal external outcome, evicting the oldest id at the cap. */
+function rememberNoExternalGiftReply(store: MessageStore, receiptEventId: string): void {
+  const receiptIds = noExternalGiftReplyReceiptsFor(store);
+  receiptIds.add(receiptEventId);
+  if (receiptIds.size > NO_EXTERNAL_GIFT_REPLY_LIMIT) {
+    const oldest = receiptIds.values().next().value as string;
+    receiptIds.delete(oldest);
+  }
 }
 
 /**
@@ -190,6 +351,41 @@ function receiptFrame(event: NostrEventFrame): Record<string, unknown> {
     content: event.content ?? '',
     sig: event.sig ?? '',
   };
+}
+
+/** Narrow one persisted JSON object back to the receipt frame used by ingest. */
+function storedReceiptFrame(value: Record<string, unknown>): NostrEventFrame | null {
+  const id = value['id'];
+  const pubkey = value['pubkey'];
+  const kind = value['kind'];
+  const tags = value['tags'];
+  if (
+    typeof id !== 'string' ||
+    typeof pubkey !== 'string' ||
+    typeof kind !== 'number' ||
+    !Array.isArray(tags) ||
+    !tags.every((tag) => Array.isArray(tag) && tag.every((part) => typeof part === 'string'))
+  ) {
+    return null;
+  }
+  const createdAt = value['created_at'];
+  const sig = value['sig'];
+  const content = value['content'];
+  return {
+    id,
+    pubkey,
+    kind,
+    tags: tags as string[][],
+    ...(typeof createdAt === 'number' ? { created_at: createdAt } : {}),
+    ...(typeof sig === 'string' ? { sig } : {}),
+    ...(typeof content === 'string' ? { content } : {}),
+  };
+}
+
+/** Clamp a receipt timestamp to the ingest clock, falling back to that clock. */
+function receiptCreatedAt(event: NostrEventFrame, nowMs: number): Date {
+  const eventMs = typeof event.created_at === 'number' ? event.created_at * 1000 : Number.NaN;
+  return new Date(Number.isFinite(eventMs) ? Math.min(eventMs, nowMs) : nowMs);
 }
 
 /**
@@ -672,8 +868,10 @@ export async function indexOpenZapReceipts(args: {
  * Returns after id validation when this process already persisted a terminal
  * decision for the receipt id on this store instance (`indexed`, or `rejected`
  * with reason `duplicate`): still runs `verifyReceipt` then `tryEnsureGiftReply`,
- * and does not persist ingest again. A payment hash already represented by a
- * synthetic manual receipt is rejected as `settled` before provider lookup.
+ * whose terminal external memo can return before receipt lookup and request
+ * verification, and does not persist ingest again. A payment hash already
+ * represented by a synthetic manual receipt is rejected as `settled` before
+ * provider lookup.
  * After address/provider/pubkey checks, an existing PN gift row is persisted
  * as `indexed` without claim or append. Every other rejection reason is
  * re-validated on each call.
@@ -686,6 +884,9 @@ async function ingestOneReceipt(
   args: {
     store: MessageStore;
     auth: AuthStore;
+    querier: NostrQuerier;
+    urls: readonly string[];
+    timeoutMs: number;
     now: () => number;
     fetchImpl: FetchFn;
     verifyReceipt: (event: NostrEventFrame) => boolean;
@@ -1115,8 +1316,11 @@ async function ingestOneReceipt(
         bolt11: pr,
         paymentHash: decoded.paymentHash,
         tags: event.tags,
+        descriptionHash: inspectBolt11(pr)?.descriptionHash ?? null,
+        amountMsat: decoded.amountMsat,
+        noteEventId,
       });
-      payer = resolved?.payer;
+      payer = resolved?.kind === 'account' ? resolved.payer : undefined;
     } catch {
       payer = undefined;
     }
@@ -1180,24 +1384,36 @@ async function resolveProviderPubkey(args: {
   return nostrPubkey;
 }
 
-/** Collaborators for creating a gift-reply after a zap is indexed. */
-interface GiftReplyDeps {
+/** Common collaborators for writing a member gift reply. */
+interface BaseGiftReplyDeps {
   store: MessageStore;
   auth: AuthStore;
   now: () => number;
 }
 
+/** Collaborators for creating a gift-reply after a zap is indexed. */
+interface GiftReplyDeps extends BaseGiftReplyDeps {
+  querier: NostrQuerier;
+  urls: readonly string[];
+  timeoutMs: number;
+}
+
 /**
  * Decode the receipt's parent and bolt11, then insert a gift-reply.
  * Never throws — lookup/create failures log `nostr.zap.gift_reply.failed`.
- * A soft-deleted parent is treated as missing (`payerAccountId` cleared).
+ * A soft-deleted parent is treated as missing (`payerAccountId` cleared), and
+ * remembered terminal external outcomes return before receipt lookup.
  *
  * @param event - Indexed kind:9735 frame.
- * @param args - Store, auth, clock.
+ * @param args - Store, auth, clock, and the relay querier, URLs and timeout
+ *   used to resolve an external payer's profile name.
  */
 async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): Promise<void> {
   /* v8 ignore next 3 -- ingestOneReceipt already requires a receipt id */
   if (typeof event.id !== 'string' || event.id === '') {
+    return;
+  }
+  if (noExternalGiftReplyReceiptsFor(args.store).has(event.id)) {
     return;
   }
   try {
@@ -1205,25 +1421,76 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
     if (receipt === undefined || receipt.giftReplyId !== null) {
       return;
     }
+    // An attributed external receipt with its payer cleared was deliberately
+    // dequeued because it was blocked or its parent could not receive a reply.
+    if (
+      receipt.payerAccountId === null &&
+      receipt.payerPubkey === null &&
+      receipt.zapRequestId !== null
+    ) {
+      return;
+    }
     const parent = await args.store.getById(receipt.messageId);
-    if (parent === undefined || parent.deletedAt !== null) {
-      await args.store.updateZapReceiptGift(event.id, { payerAccountId: null });
+    if (receipt.payerAccountId !== null) {
+      if (parent === undefined || parent.deletedAt !== null || parent.parentId !== null) {
+        await args.store.updateZapReceiptGift(event.id, { payerAccountId: null });
+        return;
+      }
+      const payer = await args.auth.getAccount(receipt.payerAccountId);
+      if (payer === undefined) {
+        await args.store.updateZapReceiptGift(event.id, { payerAccountId: null });
+        return;
+      }
+      await insertGiftReply({
+        store: args.store,
+        auth: args.auth,
+        now: args.now,
+        receiptEventId: event.id,
+        parent,
+        amountSats: receipt.sats,
+        payer,
+        text: receipt.comment,
+      });
+      return;
+    }
+    if (receipt.payerPubkey !== null) {
+      if (await args.store.isPubkeyBlocked(receipt.payerPubkey)) {
+        await args.store.updateZapReceiptGift(event.id, { payerPubkey: null });
+        return;
+      }
+      if (parent === undefined || parent.deletedAt !== null || parent.parentId !== null) {
+        await args.store.updateZapReceiptGift(event.id, { payerPubkey: null });
+        return;
+      }
+      await insertExternalGiftReply({
+        ...args,
+        receiptEventId: event.id,
+        parent,
+        amountSats: receipt.sats,
+        payerPubkey: receipt.payerPubkey,
+        text: receipt.comment,
+        createdAt: receiptCreatedAt(event, args.now()),
+      });
       return;
     }
     const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
     const pr = typeof taggedPr === 'string' ? taggedPr : '';
     const decoded = pr === '' ? null : decodeBolt11(pr);
+    const inspected = pr === '' ? null : inspectBolt11(pr);
     const paymentHash = decoded === null ? '' : decoded.paymentHash;
     await ensureGiftReplyFromReceipt({
-      store: args.store,
-      auth: args.auth,
-      now: args.now,
+      ...args,
       receiptEventId: event.id,
       parent,
       amountSats: receipt.sats,
       bolt11: pr,
       paymentHash,
       tags: event.tags,
+      descriptionHash: inspected?.descriptionHash ?? null,
+      amountMsat: decoded?.amountMsat ?? null,
+      noteEventId:
+        event.tags.find((tag) => tag[0] === 'e' && typeof tag[1] === 'string')?.[1] ?? '',
+      receiptCreatedAt: receiptCreatedAt(event, args.now()),
     });
   } catch {
     logEvent('nostr.zap.gift_reply.failed', { receiptId: event.id });
@@ -1235,8 +1502,12 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
  * verified 9734 pubkey. An invoice match whose account is missing does not
  * fall through to 9734.
  *
- * @param args - Store, auth, bolt11, payment hash, receipt tags.
- * @returns Payer and comment, or `undefined` when unknown.
+ * @param args - Store, auth, bolt11, payment hash, receipt tags, the
+ *   invoice description hash, the invoice amount in millisats, and the zapped
+ *   note's event id (the last three bind a 9734 request to this receipt).
+ * @returns `kind: 'account'` with the member payer and comment,
+ *   `kind: 'external'` with the verified request pubkey, request id and
+ *   comment, or `undefined` when unknown.
  */
 async function resolveZapPayer(args: {
   store: MessageStore;
@@ -1244,7 +1515,14 @@ async function resolveZapPayer(args: {
   bolt11: string;
   paymentHash: string;
   tags: string[][];
-}): Promise<{ payer: Account; text: string } | undefined> {
+  descriptionHash: string | null;
+  amountMsat: number | null;
+  noteEventId: string;
+}): Promise<
+  | { kind: 'account'; payer: Account; text: string }
+  | { kind: 'external'; pubkey: string; requestId: string; text: string }
+  | undefined
+> {
   const byHash = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
   const invoice = byHash ?? (await args.store.findOkInvoiceByPr(args.bolt11));
   if (invoice !== undefined) {
@@ -1253,13 +1531,27 @@ async function resolveZapPayer(args: {
     if (payer === undefined) {
       return undefined;
     }
-    return { payer, text };
+    return { kind: 'account', payer, text };
   }
   const parsed = parseVerifiedZapRequest(args.tags);
   if (parsed !== null) {
     const payer = await args.auth.getAccountByPubkey(parsed.pubkey);
     if (payer !== undefined) {
-      return { payer, text: parsed.content };
+      return { kind: 'account', payer, text: parsed.content };
+    }
+    const external = verifiedExternalZapRequest({
+      tags: args.tags,
+      descriptionHash: args.descriptionHash,
+      amountMsat: args.amountMsat,
+      noteEventId: args.noteEventId,
+    });
+    if (external !== null) {
+      return {
+        kind: 'external',
+        pubkey: external.pubkey,
+        requestId: external.requestId,
+        text: external.content,
+      };
     }
   }
   return undefined;
@@ -1273,11 +1565,15 @@ async function resolveZapPayer(args: {
 async function ensureGiftReplyFromReceipt(
   args: GiftReplyDeps & {
     receiptEventId: string;
-    parent: MessageRow;
+    parent: MessageRow | undefined;
     amountSats: number;
     bolt11: string;
     paymentHash: string;
     tags: string[][];
+    descriptionHash: string | null;
+    amountMsat: number | null;
+    noteEventId: string;
+    receiptCreatedAt: Date;
   },
 ): Promise<void> {
   const resolved = await resolveZapPayer({
@@ -1286,18 +1582,34 @@ async function ensureGiftReplyFromReceipt(
     bolt11: args.bolt11,
     paymentHash: args.paymentHash,
     tags: args.tags,
+    descriptionHash: args.descriptionHash,
+    amountMsat: args.amountMsat,
+    noteEventId: args.noteEventId,
   });
   if (resolved === undefined) {
     return;
   }
-  await insertGiftReply({
-    store: args.store,
-    auth: args.auth,
-    now: args.now,
-    receiptEventId: args.receiptEventId,
-    parent: args.parent,
-    amountSats: args.amountSats,
-    payer: resolved.payer,
+  if (resolved.kind === 'account') {
+    if (args.parent === undefined || args.parent.deletedAt !== null) {
+      await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+      return;
+    }
+    await insertGiftReply({
+      store: args.store,
+      auth: args.auth,
+      now: args.now,
+      receiptEventId: args.receiptEventId,
+      parent: args.parent,
+      amountSats: args.amountSats,
+      payer: resolved.payer,
+      text: resolved.text,
+    });
+    return;
+  }
+  await persistExternalGiftReply({
+    ...args,
+    payerPubkey: resolved.pubkey,
+    zapRequestId: resolved.requestId,
     text: resolved.text,
   });
 }
@@ -1305,7 +1617,8 @@ async function ensureGiftReplyFromReceipt(
 /**
  * Retry receipts that have a payer but no gift-reply row yet.
  *
- * @param args - Store, auth, clock.
+ * @param args - Store, auth, clock, and the relay querier, URLs and timeout
+ *   used to resolve an external payer's profile name.
  */
 async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
   const pending = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);
@@ -1313,12 +1626,37 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
     try {
       const parent = await args.store.getById(row.messageId);
       if (parent === undefined || parent.deletedAt !== null) {
-        await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
+        await args.store.updateZapReceiptGift(row.receiptEventId, {
+          ...(row.payerAccountId === null ? {} : { payerAccountId: null }),
+          ...(row.payerPubkey === null ? {} : { payerPubkey: null }),
+        });
         continue;
       }
       if (parent.parentId !== null) {
         // Stop awaiting: a reply zap must not nest a gift-reply child.
-        await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
+        await args.store.updateZapReceiptGift(row.receiptEventId, {
+          ...(row.payerAccountId === null ? {} : { payerAccountId: null }),
+          ...(row.payerPubkey === null ? {} : { payerPubkey: null }),
+        });
+        continue;
+      }
+      if (row.payerPubkey !== null) {
+        if (await args.store.isPubkeyBlocked(row.payerPubkey)) {
+          await args.store.updateZapReceiptGift(row.receiptEventId, { payerPubkey: null });
+          continue;
+        }
+        await insertExternalGiftReply({
+          ...args,
+          receiptEventId: row.receiptEventId,
+          parent,
+          amountSats: row.sats,
+          payerPubkey: row.payerPubkey,
+          text: row.comment,
+          createdAt: new Date(Math.min(row.receiptCreatedAt?.getTime() ?? args.now(), args.now())),
+        });
+        continue;
+      }
+      if (row.payerAccountId === null) {
         continue;
       }
       const payer = await args.auth.getAccount(row.payerAccountId);
@@ -1326,7 +1664,6 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         await args.store.updateZapReceiptGift(row.receiptEventId, { payerAccountId: null });
         continue;
       }
-      const text = row.comment;
       await insertGiftReply({
         store: args.store,
         auth: args.auth,
@@ -1335,12 +1672,124 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         parent,
         amountSats: row.sats,
         payer,
-        text,
+        text: row.comment,
       });
     } catch {
       logEvent('nostr.zap.gift_reply.failed', { receiptId: row.receiptEventId });
     }
   }
+}
+
+/** Persist external attribution, then apply block and gift-reply guards. */
+async function persistExternalGiftReply(
+  args: GiftReplyDeps & {
+    receiptEventId: string;
+    parent: MessageRow | undefined;
+    amountSats: number;
+    payerPubkey: string;
+    zapRequestId: string;
+    text: string;
+    receiptCreatedAt: Date;
+  },
+): Promise<{ attributed: boolean; gift: boolean }> {
+  if (args.amountSats < EXTERNAL_ZAPPER_MIN_SATS) {
+    rememberNoExternalGiftReply(args.store, args.receiptEventId);
+    return { attributed: false, gift: false };
+  }
+  const at = new Date(args.now());
+  const payerPubkey = args.payerPubkey.toLowerCase();
+  const knownZappers = knownExternalZapperPubkeysFor(args.store);
+  if (!knownZappers.has(payerPubkey)) {
+    await args.store.recordZapper(args.payerPubkey, args.receiptEventId, at);
+    knownZappers.add(payerPubkey);
+  }
+  const attributed = await args.store.attributeZapReceipt(args.receiptEventId, {
+    payerPubkey: args.payerPubkey,
+    zapRequestId: args.zapRequestId,
+    comment: args.text,
+  });
+  if (!attributed) {
+    rememberNoExternalGiftReply(args.store, args.receiptEventId);
+    return { attributed: false, gift: false };
+  }
+  if (await args.store.isPubkeyBlocked(args.payerPubkey)) {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
+    return { attributed: true, gift: false };
+  }
+  if (
+    args.parent === undefined ||
+    args.parent.deletedAt !== null ||
+    args.parent.parentId !== null
+  ) {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
+    return { attributed: true, gift: false };
+  }
+  await insertExternalGiftReply({
+    ...args,
+    parent: args.parent,
+    createdAt: new Date(Math.min(args.receiptCreatedAt.getTime(), args.now())),
+  });
+  return { attributed: true, gift: true };
+}
+
+/**
+ * Create one non-custodial gift reply without scheduling Nostr publication.
+ *
+ * Listing accounts and resolving the relay profile introduce an asynchronous
+ * gap after the caller's block check. The payer is therefore checked again
+ * immediately before creation; a block that landed during either lookup
+ * clears the attributed payer and leaves the receipt credited but dequeued.
+ *
+ * @param args - Receipt, payer, parent, profile dependencies, and creation time.
+ * @throws Propagates account-list and store failures; relay profile failures
+ *   are suppressed by {@link resolveExternalProfileName}.
+ */
+async function insertExternalGiftReply(
+  args: GiftReplyDeps & {
+    receiptEventId: string;
+    parent: MessageRow;
+    amountSats: number;
+    payerPubkey: string;
+    text: string;
+    createdAt: Date;
+  },
+): Promise<void> {
+  const accounts = await args.auth.listAccounts();
+  const profileName = await resolveExternalProfileName({
+    querier: args.querier,
+    urls: args.urls,
+    pubkey: args.payerPubkey,
+    nowMs: args.now(),
+    timeoutMs: args.timeoutMs,
+  });
+  const name = externalDisplayName({
+    profileName,
+    pubkey: args.payerPubkey,
+    accountNames: accounts
+      .map((account) => account.name)
+      .filter((value): value is string => value !== null),
+  });
+  if (await args.store.isPubkeyBlocked(args.payerPubkey)) {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerPubkey: null });
+    return;
+  }
+  const created = await args.store.create({
+    id: giftReplyIdForReceipt(args.receiptEventId),
+    accountId: null,
+    name,
+    text: args.text,
+    createdAt: args.createdAt,
+    hasPhoto: false,
+    hasVideo: false,
+    videoContentType: null,
+    ...unsignedNostrDefaults(),
+    parentId: args.parent.id,
+    authorPubkey: args.payerPubkey.toLowerCase(),
+    sats: args.amountSats,
+    nostrPublishState: 'skipped',
+    contentFp: null,
+  });
+  await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
 }
 
 /**
@@ -1355,7 +1804,7 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
  * @param args - Payer, parent, text, receipt id.
  */
 async function insertGiftReply(
-  args: GiftReplyDeps & {
+  args: BaseGiftReplyDeps & {
     receiptEventId: string;
     parent: MessageRow;
     amountSats: number;

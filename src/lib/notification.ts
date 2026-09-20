@@ -5,7 +5,8 @@
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
  * `auth` is set) and `push_subscription` account ids, except skip, then
  * filtered by each recipient's `notificationLevel` when `auth` is set.
- * Targeted `moderator_appointed` does not fan out. Web Push is still only
+ * `GET /notifications` applies the same filter to stored rows. Targeted
+ * `moderator_appointed` does not fan out. Web Push is still only
  * for `push_subscription` rows. Member HTTP never exposes recipient or actor
  * account ids. Callers catch failures so persist still succeeds.
  */
@@ -24,8 +25,11 @@ import {
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 
-/** Cap for `GET /notifications`. */
+/** Cap for `GET /notifications` after the owner's level filter. */
 export const NOTIFICATION_LIST_LIMIT = 200;
+
+/** Newest rows scanned before applying {@link notificationsMatchingLevel}. */
+export const NOTIFICATION_FILTER_SCAN_LIMIT = 1000;
 
 /** Persisted notification kind. */
 export type NotificationType = 'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed';
@@ -164,6 +168,58 @@ export function wantsNotification(args: {
   return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
 }
 
+/**
+ * Keep stored in-app rows that the owner's current {@link NotificationLevel}
+ * would still accept. `moderator_appointed` always stays (targeted, not
+ * living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
+ * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
+ * parent is unpaid and not personal. Zap `text` is the amount string.
+ * Zap actor staff is the stored actor via {@link isStaffAccount} only when
+ * that actor is not the parent note author (missing payer is not staff).
+ *
+ * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
+ * @returns Matching rows in the same order.
+ */
+export function notificationsMatchingLevel(args: {
+  rows: readonly NotificationRow[];
+  level: NotificationLevel;
+  recipientAccountId: string;
+  accounts: readonly { id: string; role: string; isPlatform?: boolean }[];
+  parentById: ReadonlyMap<string, MessageRow>;
+}): NotificationRow[] {
+  if (args.level === 'all') {
+    return [...args.rows];
+  }
+  const staffById = new Map(
+    args.accounts.map((account) => [account.id, isStaffAccount(account)] as const),
+  );
+  return args.rows.filter((row) => {
+    if (row.type === 'moderator_appointed') {
+      return true;
+    }
+    const parent = args.parentById.get(row.parentId);
+    const amountSats = Number(row.text);
+    const zapAmount = row.type === 'zap' && Number.isFinite(amountSats) ? amountSats : 0;
+    const isActive = parent === undefined ? zapAmount > 0 : parent.sats > 0 || zapAmount > 0;
+    const mentionedAccountId = row.type === 'forum_post' ? null : (parent?.accountId ?? null);
+    const storedActorIsStaff = staffById.get(row.actorAccountId) === true;
+    const actorIsStaff =
+      row.type !== 'zap'
+        ? storedActorIsStaff
+        : storedActorIsStaff &&
+          parent !== undefined &&
+          parent.accountId !== null &&
+          row.actorAccountId !== parent.accountId;
+    return wantsNotification({
+      level: args.level,
+      actorIsStaff,
+      isActive,
+      mentionedAccountId,
+      recipientAccountId: args.recipientAccountId,
+    });
+  });
+}
+
 /** Fan-out match context shared by in-app rows and Web Push. */
 interface NotificationMatch {
   /** True when the actor/payer is at least moderator, or platform. */
@@ -251,6 +307,8 @@ export async function fanoutToBellSubscribers(args: {
   auth?: Pick<AuthStore, 'listAccounts'>;
   /** Account id to skip (actor); `null` skips nobody. */
   skipAccountId: string | null;
+  /** Optional allowlist applied to both in-app and push recipients before level matching. */
+  onlyAccountIds?: readonly string[];
   /**
    * Event match context. Omitted → today's every-id-except-skip behaviour.
    * Applied only when `auth` is also set.
@@ -275,6 +333,11 @@ export async function fanoutToBellSubscribers(args: {
     args.pushStore === undefined ? [] : await args.pushStore.listAccountIdsWithSubscriptions();
   let inAppIds = exceptSkip([...new Set([...fromAuth, ...fromPush])], args.skipAccountId);
   let pushIds = exceptSkip(fromPush, args.skipAccountId);
+  if (args.onlyAccountIds !== undefined) {
+    const only = new Set(args.onlyAccountIds);
+    inAppIds = inAppIds.filter((id) => only.has(id));
+    pushIds = pushIds.filter((id) => only.has(id));
+  }
   const match = args.match;
   if (match !== undefined && args.auth !== undefined) {
     const accountsById = new Map(accounts.map((account) => [account.id, account]));
@@ -457,6 +520,67 @@ export async function notifyForumReply(args: {
       parentId: parent.id,
       replyId: args.created.id,
       name: args.created.name,
+      text: args.created.text,
+      createdAt: args.created.createdAt,
+      readAt: null,
+    },
+    outboxType: 'forum',
+    outboxMessageId: args.created.id,
+    payload: JSON.stringify(buildReplyPushPayload(args.created.id)),
+    nowMs: args.created.createdAt.getTime(),
+  });
+}
+
+/**
+ * Notify only the member who authored the parent of an external Nostr reply.
+ *
+ * A parent without an account is a no-op. The notification actor name is
+ * always the generic 'Someone', never the external row's display name. The
+ * parent author supplies the internal actor id required by notification
+ * persistence. The targeted
+ * allowlist is applied before notification-level matching to both in-app and
+ * push recipients.
+ *
+ * @param args - Parent, persisted external reply, optional stores, auth, and inbox count.
+ * @returns Resolves after the targeted fan-out, including no-op parents.
+ * @throws If fan-out persistence or enqueue fails.
+ */
+export async function notifyExternalForumReply(args: {
+  /** Parent forum note. */
+  parent: MessageRow;
+  /** Persisted external reply. */
+  created: MessageRow;
+  /** Optional notification persistence. */
+  notifications?: NotificationStore;
+  /** Optional push outbox. */
+  pushStore?: PushStore;
+  /** Optional auth account list for notification-level filtering. */
+  auth?: Pick<AuthStore, 'listAccounts'>;
+  /** Optional listed inbox unread; forwarded to fan-out. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
+}): Promise<void> {
+  const parentAccountId = args.parent.accountId;
+  if (parentAccountId === null) {
+    return;
+  }
+  await fanoutToBellSubscribers({
+    ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
+    ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+    ...(args.auth === undefined ? {} : { auth: args.auth }),
+    ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
+    skipAccountId: null,
+    onlyAccountIds: [parentAccountId],
+    match: {
+      actorIsStaff: false,
+      isActive: args.parent.sats > 0,
+      mentionedAccountId: parentAccountId,
+    },
+    template: {
+      actorAccountId: parentAccountId,
+      type: 'forum_reply',
+      parentId: args.parent.id,
+      replyId: args.created.id,
+      name: 'Someone',
       text: args.created.text,
       createdAt: args.created.createdAt,
       readAt: null,
