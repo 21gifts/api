@@ -110,6 +110,7 @@ const conversationMessageBody = z
       )
       .max(10)
       .optional(),
+    video: z.never().optional(),
   })
   .refine(
     (body) =>

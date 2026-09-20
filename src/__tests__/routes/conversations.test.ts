@@ -2914,6 +2914,42 @@ describe('moderator-group photos', () => {
     expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
   });
 
+  it('POST text plus video is 400 and does not persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'caption',
+        video: { contentType: 'video/mp4', data: 'AAAA' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+  });
+
+  it('POST photo plus video is 400 and does not persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        video: { contentType: 'video/mp4', data: 'AAAA' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+  });
+
   it('POST invalid still is 400', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);

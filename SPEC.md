@@ -3663,7 +3663,8 @@ is **400** and does not ping. Verified, basis and the platform account **404**
 on that id.
 
 Same 401 / 404 / 503 shapes as the list/get routes, plus
-**400** `{ "error": "Expected a JSON body with text and/or photo" }`,
+**400** `{ "error": "Expected a JSON body with text and/or photo" }`
+(including any `video` field; stills only),
 **400** `{ "error": "At most 10 photos" }`,
 **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`,
 **400** `{ "error": "Photos are only allowed in the Moderators group" }`,
