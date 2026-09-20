@@ -110,6 +110,12 @@ Public base URLs used in examples:
 | GET    | `/trust/proposals`                           | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                   |
 | POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
+| POST   | `/funding/apply`                             | Bearer                     | Member apply (verified+; `basis` 403)                                                                     |
+| GET    | `/funding/applications`                      | Bearer (moderator+)        | Staff pending grant queue                                                                                 |
+| GET    | `/funding/applications/:accountId`           | Bearer (moderator+)        | Staff grant review                                                                                        |
+| POST   | `/funding/trial`                             | Bearer (moderator+)        | One-UTC-day trial                                                                                         |
+| POST   | `/funding/admit`                             | Bearer (moderator+)        | Admit grant                                                                                               |
+| POST   | `/funding/reject`                            | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |
 | GET    | `/messages/hidden`                           | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
@@ -156,6 +162,7 @@ Public base URLs used in examples:
 | GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                                                       |
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
+| GET    | `/invoices/eligible`                         | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |
 | POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
