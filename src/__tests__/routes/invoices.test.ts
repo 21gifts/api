@@ -2606,14 +2606,10 @@ describe('POST /invoices/proof', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = {
-      getById: async () => undefined,
-      getMessageById: async () => {
-        throw new Error('db');
-      },
-      appendMessage: async () => {
-        throw new Error('db');
-      },
-    } as ConversationStore;
+      getById: () => Promise.resolve(undefined),
+      getMessageById: () => Promise.reject(new Error('db')),
+      appendMessage: () => Promise.reject(new Error('db')),
+    } as unknown as ConversationStore;
     store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
     const res = await createApp({
       spendApiToken: TOKEN,
