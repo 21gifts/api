@@ -91,8 +91,7 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             continue;
           }
           const parent = messageById.get(row.parentId);
-          const reply =
-            row.replyId === row.parentId ? parent : messageById.get(row.replyId);
+          const reply = row.replyId === row.parentId ? parent : messageById.get(row.replyId);
           if (
             parent === undefined ||
             parent.deletedAt !== null ||

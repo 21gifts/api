@@ -6711,6 +6711,7 @@ describe('DELETE /messages/:id', () => {
     warn.mockClear();
     const store = throwingStore({
       markDeleted: (id, at, byAccountId) => messages.markDeleted(id, at, byAccountId),
+      getById: (id) => messages.getById(id),
     });
     const res = await mount(auth, store).request(`/messages/${NOTE_ID}`, {
       method: 'DELETE',

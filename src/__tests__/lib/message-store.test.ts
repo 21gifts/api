@@ -4525,9 +4525,10 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [];
     const store = new PostgresMessageStore(sql);
     await store.listReplies('p1', 10, true);
-    expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1 AND account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1\s+AND \(account_id IS NOT NULL/);
     expect(sql.queries[0]?.text).not.toMatch(/deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zapper/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.params).toEqual(['p1', 10]);
     await store.listReplies('p1', 10);
