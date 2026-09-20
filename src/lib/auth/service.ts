@@ -18,6 +18,8 @@ import { SESSION_TTL_MS } from '@/lib/config';
  * @param now - Current time in epoch milliseconds.
  * @param account - The account the session should authenticate.
  * @returns The new token and the same account.
+ * @throws Error with message {@link WRONG_ACCOUNT_ERROR} when
+ * {@link isWrongAccount} is true; no session row is written.
  */
 export async function issueSession(
   store: AuthStore,

@@ -199,6 +199,7 @@ api/
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
+│       │       ├── wrong-account.test.ts
 │       │       ├── store.test.ts
 │       │       ├── schema.test.ts
 │       │       ├── sql.test.ts
