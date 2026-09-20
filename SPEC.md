@@ -505,7 +505,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set).
+`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set;
+optional `goalSats` omitted when unset).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -2466,6 +2467,8 @@ the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+optional `goalSats` (positive integer on a top-level note; omitted when
+unset/null/0),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -3014,7 +3017,8 @@ Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
 captured as `:id`. A live GET returns
-the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
+the public message JSON (`sats`, optional `goalSats` on a top-level note
+when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors) and omits
 `accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
@@ -3172,7 +3176,8 @@ desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
-`hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
+`hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
+top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
