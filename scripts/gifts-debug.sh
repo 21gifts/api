@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
-#               forum-note debug reads, external-pubkey inspection,
+#               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
 #               spend live roster, and trust-edge backfill for 21.gifts
 #               (GET /debug/accounts, PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
-#               GET /debug/external-pubkeys,
+#               GET /debug/api-log, GET /debug/external-pubkeys,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
@@ -44,6 +44,7 @@
 #   gifts-debug role <account-id> moderator
 #   gifts-debug unlink <account-id>
 #   gifts-debug messages
+#   gifts-debug api-log
 #   gifts-debug external-pubkeys
 #   gifts-debug external-pubkeys --raw
 #   gifts-debug message <message-id>
