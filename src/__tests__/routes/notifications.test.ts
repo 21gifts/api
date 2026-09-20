@@ -423,6 +423,80 @@ describe('GET /notifications', () => {
     expect(body.notifications).toEqual([]);
     expect(body.unreadCount).toBe(0);
   });
+
+  it('keeps a zap whose parent note is live even when replyId is not a message id', async () => {
+    const parentLive = '11111111-1111-4111-8111-111111111111';
+    const receiptReplyId = 'cafef00d-cafe-4f00-8d00-cafef00d0001';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: parentLive,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'live parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'zap',
+        parentId: parentLive,
+        replyId: receiptReplyId,
+        text: '21',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+      unreadCount: number;
+    };
+    expect(body.notifications.map((item) => item['id'])).toEqual([ID_A]);
+    expect(body.notifications[0]?.['type']).toBe('zap');
+    expect(body.unreadCount).toBe(1);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
+  });
+
+  it('drops a zap when its parent note is hidden', async () => {
+    const parentHidden = '33333333-3333-4333-8333-333333333333';
+    const receiptReplyId = 'cafef00d-cafe-4f00-8d00-cafef00d0001';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: parentHidden,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    expect(await messages.markDeleted(parentHidden, new Date(now()), 'acc')).toBe(true);
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'zap',
+        parentId: parentHidden,
+        replyId: receiptReplyId,
+        text: '21',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+    };
+    expect(body.notifications).toEqual([]);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeUndefined();
+  });
 });
 
 describe('POST /notifications/read-all', () => {

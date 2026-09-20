@@ -91,20 +91,17 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             continue;
           }
           const parent = messageById.get(row.parentId);
-          const reply = row.replyId === row.parentId ? parent : messageById.get(row.replyId);
-          if (
-            parent === undefined ||
-            parent.deletedAt !== null ||
-            reply === undefined ||
-            reply.deletedAt !== null
-          ) {
-            if (parent === undefined || parent.deletedAt !== null) {
-              droppedMessageIds.add(row.parentId);
-            }
+          if (parent === undefined || parent.deletedAt !== null) {
+            droppedMessageIds.add(row.parentId);
+            continue;
+          }
+          // zap replyId is a receipt-derived UUID, not a message id.
+          if (row.type === 'forum_reply' && row.replyId !== row.parentId) {
+            const reply = messageById.get(row.replyId);
             if (reply === undefined || reply.deletedAt !== null) {
               droppedMessageIds.add(row.replyId);
+              continue;
             }
-            continue;
           }
           kept.push(row);
         }

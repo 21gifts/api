@@ -5533,7 +5533,8 @@ describe('GET /messages/:id/photo', () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/jpeg');
-    expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400');
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(res.headers.get('Vary')).toBe('Authorization');
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.jpg"');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
@@ -6473,6 +6474,10 @@ describe('DELETE /messages/:id', () => {
       (await app.request(`/messages/${videoId}`, { method: 'DELETE', headers: AUTH })).status,
     ).toBe(204);
     expect((await app.request(`/messages/${videoId}/video.mp4`)).status).toBe(404);
+    const staffVideo = await app.request(`/messages/${videoId}/video.mp4`, { headers: AUTH });
+    expect(staffVideo.status).toBe(200);
+    expect(staffVideo.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(staffVideo.headers.get('Vary')).toBe('Authorization');
     expect(await messages.getById(videoId)).toBeDefined();
   });
 

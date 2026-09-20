@@ -357,7 +357,12 @@ async function serveForumPhoto(
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
-    return forumPhotoResponse(photo);
+    const res = forumPhotoResponse(photo);
+    if (row.deletedAt !== null) {
+      res.headers.set('Cache-Control', 'private, no-store');
+      res.headers.set('Vary', 'Authorization');
+    }
+    return res;
   } catch {
     logEvent('messages.photo.failed');
     return Response.json({ error: 'Messages are unavailable' }, { status: 503 });
@@ -426,7 +431,9 @@ async function serveForumVideo(
     const headers: Record<string, string> = {
       'Content-Type': mime,
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=86400',
+      'Cache-Control':
+        row.deletedAt !== null ? 'private, no-store' : 'public, max-age=86400',
+      ...(row.deletedAt !== null ? { Vary: 'Authorization' } : {}),
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': `inline; filename="video.${ext}"`,
     };
