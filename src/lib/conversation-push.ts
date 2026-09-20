@@ -94,7 +94,8 @@ export async function notifyConversationMessage(args: {
   if (args.thread.kind === 'moderator_group') {
     const accounts = await args.authStore.listAccounts();
     moderatorIds = accounts
-      .filter((item) => roleAtLeast(item.role, 'moderator'))
+      // The platform account is a house identity, not a person in the staff room.
+      .filter((item) => item.isPlatform !== true && roleAtLeast(item.role, 'moderator'))
       .map((item) => item.id);
   }
   const recipientIds = conversationPushRecipientIds(

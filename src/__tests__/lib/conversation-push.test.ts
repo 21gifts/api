@@ -302,10 +302,12 @@ describe('notifyConversationMessage', () => {
     const group = await conversations.ensureModeratorGroup('plat', NOW);
     const push = new InMemoryPushStore();
     const auth = new InMemoryAuthStore();
-    const accounts = [
-      { id: 'mod-a', role: 'moderator' as const },
-      { id: 'mod-b', role: 'moderator' as const },
-      { id: 'founder-a', role: 'founder' as const },
+    const accounts: { id: string; role: 'moderator' | 'founder'; isPlatform?: boolean }[] = [
+      { id: 'mod-a', role: 'moderator' },
+      { id: 'mod-b', role: 'moderator' },
+      { id: 'founder-a', role: 'founder' },
+      // A platform account never receives the staff-room push, whatever role it carries.
+      { id: 'plat', role: 'founder', isPlatform: true },
     ];
     for (const item of accounts) {
       await subscribe(push, item.id);
@@ -313,6 +315,7 @@ describe('notifyConversationMessage', () => {
         id: item.id,
         linkingKey: null,
         role: item.role,
+        ...(item.isPlatform === true ? { isPlatform: true } : {}),
         name: item.id,
         lightningAddress: null,
         lightningAddressVerified: false,

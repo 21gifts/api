@@ -158,8 +158,8 @@ Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 Roles are ordered `founder > moderator > verified > basis`. A higher role can
 always do and see everything a lower role can; there are no exceptions. Every
-route that names a role names the **minimum** role: "Bearer (moderator)" means
-moderator **or founder**, "Bearer (verified)" means verified, moderator or
+route that names a role names the **minimum** role: "Bearer (moderator+)" means
+moderator **or founder**, "Bearer (verified+)" means verified, moderator or
 founder. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
 equality test on the caller's role is a defect. Checks on the _subject_ of an
 action (for example "only a verified member can be proposed as moderator") are

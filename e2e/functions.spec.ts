@@ -1519,7 +1519,7 @@ test('Function: isStaffRole — GET /trust-chain without bearer is 401', async (
   expect(res.status()).toBe(401);
 });
 
-test('Function: roleRank — GET /conversations/moderator-group as a member is 404', async ({
+test('Function: roleAtLeast — GET /conversations/moderator-group as a member is 404', async ({
   request,
 }) => {
   const auth = await memberSession(request);
@@ -1528,10 +1528,11 @@ test('Function: roleRank — GET /conversations/moderator-group as a member is 4
   );
 });
 
-test('Function: roleAtLeast — GET /conversations/moderator-group without bearer is 401', async ({
+test('Function: roleRank — a basis member ranks below the staff log (GET /messages/hidden is 403)', async ({
   request,
 }) => {
-  expect((await request.get('/conversations/moderator-group')).status()).toBe(401);
+  const auth = await memberSession(request);
+  expect((await request.get('/messages/hidden', { headers: auth })).status()).toBe(403);
 });
 
 test('Function: isProjectedTrustEdge — GET /trust-chain is empty on default boot', async ({
