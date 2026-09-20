@@ -653,16 +653,16 @@
 ## Endpoint: GET /funding/applications
 
 - **Purpose:** Staff Bearer. Effective pending grants only (expired trials after lazy persist). JSON `{ applications: [{ accountId, name, role, appliedAt }] }` oldest `appliedAt` first. Logs `funding.applications.listed` `{ count }`.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when not founder/moderator; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
 - **Used by:** Staff funding queue.
-- **Auth:** `Authorization: Bearer` session (founder or moderator).
+- **Auth:** `Authorization: Bearer` session (moderator).
 
 ## Endpoint: GET /funding/applications/:accountId
 
 - **Purpose:** Staff Bearer. 200 `{ account: { id, name, role, lightningAddress }, grant: { status, appliedAt, trialUtcDate, admittedAt, decidedAt }, messages }` with **effective** grant status and the same video-drop as member posts (`MESSAGE_LIST_LIMIT`, `serializeMessage`).
 - **Errors:** 401/403 as list; 404 `{ error: 'Not found' }` for a non-UUID, missing account, or no grant; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
 - **Used by:** Staff funding review.
-- **Auth:** `Authorization: Bearer` session (founder or moderator).
+- **Auth:** `Authorization: Bearer` session (moderator).
 
 ## Endpoint: POST /funding/trial
 

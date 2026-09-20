@@ -732,7 +732,7 @@ cleared). `pending` / `trial` / `admitted` → **409**. **200**
 
 ### `GET /funding/applications`
 
-Staff Bearer (founder or moderator). Lists effective **pending** grants
+Staff Bearer (moderator). Lists effective **pending** grants
 oldest `appliedAt` first (expired trials included after lazy persist).
 JSON `{ "applications": [ { accountId, name, role, appliedAt } ] }`.
 Logs `funding.applications.listed`. Same 401/403/503 shapes as
