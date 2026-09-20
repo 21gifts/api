@@ -256,7 +256,7 @@ more than one hour old and no more than ten minutes in the future. Missing/non-n
 farther-future event times still persist with the existing ingest-time storage
 fallback/clamp but do not notify.
 
-**Staff hide → block.** Founder/moderator `DELETE /messages/:id` keeps the
+**Staff hide → block.** Moderator `DELETE /messages/:id` keeps the
 normal target-and-direct-reply soft-hide. When the target itself is external,
 it also writes the pubkey kill switch and soft-hides that pubkey's other live
 rows. Future external gift-replies and inbound replies are skipped while sats

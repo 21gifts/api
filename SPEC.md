@@ -2939,7 +2939,7 @@ Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
 **session** required (moderator). This is **not** a
 `DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
 `"hidden"` is not captured as `:id`. No `forum.read` gate — a
-founder/moderator without rules agreement is still **200**. Listed rows
+moderator without rules agreement is still **200**. Listed rows
 include every hidden row regardless of external-zapper entitlement — the
 moderation view is intentionally unaffected by the public read-visibility
 rule.
