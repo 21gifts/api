@@ -178,7 +178,7 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
-— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter only; operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. The shipped UI
+— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs; operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1

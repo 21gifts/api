@@ -4,6 +4,7 @@ import {
   buildKind0Content,
   buildKind0Event,
   buildKind1Event,
+  buildKind5Event,
   buildKind10002Event,
   forumExtraPhotoUrl,
   forumPhotoUrl,
@@ -309,6 +310,22 @@ describe('kind0', () => {
       'Hello from Ada',
     );
     expect(JSON.parse(buildKind0Event('Ada', null, 1, null, 'Bio').content).about).toBe('Bio');
+  });
+});
+
+describe('kind5', () => {
+  it('builds an empty NIP-09 template with e and k tags', () => {
+    const eventId = 'ab'.repeat(32);
+    const event = buildKind5Event(eventId, 1_700_000_000);
+    expect(event).toEqual({
+      kind: 5,
+      content: '',
+      tags: [
+        ['e', eventId],
+        ['k', '1'],
+      ],
+      created_at: 1_700_000_000,
+    });
   });
 });
 
