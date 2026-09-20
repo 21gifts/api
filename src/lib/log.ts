@@ -97,14 +97,17 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
     if (c.req.method === 'OPTIONS' || c.req.path === '/healthz') {
       return;
     }
+    const ms = Date.now() - started;
     logEvent('http.request', {
       method: c.req.method,
       path: requestLogPath(c.req.path),
       status: c.res.status,
-      ms: Date.now() - started,
+      ms,
     });
+    const clock = deps.now ?? Date.now;
+    let accountId: string | null = null;
+    let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
     try {
-      const clock = deps.now ?? Date.now;
       const auth = await resolveRequestAuth({
         authorizationHeader: c.req.header('authorization'),
         debugToken: deps.debugToken,
@@ -112,15 +115,22 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
         authStore: deps.authStore,
         now: clock(),
       });
+      accountId = auth.accountId;
+      authKind = auth.authKind;
+    } catch {
+      accountId = null;
+      authKind = 'none';
+    }
+    try {
       await deps.apiLogStore.append({
         id: crypto.randomUUID(),
         createdAt: new Date(clock()),
         method: c.req.method,
         path: requestLogPath(c.req.path),
         status: c.res.status,
-        ms: Date.now() - started,
-        accountId: auth.accountId,
-        authKind: auth.authKind,
+        ms,
+        accountId,
+        authKind,
       });
     } catch {
       logEvent('api_log.write.failed');

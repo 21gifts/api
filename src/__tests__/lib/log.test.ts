@@ -190,6 +190,30 @@ describe('requestLog', () => {
     expect(raw).not.toContain(key);
   });
 
+  it('still stores a none row when session lookup throws', async () => {
+    const store = new InMemoryApiLogStore();
+    const authStore = new InMemoryAuthStore();
+    vi.spyOn(authStore, 'getSession').mockRejectedValue(new Error('db'));
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore,
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info', { headers: { authorization: 'Bearer tok' } });
+    expect(res.status).toBe(200);
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.authKind).toBe('none');
+    expect(rows[0]?.accountId).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.write.failed')).toBe(false);
+  });
+
   it('logs api_log.write.failed when append throws and keeps the response', async () => {
     const store = {
       append: async () => {

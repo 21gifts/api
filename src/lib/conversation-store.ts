@@ -1144,8 +1144,8 @@ export class PostgresConversationStore implements ConversationStore {
           row.nostrPublishState,
           row.nostrEvent,
           row.claimedUntil === null ? null : new Date(row.claimedUntil),
-          row.actorAccountId,
-          row.actorName,
+          row.actorAccountId ?? null,
+          row.actorName ?? '',
         ],
       );
     } catch (error: unknown) {

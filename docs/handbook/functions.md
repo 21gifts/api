@@ -1186,7 +1186,7 @@
 
 ## Function: requestLog
 
-- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. Store write failure logs `api_log.write.failed` and does not replace the response.
+- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. `ms` is handler duration (captured once after `next`). Auth-classification failure still stores `authKind: 'none'` with `accountId` null. Store write failure logs `api_log.write.failed` and does not replace the response.
 - **Inputs:** `{ apiLogStore, authStore, debugToken, spendApiToken, now? }`.
 - **Returns / side effects:** `MiddlewareHandler`.
 - **Used by:** `createApp`.
