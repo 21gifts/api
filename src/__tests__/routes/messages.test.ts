@@ -14,6 +14,7 @@ import {
   unsignedNostrDefaults,
 } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
@@ -59,6 +60,21 @@ const JPEG2_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
 const JPEG2_B64 = Buffer.from(JPEG2_BYTES).toString('base64');
 const JPEG3_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0x01]);
 const JPEG3_B64 = Buffer.from(JPEG3_BYTES).toString('base64');
+
+function admittedFunding(accountId = 'acc'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: 1,
+      decidedAt: 1,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: 1,
+      note: null,
+    },
+  ]);
+}
 
 function mount(
   authStore: InMemoryAuthStore,
@@ -2171,8 +2187,9 @@ describe('POST /messages', () => {
 
   it('pings spend once on a top-level post', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
-    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -2213,7 +2230,10 @@ describe('POST /messages', () => {
 
   it('does not ping spend a second time on photo replay', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
-    const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), { spendPing });
+    const app = mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    });
     const body = JSON.stringify({
       text: 'push photo',
       photo: { contentType: 'image/jpeg', data: JPEG_B64 },
@@ -2237,6 +2257,24 @@ describe('POST /messages', () => {
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
   });
 
+  it('skips spend ping when the poster is not funding-eligible', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
+  });
+
   it('returns 200 on a top-level post when spendPing is omitted', async () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
@@ -2252,8 +2290,9 @@ describe('POST /messages', () => {
         throw new Error('ping boom');
       }),
     };
-    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -2277,8 +2316,9 @@ describe('POST /messages', () => {
     form.set('text', 'clip');
     form.set('video', new File([mp4()], 'clip.mp4', { type: 'video/mp4' }));
     form.set('poster', new File([JPEG_BYTES], 'poster.jpg', { type: 'image/jpeg' }));
-    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
       headers: AUTH,

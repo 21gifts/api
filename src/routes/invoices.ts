@@ -12,6 +12,8 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { preimageMatchesHash } from '@/lib/proof';
+import { eligibleToday } from '@/lib/funding';
+import { InMemoryFundingStore, loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   NoopGiftRecorder,
@@ -79,6 +81,11 @@ export interface InvoiceRouteDeps {
    * when undefined, a `groupMessageId` is accepted but ignored (display only).
    */
   conversationStore?: Pick<ConversationStore, 'getById' | 'getMessageById' | 'appendMessage'>;
+  /**
+   * Funding grants for spend eligibility (default: empty
+   * {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -198,6 +205,7 @@ async function addressHasPosted(
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
 
   async function persistProvenGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
     try {
@@ -376,6 +384,27 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const hasPasskey = await addressHasPasskey(deps.authStore, address);
       return c.json({ hasPasskey }, 200);
     })
+    .get('/eligible', async (c) => {
+      const denied = authGate(
+        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
+        (body, status) => c.json(body, status),
+      );
+      if (denied !== null) {
+        return denied;
+      }
+
+      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      if (address === null) {
+        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+
+      const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined) {
+        return c.json({ eligible: false }, 200);
+      }
+      const grant = await loadGrantEffective(fundingStore, account.id, deps.now());
+      return c.json({ eligible: eligibleToday(account.role, grant, deps.now()) }, 200);
+    })
     .get('/posted', async (c) => {
       const denied = authGate(
         checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
@@ -455,6 +484,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (account === undefined || !(await deps.authStore.accountHasPasskey(account.id))) {
         logEvent('invoice.passkey_required', { address });
         return c.json({ error: 'Passkey required' }, 403);
+      }
+
+      const grant = await loadGrantEffective(fundingStore, account.id, deps.now());
+      if (!eligibleToday(account.role, grant, deps.now())) {
+        logEvent('invoice.funding_required', { address });
+        return c.json({ error: 'Funding grant required' }, 403);
       }
 
       let resolvedGroupMessageId: string | undefined;

@@ -228,6 +228,7 @@ describe('GET /me', () => {
       missing: string[];
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
+      funding: null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -242,6 +243,22 @@ describe('GET /me', () => {
     expect(body.missing).toEqual(['name', 'username', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
+    expect(body.funding).toBeNull();
+  });
+
+  it('returns funding none for a verified account without a grant', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { funding: unknown }).funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+    });
   });
 
   it('returns hasPosted false when the only live row is the profile note', async () => {

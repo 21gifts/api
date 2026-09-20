@@ -695,6 +695,27 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
   });
 
+  it('returns 403 when the account has a passkey but no funding grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      fundingStore: new InMemoryFundingStore(),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
+  });
+
   it('returns 403 when the account has a passkey but no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -2697,3 +2718,89 @@ describe('POST /invoices/proof', () => {
     ]);
   });
 });
+describe('GET /invoices/eligible', () => {
+  it('returns 503 when the spend token is not configured', async () => {
+    const res = await spendApp({ spendApiToken: '' }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  });
+
+  it('returns 401 when the bearer is missing', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 on a bad Lightning Address', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      '/invoices/eligible?address=nope',
+      auth(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when the address query is omitted', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request('/invoices/eligible', auth());
+    expect(res.status).toBe(400);
+  });
+
+  it('uses the default empty funding store when none is injected', async () => {
+    const res = await invoiceRoutes({
+      spendApiToken: TOKEN,
+      store: new InMemoryInvoiceStore(),
+      authStore: new InMemoryAuthStore(),
+      messageStore: new InMemoryMessageStore(),
+      now: () => 1,
+      fetchImpl: happyFetch(),
+    }).request(`/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('returns eligible false for an unknown address', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('returns eligible true when admitted today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({ spendApiToken: TOKEN, authStore }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: true });
+  });
+
+  it('returns eligible false when there is no grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore: new InMemoryFundingStore(),
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+});
+  it('returns eligible false when there is no grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore: new InMemoryFundingStore(),
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+

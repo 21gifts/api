@@ -41,8 +41,9 @@ import {
 } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
+import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
 
-/** Auth, gift, forum, contact, conversation, notification, push, trust, and FX persistence produced from `DATABASE_URL`. */
+/** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
   /** Durable or in-memory account store. */
   authStore: AuthStore;
@@ -96,6 +97,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   trustStore: TrustStore | undefined;
+  /**
+   * Postgres-backed funding-grant store, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  fundingStore: FundingStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -118,40 +124,42 @@ export interface BootFxOptions {
 
 /**
  * Open auth, optional gift, forum, contact, conversation, notification,
- * push, and trust persistence, and the BTC-USD and USD-fiat rate books from
- * `DATABASE_URL`.
+ * push, trust, and funding persistence, and the BTC-USD and USD-fiat rate
+ * books from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `contactStore: undefined`, `apiLogStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `trustStore: undefined`, `nostrKek: undefined`, an empty
- * {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}. A set
- * URL asks `createClient` for one `SqlClient`, migrates auth (via
+ * `trustStore: undefined`, `fundingStore: undefined`, `nostrKek: undefined`,
+ * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
+ * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
- * `api_log`, and `db_change` schemas (notification after push, trust after
- * notification, `api_log` after trust and immediately before `db_change` so
- * `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust
+ * after notification, funding after trust, `api_log` immediately before
+ * `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresContactStore}, {@link PostgresConversationStore},
- * {@link PostgresNotificationStore}, {@link PostgresPushStore}, and
- * {@link PostgresTrustStore}, parses `NOSTR_NSEC_KEK` into `nostrKek`,
- * constructs {@link PostgresBtcUsdStore} and {@link PostgresFiatStore}, and
- * best-effort fills rates for the outbound gift day range (BTC-USD failures
- * log `gifts.fx.boot_fill.failed`; fiat failures log
- * `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres message
- * store exists, it backfills zap-payment claims and best-effort backfills
- * external zappers after the `db_change` triggers are attached and before the
- * remaining Postgres stores are constructed. External-zapper backfill failures
- * log `nostr.zapper.backfill.failed` and do not abort boot.
+ * {@link PostgresNotificationStore}, {@link PostgresPushStore},
+ * {@link PostgresTrustStore}, and {@link PostgresFundingStore}, parses
+ * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
+ * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
+ * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
+ * log `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres
+ * message store exists, it backfills zap-payment claims and best-effort
+ * backfills external zappers after the `db_change` triggers are attached and
+ * before the remaining Postgres stores are constructed. External-zapper
+ * backfill failures log `nostr.zapper.backfill.failed` and do not abort boot.
  * Memory boots omit
- * `notificationStore` and `trustStore`, leave `nostrKek` undefined, and do
- * not run the `db_change` migrate. SQL boots return
- * {@link PostgresNotificationStore} and {@link PostgresTrustStore}.
- * `migrateTrustSchema` runs after auth/`account` exists and before
- * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`.
+ * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
+ * undefined, and do not run the `db_change` migrate. SQL boots return
+ * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
+ * {@link PostgresFundingStore}, and {@link PostgresApiLogStore}.
+ * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
+ * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
+ * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists) and
  * immediately before `migrateDbChangeSchema` so `trg_db_change` attaches
  * to `api_log`.
@@ -194,6 +202,7 @@ export async function openBootStores(
       notificationStore: undefined,
       pushStore: undefined,
       trustStore: undefined,
+      fundingStore: undefined,
     };
   }
 
@@ -207,6 +216,7 @@ export async function openBootStores(
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
   await migrateTrustSchema(sqlClient);
+  await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
 
@@ -263,6 +273,7 @@ export async function openBootStores(
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);
+  const fundingStore = new PostgresFundingStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -277,5 +288,6 @@ export async function openBootStores(
     notificationStore,
     pushStore,
     trustStore,
+    fundingStore,
   };
 }

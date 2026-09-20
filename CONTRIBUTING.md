@@ -49,10 +49,11 @@ api/
 │   │   ├── debug-trust.ts    # POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
 │   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
+│   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
-│   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
+│   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
@@ -75,6 +76,8 @@ api/
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
+│   │   ├── funding.ts        # Funding-grant types, utcDayKey, effectiveStatus, eligibleToday, owner/member JSON
+│   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
@@ -102,7 +105,7 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, BTC-USD and USD-fiat rates, KEK, db_change
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, BTC-USD and USD-fiat rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
@@ -180,6 +183,8 @@ api/
 │       │   ├── trust-store.test.ts
 │       │   ├── api-log.test.ts
 │       │   ├── request-auth.test.ts
+│       │   ├── funding.test.ts
+│       │   ├── funding-store.test.ts
 │       │   ├── conversation.test.ts
 │       │   ├── conversation-store.test.ts
 │       │   ├── conversation-push.test.ts
@@ -235,6 +240,7 @@ api/
 │           ├── debug-trust.test.ts
 │           ├── trust-chain.test.ts
 │           ├── trust.test.ts
+│           ├── funding.test.ts
 │           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
@@ -251,6 +257,7 @@ api/
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
+│   ├── funding_grant.sql     # funding-program grant (one row per account; spend ping / invoice gate)
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
