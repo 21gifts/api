@@ -805,7 +805,7 @@
 
 ## Function: conversationRoutes
 
-- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists `{ conversations, unreadCount }` (`unreadCount` = listed rows with `unread` true) for visible inbox threads and always passes `moderator: false` into `listVisible` (never ensures, pins, or returns `moderator_group`); `POST /` opens a thread from `{ forumMessageId }`; `GET /moderator-group` (before `GET /:id`) is the moderator-only tool: `ensureModeratorGroup` then `{ conversation }` (with `unread` from `hasUnread`); non-moderator 404; missing platform / store failure 503 `conversations.moderator_group.failed`; `GET /:id` lists messages oldest-first (`?sinceMessageId=` long-poll); `POST /:id/read` stamps last-read (mount before `POST /:id`); `POST /:id` appends `{ text }`; `POST /:id/invoice` issues a NIP-57 gift invoice. Staff (founder/moderator) see all platform threads and reply as the platform nsec. `moderator_group` ACL is `role === 'moderator'` only (founder 404). `POST /:id` on this kind persists as the moderator (not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` only when Lightning Address is non-empty after trim **and** a live living-room top-level post exists on this UTC day; no living-room post today → 200, no ping, `spend.ping.skipped` / `no_public_post`; living-room lookup failure after persist → 200, no ping, `spend.ping.skipped` / `posted_unreachable`; ping throw still 200.
+- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists `{ conversations, unreadCount }` (`unreadCount` = listed rows with `unread` true) for visible inbox threads and always passes `moderator: false` into `listVisible` (never ensures, pins, or returns `moderator_group`); `POST /` opens a thread from `{ forumMessageId }`; `GET /moderator-group` (before `GET /:id`) is the closed-group tool for `roleAtLeast(..., 'moderator')` (moderator or founder): `ensureModeratorGroup` then `{ conversation }` (with `unread` from `hasUnread`); verified/basis 404; missing platform / store failure 503 `conversations.moderator_group.failed`; `GET /:id` lists messages oldest-first (`?sinceMessageId=` long-poll); `POST /:id/read` stamps last-read (mount before `POST /:id`); `POST /:id` appends `{ text }`; `POST /:id/invoice` issues a NIP-57 gift invoice. Staff (founder/moderator) see all platform threads and reply as the platform nsec. `moderator_group` ACL is `roleAtLeast(..., 'moderator')` (moderator or founder 200; verified/basis 404). `POST /:id` on this kind persists as the caller (moderator or founder, not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` only when Lightning Address is non-empty after trim **and** a live living-room top-level post exists on this UTC day (same ping when a founder posts); no living-room post today → 200, no ping, `spend.ping.skipped` / `no_public_post`; living-room lookup failure after persist → 200, no ping, `spend.ping.skipped` / `posted_unreachable`; ping throw still 200.
 - **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`, optional `spendPing`, optional `fetchImpl` / `nostrKek` / `invoiceLimiter` / wait injects, optional `pushStore` and `notificationStore`.
 - **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet; 404 when not allowed; 429 Too many payments; 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw (`conversations.list.failed` / `conversations.read.failed`). After a successful `POST /:id` append, `notifyConversationMessage` is void-caught (`conversations.push.failed`) so 200 is unchanged. Public list/open JSON includes `unread` and `lastSats` and may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`.
 - **Used by:** `createApp`.
@@ -966,7 +966,7 @@
 
 ## Function: isStaffAccount
 
-- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. `role` `founder` or `moderator` is staff. `isPlatform === true` is staff even when `role` is `basis`. `verified` is not staff. Does not parse display names or @mentions out of post text.
+- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles (`founder` / `moderator` true; `basis` / `verified` false). `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings take an explicit not-staff branch and never call `roleAtLeast`. Does not parse display names or @mentions out of post text.
 - **Inputs:** `{ role: string; isPlatform?: boolean }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap` via `actorIsStaffFromAuth`.
@@ -987,14 +987,14 @@
 
 ## Function: inboxUnreadCountFor
 
-- **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff from `getAccount` + `isStaffRole`; `moderator` when `role === 'moderator'` (so `moderator_group` counts); platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
+- **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff and the `moderator` flag both come from `getAccount` + `roleAtLeast(role, 'moderator')`, so founder and moderator are identical. GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for anyone at least moderator — the same former exact-moderator rule, now including founder. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
 - **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `invoiceRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
 
 ## Function: notifyConversationMessage
 
-- **Purpose:** Enqueue one `type: 'conversation'` Web Push per 21.gifts recipient with at least one `push_subscription`. No-op when `pushStore` is omitted. Does not write in-app Notification rows. Payload from `buildConversationPushPayload` plus `unreadCount` = notification unread + listed inbox unread (missing source 0). `messageId` is the conversation message UUID. For `moderator_group`, recipients are other `role === 'moderator'` accounts from `listAccounts`. Per-recipient failures log `conversations.push.failed` and continue; throws after the loop when any failed. Callers still catch so HTTP/Nostr ingest stays 200.
+- **Purpose:** Enqueue one `type: 'conversation'` Web Push per 21.gifts recipient with at least one `push_subscription`. No-op when `pushStore` is omitted. Does not write in-app Notification rows. Payload from `buildConversationPushPayload` plus `unreadCount` = notification unread + listed inbox unread (missing source 0). `messageId` is the conversation message UUID. For `moderator_group`, recipients are every account with `roleAtLeast(role, 'moderator')` from `listAccounts` (founder included). Per-recipient failures log `conversations.push.failed` and continue; throws after the loop when any failed. Callers still catch so HTTP/Nostr ingest stays 200.
 - **Inputs:** `{ pushStore?, notifications?, conversations, authStore, thread, message, nowMs }`.
 - **Returns / side effects:** Void. Skip recipients with zero subscriptions. Title is `message.name` or `21.gifts` when empty. URL `/messages?c=<conversationId>`. Tag `conversation:<conversationId>`.
 - **Used by:** `conversationRoutes` `POST /:id`; `contactRoutes` after conversation append; `indexInboundDirectMessages` after inbound persist.
@@ -1821,16 +1821,30 @@
 - **Returns / side effects:** mkdir, write UUID sibling temp, `rename` onto the public path so readers never see a partial file.
 - **Used by:** `MessageStore.create`; `debugMessagesRoutes`.
 
+## Function: roleRank
+
+- **Purpose:** Integer rank of a live `AccountRole` in `ROLE_ORDER` (`basis` = 0, `verified` = 1, `moderator` = 2, `founder` = 3). `ROLE_ORDER` is lowest to highest; the index is the rank.
+- **Inputs:** `role` (`AccountRole`).
+- **Returns / side effects:** Integer 0–3. No I/O.
+- **Used by:** `roleAtLeast`.
+
+## Function: roleAtLeast
+
+- **Purpose:** Whether a caller's live role meets a minimum on the product hierarchy `founder > moderator > verified > basis`. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Checks on the _subject_ of an action stay exact (state, not permission).
+- **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `notifyConversationMessage`.
+
 ## Function: isStaffRole
 
-- **Purpose:** True when `account.role` may run staff trust routes. Founder and moderator return true; `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately).
+- **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. Founder and moderator return true; `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
 - **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `founder`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustRoutes`.
 
 ## Function: isChainAccount
 
-- **Purpose:** True when `account.role` appears on the public Trust Chain (`founder`, `moderator`, or `verified`). `basis` is false.
+- **Purpose:** True when `account.role` appears on the public Trust Chain. Delegates to `roleAtLeast(account.role, 'verified')` (`founder`, `moderator`, or `verified`). `basis` is false.
 - **Inputs:** `Account`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain?around=`).

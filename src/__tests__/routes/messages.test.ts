@@ -954,6 +954,47 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toHaveLength(1);
   });
 
+  it('lets a moderator reply without paying', async () => {
+    const authStore = await namedStore('Ada');
+    const acc = await authStore.getAccount('acc');
+    expect(acc).toBeDefined();
+    if (acc === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({ ...acc, role: 'moderator' });
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'bless you', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect(await messageStore.listReplies(parentId)).toHaveLength(1);
+  });
+
   it('lets a founder reply without paying', async () => {
     const authStore = await namedStore('Ada');
     const acc = await authStore.getAccount('acc');

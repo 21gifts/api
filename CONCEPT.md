@@ -138,7 +138,9 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 
 ### Roles
 
-One exclusive `account.role` per account. New passkey accounts are **Basis**.
+One exclusive `account.role` per account. Roles form a strict hierarchy
+`founder > moderator > verified > basis`: a higher role can always do and
+see everything a lower role can. New passkey accounts are **Basis**.
 `verified` is a founder or moderator confirming this person in real life
 (forum badge), not Lightning-Address proof. A **moderator** is proposed by
 an existing moderator or founder and confirmed by a **different** staff
@@ -153,12 +155,12 @@ write trust edges; `POST /debug/trust-edges` backfills stored edges and
 `DELETE /debug/trust-edges` removes one `(subjectId, kind)` row, both
 without changing `role`.
 
-| Role      | Capabilities                                                                                                        |
-| --------- | ------------------------------------------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                  |
-| Verified  | Basis, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. |
-| Moderator | Basis, plus extended permissions for content moderation. Forum tag.                                                 |
-| Founder   | Basis, plus a forum tag for the people who started 21.gifts.                                                        |
+| Role      | Capabilities                                                                                                                                                            |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                      |
+| Verified  | Everything Basis can, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment. |
+| Moderator | Everything Verified can, plus content moderation, the staff inbox and the closed Moderators group. Forum tag.                                                           |
+| Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                               |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator, and
@@ -512,7 +514,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   the spend worker)
 - Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
   official platform account; `Account.isPlatform`; `moderator_group` is a
-  closed moderator-only HTTP group with no Nostr, not founder)
+  closed HTTP group for moderator or founder with no Nostr)
 - Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
   `GET /messages/:id`
 - NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
@@ -528,8 +530,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Non-custodial donor spending (replaces the v1 spend worker)
 - Non-custodial client-side DMs (v1 ships a custodial PN channel on
   `/conversations`: NIP-17 + kind:4, official platform account;
-  `moderator_group` is a closed moderator-only HTTP group with no Nostr,
-  not founder)
+  `moderator_group` is a closed HTTP group for moderator or founder with
+  no Nostr)
 - NIP-57 Zap receipts / leaderboards
 - NIP-05 verification badge
 - Native mobile app
@@ -834,6 +836,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-17 | Inbox last-read is per (account, conversation). `GET /conversations` adds per-row `unread` and list `unreadCount`; `POST /conversations/:id/read` stamps last-read. Does not copy DMs into Notifications.                                                                                                                                                                                                                                                                                                                                          |
 | 2026-09-17 | Inbound private messages enqueue Web Push (`type: conversation`, url `/messages?c=<id>`, tag `conversation:<id>`) to bell subscribers only. No in-app Notification rows for DMs. Every outbox `unreadCount` (forum, zap, conversation) is notification unread plus listed inbox unread. Push failure does not fail HTTP 200 or Nostr ingest.                                                                                                                                                                                                       |
 | 2026-09-17 | A living-room note may carry up to 10 JPEG/PNG/WebP stills. Photo 0 stays on `message.photo` (Damus `/photo.jpg` unchanged). Extras 1–9 live in `message_extra_photo` and are served at `/messages/:id/photo/1.jpg` … `/photo/9.webp`. Public JSON includes `photoCount` (0–10). POST accepts `photos[]` (max 10) and still accepts singular `photo`. Video stays exclusive (poster = photo 0, no extras).                                                                                                                                         |
+| 2026-09-20 | Roles are a strict hierarchy founder > moderator > verified > basis; every permission is a minimum role (roleAtLeast). The closed Moderators group is open to founders.                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## Next Steps
 

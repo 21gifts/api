@@ -200,6 +200,52 @@ describe('inboxUnreadCountFor', () => {
     );
     expect(await inboxUnreadCountFor(conversations, auth)('staff')).toBe(1);
   });
+
+  it('treats founder and moderator identically for staff-visible platform unread', async () => {
+    const conversations = new InMemoryConversationStore();
+    const auth = new InMemoryAuthStore();
+    for (const item of [
+      { id: 'mod', role: 'moderator' as const, name: 'Mod', key: 'm' },
+      { id: 'founder', role: 'founder' as const, name: 'Founder', key: 'f' },
+    ]) {
+      await auth.createAccount({
+        id: item.id,
+        linkingKey: null,
+        role: item.role,
+        name: item.name,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: item.key.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+    }
+    await auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'p'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const opened = await conversations.openMemberPlatform('mem', 'plat', NOW);
+    await conversations.appendMessage(
+      message({ conversationId: opened.id, senderAccountId: 'mem' }),
+    );
+    const unreadOf = inboxUnreadCountFor(conversations, auth);
+    const moderatorUnread = await unreadOf('mod');
+    const founderUnread = await unreadOf('founder');
+    expect(moderatorUnread).toBe(1);
+    expect(founderUnread).toBe(moderatorUnread);
+  });
 });
 
 describe('notifyConversationMessage', () => {
@@ -249,6 +295,60 @@ describe('notifyConversationMessage', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('mod-b');
     expect(claimed[0]?.type).toBe('conversation');
+  });
+
+  it('enqueues for a founder alongside moderators on moderator_group and excludes the sender', async () => {
+    const conversations = new InMemoryConversationStore();
+    const group = await conversations.ensureModeratorGroup('plat', NOW);
+    const push = new InMemoryPushStore();
+    const auth = new InMemoryAuthStore();
+    const accounts = [
+      { id: 'mod-a', role: 'moderator' as const },
+      { id: 'mod-b', role: 'moderator' as const },
+      { id: 'founder-a', role: 'founder' as const },
+    ];
+    for (const item of accounts) {
+      await subscribe(push, item.id);
+      await auth.createAccount({
+        id: item.id,
+        linkingKey: null,
+        role: item.role,
+        name: item.id,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: `${item.id}-key`.padEnd(64, '0'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+    }
+    await notifyConversationMessage({
+      pushStore: push,
+      conversations,
+      authStore: auth,
+      thread: group,
+      message: message({ conversationId: group.id, senderAccountId: 'mod-a' }),
+      nowMs: NOW.getTime(),
+    });
+    const afterModerator = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(afterModerator.map((row) => row.accountId).sort()).toEqual(['founder-a', 'mod-b']);
+    expect(afterModerator.every((row) => row.type === 'conversation')).toBe(true);
+    await notifyConversationMessage({
+      pushStore: push,
+      conversations,
+      authStore: auth,
+      thread: group,
+      message: message({
+        id: '22222222-2222-4222-8222-222222222222',
+        conversationId: group.id,
+        senderAccountId: 'founder-a',
+      }),
+      nowMs: NOW.getTime(),
+    });
+    const afterFounder = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(afterFounder.map((row) => row.accountId).sort()).toEqual(['mod-a', 'mod-b']);
+    expect(afterFounder.every((row) => row.type === 'conversation')).toBe(true);
   });
 
   it('skips recipients with zero subscriptions', async () => {

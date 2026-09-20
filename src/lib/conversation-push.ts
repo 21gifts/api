@@ -4,6 +4,7 @@
  * Does not write in-app Notification rows. Inbox stays the DM surface.
  */
 
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { AuthStore } from '@/lib/auth/store';
 import {
   conversationPushRecipientIds,
@@ -15,15 +16,17 @@ import { logEvent } from '@/lib/log';
 import type { NotificationStore } from '@/lib/notification-store';
 import { buildConversationPushPayload } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
-import { isStaffRole } from '@/lib/trust';
 
 /**
  * Inbox unread callback for forum/zap fan-out.
  *
- * Staff comes from `getAccount` + `isStaffRole`; `moderator` from
- * `role === 'moderator'` (pins `moderator_group` like GET `/conversations`);
- * platform id from `listAccounts` / `isPlatform`. Lookup failure yields
- * staff false, `moderator` false, and `platformId` null.
+ * Staff and the `moderator` flag both come from `getAccount` +
+ * `roleAtLeast(role, 'moderator')`, so founder and moderator are identical.
+ * GET `/conversations` never lists `moderator_group` (fifth argument always
+ * false); this helper still pins that thread in the badge unread count for
+ * anyone at least moderator — the same former exact-moderator rule, now
+ * including founder. Platform id from `listAccounts` / `isPlatform`. Lookup
+ * failure yields staff false, `moderator` false, and `platformId` null.
  *
  * @param conversations - Conversation store.
  * @param auth - Account lookup.
@@ -39,8 +42,9 @@ export function inboxUnreadCountFor(
     let platformId: string | null = null;
     try {
       const account = await auth.getAccount(accountId);
-      staff = account !== undefined && isStaffRole(account.role);
-      moderator = account?.role === 'moderator';
+      const atLeastModerator = account !== undefined && roleAtLeast(account.role, 'moderator');
+      staff = atLeastModerator;
+      moderator = atLeastModerator;
       const accounts = await auth.listAccounts();
       const platform = accounts.find((item) => item.isPlatform === true);
       platformId = platform === undefined ? null : platform.id;
@@ -89,7 +93,9 @@ export async function notifyConversationMessage(args: {
   let moderatorIds: string[] = [];
   if (args.thread.kind === 'moderator_group') {
     const accounts = await args.authStore.listAccounts();
-    moderatorIds = accounts.filter((item) => item.role === 'moderator').map((item) => item.id);
+    moderatorIds = accounts
+      .filter((item) => roleAtLeast(item.role, 'moderator'))
+      .map((item) => item.id);
   }
   const recipientIds = conversationPushRecipientIds(
     args.thread,
