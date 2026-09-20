@@ -102,9 +102,13 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
         residentKey: 'required',
         userVerification: 'required',
       },
-      excludeCredentials: input.excludeCredentials?.map((credential) => ({
-        id: credential.id,
-      })),
+      ...(input.excludeCredentials === undefined
+        ? {}
+        : {
+            excludeCredentials: input.excludeCredentials.map((credential) => ({
+              id: credential.id,
+            })),
+          }),
       // PRF is not on AuthenticationExtensionsClientInputs in this SimpleWebAuthn release.
       extensions: { prf: {} } as never,
     });
