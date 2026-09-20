@@ -17,9 +17,10 @@ import { SESSION_TTL_MS } from '@/lib/config';
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param account - The account the session should authenticate.
- * @returns The new token and the same account.
+ * @returns The new token and the current account row.
  * @throws Error with message {@link WRONG_ACCOUNT_ERROR} when
- * {@link isWrongAccount} is true; no session row is written.
+ * {@link isWrongAccount} is true or {@link AuthStore.tryCreateSession}
+ * writes no row; no session is persisted.
  */
 export async function issueSession(
   store: AuthStore,
@@ -30,8 +31,16 @@ export async function issueSession(
     throw new Error(WRONG_ACCOUNT_ERROR);
   }
   const token = randomHex(32);
-  await store.createSession({ token, accountId: account.id, createdAt: now });
-  return { token, account };
+  const inserted = await store.tryCreateSession({
+    token,
+    accountId: account.id,
+    createdAt: now,
+  });
+  if (!inserted) {
+    throw new Error(WRONG_ACCOUNT_ERROR);
+  }
+  const current = await store.getAccount(account.id);
+  return { token, account: current ?? account };
 }
 
 /**

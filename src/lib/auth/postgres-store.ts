@@ -158,8 +158,7 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $14,
              location = $15,
              notification_level = $16,
-             username = $17,
-             session_refused = $18
+             username = $17
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -186,7 +185,6 @@ export class PostgresAuthStore implements AuthStore {
           account.location,
           account.notificationLevel ?? 'all',
           account.username ?? null,
-          account.sessionRefused === true,
         ],
       );
     } catch (error: unknown) {
@@ -312,6 +310,29 @@ export class PostgresAuthStore implements AuthStore {
        VALUES ($1, $2, to_timestamp($3::double precision / 1000.0))`,
       [session.token, session.accountId, session.createdAt],
     );
+  }
+
+  async tryCreateSession(session: Session): Promise<boolean> {
+    await this.#evictExpiredSessions(session.createdAt);
+    const rows = await this.#sql.query<{ token: string }>(
+      `INSERT INTO auth_session (token, account_id, created_at)
+       SELECT $1, id, to_timestamp($3::double precision / 1000.0)
+       FROM account
+       WHERE id = $2 AND session_refused IS NOT TRUE
+       RETURNING token`,
+      [session.token, session.accountId, session.createdAt],
+    );
+    return rows.length > 0;
+  }
+
+  async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `UPDATE account SET session_refused = $2 WHERE id = $1
+       RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, refused],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
   }
 
   async getSession(token: string): Promise<Session | undefined> {

@@ -229,7 +229,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
-    expect(sql.executes[1]?.text).toMatch(/session_refused = \$18/);
+    expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -249,7 +249,6 @@ describe('PostgresAuthStore', () => {
       null,
       'all',
       null,
-      false,
     ]);
   });
 
@@ -276,10 +275,8 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
-    expect(sql.executes[1]?.text).toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.params[15]).toBe('active');
     expect(sql.executes[1]?.params[16]).toBeNull();
-    expect(sql.executes[1]?.params[17]).toBe(false);
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {
@@ -667,6 +664,48 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/DELETE FROM auth_session/);
     expect(sql.executes[0]?.params[0]).toBe(9_000 - SESSION_TTL_MS);
     expect(sql.executes[1]?.text).toMatch(/INSERT INTO auth_session/);
+  });
+
+  it('tryCreateSession inserts only when session_refused is not true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ token: 'tok' }];
+    expect(
+      await new PostgresAuthStore(sql).tryCreateSession({
+        token: 'tok',
+        accountId: 'acc',
+        createdAt: 9_000,
+      }),
+    ).toBe(true);
+    expect(sql.executes[0]?.text).toMatch(/DELETE FROM auth_session/);
+    expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
+    expect(sql.queries[0]?.params).toEqual(['tok', 'acc', 9_000]);
+  });
+
+  it('tryCreateSession returns false when the insert matches no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).tryCreateSession({
+        token: 'tok',
+        accountId: 'acc',
+        createdAt: 9_000,
+      }),
+    ).toBe(false);
+  });
+
+  it('setSessionRefused updates only that column', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, session_refused: true }];
+    const updated = await new PostgresAuthStore(sql).setSessionRefused('acc', true);
+    expect(updated?.sessionRefused).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/SET session_refused = \$2/);
+    expect(sql.queries[0]?.params).toEqual(['acc', true]);
+  });
+
+  it('setSessionRefused returns undefined when the id is unknown', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).setSessionRefused('missing', true)).toBeUndefined();
   });
 
   it('maps a session row', async () => {

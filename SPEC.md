@@ -320,7 +320,7 @@ ID).
 | 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                         |
 | 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                      |
 | 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                   |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Listed duplicate account; no bearer is persisted                    |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted               |
 
 **Response** `200`:
 

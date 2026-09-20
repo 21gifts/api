@@ -10,7 +10,7 @@ import { meRoutes } from '@/routes/me';
 
 const now = (): number => 1_000_000;
 const ORIGIN = 'http://localhost:3000';
-const LISTED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+const REFUSED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
 
 function mount(store: InMemoryAuthStore, webAuthnRpId: string | undefined = 'localhost'): Hono {
   return new Hono().route(
@@ -288,11 +288,11 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({ error: 'Invalid passkey' });
     });
 
-    it('returns 403 when finishing registration for a listed account', async () => {
+    it('returns 403 when finishing registration for a sessionRefused account', async () => {
       const store = new InMemoryAuthStore();
       const viewKey = 'a'.repeat(64);
       await store.createAccount({
-        id: LISTED_ID,
+        id: REFUSED_ID,
         linkingKey: null,
         role: 'basis',
         name: null,
@@ -407,10 +407,10 @@ describe('auth routes', () => {
       ).toBe(true);
     });
 
-    it('returns 403 when finishing authentication for a listed account', async () => {
+    it('returns 403 when finishing authentication for a sessionRefused account', async () => {
       const store = new InMemoryAuthStore();
       await store.createAccount({
-        id: LISTED_ID,
+        id: REFUSED_ID,
         linkingKey: null,
         role: 'basis',
         name: null,
@@ -427,7 +427,7 @@ describe('auth routes', () => {
         credentialId: 'cred-1',
         publicKey: new Uint8Array([1, 2, 3]),
         signCount: 0,
-        accountId: LISTED_ID,
+        accountId: REFUSED_ID,
         createdAt: 1,
       });
       const app = mount(store);

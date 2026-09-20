@@ -462,7 +462,7 @@ describe('debugRoutes', () => {
     expect(again.status).toBe(200);
   });
 
-  it('POST /:id/session refuses a listed account', async () => {
+  it('POST /:id/session refuses a sessionRefused account', async () => {
     const store = new InMemoryAuthStore();
     const id = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
     await store.createAccount({

@@ -52,6 +52,33 @@ describe('issueSession', () => {
     await expect(issueSession(store, T0, account)).rejects.toThrow(WRONG_ACCOUNT_ERROR);
     expect(createSession).not.toHaveBeenCalled();
   });
+
+  it('does not mint when tryCreateSession fails after a concurrent refuse', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store);
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    const createSession = vi.spyOn(store, 'createSession');
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+    await expect(issueSession(store, T0, account)).rejects.toThrow(WRONG_ACCOUNT_ERROR);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('returns the issued account when reload finds no row', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store);
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(true);
+    vi.spyOn(store, 'getAccount').mockResolvedValue(undefined);
+    const issued = await issueSession(store, T0, account);
+    expect(issued.account).toBe(account);
+    expect(issued.token).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
 
 describe('resolveSession', () => {

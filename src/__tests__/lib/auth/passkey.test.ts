@@ -14,7 +14,7 @@ import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
 const T0 = 1_000_000;
-const LISTED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+const REFUSED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
 const CONFIG: WebAuthnRuntimeConfig = {
   rpId: 'localhost',
   rpName: '21.gifts',
@@ -428,7 +428,7 @@ describe('passkey claim', () => {
   it('refuses a listed existing account before issuing a session', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
-      id: LISTED_ID,
+      id: REFUSED_ID,
       linkingKey: null,
       role: 'basis',
       name: null,
@@ -445,7 +445,7 @@ describe('passkey claim', () => {
       id: 'ch',
       type: 'register',
       challenge: 'test-challenge',
-      accountId: LISTED_ID,
+      accountId: REFUSED_ID,
       consumed: false,
       createdAt: T0,
     });
@@ -659,11 +659,11 @@ describe('passkey authentication', () => {
     expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
   });
 
-  it('refuses a listed account before issuing a session', async () => {
+  it('refuses a sessionRefused account before issuing a session', async () => {
     const store = new InMemoryAuthStore();
     const ceremony = new FakePasskeyCeremony();
     await store.createAccount({
-      id: LISTED_ID,
+      id: REFUSED_ID,
       linkingKey: null,
       role: 'basis',
       name: null,
@@ -680,7 +680,7 @@ describe('passkey authentication', () => {
       credentialId: 'cred-1',
       publicKey: new Uint8Array([1, 2, 3]),
       signCount: 0,
-      accountId: LISTED_ID,
+      accountId: REFUSED_ID,
       createdAt: T0,
     });
     const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);

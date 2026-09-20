@@ -380,10 +380,13 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;
       }
-      if (parsed.data.sessionRefused !== undefined) {
-        updated.sessionRefused = parsed.data.sessionRefused;
-      }
       await deps.store.updateAccount(updated);
+      if (parsed.data.sessionRefused !== undefined) {
+        const flagged = await deps.store.setSessionRefused(updated.id, parsed.data.sessionRefused);
+        if (flagged !== undefined) {
+          updated.sessionRefused = flagged.sessionRefused === true;
+        }
+      }
       if (parsed.data.lightningAddress === null) {
         await deps.store.deleteVerification(updated.id);
         logEvent('debug.accounts.lightning_address.cleared', { accountId: updated.id });
