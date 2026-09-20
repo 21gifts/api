@@ -730,7 +730,7 @@
 
 ## Endpoint: GET /debug/dump
 
-- **Purpose:** Operator catalog of every allowlisted Postgres table as camelCase JSON (cap 200 per table), including `nostr_zapper`, `nostr_blocked_pubkey`, and `api_log`. Media bytes stay off JSON (`photoBytes` / extra-photo `bytes` are lengths). `nostr_nsec_ciphertext` is envelope hex. `btc_usd_daily` / `usd_fiat_daily` dump stored rate rows when the rate books expose `listDebug`; `db_change` dumps when a list port is wired (in-memory boots dump `[]`). `api_log` dumps when `apiLogStore` is wired (same rows as `GET /debug/api-log`).
+- **Purpose:** Operator catalog of every allowlisted Postgres table as camelCase JSON (cap 200 per table), including `nostr_zapper`, `nostr_blocked_pubkey`, and `api_log`. Media bytes stay off JSON (`photoBytes` / extra-photo `bytes` are lengths). `nostrNsecCiphertext` is envelope hex. `btc_usd_daily` / `usd_fiat_daily` dump stored rate rows when the rate books expose `listDebug`; `db_change` dumps when a list port is wired (in-memory boots dump `[]`). `api_log` dumps when `apiLogStore` is wired (same rows as `GET /debug/api-log`).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Dump is unavailable' }` when a store throws.
 - **Used by:** Operator `gifts-debug dump`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
