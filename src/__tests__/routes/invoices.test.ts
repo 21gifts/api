@@ -35,9 +35,7 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
-function createApp(
-  deps: Parameters<typeof createAppRaw>[0] = {},
-): ReturnType<typeof createAppRaw> {
+function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
   return createAppRaw({
     fundingStore: admittedStore(),
     ...deps,
@@ -2892,4 +2890,3 @@ describe('GET /invoices/eligible', () => {
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
 });
-
