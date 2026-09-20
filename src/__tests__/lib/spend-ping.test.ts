@@ -156,7 +156,7 @@ describe('HttpSpendPing', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
-  it('POSTs JSON { address, kind: "moderator" } without messageId', async () => {
+  it('POSTs JSON { address, kind: "moderator", groupMessageId } without messageId', async () => {
     let seenInit: RequestInit | undefined;
     const fetchImpl: FetchFn = async (_input, init) => {
       seenInit = init;
@@ -170,7 +170,13 @@ describe('HttpSpendPing', () => {
     expect(seenInit?.method).toBe('POST');
     expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
     expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
-    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS, kind: 'moderator' }));
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        kind: 'moderator',
+        groupMessageId: MESSAGE_ID,
+      }),
+    );
     expect(String(seenInit?.body)).not.toContain('messageId');
     expect(
       parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),

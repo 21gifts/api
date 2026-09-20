@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
@@ -28,7 +29,9 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * a reply, the proof persists a deterministic `spendGiftReplyId` marker
  * under that reply, `markDeleted` so live `listReplies` omits it, then
  * `addSats`s the reply. A live existing marker is `markDeleted` only and
- * does not `addSats`. Platform gift-replies do not notify. The api does not pay.
+ * does not `addSats`. Platform gift-replies do not notify. A proof with
+ * `groupMessageId` attaches a platform stipend message in the closed
+ * Moderators group. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -71,6 +74,11 @@ export interface InvoiceRouteDeps {
    * Insert failures are logged; proof still returns 200.
    */
   giftRecorder?: GiftRecorder;
+  /**
+   * Conversation store for the moderator-group stipend reference. Optional —
+   * when undefined, a `groupMessageId` is accepted but ignored (display only).
+   */
+  conversationStore?: Pick<ConversationStore, 'getById' | 'getMessageById' | 'appendMessage'>;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -80,12 +88,24 @@ const issueBodySchema = z.object({
   amountMsat: z.number().int(),
   comment: z.string().max(255).optional(),
   messageId: z.string().optional(),
+  groupMessageId: z.string().optional(),
 });
 
 const proofBodySchema = z.object({
   id: z.string().min(1),
   preimage: z.string(),
 });
+
+/**
+ * Format a SHA-256 hex digest as a version-5-style UUID.
+ *
+ * @param hex - 64-character SHA-256 hex digest.
+ * @returns UUID string.
+ */
+function deterministicUuidFromHex(hex: string): string {
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
 
 /**
  * Deterministic gift-reply id for a spend invoice so a retry of the same
@@ -96,8 +116,19 @@ const proofBodySchema = z.object({
  */
 function spendGiftReplyId(invoiceId: string): string {
   const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
-  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+  return deterministicUuidFromHex(hex);
+}
+
+/**
+ * Deterministic Moderators-group stipend message id for a spend invoice so
+ * a retry of the same proof is idempotent on `conversation_message.id`.
+ *
+ * @param invoiceId - Gift invoice id.
+ * @returns UUID derived from SHA-256 of `21gifts-spend-group-gift:` and invoice id.
+ */
+function spendGroupGiftId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-group-gift:${invoiceId}`).digest('hex');
+  return deterministicUuidFromHex(hex);
 }
 
 /**
@@ -162,7 +193,7 @@ async function addressHasPosted(
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder.
+ *   optional gift recorder, optional conversation store.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
@@ -176,7 +207,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         feeSats: 0,
         recipientWosUser: recipientHandleFromAddress(invoice.address),
         lightningInvoice: invoice.pr,
-        description: '21gifts daily',
+        description: invoice.groupMessageId !== undefined ? '21gifts moderator' : '21gifts daily',
         sourceWallet: 'lightning.space',
       });
     } catch {
@@ -256,9 +287,77 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
     }
   }
 
+  /**
+   * Insert a platform stipend message in the closed Moderators group after
+   * the triggering group message. No-op without `groupMessageId` or a
+   * conversation store. Idempotent on the deterministic message id.
+   *
+   * @param invoice - Proven gift invoice.
+   * @param paidAtMs - Proof clock, epoch milliseconds.
+   */
+  async function attachSpendGroupGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+    if (invoice.groupMessageId === undefined || deps.conversationStore === undefined) {
+      return;
+    }
+    const conversationStore = deps.conversationStore;
+    try {
+      const id = spendGroupGiftId(invoice.id);
+      const existing = await conversationStore.getMessageById(id);
+      if (existing !== undefined) {
+        return;
+      }
+      const row = await conversationStore.getMessageById(invoice.groupMessageId);
+      const thread =
+        row === undefined ? undefined : await conversationStore.getById(row.conversationId);
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (
+        row === undefined ||
+        thread === undefined ||
+        thread.kind !== 'moderator_group' ||
+        platform === undefined
+      ) {
+        logEvent('invoice.group_gift.failed');
+        return;
+      }
+      const recipient =
+        row.senderAccountId === null
+          ? undefined
+          : await deps.authStore.getAccount(row.senderAccountId);
+      const recipientName = recipient?.name?.trim() ?? '';
+      const comment = invoice.comment ?? '';
+      const text =
+        comment !== '' && recipientName !== ''
+          ? `${comment} · ${recipientName}`
+          : comment !== ''
+            ? comment
+            : recipientName;
+      const platformNameTrim = platform.name?.trim() ?? '';
+      const platformName = platformNameTrim !== '' ? platformNameTrim : '21.gifts';
+      await conversationStore.appendMessage({
+        id,
+        conversationId: thread.id,
+        text,
+        createdAt: new Date(paidAtMs),
+        senderAccountId: platform.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
+        name: platformName,
+        sats: Math.floor(invoice.amountMsat / 1000),
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+      logEvent('invoice.group_gift.attached', { id: invoice.id });
+    } catch {
+      logEvent('invoice.group_gift.failed');
+    }
+  }
+
   async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
     await persistProvenGift(invoice, paidAtMs);
     await attachSpendGiftReply(invoice, paidAtMs);
+    await attachSpendGroupGift(invoice, paidAtMs);
   }
 
   return new Hono()
@@ -336,7 +435,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
-      if (parsed.data.messageId !== undefined && !MESSAGE_ID_RE.test(parsed.data.messageId)) {
+      if (
+        (parsed.data.messageId !== undefined && !MESSAGE_ID_RE.test(parsed.data.messageId)) ||
+        (parsed.data.messageId !== undefined && parsed.data.groupMessageId !== undefined) ||
+        (parsed.data.groupMessageId !== undefined &&
+          !MESSAGE_ID_RE.test(parsed.data.groupMessageId))
+      ) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
@@ -355,6 +459,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Passkey required' }, 403);
       }
 
+      let resolvedGroupMessageId: string | undefined;
       if (parsed.data.messageId !== undefined) {
         const message = await deps.messageStore.getById(parsed.data.messageId);
         if (
@@ -385,6 +490,37 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         if (!hasPosted) {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
+        }
+        if (parsed.data.groupMessageId !== undefined) {
+          // Display only: a failing lookup must never block the payout.
+          try {
+            const conversationStore = deps.conversationStore;
+            const row =
+              conversationStore === undefined
+                ? undefined
+                : await conversationStore.getMessageById(parsed.data.groupMessageId);
+            const thread =
+              conversationStore === undefined || row === undefined
+                ? undefined
+                : await conversationStore.getById(row.conversationId);
+            const accounts = await deps.authStore.listAccounts();
+            const platform = accounts.find((item) => item.isPlatform === true);
+            if (
+              conversationStore !== undefined &&
+              row !== undefined &&
+              thread !== undefined &&
+              thread.kind === 'moderator_group' &&
+              row.senderAccountId === account.id &&
+              platform !== undefined
+            ) {
+              resolvedGroupMessageId = parsed.data.groupMessageId;
+            }
+          } catch {
+            resolvedGroupMessageId = undefined;
+          }
+          if (resolvedGroupMessageId === undefined) {
+            logEvent('invoice.group_message_ignored', { address });
+          }
         }
       }
 
@@ -429,6 +565,9 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
               messageId: parsed.data.messageId,
               comment: parsed.data.comment ?? '',
             }),
+        ...(resolvedGroupMessageId === undefined
+          ? {}
+          : { groupMessageId: resolvedGroupMessageId, comment: parsed.data.comment ?? '' }),
       });
       logEvent('invoice.issued', { id, address, amountMsat });
       return c.json(

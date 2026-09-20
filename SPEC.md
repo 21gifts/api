@@ -2308,17 +2308,24 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 **Body:**
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "messageId": "<uuid>" }
+{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "messageId": "<uuid>", "groupMessageId": "<uuid>" }
 ```
 
 `comment` is optional and at most 255 characters. `amountMsat` must be an
 integer in `1000..10000000000`. `messageId` is optional (current spend without
-the field still works). Invalid UUID → **400**
-`{ "error": "Expected a JSON body with address and amountMsat" }`. When set,
-the post must be that address's live top-level non-profile note (else **403**
-`Forum post required` before LNURL). Missing `isPlatform` account → **503**
-`{ "error": "Platform account is not configured" }` (no LNURL). Stores
-`messageId` and `comment` (or `''`) on the invoice.
+the field still works). `groupMessageId` is optional and mutually exclusive
+with `messageId` (both set → **400**). Invalid UUID on either field → **400**
+`{ "error": "Expected a JSON body with address and amountMsat" }`. When
+`messageId` is set, the post must be that address's live top-level
+non-profile note (else **403** `Forum post required` before LNURL). Missing
+`isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
+(no LNURL). Stores `messageId` and `comment` (or `''`) on the invoice.
+When `groupMessageId` is set (no `messageId`), the living-room post gate
+still applies. The id is display-only: it is stored only when it is that
+address's message in the closed `moderator_group` thread and an
+`isPlatform` account exists; otherwise the invoice is still issued, the
+field is omitted, and `invoice.group_message_ignored` is logged. A missing
+conversation store or a failing lookup never blocks the **200**.
 
 When `SPEND_API_TOKEN` is unset or blank:
 
@@ -2331,7 +2338,8 @@ When `SPEND_API_TOKEN` is unset or blank:
 Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
 
 Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
-255, or invalid `messageId` UUID → **400**
+255, invalid `messageId` or `groupMessageId` UUID, or both `messageId` and
+`groupMessageId` set → **400**
 `{ "error": "Expected a JSON body with address and amountMsat" }`.
 
 Invalid Lightning Address → **400**
@@ -2403,7 +2411,8 @@ preimage → **200** idempotent.
 A matching proof (including the same-preimage idempotent 200) inserts one
 outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
 `lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
-handle from the invoice address, description `21gifts daily`,
+handle from the invoice address, description `21gifts moderator` when the
+invoice has `groupMessageId` else `21gifts daily`,
 `source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
@@ -2418,6 +2427,14 @@ existing marker is `markDeleted` only and does not `addSats`; no nested
 gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
 idempotent. Parent missing/deleted or platform missing: skip attach, log
 `invoice.gift_reply.failed`, still **200** + gift persist.
+
+When the invoice has `groupMessageId`, the api then inserts one platform
+conversation message in that closed `moderator_group` thread (name trimmed
+or `21.gifts`, `sats` = `floor(msat/1000)`, text = comment · recipient
+name). Repeat proof with the same preimage is idempotent on the
+deterministic id. Triggering row missing, thread missing or not
+`moderator_group`, platform missing, or store throw: skip attach, log
+`invoice.group_gift.failed`, still **200** + gift persist.
 
 Success → **Response** `200`:
 
@@ -3384,8 +3401,10 @@ uses the actor; members still see `21.gifts`. The worker signs with the
 platform nsec. Relay failure does not block local persist. Kind includes
 `moderator_group`: persist as the caller account (moderator,
 not platform) with `nostrPublishState` skipped (never Nostr). After a new
-persist on `moderator_group`, ping `{ address, kind: "moderator" }` (no
-`messageId` in the HTTP body) only when Lightning Address is a non-empty
+persist on `moderator_group`, ping
+`{ address, kind: "moderator", groupMessageId }` (no `messageId` in the
+HTTP body; `groupMessageId` is the new conversation message id) only when
+Lightning Address is a non-empty
 trimmed string, `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
 the same UTC day. No such post → **200**, no ping,
