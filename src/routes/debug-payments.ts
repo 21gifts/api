@@ -9,7 +9,7 @@ import type { PushStore } from '@/lib/push-store';
 
 /**
  * Operator debug surface for `message_invoice` attempts (forum and
- * conversation invoices; `serializeInvoice` omits `conversationId` and
+ * conversation invoices, including `conversationId` and
  * `conversationMessageId`) and zap ingest rows.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  */
@@ -65,6 +65,8 @@ function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
     descriptionHash: row.descriptionHash,
     isNip57Invoice: row.isNip57Invoice,
     lnurlResponse: row.lnurlResponse,
+    conversationId: row.conversationId ?? null,
+    conversationMessageId: row.conversationMessageId ?? null,
   };
 }
 

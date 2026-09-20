@@ -4,12 +4,12 @@
  */
 
 /**
- * Encode bytes as a lower-case hex string.
+ * Encode bytes as a lower-case hex string (no `0x` prefix).
  *
  * @param bytes - The bytes to encode.
  * @returns The hex encoding (two chars per byte).
  */
-function bytesToHex(bytes: Uint8Array): string {
+export function bytesToHex(bytes: Uint8Array): string {
   let hex = '';
   for (const b of bytes) {
     hex += b.toString(16).padStart(2, '0');

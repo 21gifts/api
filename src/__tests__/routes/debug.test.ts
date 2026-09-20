@@ -113,6 +113,12 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await store.setNostrKeyIfAbsent('acc', {
+      pubkey: 'cc'.repeat(32),
+      ciphertext: new Uint8Array([2]),
+      kekId: 1,
+      custody: 'custodial',
+    });
     const app = new Hono().route(
       '/debug/accounts',
       debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
@@ -127,10 +133,76 @@ describe('debugRoutes', () => {
     expect(body.accounts).toHaveLength(1);
     expect(body.accounts[0]?.id).toBe('acc');
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
-    expect(body.accounts[0]).not.toHaveProperty('viewKey');
+    expect(body.accounts[0]).toHaveProperty('viewKey');
     expect(body.accounts[0]).toHaveProperty('isPlatform');
     expect(body.accounts[0]).toHaveProperty('sessionRefused');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
+  });
+
+  it('GET /:id returns nested passkeys and 404 for a non-uuid', async () => {
+    const store = new InMemoryAuthStore();
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 255]),
+      signCount: 0,
+      accountId: id,
+      createdAt: 2,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 3 });
+    await store.putVerification({
+      accountId: id,
+      address: 'ada@walletofsatoshi.com',
+      nonce: 'ab'.repeat(16),
+      createdAt: 4,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const missing = await app.request('/debug/accounts/not-a-uuid', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(missing.status).toBe(404);
+    const unknown = await app.request('/debug/accounts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(unknown.status).toBe(404);
+    const res = await app.request(`/debug/accounts/${id}`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      id: string;
+      viewKey: string;
+      passkeys: Array<{ credentialId: string; publicKey: string }>;
+      sessions: Array<{ token: string }>;
+      addressVerification: { address: string } | null;
+      nostrPubkey: string | null;
+    };
+    expect(body.id).toBe(id);
+    expect(body.viewKey).toHaveLength(64);
+    expect(body.passkeys).toEqual([
+      expect.objectContaining({ credentialId: 'cred-1', publicKey: '0102ff' }),
+    ]);
+    expect(body.sessions).toEqual([expect.objectContaining({ token: 'tok' })]);
+    expect(body.addressVerification).toEqual(
+      expect.objectContaining({ address: 'ada@walletofsatoshi.com' }),
+    );
+    expect(body.nostrPubkey).toBeNull();
   });
 
   it('PATCH returns 503 when debug is not configured', async () => {
@@ -1026,7 +1098,7 @@ describe('debugRoutes', () => {
     const listBody = (await listed.json()) as {
       accounts: Array<Record<string, unknown>>;
     };
-    expect(listBody.accounts[0]).not.toHaveProperty('viewKey');
+    expect(listBody.accounts[0]).toHaveProperty('viewKey');
     expect(
       parsedEvents(warn).some(
         (e) =>

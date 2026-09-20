@@ -3327,6 +3327,64 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 
+  it('lists extra-photo meta, zap receipts, and zap payments', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [
+      {
+        message_id: 'm1',
+        idx: 1,
+        photo_content_type: 'image/png',
+        bytes: 3,
+      },
+    ];
+    expect(await store.listExtraPhotoMeta(10)).toEqual([
+      { messageId: 'm1', idx: 1, photoContentType: 'image/png', bytes: 3 },
+    ]);
+    sql.nextRows = [
+      {
+        event_id: 'ev',
+        message_id: 'm1',
+        sats: 21,
+        payer_account_id: null,
+        gift_reply_id: null,
+        comment: null,
+      },
+    ];
+    expect(await store.listZapReceipts(10)).toEqual([
+      {
+        eventId: 'ev',
+        messageId: 'm1',
+        sats: 21,
+        payerAccountId: null,
+        giftReplyId: null,
+        comment: '',
+      },
+    ]);
+    sql.nextRows = [
+      {
+        payment_hash: 'aa'.repeat(32),
+        receipt_event_id: 'ev',
+        created_at: '2026-09-01T00:00:00.000Z',
+      },
+    ];
+    expect(await store.listZapPayments(10)).toEqual([
+      {
+        paymentHash: 'aa'.repeat(32),
+        receiptEventId: 'ev',
+        createdAt: '2026-09-01T00:00:00.000Z',
+      },
+    ]);
+    sql.nextRows = [
+      {
+        payment_hash: 'bb'.repeat(32),
+        receipt_event_id: 'ev2',
+        created_at: new Date('2026-09-02T00:00:00.000Z'),
+      },
+    ];
+    expect((await store.listZapPayments(10))[0]?.createdAt).toBe('2026-09-02T00:00:00.000Z');
+  });
+
   it('accountHasLiveTopLevelPost queries live top-level message rows for the account', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);

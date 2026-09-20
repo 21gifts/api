@@ -346,7 +346,7 @@
 
 - **Purpose:** Operator listing, provisioning, role assignment, Lightning Address unlink, official platform-flag retarget, session-refusal (`sessionRefused`), and minting a member bearer via `POST /:id/session`.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken, required `fetchImpl` (NIP-57 mint probe on new POST addresses), optional `conversationStore` (`PATCH platform: true` calls `retargetMemberPlatform`), optional `messageStore`, `pushStore`, and `notificationStore` (POST provision calls `ensureProfileMessage` when `messageStore` is set), optional `now` for minted debug sessions.
-- **Returns / side effects:** Hono app (`GET /`, `POST /`, `PATCH /:id`, `POST /:id/session`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` via `serializeDebugAccount` (includes `isPlatform` and `sessionRefused`; no `viewKey`) logs `debug.accounts.listed` with count. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); probes **all** new addresses first (`probeNip57Mint`) unless `NIP57_PROBE=0` (Playwright e2e skip; production must not set this); any `not_zap` / `unreachable` is 400 and no new address in that request is saved; name-only updates run only after every probe has passed; 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress`; when `messageStore` is set, POST then calls `ensureProfileMessage` (optional `pushStore` and `notificationStore`) (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` and/or `{ platform: true|false }` and/or `{ sessionRefused: true|false }` → 400 unknown/missing; 404 missing account; 200 `serializeDebugAccount` of the updated row (includes `isPlatform` and `sessionRefused`; no `viewKey`); unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role; `platform: true` uniquely retargets (store clears any other `isPlatform`), points every member→platform thread at the new account via `retargetMemberPlatform` when `conversationStore` is set, and logs `debug.accounts.platform_set`; `sessionRefused` is written only via `setSessionRefused` (not `updateAccount`) and logs `debug.accounts.session_refused_set`. POST `/:id/session` 404 unknown id; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true or `tryCreateSession` writes no row, with no `debug.accounts.session_minted` and no member bearer; otherwise 200 `{ token }` and `debug.accounts.session_minted`. Never logs the token or the previous address.
+- **Returns / side effects:** Hono app (`GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/session`). Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` via `serializeDebugAccount` (includes `isPlatform`, `sessionRefused`, and `viewKey`) logs `debug.accounts.listed` with count. GET `/:id` 200 `serializeDebugAccountDetail` or 404. POST body `{ accounts: [{ name, lightningAddress }] }` → 400 invalid body (including C0/DEL names or non-LUD-16 addresses after the shape check; no row is written); probes **all** new addresses first (`probeNip57Mint`) unless `NIP57_PROBE=0` (Playwright e2e skip; production must not set this); any `not_zap` / `unreachable` is 400 and no new address in that request is saved; name-only updates run only after every probe has passed; 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name; creates by Lightning Address, or for an existing address updates **only** `name` via `updateAccountNameByLightningAddress`; when `messageStore` is set, POST then calls `ensureProfileMessage` (optional `pushStore` and `notificationStore`) (keeps `viewKey` / `role` / other columns); returns `{ accounts: [{ name, lightningAddress, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH body `{ role }` and/or `{ lightningAddress: null }` and/or `{ platform: true|false }` and/or `{ sessionRefused: true|false }` → 400 unknown/missing; 404 missing account; 200 `serializeDebugAccount` of the updated row (includes `isPlatform`, `sessionRefused`, and `viewKey`); unlink also `deleteVerification` and logs `debug.accounts.lightning_address.cleared`; role changes log `debug.accounts.role_set` with account id and role; `platform: true` uniquely retargets (store clears any other `isPlatform`), points every member→platform thread at the new account via `retargetMemberPlatform` when `conversationStore` is set, and logs `debug.accounts.platform_set`; `sessionRefused` is written only via `setSessionRefused` (not `updateAccount`) and logs `debug.accounts.session_refused_set`. POST `/:id/session` 404 unknown id; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true or `tryCreateSession` writes no row, with no `debug.accounts.session_minted` and no member bearer; otherwise 200 `{ token }` and `debug.accounts.session_minted`. Never logs the token or the previous address.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -365,7 +365,7 @@
 
 ## Function: debugPaymentsRoutes
 
-- **Purpose:** Operator listing of all `message_invoice` attempts (forum and conversation invoices; `serializeInvoice` omits `conversationId` and `conversationMessageId`), manual forum-invoice settlement, and kind:9735 ingest decisions (`nostr_zap_ingest`).
+- **Purpose:** Operator listing of all `message_invoice` attempts (forum and conversation invoices; JSON includes `conversationId` and `conversationMessageId`), manual forum-invoice settlement, and kind:9735 ingest decisions (`nostr_zap_ingest`).
 - **Inputs:** `DebugPaymentsRouteDeps`: message store, auth store, clock, optional push/notification stores, and optional debugToken.
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices`, `{ receiptId, messageId, amountSats, resumed }` on `POST /invoices/settle`, and `{ ingests }` on `GET /zap-ingests`. Manual settle accepts `{ paymentHash, note, preimage? }` and delegates to `settleInvoiceManually`; store throws, including the direct ingest write, map to 503. Listing is newest-first (cap 200). Logs list/settle results without token, note, preimage, or nsec.
 - **Used by:** `createApp` at `/debug`.
@@ -985,7 +985,7 @@
 
 ## Function: serializeDebugMessage
 
-- **Purpose:** Project a stored forum row to operator debug JSON, including soft-hide stamps, Damus-only `accountId: null`, and `photoCount` (0–10; from `row.photoCount` or `hasPhoto ? 1 : 0`). Optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Public hide does not apply: hidden rows keep `text` and ISO `deletedAt`. Never includes `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+- **Purpose:** Project a stored forum row to operator debug JSON, including soft-hide stamps, Damus-only `accountId: null`, `photoCount`, Nostr columns (`nostrEvent`, `claimedUntil`, `contentFp`), and photo MIME/byte lengths. Optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Public hide does not apply: hidden rows keep `text` and ISO `deletedAt`. Never includes nsec or photo/video payloads.
 - **Inputs:** `MessageRow` (includes hidden rows and replies; never photo/video bytes).
 - **Returns / side effects:** `{ id, name, text, createdAt, sats, hasPhoto, photoCount, hasVideo, videoContentType, parentId, eventId, nostrPublishState, deletedAt, deletedBy, authorPubkey, nostrAttempts, accountId }` with ISO-8601 `createdAt` / `deletedAt` (`deletedAt` JSON `null` when live); `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `accountId` is a string or JSON `null` (never omitted); optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Invalid `createdAt` / `deletedAt` still throws from `toISOString()`. No I/O.
 - **Used by:** `debugMessagesRoutes`.
@@ -1433,10 +1433,73 @@
 
 ## Function: serializeDebugAccount
 
-- **Purpose:** Operator account JSON: the eleven public fields plus `isPlatform` and `sessionRefused`. Never used by member `GET /me`.
-- **Inputs:** `Account`.
-- **Returns / side effects:** `DebugAccountResponse`. `isPlatform` and `sessionRefused` are true only when the stored flags are true. No `viewKey`. No I/O.
-- **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
+- **Purpose:** Operator account JSON: every stored account column plus Nostr debug fields. Never used by member `GET /me`.
+- **Inputs:** `Account` and optional `DebugNostrFields` (defaults to all-null).
+- **Returns / side effects:** `DebugAccountResponse` including `username`, `viewKey`, `sessionRefused`, skip stamps, `profileMessageId`, `notificationLevel`, and envelope hex `nostrNsecCiphertext`. Never decrypts. No I/O.
+- **Used by:** `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and the operator dump.
+
+## Function: serializeDebugAccountDetail
+
+- **Purpose:** Operator one-account JSON with nested passkeys, sessions, address verification, and passkey challenges.
+- **Inputs:** `Account`, `DebugNostrFields`, nested credential/session/verification/challenge rows.
+- **Returns / side effects:** `DebugAccountDetailResponse`. Passkey `publicKey` is lowercase COSE hex. No I/O.
+- **Used by:** `GET /debug/accounts/:id`.
+
+## Function: serializeDebugPasskey
+
+- **Purpose:** Operator JSON for one `passkey_credential` row.
+- **Inputs:** `PasskeyCredential`.
+- **Returns / side effects:** `{ credentialId, publicKey, signCount, accountId, createdAt }` with hex `publicKey`. No I/O.
+- **Used by:** `serializeDebugAccountDetail` and dump table `passkey_credential`.
+
+## Function: serializeDebugSession
+
+- **Purpose:** Operator JSON for one `auth_session` row (plaintext stored token).
+- **Inputs:** `Session`.
+- **Returns / side effects:** `{ token, accountId, createdAt }`. No I/O.
+- **Used by:** `serializeDebugAccountDetail` and dump table `auth_session`.
+
+## Function: serializeDebugAddressVerification
+
+- **Purpose:** Operator JSON for one `address_verification` row.
+- **Inputs:** `AddressVerification`.
+- **Returns / side effects:** `{ accountId, address, nonce, createdAt }`. No I/O.
+- **Used by:** `serializeDebugAccountDetail` and dump table `address_verification`.
+
+## Function: serializeDebugPasskeyChallenge
+
+- **Purpose:** Operator JSON for one `passkey_challenge` row.
+- **Inputs:** `PasskeyChallenge`.
+- **Returns / side effects:** `{ id, type, challenge, accountId, consumed, createdAt }`. No I/O.
+- **Used by:** `serializeDebugAccountDetail` and dump table `passkey_challenge`.
+
+## Function: debugNostrFieldsFromListRow
+
+- **Purpose:** Map a `NostrKeyListRow` (or missing row) to `DebugNostrFields`.
+- **Inputs:** Optional list row from `AuthStore.listNostrKeys`.
+- **Returns / side effects:** Hex envelope or all-null `EMPTY_DEBUG_NOSTR`. Never decrypts. No I/O.
+- **Used by:** Debug account listing and GET `/:id`.
+
+## Function: isDebugCatalogTable
+
+- **Purpose:** Guard the `/debug/dump/:table` path segment.
+- **Inputs:** Table name string.
+- **Returns / side effects:** True when the name is in `DEBUG_CATALOG_TABLES`. No I/O.
+- **Used by:** `debugCatalogRoutes`.
+
+## Function: loadDebugTables
+
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200).
+- **Inputs:** `DebugCatalogDeps` and optional table name.
+- **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
+- **Used by:** `debugCatalogRoutes`.
+
+## Function: debugCatalogRoutes
+
+- **Purpose:** GET-only operator catalog at `/debug/dump` and `/debug/dump/:table`.
+- **Inputs:** `DebugCatalogRouteDeps` (auth, messages, contacts, optional other stores, debugToken).
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 404 unknown table; 200 dump JSON; 503 `{ error: 'Dump is unavailable' }` on store throw.
+- **Used by:** `createApp` at `/debug/dump`.
 
 ## Function: aboutMeFromNote
 
@@ -2092,7 +2155,7 @@
 
 ## Function: debugTrustRoutes
 
-- **Purpose:** Operator backfill `POST /debug/trust-edges` and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. Both return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
+- **Purpose:** Operator list `GET /debug/trust-edges`, backfill `POST /debug/trust-edges`, and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. GET returns `{ edges }` newest-first. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. POST/DELETE return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
 - **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`; unused by DELETE).
 - **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`).
 - **Used by:** `createApp`; operator `gifts-debug trust-edge` / `gifts-debug trust-edge-delete`.

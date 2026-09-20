@@ -1030,4 +1030,77 @@ describe('PostgresAuthStore', () => {
     const row = await new PostgresAuthStore(sql).getPasskeyChallenge('ch');
     expect(row?.createdAt).toBe(1_000);
   });
+
+  it('lists passkeys, sessions, challenges, verifications, and nostr keys', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [
+      {
+        credential_id: 'cred',
+        public_key: Array.from(new Uint8Array([1, 2])),
+        sign_count: 0,
+        account_id: 'acc',
+        created_at: new Date(1_000),
+      },
+    ];
+    const listedPasskeys = await store.listPasskeyCredentials();
+    expect(listedPasskeys[0]?.credentialId).toBe('cred');
+    expect(listedPasskeys[0]?.publicKey).toEqual(new Uint8Array([1, 2]));
+    sql.nextRows = [{ token: 'tok', account_id: 'acc', created_at: new Date(2_000) }];
+    expect(await store.listSessions()).toEqual([
+      { token: 'tok', accountId: 'acc', createdAt: 2_000 },
+    ]);
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(3_000),
+      },
+    ];
+    expect((await store.listPasskeyChallenges())[0]?.id).toBe('ch');
+    sql.nextRows = [
+      {
+        account_id: 'acc',
+        address: 'a@b.com',
+        nonce: 'n',
+        created_at: new Date(4_000),
+      },
+    ];
+    expect((await store.listAddressVerifications())[0]?.nonce).toBe('n');
+    sql.nextRows = [
+      {
+        id: 'acc',
+        nostr_pubkey: 'aa'.repeat(32),
+        nostr_nsec_ciphertext: new Uint8Array([9]),
+        nostr_kek_id: 1,
+        nostr_key_custody: 'user',
+        nostr_key_created_at: new Date(5_000),
+      },
+      {
+        id: 'skip',
+        nostr_pubkey: null,
+        nostr_nsec_ciphertext: null,
+        nostr_kek_id: null,
+        nostr_key_custody: null,
+        nostr_key_created_at: null,
+      },
+      {
+        id: 'acc2',
+        nostr_pubkey: 'bb'.repeat(32),
+        nostr_nsec_ciphertext: null,
+        nostr_kek_id: null,
+        nostr_key_custody: 'custodial',
+        nostr_key_created_at: null,
+      },
+    ];
+    const keys = await store.listNostrKeys();
+    expect(keys).toHaveLength(2);
+    expect(keys[0]?.record.custody).toBe('user');
+    expect(keys[0]?.createdAt).toBe(5_000);
+    expect(keys[1]?.record.ciphertext).toEqual(new Uint8Array());
+    expect(keys[1]?.createdAt).toBeNull();
+  });
 });

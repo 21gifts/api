@@ -92,7 +92,7 @@ export interface Account {
   profileMessageId?: string | null;
   /**
    * Owner fan-out filter. Omitted / unknown → `all`. Not public on member
-   * cards, view profiles, or operator debug JSON.
+   * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
 }
@@ -237,9 +237,23 @@ export interface AuthStore {
   deleteAccount(id: string): Promise<void>;
   /**
    * Every stored account, oldest first (then `id` ascending).
-   * Used by the operator debug listing; never includes session tokens.
+   * Used by the operator debug listing. Does not embed session tokens
+   * (GET `/debug/accounts/:id` and dump table `auth_session` do).
    */
   listAccounts(): Promise<Account[]>;
+  /** Every stored passkey credential (operator dump / account detail). */
+  listPasskeyCredentials(): Promise<PasskeyCredential[]>;
+  /** Every stored session (operator dump / account detail). */
+  listSessions(): Promise<Session[]>;
+  /** Every stored passkey challenge (operator dump / account detail). */
+  listPasskeyChallenges(): Promise<PasskeyChallenge[]>;
+  /** Every pending address verification (operator dump / account detail). */
+  listAddressVerifications(): Promise<AddressVerification[]>;
+  /**
+   * Custodial Nostr key rows (pubkey, envelope, kek, custody, createdAt).
+   * In-memory `createdAt` is `null` when the map does not store it.
+   */
+  listNostrKeys(): Promise<NostrKeyListRow[]>;
   /** Persist a new session. Does not consult `sessionRefused`. */
   createSession(session: Session): Promise<void>;
   /**
@@ -328,6 +342,16 @@ export interface NostrKeyRecord {
   kekId: number;
   /** Custody mode. v1 is always `custodial`. */
   custody: 'custodial' | 'user';
+}
+
+/** One listed Nostr key row for operator debug. */
+export interface NostrKeyListRow {
+  /** Owning account id. */
+  accountId: string;
+  /** Stored key material (ciphertext is a copy). */
+  record: NostrKeyRecord;
+  /** Key creation time (epoch ms), or `null` when the adapter does not store it. */
+  createdAt: number | null;
 }
 
 /**
@@ -559,6 +583,40 @@ export class InMemoryAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     return [...this.#accounts.values()].sort(compareAccountsForList);
+  }
+
+  async listPasskeyCredentials(): Promise<PasskeyCredential[]> {
+    return [...this.#passkeyCredentials.values()].map((credential) => ({
+      ...credential,
+      publicKey: new Uint8Array(credential.publicKey),
+    }));
+  }
+
+  async listSessions(): Promise<Session[]> {
+    return [...this.#sessions.values()].map((session) => ({ ...session }));
+  }
+
+  async listPasskeyChallenges(): Promise<PasskeyChallenge[]> {
+    return [...this.#passkeyChallenges.values()].map((challenge) => ({ ...challenge }));
+  }
+
+  async listAddressVerifications(): Promise<AddressVerification[]> {
+    return [...this.#verifications.values()].map((row) => ({ ...row }));
+  }
+
+  async listNostrKeys(): Promise<NostrKeyListRow[]> {
+    const rows: NostrKeyListRow[] = [];
+    for (const [accountId, record] of this.#nostrKeys) {
+      rows.push({
+        accountId,
+        record: {
+          ...record,
+          ciphertext: new Uint8Array(record.ciphertext),
+        },
+        createdAt: null,
+      });
+    }
+    return rows;
   }
 
   async createSession(session: Session): Promise<void> {

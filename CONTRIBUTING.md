@@ -39,14 +39,15 @@ api/
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
-│   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
+│   │   ├── debug.ts          # GET/POST /debug/accounts; GET/PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── debug-api-log.ts  # GET /debug/api-log (operator DEBUG_TOKEN)
 │   │   ├── debug-external.ts # GET /debug/external-pubkeys (operator DEBUG_TOKEN)
 │   │   ├── debug-messages.ts # GET /debug/messages, GET /:id, GET /:id/photo; PUT /:id/video; POST /:id/restore (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; POST /debug/invoices/settle; GET /debug/zap-ingests (DEBUG_TOKEN)
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
-│   │   ├── debug-trust.ts    # POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
+│   │   ├── debug-trust.ts    # GET/POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
+│   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
 │   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
 │   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject
@@ -262,7 +263,7 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI: list, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
+│   └── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount

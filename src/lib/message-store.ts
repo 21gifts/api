@@ -597,6 +597,44 @@ export interface MessageStore {
   listZapIngests(limit: number): Promise<ZapIngestRow[]>;
 
   /**
+   * Extra still metadata (no photo bytes), newest parent first, capped at
+   * `limit`. Operator dump.
+   *
+   * @param limit - Maximum rows.
+   * @returns `{ messageId, idx, photoContentType, bytes }` lengths.
+   */
+  listExtraPhotoMeta?(
+    limit: number,
+  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>>;
+
+  /**
+   * Zap receipts newest-first, capped at `limit`. Operator dump.
+   *
+   * @param limit - Maximum rows.
+   * @returns Receipt JSON rows.
+   */
+  listZapReceipts?(limit: number): Promise<
+    Array<{
+      eventId: string;
+      messageId: string;
+      sats: number;
+      payerAccountId: string | null;
+      giftReplyId: string | null;
+      comment: string;
+    }>
+  >;
+
+  /**
+   * Zap payment-hash tombstones newest-first, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns Payment JSON rows.
+   */
+  listZapPayments?(
+    limit: number,
+  ): Promise<Array<{ paymentHash: string; receiptEventId: string; createdAt: string }>>;
+
+  /**
    * Indexed kind:9735 ingests, newest-first, **no debug cap**.
    * Same sort as {@link MessageStore.listZapIngests}.
    *
@@ -2084,6 +2122,60 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id.localeCompare(a.id);
     });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
+  }
+
+  listExtraPhotoMeta(
+    limit: number,
+  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>> {
+    const rows: Array<{
+      messageId: string;
+      idx: number;
+      photoContentType: string;
+      bytes: number;
+    }> = [];
+    for (const [messageId, extras] of this.#extraPhotos) {
+      extras.forEach((photo, index) => {
+        rows.push({
+          messageId,
+          idx: index + 1,
+          photoContentType: photo.contentType,
+          bytes: photo.bytes.byteLength,
+        });
+      });
+    }
+    return Promise.resolve(rows.slice(0, limit));
+  }
+
+  listZapReceipts(limit: number): Promise<
+    Array<{
+      eventId: string;
+      messageId: string;
+      sats: number;
+      payerAccountId: string | null;
+      giftReplyId: string | null;
+      comment: string;
+    }>
+  > {
+    const rows = [...this.#receipts.entries()].map(([eventId, receipt]) => ({
+      eventId,
+      messageId: receipt.messageId,
+      sats: receipt.sats,
+      payerAccountId: receipt.payerAccountId,
+      giftReplyId: receipt.giftReplyId,
+      comment: receipt.comment,
+    }));
+    return Promise.resolve(rows.slice(0, limit));
+  }
+
+  listZapPayments(
+    limit: number,
+  ): Promise<Array<{ paymentHash: string; receiptEventId: string; createdAt: string }>> {
+    const rows = [...this.#zapPayments.entries()].map(([paymentHash, row]) => ({
+      paymentHash,
+      receiptEventId: row.receiptEventId,
+      createdAt: row.createdAt.toISOString(),
+    }));
+    return Promise.resolve(rows.slice(0, limit));
   }
 
   listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {
@@ -3623,6 +3715,86 @@ export class PostgresMessageStore implements MessageStore {
       [limit],
     );
     return rows.map((row) => mapZapIngestRow(row));
+  }
+
+  async listExtraPhotoMeta(
+    limit: number,
+  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>> {
+    const rows = await this.#sql.query<{
+      message_id: string;
+      idx: number | string;
+      photo_content_type: string;
+      bytes: number | string;
+    }>(
+      `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes
+       FROM message_extra_photo
+       ORDER BY message_id, idx
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      messageId: row.message_id,
+      idx: Number(row.idx),
+      photoContentType: row.photo_content_type,
+      bytes: Number(row.bytes),
+    }));
+  }
+
+  async listZapReceipts(limit: number): Promise<
+    Array<{
+      eventId: string;
+      messageId: string;
+      sats: number;
+      payerAccountId: string | null;
+      giftReplyId: string | null;
+      comment: string;
+    }>
+  > {
+    const rows = await this.#sql.query<{
+      event_id: string;
+      message_id: string;
+      sats: number | string;
+      payer_account_id: string | null;
+      gift_reply_id: string | null;
+      comment: string | null;
+    }>(
+      `SELECT event_id, message_id, sats, payer_account_id, gift_reply_id, comment
+       FROM nostr_zap_receipt
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      eventId: row.event_id,
+      messageId: row.message_id,
+      sats: Number(row.sats),
+      payerAccountId: row.payer_account_id,
+      giftReplyId: row.gift_reply_id,
+      comment: row.comment ?? '',
+    }));
+  }
+
+  async listZapPayments(
+    limit: number,
+  ): Promise<Array<{ paymentHash: string; receiptEventId: string; createdAt: string }>> {
+    const rows = await this.#sql.query<{
+      payment_hash: string;
+      receipt_event_id: string;
+      created_at: Date | string;
+    }>(
+      `SELECT payment_hash, receipt_event_id, created_at
+       FROM nostr_zap_payment
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      paymentHash: row.payment_hash,
+      receiptEventId: row.receipt_event_id,
+      createdAt:
+        row.created_at instanceof Date
+          ? row.created_at.toISOString()
+          : new Date(row.created_at).toISOString(),
+    }));
   }
 
   async listInvoiceAttemptsForPayer(payerAccountId: string): Promise<MessageInvoiceAttempt[]> {

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EMPTY_DEBUG_NOSTR,
   serializeAccount,
   serializeDebugAccount,
+  serializeDebugAccountDetail,
+  serializeDebugPasskey,
   serializeOwnerAccount,
   serializeOwnerAccountWithPosts,
   serializeViewProfile,
@@ -64,16 +67,44 @@ describe('serializeAccount', () => {
 });
 
 describe('serializeDebugAccount', () => {
-  it('adds isPlatform without exposing viewKey', () => {
+  it('adds isPlatform, viewKey, skip stamps, and null Nostr fields', () => {
     const json = serializeDebugAccount({ ...account, isPlatform: true });
     expect(json.isPlatform).toBe(true);
-    expect(json).not.toHaveProperty('viewKey');
+    expect(json.viewKey).toBe(account.viewKey);
+    expect(json.notificationLevel).toBe('all');
+    expect(json.nameSkippedAt).toBeNull();
+    expect(json.lightningAddressSkippedAt).toBeNull();
+    expect(json.profileMessageId).toBeNull();
+    expect(json.nostrPubkey).toBeNull();
+    expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
-    expect(json).not.toHaveProperty('notificationLevel');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
     expect(serializeDebugAccount(account).sessionRefused).toBe(false);
     expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
+  });
+
+  it('hex-encodes passkey public keys that are not Uint8Array', () => {
+    const json = serializeDebugPasskey({
+      credentialId: 'c',
+      publicKey: new Uint8Array([255]).buffer as unknown as Uint8Array,
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(json.publicKey).toMatch(/^[0-9a-f]+$/);
+  });
+});
+
+describe('serializeDebugAccountDetail', () => {
+  it('emits null addressVerification when none is stored', () => {
+    const json = serializeDebugAccountDetail(account, EMPTY_DEBUG_NOSTR, {
+      passkeys: [],
+      sessions: [],
+      addressVerification: undefined,
+      passkeyChallenges: [],
+    });
+    expect(json.addressVerification).toBeNull();
   });
 });
 

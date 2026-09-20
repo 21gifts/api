@@ -28,6 +28,7 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugTrustRoutes } from '@/routes/debug-trust';
+import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
 import { fundingRoutes } from '@/routes/funding';
@@ -100,7 +101,9 @@ export interface AppDeps {
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
-   * `GET /debug/external-pubkeys`, and `POST /debug/trust-edges`
+   * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
+   * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
+   * and `POST /debug/trust-edges`
    * return 503.
    */
   debugToken?: string;
@@ -389,6 +392,20 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route(
+    '/debug/dump',
+    debugCatalogRoutes({
+      auth: store,
+      messages: messageStore,
+      contacts: contactStore,
+      conversations: conversationStore,
+      notifications: notificationStore,
+      push: pushStore,
+      trust: trustStore,
+      gifts: giftStore,
+      debugToken,
+    }),
+  );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
   app.route(
     '/trust',

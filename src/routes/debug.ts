@@ -2,7 +2,12 @@ import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
-import { serializeDebugAccount } from '@/lib/auth/account-json';
+import {
+  EMPTY_DEBUG_NOSTR,
+  debugNostrFieldsFromListRow,
+  serializeDebugAccount,
+  serializeDebugAccountDetail,
+} from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
@@ -21,11 +26,13 @@ import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
+import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
- * Exposes `GET /` (list), `POST /` (provision), `PATCH /:id`
+ * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
+ * `POST /` (provision), `PATCH /:id`
  * (set role, unlink Lightning Address, the official platform flag, and/or sessionRefused),
  * and `POST /:id/session` (mint a member bearer).
  */
@@ -180,15 +187,56 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
  * Build the `/debug/accounts` route group.
  *
  * @param deps - Store, optional debug token, required `fetchImpl` for the NIP-57 mint probe, optional `conversationStore`, optional `now`.
- * @returns A Hono app exposing `GET /`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
+ * @returns A Hono app exposing `GET /`, `GET /:id`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
     .use('*', requireDebugToken(deps))
     .get('/', async (c) => {
       const accounts = await deps.store.listAccounts();
+      const nostrById = new Map(
+        (await deps.store.listNostrKeys()).map((row) => [
+          row.accountId,
+          debugNostrFieldsFromListRow(row),
+        ]),
+      );
       logEvent('debug.accounts.listed', { count: accounts.length });
-      return c.json({ accounts: accounts.map(serializeDebugAccount) }, 200);
+      return c.json(
+        {
+          accounts: accounts.map((a) =>
+            serializeDebugAccount(a, nostrById.get(a.id) ?? EMPTY_DEBUG_NOSTR),
+          ),
+        },
+        200,
+      );
+    })
+    .get('/:id', async (c) => {
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const account = await deps.store.getAccount(id);
+      if (account === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const nostrRows = await deps.store.listNostrKeys();
+      const nostr = debugNostrFieldsFromListRow(nostrRows.find((row) => row.accountId === id));
+      const [passkeys, sessions, addressVerifications, passkeyChallenges] = await Promise.all([
+        deps.store.listPasskeyCredentials(),
+        deps.store.listSessions(),
+        deps.store.listAddressVerifications(),
+        deps.store.listPasskeyChallenges(),
+      ]);
+      logEvent('debug.accounts.shown', { accountId: id });
+      return c.json(
+        serializeDebugAccountDetail(account, nostr, {
+          passkeys: passkeys.filter((row) => row.accountId === id),
+          sessions: sessions.filter((row) => row.accountId === id),
+          addressVerification: addressVerifications.find((row) => row.accountId === id),
+          passkeyChallenges: passkeyChallenges.filter((row) => row.accountId === id),
+        }),
+        200,
+      );
     })
     .post('/', async (c) => {
       const parsed = provisionBody.safeParse(await c.req.json().catch(() => null));

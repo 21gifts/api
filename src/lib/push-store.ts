@@ -75,6 +75,22 @@ export interface PushStore {
   listByAccount(accountId: string): Promise<PushSubscriptionRecord[]>;
 
   /**
+   * Every push subscription (caller-owned copies). Operator dump.
+   *
+   * @returns Subscription rows.
+   */
+  listAllSubscriptions(): Promise<PushSubscriptionRecord[]>;
+
+  /**
+   * Newest outbox rows first (`createdAt` desc, then `id` desc), capped at
+   * `limit`. Operator dump.
+   *
+   * @param limit - Maximum rows.
+   * @returns Outbox copies.
+   */
+  listAllOutbox(limit: number): Promise<PushOutboxRow[]>;
+
+  /**
    * Distinct account ids that currently have at least one subscription.
    *
    * @returns Account ids.
@@ -292,6 +308,21 @@ export class InMemoryPushStore implements PushStore {
       }
     }
     return Promise.resolve(rows);
+  }
+
+  listAllSubscriptions(): Promise<PushSubscriptionRecord[]> {
+    return Promise.resolve([...this.#subs.values()].map((row) => copySub(row)));
+  }
+
+  listAllOutbox(limit: number): Promise<PushOutboxRow[]> {
+    const sorted = [...this.#outbox].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyOutbox(row)));
   }
 
   /**
@@ -542,6 +573,23 @@ export class PostgresPushStore implements PushStore {
       [accountId],
     );
     return rows.map((row) => mapSub(row));
+  }
+
+  async listAllSubscriptions(): Promise<PushSubscriptionRecord[]> {
+    const rows = await this.#sql.query<PushSubSqlRow>(
+      `SELECT endpoint, account_id, p256dh, auth, created_at FROM push_subscription`,
+    );
+    return rows.map((row) => mapSub(row));
+  }
+
+  async listAllOutbox(limit: number): Promise<PushOutboxRow[]> {
+    const rows = await this.#sql.query<PushOutboxSqlRow>(
+      `SELECT ${OUTBOX_SELECT} FROM push_outbox
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapOutbox(row));
   }
 
   /**

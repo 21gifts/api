@@ -413,6 +413,26 @@ test('POST /debug/accounts with the e2e token provisions a guest', async ({ requ
   expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
 });
 
+test('GET /debug/accounts/:id without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/accounts/:id');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/dump without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/dump');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/dump/:table without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/dump/:table');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/trust-edges without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },

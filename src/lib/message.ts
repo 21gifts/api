@@ -368,20 +368,36 @@ export function serializeMessage(
   return body;
 }
 
+/** Optional still-photo lengths for operator debug JSON (never payloads). */
+export interface DebugMessagePhotoMeta {
+  /** Photo 0 MIME, or `null` when none. */
+  photoContentType: string | null;
+  /** Photo 0 byte length, or `0`. */
+  photoBytes: number;
+  /** Extra stills (indices 1–9) with lengths only. */
+  extraPhotos: Array<{ idx: number; photoContentType: string | null; bytes: number }>;
+}
+
 /**
  * Project a store row to operator debug JSON (includes soft-hide stamps).
  *
  * Always includes `accountId` (JSON `null` for Damus-only rows). Soft-hidden
- * rows keep `text` and `deletedAt` / `deletedBy`. Never includes `nostrEvent`,
- * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+ * rows keep `text` and `deletedAt` / `deletedBy`. Includes every
+ * {@link MessageRow} column (`nostrEvent`, `claimedUntil`,
+ * `nostrFirstAttemptAt`, `nostrPublishEpoch`, `contentFp`). Photo/video
+ * **payloads** stay off JSON; `photo` / extra stills are MIME + byte length.
  *
  * @param row - Persisted message (including hidden rows and replies).
+ * @param photo - Optional photo 0 / extra-still lengths (defaults: `null` / `0` / `[]`).
  * @returns Debug fields; `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null
  *   when live). Optional `goalSats` when the stored value is a positive
  *   integer on a top-level note (omitted otherwise).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
-export function serializeDebugMessage(row: MessageRow): Record<string, unknown> {
+export function serializeDebugMessage(
+  row: MessageRow,
+  photo?: DebugMessagePhotoMeta,
+): Record<string, unknown> {
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
   return {
@@ -397,12 +413,20 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
     parentId: row.parentId ?? null,
     eventId: row.eventId ?? null,
     nostrPublishState: row.nostrPublishState,
+    nostrEvent: row.nostrEvent ?? null,
+    claimedUntil: row.claimedUntil ?? null,
+    nostrFirstAttemptAt: row.nostrFirstAttemptAt ?? null,
+    nostrPublishEpoch: row.nostrPublishEpoch ?? null,
+    contentFp: row.contentFp ?? null,
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy: row.deletedBy ?? null,
     authorPubkey: row.authorPubkey ?? null,
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
     ...(goalSats === undefined ? {} : { goalSats }),
+    photoContentType: photo?.photoContentType ?? null,
+    photoBytes: photo?.photoBytes ?? 0,
+    extraPhotos: photo?.extraPhotos ?? [],
   };
 }
 

@@ -426,7 +426,7 @@ describe('serializeMessage', () => {
 });
 
 describe('serializeDebugMessage', () => {
-  it('includes hide stamps, null accountId, and omits nostrEvent and contentFp', () => {
+  it('includes hide stamps, null accountId, nostrEvent, and contentFp', () => {
     const deletedAt = new Date('2026-09-01T12:00:00.000Z');
     const row: MessageRow = {
       id: 'msg-debug',
@@ -462,15 +462,20 @@ describe('serializeDebugMessage', () => {
       parentId: 'parent-1',
       eventId: 'ee'.repeat(32),
       nostrPublishState: 'published',
+      nostrEvent: { id: 'ee'.repeat(32) },
+      claimedUntil: null,
+      nostrFirstAttemptAt: null,
+      nostrPublishEpoch: null,
+      contentFp: 'ab'.repeat(32),
       deletedAt: '2026-09-01T12:00:00.000Z',
       deletedBy: 'staff',
       authorPubkey: 'aa'.repeat(32),
       nostrAttempts: 2,
       accountId: null,
+      photoContentType: null,
+      photoBytes: 0,
+      extraPhotos: [],
     });
-    expect(serializeDebugMessage(row)).not.toHaveProperty('nostrEvent');
-    expect(serializeDebugMessage(row)).not.toHaveProperty('claimedUntil');
-    expect(serializeDebugMessage(row)).not.toHaveProperty('contentFp');
   });
 
   it('emits live null deletedAt and a string accountId', () => {

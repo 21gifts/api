@@ -347,8 +347,8 @@ describe('debugMessagesRoutes', () => {
     expect(body['deletedAt']).toBe(HIDDEN_AT.toISOString());
     expect(body['deletedBy']).toBe('staff');
     expect(body['accountId']).toBeNull();
-    expect(body).not.toHaveProperty('nostrEvent');
-    expect(body).not.toHaveProperty('contentFp');
+    expect(body['nostrEvent']).toBeNull();
+    expect(body['contentFp']).toBeNull();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'debug.messages.get' && e['messageId'] === HIDDEN_ID,

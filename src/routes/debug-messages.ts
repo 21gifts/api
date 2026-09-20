@@ -65,7 +65,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
       try {
         const rows = await deps.store.listDebug(MESSAGE_LIST_LIMIT);
         logEvent('debug.messages.listed', { count: rows.length });
-        return c.json({ messages: rows.map(serializeDebugMessage) }, 200);
+        return c.json({ messages: rows.map((row) => serializeDebugMessage(row)) }, 200);
       } catch {
         logEvent('debug.messages.list_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

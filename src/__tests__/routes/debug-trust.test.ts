@@ -80,6 +80,35 @@ function del(app: Hono, token: string | undefined, body: unknown): Promise<Respo
   );
 }
 
+describe('GET /debug/trust-edges', () => {
+  it('returns 401 without a matching bearer', async () => {
+    const app = mount(new InMemoryAuthStore(), new InMemoryTrustStore());
+    const res = await app.request('/debug/trust-edges');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists edges newest first', async () => {
+    const store = await seeded();
+    const trustStore = new InMemoryTrustStore();
+    await trustStore.insertEdge({
+      id: 'edge-old',
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'verify',
+      createdAt: 1,
+    });
+    const app = mount(store, trustStore);
+    const res = await app.request('/debug/trust-edges', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { edges: Array<{ id: string; kind: string }> };
+    expect(body.edges).toHaveLength(1);
+    expect(body.edges[0]?.id).toBe('edge-old');
+    expect(body.edges[0]?.kind).toBe('verify');
+  });
+});
+
 describe('POST /debug/trust-edges', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
