@@ -318,16 +318,18 @@ On iPhone Safari the site must be on the Home Screen before the OS will
 deliver pushes; the app shows that hint. Android and desktop Chrome do
 not need the icon.
 
-For member-authored living-room events, the api writes one in-app row to every
-account except the actor, then filters recipients by each account's
-`notificationLevel`, and enqueues (does not send inline) one Web Push to every
-remaining bell subscriber (an account with at least one `push_subscription`)
-except the actor. External replies use the targeted exception below:
+The official platform account (`isPlatform`) never fans out living-room post,
+reply, or zap notifications (in-app or Web Push). For other member-authored
+living-room events, the api writes one in-app row to every account except the
+actor, then filters recipients by each account's `notificationLevel`, and
+enqueues (does not send inline) one Web Push to every remaining bell subscriber
+(an account with at least one `push_subscription`) except the actor. External
+replies use the targeted exception below:
 
 - a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
 - a **reply** payload when someone replies (`title` New reply on 21.gifts, `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
 - an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor is the generic "Someone", not the reply's own name. The persisted row remains visible in every suppressed-notification case.
-- a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer.
+- a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer. A platform-account payer does not notify anyone.
 
 Missing `pushStore` still writes in-app rows. If persist or enqueue
 fails, the living-room write still succeeds (HTTP 200 on `POST /messages`;

@@ -2579,7 +2579,7 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor, then filter recipients by each account's `notificationLevel`
+actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
 fan out. A self-reply skips only the actor. `GET /notifications` applies the
@@ -2714,7 +2714,8 @@ member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer, then filtered by each account's
+every account except the resolved payer, no-op when that payer is the official
+platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
 failure logs `push.enqueue.failed`). `GET /notifications` applies the same
