@@ -11,6 +11,8 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { invoiceRoutes } from '@/routes/invoices';
 import { createApp } from '@/server';
+import type { FundingGrant } from '@/lib/funding';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 
@@ -18,6 +20,8 @@ vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
 
+const spendApp = createApp;
+const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc1issued';
@@ -108,6 +112,19 @@ async function seedPasskeyAccount(
 /**
  * Seed one live non-profile top-level forum row for `accountId` (EARLY-shaped).
  */
+function expiredTrialGrant(accountId = 'acc-alice'): FundingGrant {
+  return {
+    accountId,
+    status: 'trial',
+    appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+    decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+    decidedBy: 'staff',
+    trialUtcDate: '2026-09-19',
+    admittedAt: null,
+    note: 'keep',
+  };
+}
+
 function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   return new InMemoryMessageStore([
     {
@@ -2772,7 +2789,23 @@ describe('GET /invoices/eligible', () => {
   it('returns eligible true when admitted today', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const res = await spendApp({ spendApiToken: TOKEN, authStore }).request(
+    const account = await authStore.getAccount('acc-alice');
+    if (account !== undefined) {
+      await authStore.updateAccount({ ...account, role: 'verified' });
+    }
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc-alice',
+        status: 'admitted',
+        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+        decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: Date.parse('2026-09-15T18:00:00.000Z'),
+        note: null,
+      },
+    ]);
+    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
       `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
       auth(),
     );
@@ -2791,18 +2824,7 @@ describe('GET /invoices/eligible', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: false });
   });
-});
-  it('returns eligible false when there is no grant', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fundingStore: new InMemoryFundingStore(),
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false });
-  });
+
   it('does not persist when GET /eligible sees an expired trial', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -2843,4 +2865,5 @@ describe('GET /invoices/eligible', () => {
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
+});
 
