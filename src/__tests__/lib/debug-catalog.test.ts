@@ -336,10 +336,12 @@ describe('loadDebugTables', () => {
     const only = await loadDebugTables({ auth, messages, contacts }, 'btc_usd_daily');
     expect(only.btc_usd_daily).toEqual([]);
     expect(only.account).toEqual([]);
-    expect((await loadDebugTables({ auth, messages, contacts }, 'usd_fiat_daily')).usd_fiat_daily).toEqual(
+    expect(
+      (await loadDebugTables({ auth, messages, contacts }, 'usd_fiat_daily')).usd_fiat_daily,
+    ).toEqual([]);
+    expect((await loadDebugTables({ auth, messages, contacts }, 'db_change')).db_change).toEqual(
       [],
     );
-    expect((await loadDebugTables({ auth, messages, contacts }, 'db_change')).db_change).toEqual([]);
     const missingOptional = await loadDebugTables({
       auth: new InMemoryAuthStore(),
       messages: new InMemoryMessageStore(),
