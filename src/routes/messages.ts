@@ -249,6 +249,35 @@ async function authedAccount(
   return resolveSession(deps.authStore, deps.now(), token);
 }
 
+/** True when the bearer is a founder or moderator session. */
+async function staffMayReadHidden(
+  deps: MessagesRouteDeps,
+  header: string | undefined,
+): Promise<boolean> {
+  const account = await authedAccount(deps, header);
+  return account !== null && roleAtLeast(account.role, 'moderator');
+}
+
+/**
+ * Resolve `{ id, name, role }` for a hide stamp. Same rules as `GET /hidden`.
+ *
+ * @param authStore - Account lookup.
+ * @param row - Hidden forum row.
+ * @returns Deleter object; missing account keeps the id with null name/role.
+ */
+async function resolveDeletedBy(
+  authStore: AuthStore,
+  row: MessageRow,
+): Promise<{ id: string | null; name: string | null; role: AccountRole | null }> {
+  if (row.deletedBy === null) {
+    return { id: null, name: null, role: null };
+  }
+  const deleter = await authStore.getAccount(row.deletedBy);
+  return deleter === undefined
+    ? { id: row.deletedBy, name: null, role: null }
+    : { id: deleter.id, name: deleter.name, role: deleter.role };
+}
+
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -293,12 +322,14 @@ async function withheldFromPublic(deps: MessagesRouteDeps, row: MessageRow): Pro
  * (indices 1–9) use `/photo/1.jpg` … `/photo/9.webp`.
  *
  * @param deps - Message store.
+ * @param c - Request (Authorization for staff hidden reads).
  * @param id - Path id.
  * @param index - Extra still index (1–9). Omitted = photo 0 (`getPhoto`).
  * @returns 200 bytes, 404, or 503.
  */
 async function serveForumPhoto(
   deps: MessagesRouteDeps,
+  c: Context,
   id: string,
   index?: number,
 ): Promise<Response> {
@@ -307,7 +338,16 @@ async function serveForumPhoto(
   }
   try {
     const row = await deps.store.getById(id);
-    if (row === undefined || row.deletedAt !== null || (await withheldFromPublic(deps, row))) {
+    if (row === undefined) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
+    if (
+      row.deletedAt !== null &&
+      !(await staffMayReadHidden(deps, c.req.header('authorization')))
+    ) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
+    if (row.deletedAt === null && (await withheldFromPublic(deps, row))) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
     const photo =
@@ -350,13 +390,16 @@ async function serveForumVideo(
   try {
     const row = await deps.store.getById(id);
     const mime = row?.videoContentType ?? null;
+    if (row === undefined || row.hasVideo !== true || mime === null) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
+    }
     if (
-      row === undefined ||
-      row.deletedAt !== null ||
-      row.hasVideo !== true ||
-      mime === null ||
-      (await withheldFromPublic(deps, row))
+      row.deletedAt !== null &&
+      !(await staffMayReadHidden(deps, c.req.header('authorization')))
     ) {
+      return Response.json({ error: 'Video not found' }, { status: 404 });
+    }
+    if (row.deletedAt === null && (await withheldFromPublic(deps, row))) {
       return Response.json({ error: 'Video not found' }, { status: 404 });
     }
     if (forumVideoExt(mime) !== ext) {
@@ -659,18 +702,22 @@ const invoiceBody = z.object({
  * the current body; invalid value 400), and `POST /messages/:id/invoice`.
  * Photo, video, replies, DELETE, and `GET /hidden` register before the public
  * single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
- * lists and 404 on reads; `getById` still returns them for workers. Public
+ * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
+ * GET the hidden permalink, its replies (including hidden children), and
+ * photo/video bytes. `getById` still returns hidden rows for workers. Public
  * `GET /:id` of a live reply with `accountId` null returns 200 with
  * `via: 'nostr'` only while its `authorPubkey` holds a zapper entitlement
  * (`isZapperPubkey`); without the entitlement, or with neither an account
  * nor an author pubkey, it is 404, and the photo and video routes answer
- * 404 for the same rows. Top-level Damus-only notes stay 200. Public
+ * 404 for the same live rows. Top-level Damus-only notes stay 200. Public
  * `GET /:id/replies` lists live children with either an account or an
  * author pubkey that is a recorded zapper; Bearer is optional (`accountId`
- * present only when signed in). Deleting an external row (`accountId` null
- * with `authorPubkey` set) also blocks that pubkey, soft-hides its other live
- * external rows, and logs `messages.external.blocked` with the target
- * `messageId` and total `hidden` count.
+ * present only when signed in). Staff hide retracts in-app notifications
+ * for the note and its direct children. Deleting an external row
+ * (`accountId` null with `authorPubkey` set) also blocks that pubkey,
+ * soft-hides its other live external rows, and logs
+ * `messages.external.blocked` with the target `messageId` and total
+ * `hidden` count.
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
  * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`, and
@@ -822,13 +869,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (match === null) {
         return c.json({ error: 'Photo not found' }, 404);
       }
-      return serveForumPhoto(deps, c.req.param('id'), Number(match[1]));
+      return serveForumPhoto(deps, c, c.req.param('id'), Number(match[1]));
     })
-    .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c.req.param('id')))
-    .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c.req.param('id')))
-    .get('/:id/photo.png', (c) => serveForumPhoto(deps, c.req.param('id')))
-    .get('/:id/photo.webp', (c) => serveForumPhoto(deps, c.req.param('id')))
-    .get('/:id/photo', (c) => serveForumPhoto(deps, c.req.param('id')))
+    .get('/:id/photo.jpg', (c) => serveForumPhoto(deps, c, c.req.param('id')))
+    .get('/:id/photo.jpeg', (c) => serveForumPhoto(deps, c, c.req.param('id')))
+    .get('/:id/photo.png', (c) => serveForumPhoto(deps, c, c.req.param('id')))
+    .get('/:id/photo.webp', (c) => serveForumPhoto(deps, c, c.req.param('id')))
+    .get('/:id/photo', (c) => serveForumPhoto(deps, c, c.req.param('id')))
     .get('/:id/video.mp4', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mp4'))
     .get('/:id/video.webm', (c) => serveForumVideo(deps, c, c.req.param('id'), 'webm'))
     .get('/:id/video.mov', (c) => serveForumVideo(deps, c, c.req.param('id'), 'mov'))
@@ -841,12 +888,35 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const includeAccountId = account !== null;
       try {
         const parent = await deps.store.getById(id);
-        if (parent === undefined || parent.deletedAt !== null) {
+        if (parent === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT);
+        const staffHidden =
+          parent.deletedAt !== null && account !== null && roleAtLeast(account.role, 'moderator');
+        if (parent.deletedAt !== null && !staffHidden) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT, staffHidden);
         const messages = [];
         for (const row of rows) {
+          if (row.deletedAt !== null) {
+            try {
+              const author =
+                row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+              const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+              const deletedBy = await resolveDeletedBy(deps.authStore, row);
+              messages.push(
+                serializeMessage(row, false, role, undefined, true, {
+                  deletedAt: row.deletedAt,
+                  deletedBy,
+                }),
+              );
+            } catch {
+              // One child must not 503 the thread (invalid createdAt, author lookup).
+              continue;
+            }
+            continue;
+          }
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
             continue;
@@ -922,6 +992,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        try {
+          const childIds = await deps.store.listChildIds(id);
+          if (deps.notificationStore !== undefined) {
+            await deps.notificationStore.deleteByMessageIds([id, ...childIds]);
+          }
+        } catch {
+          logEvent('messages.delete.notifications_failed', { messageId: id });
+        }
         return c.body(null, 204);
       } catch {
         logEvent('messages.delete.failed');
@@ -940,17 +1018,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const rows = await deps.store.listHidden(MESSAGE_LIST_LIMIT);
         const messages = [];
         for (const row of rows) {
-          let deletedBy: { id: string | null; name: string | null; role: AccountRole | null };
-          if (row.deletedBy === null) {
-            deletedBy = { id: null, name: null, role: null };
-          } else {
-            const deleter = await deps.authStore.getAccount(row.deletedBy);
-            deletedBy =
-              deleter === undefined
-                ? { id: row.deletedBy, name: null, role: null }
-                : { id: deleter.id, name: deleter.name, role: deleter.role };
-          }
-          messages.push(serializeHiddenMessage(row, deletedBy));
+          messages.push(serializeHiddenMessage(row, await resolveDeletedBy(deps.authStore, row)));
         }
         logEvent('messages.hidden.listed', { count: messages.length });
         return c.json({ messages }, 200);
@@ -979,11 +1047,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       try {
         for (;;) {
           const row = await deps.store.getById(id);
-          if (
-            row === undefined ||
-            row.deletedAt !== null ||
-            (await withheldFromPublic(deps, row))
-          ) {
+          if (row === undefined) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (row.deletedAt !== null) {
+            const account = await authedAccount(deps, c.req.header('authorization'));
+            if (account === null || !roleAtLeast(account.role, 'moderator')) {
+              return c.json({ error: 'Not found' }, 404);
+            }
+            const author =
+              row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+            const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+            const deletedBy = await resolveDeletedBy(deps.authStore, row);
+            return c.json(
+              serializeMessage(row, false, role, undefined, true, {
+                deletedAt: row.deletedAt,
+                deletedBy,
+              }),
+              200,
+            );
+          }
+          if (await withheldFromPublic(deps, row)) {
             return c.json({ error: 'Not found' }, 404);
           }
           if (

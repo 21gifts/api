@@ -215,6 +215,28 @@ describe('InMemoryNotificationStore', () => {
     ]);
     expect((await store.listByRecipient('parent', 1)).map((item) => item.id)).toEqual(['z']);
   });
+
+  it('deleteByMessageIds is a no-op for empty ids', async () => {
+    const store = new InMemoryNotificationStore([row()]);
+    expect(await store.deleteByMessageIds([])).toBe(0);
+    expect((await store.listByRecipient('parent', 10)).map((item) => item.id)).toEqual(['n-1']);
+  });
+
+  it('deleteByMessageIds matches parentId or replyId and does not inspect type', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'by-parent', parentId: 'hit', replyId: 'other' }),
+      row({ id: 'by-reply', parentId: 'other', replyId: 'hit' }),
+      row({
+        id: 'by-type',
+        type: 'moderator_appointed',
+        parentId: 'hit',
+        replyId: 'unrelated',
+      }),
+      row({ id: 'neither', parentId: 'x', replyId: 'y' }),
+    ]);
+    expect(await store.deleteByMessageIds(['hit'])).toBe(3);
+    expect((await store.listByRecipient('parent', 10)).map((item) => item.id)).toEqual(['neither']);
+  });
 });
 
 describe('PostgresNotificationStore', () => {
@@ -394,5 +416,25 @@ describe('PostgresNotificationStore', () => {
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/UPDATE notification SET read_at = \$2/);
     expect(sql.executes[0]?.params).toEqual(['parent', READ_AT]);
+  });
+
+  it('deleteByMessageIds skips SQL when ids is empty', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresNotificationStore(sql).deleteByMessageIds([])).toBe(0);
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('deleteByMessageIds deletes by parent_id or reply_id without inspecting type', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'n-1' }, { id: 'n-2' }];
+    const removed = await new PostgresNotificationStore(sql).deleteByMessageIds(['p-1', 'r-2']);
+    expect(removed).toBe(2);
+    expect(sql.queries[0]?.text).toBe(
+      `DELETE FROM notification WHERE parent_id = ANY($1::uuid[]) OR reply_id = ANY($1::uuid[]) RETURNING id`,
+    );
+    expect(sql.queries[0]?.text).not.toMatch(/type/);
+    expect(sql.queries[0]?.params).toEqual([['p-1', 'r-2']]);
+    expect(sql.executes).toEqual([]);
   });
 });

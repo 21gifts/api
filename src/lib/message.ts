@@ -165,6 +165,15 @@ export interface PublicMessage {
    * Parent note id for a reply. Omitted on top-level notes (`parentId` null).
    */
   parentId?: string;
+  /**
+   * ISO-8601 hide timestamp. Set only when staff serialize a hidden row.
+   * Omitted on live JSON.
+   */
+  deletedAt?: string;
+  /**
+   * Staff member who hid the note. Set only with {@link PublicMessage.deletedAt}.
+   */
+  deletedBy?: { id: string | null; name: string | null; role: AccountRole | null };
 }
 
 /**
@@ -266,14 +275,18 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param replyCount - Optional reply count for top-level list rows.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
+ * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
+ * `payable` false (the `payable` argument is ignored). Omit on live JSON so
+ * those keys are absent.
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
  * `hasVideo`, `videoContentType`; live `role` for 21gifts authors; optional
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
- * `row.parentId !== null`); `createdAt` ISO-8601. Never includes photo or
- * video bytes, and never includes `contentFp`. Omits the `parentId` key on
- * top-level notes.
+ * `row.parentId !== null`; optional hide stamps when `hidden` is set);
+ * `createdAt` ISO-8601. Never includes photo or video bytes, and never
+ * includes `contentFp`. Omits the `parentId` key on top-level notes.
+ * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
@@ -282,6 +295,10 @@ export function serializeMessage(
   role: AccountRole | undefined,
   replyCount?: number,
   includeAccountId?: boolean,
+  hidden?: {
+    deletedAt: Date;
+    deletedBy: { id: string | null; name: string | null; role: AccountRole | null };
+  },
 ): PublicMessage {
   const body: PublicMessage = {
     id: row.id,
@@ -289,7 +306,7 @@ export function serializeMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
-    payable,
+    payable: hidden === undefined ? payable : false,
     hasPhoto: row.hasPhoto,
     photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
@@ -309,6 +326,10 @@ export function serializeMessage(
   }
   if (row.parentId !== null) {
     body.parentId = row.parentId;
+  }
+  if (hidden !== undefined) {
+    body.deletedAt = hidden.deletedAt.toISOString();
+    body.deletedBy = hidden.deletedBy;
   }
   return body;
 }

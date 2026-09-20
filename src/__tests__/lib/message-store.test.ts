@@ -999,6 +999,39 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-legacy', 'r-member']);
   });
 
+  it('listChildIds returns children of any deletedAt and listReplies includeHidden keeps 21gifts hidden children', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'c-live',
+      parentId: 'a',
+      text: 'live child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'c-hidden',
+      parentId: 'a',
+      text: 'hidden child',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'c-damus',
+      parentId: 'a',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'damus child',
+    });
+    expect((await store.listChildIds('a')).sort()).toEqual(['c-damus', 'c-hidden', 'c-live']);
+    expect(await store.listChildIds('missing')).toEqual([]);
+    expect((await store.listReplies('a', 10, true)).map((row) => row.id)).toEqual([
+      'c-hidden',
+      'c-live',
+    ]);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['c-live']);
+  });
+
   it('listDebug includes hidden rows and replies newest-first', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({
@@ -4475,6 +4508,32 @@ describe('PostgresMessageStore', () => {
     expect(await store.listPublishedEventIds(7)).toEqual(['ee'.repeat(32)]);
     expect(sql.queries[1]?.text).toMatch(/event_id IS NOT NULL AND parent_id IS NULL/);
     expect(sql.queries[1]?.params).toEqual([7]);
+  });
+
+  it('listChildIds selects ids by parent_id with any deleted_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'c1' }, { id: 'c2' }];
+    const ids = await new PostgresMessageStore(sql).listChildIds('p1');
+    expect(ids).toEqual(['c1', 'c2']);
+    expect(sql.queries[0]?.text).toBe('SELECT id FROM message WHERE parent_id = $1');
+    expect(sql.queries[0]?.params).toEqual(['p1']);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+  });
+
+  it('listReplies includeHidden omits deleted_at IS NULL and keeps member oldest-first order', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    await store.listReplies('p1', 10, true);
+    expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1 AND account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.params).toEqual(['p1', 10]);
+    await store.listReplies('p1', 10);
+    expect(sql.queries[1]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[1]?.text).toMatch(/account_id IS NOT NULL/);
+    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
   });
 
   it('recordInvoiceAttempt inserts into message_invoice with jsonb zap_request and lnurl_response', async () => {
