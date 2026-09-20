@@ -1237,6 +1237,20 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('nogoal'))?.goalSats).toBeNull();
   });
 
+  it('create stores null goalSats on a reply even when the row asked for one', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    const child = await store.create({
+      ...LATE,
+      id: 'child-goal',
+      parentId: 'a',
+      text: 'reply',
+      goalSats: 21000,
+    });
+    expect(child.goalSats).toBeNull();
+    expect((await store.getById('child-goal'))?.goalSats).toBeNull();
+  });
+
   it('create with non-null parentId when the parent is missing throws and does not append', async () => {
     const store = new InMemoryMessageStore();
     await expect(
@@ -3435,6 +3449,26 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toHaveLength(16);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
+  });
+
+  it('create with non-null parentId binds goal_sats null even when the row asked', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'child-goal' }];
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'child-goal',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      goalSats: 21000,
+    };
+    const created = await store.create(row);
+    expect(sql.queries[0]?.params.at(-1)).toBeNull();
+    expect(created.goalSats).toBeNull();
   });
 
   it('create with non-null parentId throws when the query returns zero rows and unlinks video', async () => {

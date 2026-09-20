@@ -2637,8 +2637,24 @@ each `{ contentType, data }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
 on a top-level note only):
 
+Top-level with a goal:
+
 ```json
-{ "text": "…", "inReplyTo": "<uuid>", "goalSats": 21000, "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
+{
+  "text": "…",
+  "goalSats": 21000,
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
+```
+
+Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400):
+
+```json
+{
+  "text": "…",
+  "inReplyTo": "<uuid>",
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
 ```
 
 Non-empty `photos` wins over singular `photo`. Dual-send `{ photo, photos }`

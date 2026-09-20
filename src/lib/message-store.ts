@@ -1376,7 +1376,8 @@ export class InMemoryMessageStore implements MessageStore {
    * media (`eventId` null) with the same account, parent, and fingerprint
    * returns the existing row without appending or writing a second video file.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
-   * or soft-hidden parent throws and does not append.
+   * or soft-hidden parent throws and does not append. Replies store
+   * `goalSats` null even when the row carried a positive ask.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -1439,6 +1440,7 @@ export class InMemoryMessageStore implements MessageStore {
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
+    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
       if (parent === undefined || parent.deletedAt !== null) {
@@ -2785,7 +2787,8 @@ export class PostgresMessageStore implements MessageStore {
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
-   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. A 0-row insert calls
+   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. Replies bind `goal_sats`
+   * SQL null even when the row carried a positive `goalSats`. A 0-row insert calls
    * `getById(stored.id)` and returns that row when present (gift-reply retry
    * after the parent was later deleted); otherwise throws, no insert. On unique
    * violation (`23505`), if `getById(stored.id)` matches that id, return that
@@ -2836,6 +2839,7 @@ export class PostgresMessageStore implements MessageStore {
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
+    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }

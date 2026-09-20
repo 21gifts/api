@@ -709,6 +709,26 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
   });
 
+  it.each([0, 21.5])('returns 400 when JSON goalSats is %s', async (goalSats) => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+  });
+
+  it('omits goalSats when JSON goalSats is null', async () => {
+    const post = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: null }),
+    });
+    expect(post.status).toBe(200);
+    expect(await post.json()).not.toHaveProperty('goalSats');
+  });
+
   it('enqueues a forum push for other subscribed accounts, not the author', async () => {
     const authStore = await namedStore('Ada');
     const pushStore = new InMemoryPushStore();
