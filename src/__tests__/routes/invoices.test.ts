@@ -2381,23 +2381,30 @@ describe('POST /invoices/proof', () => {
     if (platform === undefined) {
       return;
     }
-    await authStore.updateAccount({ ...platform, name: '  ' });
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
-    expect(attached?.name).toBe('21.gifts');
+    for (const [index, name] of ['  ', null].entries()) {
+      await authStore.updateAccount({ ...platform, name });
+      const invoice = unpaid({
+        id: `${index}`.padStart(32, 'a'),
+        groupMessageId: GROUP_MSG_ID,
+        comment: '21gifts moderator',
+      });
+      store.put(invoice);
+      const res = await createApp({
+        spendApiToken: TOKEN,
+        invoiceStore: store,
+        authStore,
+        conversationStore,
+        now: () => 100,
+      }).request(
+        '/invoices/proof',
+        auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+      );
+      expect(res.status).toBe(200);
+      const attached = await conversationStore.getMessageById(spendGroupGiftId(invoice.id));
+      expect(attached?.name).toBe('21.gifts');
+    }
   });
 
   it('attaches a group stipend with comment-only text when the recipient name is empty', async () => {
