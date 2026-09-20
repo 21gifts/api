@@ -307,9 +307,21 @@ test('GET /.well-known/nostr.json is 200', async ({ request }) => {
   expect(res.status()).toBe(200);
 });
 
+test('GET /.well-known/lnurlp/:username is 404 when unknown', async ({ request }) => {
+  const res = await request.get('/.well-known/lnurlp/:username');
+  expect(res.status()).toBe(404);
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/username without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/username', {
+    data: { username: 'ada' },
   });
   expect(res.status()).toBe(401);
 });

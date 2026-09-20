@@ -10,7 +10,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
 
 /**
- * Public JSON shape of an account (ten fields). Never includes Nostr
+ * Public JSON shape of an account (eleven fields). Never includes Nostr
  * pubkey, ciphertext, or other key material. Omits `viewKey` (operator
  * debug listing only — not `/me` or passkey finish).
  */
@@ -23,6 +23,8 @@ export interface AccountResponse {
   role: string;
   /** Display name, or `null` until set. */
   name: string | null;
+  /** Unique LUD-16 / NIP-05 local-part, or `null` until set. */
+  username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
   /** Linked Lightning Address, or `null`. */
@@ -38,7 +40,7 @@ export interface AccountResponse {
 }
 
 /**
- * Owner-facing account JSON: the ten public fields plus the durable
+ * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`.
  */
@@ -46,15 +48,17 @@ export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
-   * Next setup step the owner must complete (`name`, `lightning-address`,
-   * `rules`), or `null` when the signed-in app is allowed. Skip timestamps
-   * count as done for the wizard. Computed on the api; clients must not
-   * invent a parallel sequence.
+   * Next setup step the owner must complete (`name`, `username`,
+   * `lightning-address`, `rules`), or `null` when the signed-in app is
+   * allowed. Skip timestamps count as done for the wizard except
+   * username, which cannot be skipped. Computed on the api; clients must
+   * not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
    * Factually unset fields (skip does not clear them). Order: `name`,
-   * `lightning-address`, `rules`. Used by clients alongside action gates.
+   * `username`, `lightning-address`, `rules`. Used by clients alongside
+   * action gates.
    */
   missing: AccountMissingField[];
   /** True when this account has a live forum row that is not the profile note. */
@@ -85,6 +89,8 @@ export interface OwnerAccountResponse extends AccountResponse {
 export interface ViewProfileResponse {
   /** Display name, or `null` until set. */
   name: string | null;
+  /** Unique LUD-16 / NIP-05 local-part, or `null` until set. */
+  username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
   /** Linked Lightning Address, or `null`. */
@@ -109,7 +115,7 @@ export interface ViewProfileResponse {
 }
 
 /**
- * Project an account to the ten-field public JSON shape.
+ * Project an account to the eleven-field public JSON shape.
  *
  * Shared by {@link serializeDebugAccount} and {@link serializeOwnerAccount}.
  * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
@@ -117,7 +123,7 @@ export interface ViewProfileResponse {
  * `viewKey` or `isPlatform`.
  *
  * @param account - Stored account.
- * @returns The ten public fields only.
+ * @returns The eleven public fields only.
  */
 export function serializeAccount(account: Account): AccountResponse {
   return {
@@ -125,6 +131,7 @@ export function serializeAccount(account: Account): AccountResponse {
     linkingKey: account.linkingKey,
     role: account.role,
     name: account.name,
+    username: account.username ?? null,
     location: account.location,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,
@@ -134,7 +141,7 @@ export function serializeAccount(account: Account): AccountResponse {
   };
 }
 
-/** Operator JSON shape: the ten public fields plus `isPlatform`. */
+/** Operator JSON shape: the eleven public fields plus `isPlatform`. */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
@@ -168,7 +175,7 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * @param hasPosted - True when the account has a live non-profile forum row.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Seventeen fields including `viewKey`, `setup`, `missing`,
+ * @returns Eighteen fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`, and
  * `notificationLevel`.
  */
@@ -235,7 +242,7 @@ export async function serializeOwnerAccountWithPosts(
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Eight public profile fields (including location, aboutMe, and
+ * @returns Nine public profile fields (including username, location, aboutMe, and
  *   aboutMeHasPhoto).
  */
 export function serializeViewProfile(
@@ -246,6 +253,7 @@ export function serializeViewProfile(
 ): ViewProfileResponse {
   return {
     name: account.name,
+    username: account.username ?? null,
     location: account.location,
     lightningAddress: account.lightningAddress,
     lightningAddressVerified: account.lightningAddressVerified,

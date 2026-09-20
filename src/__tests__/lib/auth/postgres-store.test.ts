@@ -44,6 +44,7 @@ const ACCOUNT_ROW = {
   name_skipped_at: null as Date | string | null,
   lightning_address_skipped_at: null as Date | string | null,
   profile_message_id: null as string | null,
+  username: null as string | null,
 };
 
 describe('PostgresAuthStore nostr keys', () => {
@@ -104,6 +105,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.profileMessageId).toBeNull();
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
+    expect(mapped?.username).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -113,6 +115,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/profile_message_id/);
     expect(sql.queries[0]?.text).toMatch(/location/);
     expect(sql.queries[0]?.text).toMatch(/notification_level/);
+    expect(sql.queries[0]?.text).toMatch(/username/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -212,6 +215,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/location/);
     expect(sql.executes[0]?.text).toMatch(/notification_level/);
     expect(sql.executes[0]?.params[15]).toBe('all');
+    expect(sql.executes[0]?.params[16]).toBeNull();
+    expect(sql.executes[0]?.text).toMatch(/username/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
@@ -221,6 +226,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
+    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -239,6 +245,7 @@ describe('PostgresAuthStore', () => {
       null,
       null,
       'all',
+      null,
     ]);
   });
 
@@ -264,7 +271,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[15]).toBe('mentions');
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
+    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
     expect(sql.executes[1]?.params[15]).toBe('active');
+    expect(sql.executes[1]?.params[16]).toBeNull();
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {
@@ -357,6 +366,25 @@ describe('PostgresAuthStore', () => {
       await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(
         'missing@example.com',
       ),
+    ).toBeUndefined();
+  });
+
+  it('looks up an account by username with lower(trim) SQL', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, username: 'ada', name: 'Ada' }];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.getAccountByUsername('  Ada  ');
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE username IS NOT NULL AND lower\(trim\(username\)\) = lower\(trim\(\$1\)\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['  Ada  ']);
+    expect(found?.id).toBe('acc');
+    expect(found?.username).toBe('ada');
+  });
+
+  it('returns undefined when username lookup has no rows', async () => {
+    expect(
+      await new PostgresAuthStore(new MockSql()).getAccountByUsername('missing'),
     ).toBeUndefined();
   });
 

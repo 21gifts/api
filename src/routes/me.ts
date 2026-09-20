@@ -24,6 +24,7 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
+import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost } from '@/lib/notification';
@@ -36,9 +37,10 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
- * optional location, About me, welcome-forum laws dismiss, living-room rules
- * agreement, notification level, and the receiver's Lightning Address), including
- * proof-of-control verification. Shares the {@link AuthStore} instance with `/auth`.
+ * unique username, optional location, About me, welcome-forum laws dismiss,
+ * living-room rules agreement, notification level, and the receiver's
+ * Lightning Address), including proof-of-control verification. Shares the
+ * {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -125,6 +127,9 @@ async function storedAccount(deps: MeRouteDeps, id: string): Promise<Account | n
 /** Body schema for setting a display name. */
 const nameBody = z.object({ name: z.string() });
 
+/** Body schema for setting a unique username. */
+const usernameBody = z.object({ username: z.string() });
+
 /** Body schema for setting a free-text profile location. */
 const locationBody = z.object({ location: z.string() });
 
@@ -163,7 +168,7 @@ const notificationLevelBody = z.object({
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, location, About me, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -260,10 +265,86 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (live === null || live === undefined) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const named: Account = { ...live, name };
-      await deps.store.updateAccount(named);
+      await deps.store.updateAccount({ ...live, name });
+      const named = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (named === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const usernameBlank =
+        named.username === null || named.username === undefined || named.username.trim() === '';
+      if (usernameBlank) {
+        const derived = usernameFromDisplayName(name);
+        if (derived !== null) {
+          const owner = await deps.store.getAccountByUsername(derived);
+          if (owner === undefined || owner.id === named.id) {
+            const latest = await storedAccount(deps, named.id);
+            /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+            if (latest === null) {
+              return c.json({ error: 'Unauthorized' }, 401);
+            }
+            const latestBlank =
+              latest.username === null ||
+              latest.username === undefined ||
+              latest.username.trim() === '';
+            if (latestBlank) {
+              await deps.store.updateAccount({ ...latest, username: derived });
+            }
+          }
+        }
+      }
+      const stored = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (stored === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(named, deps.messages), 200);
+      return c.json(await serializeOwnerAccountWithPosts(stored, deps.messages), 200);
+    })
+    .post('/username', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = usernameBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a "username" string' }, 400);
+      }
+      const username = normalizeUsername(parsed.data.username);
+      if (username === null) {
+        return c.json(
+          {
+            error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+          },
+          400,
+        );
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const owner = await deps.store.getAccountByUsername(username);
+      if (owner !== undefined && owner.id !== current.id) {
+        return c.json({ error: 'Username is already in use' }, 409);
+      }
+      const latest = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (latest === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      await deps.store.updateAccount({ ...latest, username });
+      const stored = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (stored === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      /* v8 ignore next 3 -- unique-index race: update no-ops and the stored handle stays taken */
+      if ((stored.username ?? '').trim().toLowerCase() !== username) {
+        return c.json({ error: 'Username is already in use' }, 409);
+      }
+      logEvent('account.username.set', { accountId: current.id });
+      return c.json(await serializeOwnerAccountWithPosts(stored, deps.messages), 200);
     })
     .post('/location', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

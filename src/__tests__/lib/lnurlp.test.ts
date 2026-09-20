@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import { resolveLnurlp, resolveLnurlpDocument, type FetchFn } from '@/lib/lnurlp';
 
 const ADDRESS = 'alice@walletofsatoshi.com';
 const MAX_SENDABLE = 100_000_000_000;
@@ -172,5 +172,37 @@ describe('resolveLnurlp', () => {
     };
     await resolveLnurlp({ address: 'a+b@example.com', fetchImpl });
     expect(calls[0]).toBe('https://example.com/.well-known/lnurlp/a%2Bb');
+  });
+});
+
+describe('resolveLnurlpDocument', () => {
+  it('returns the provider JSON including extra fields', async () => {
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse({
+        tag: 'payRequest',
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+        extra: 'keep',
+      });
+    const result = await resolveLnurlpDocument({ address: ADDRESS, fetchImpl });
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        tag: 'payRequest',
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+        extra: 'keep',
+      },
+    });
+  });
+
+  it('rejects a non-object body', async () => {
+    const result = await resolveLnurlpDocument({
+      address: ADDRESS,
+      fetchImpl: async () => jsonResponse(['nope']),
+    });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 });

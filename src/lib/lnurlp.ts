@@ -26,6 +26,10 @@ export interface LnurlpMetadata {
 export type ResolveLnurlpResult =
   { ok: true; metadata: LnurlpMetadata } | { ok: false; reason: 'unreachable' };
 
+/** Successful raw LNURL-pay JSON, or a collapsed failure reason. */
+export type ResolveLnurlpDocumentResult =
+  { ok: true; body: Record<string, unknown> } | { ok: false; reason: 'unreachable' };
+
 /** LNURL-pay metadata from `/.well-known/lnurlp/...`. */
 const lnurlpMetadataSchema = z
   .object({
@@ -39,19 +43,22 @@ const lnurlpMetadataSchema = z
   .refine((m) => m.maxSendable >= m.minSendable);
 
 /**
- * Resolve a LUD-16 address to LNURL-pay metadata via the well-known endpoint.
+ * Fetch and validate LNURL-pay JSON for a LUD-16 address.
  *
- * GETs `https://<domain>/.well-known/lnurlp/<name>` without following
- * redirects (`redirect: 'error'`). Any network, HTTP, JSON, schema, or
- * non-HTTPS callback failure collapses to `unreachable`.
+ * Same reachability rules as {@link resolveLnurlp}. The raw object is kept so
+ * `/.well-known/lnurlp/:username` can pass Wallet of Satoshi's payload through
+ * (invoice `description_hash` stays valid; settlement stays at WoS).
  *
  * @param args - Address (`name@domain`) and injected fetch.
- * @returns Metadata on success, or `{ ok: false, reason: 'unreachable' }`.
+ * @returns Raw JSON plus parsed metadata, or `{ ok: false, reason: 'unreachable' }`.
  */
-export async function resolveLnurlp(args: {
+async function loadLnurlpJson(args: {
   address: string;
   fetchImpl: FetchFn;
-}): Promise<ResolveLnurlpResult> {
+}): Promise<
+  | { ok: true; body: Record<string, unknown>; metadata: LnurlpMetadata }
+  | { ok: false; reason: 'unreachable' }
+> {
   const at = args.address.lastIndexOf('@');
   if (at <= 0 || at === args.address.length - 1) {
     return { ok: false, reason: 'unreachable' };
@@ -81,6 +88,9 @@ export async function resolveLnurlp(args: {
   } catch {
     return { ok: false, reason: 'unreachable' };
   }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, reason: 'unreachable' };
+  }
 
   const parsed = lnurlpMetadataSchema.safeParse(body);
   if (!parsed.success) {
@@ -107,5 +117,46 @@ export async function resolveLnurlp(args: {
   if (parsed.data.nostrPubkey !== undefined) {
     metadata.nostrPubkey = parsed.data.nostrPubkey;
   }
-  return { ok: true, metadata };
+  return { ok: true, body: body as Record<string, unknown>, metadata };
+}
+
+/**
+ * Resolve a LUD-16 address to LNURL-pay metadata via the well-known endpoint.
+ *
+ * GETs `https://<domain>/.well-known/lnurlp/<name>` without following
+ * redirects (`redirect: 'error'`). Any network, HTTP, JSON, schema, or
+ * non-HTTPS callback failure collapses to `unreachable`.
+ *
+ * @param args - Address (`name@domain`) and injected fetch.
+ * @returns Metadata on success, or `{ ok: false, reason: 'unreachable' }`.
+ */
+export async function resolveLnurlp(args: {
+  address: string;
+  fetchImpl: FetchFn;
+}): Promise<ResolveLnurlpResult> {
+  const loaded = await loadLnurlpJson(args);
+  if (!loaded.ok) {
+    return loaded;
+  }
+  return { ok: true, metadata: loaded.metadata };
+}
+
+/**
+ * Resolve a LUD-16 address to the provider's LNURL-pay JSON object.
+ *
+ * Used to serve `username@21.gifts` while settlement stays on the linked
+ * Wallet of Satoshi callback.
+ *
+ * @param args - Address (`name@domain`) and injected fetch.
+ * @returns The provider JSON, or `{ ok: false, reason: 'unreachable' }`.
+ */
+export async function resolveLnurlpDocument(args: {
+  address: string;
+  fetchImpl: FetchFn;
+}): Promise<ResolveLnurlpDocumentResult> {
+  const loaded = await loadLnurlpJson(args);
+  if (!loaded.ok) {
+    return loaded;
+  }
+  return { ok: true, body: loaded.body };
 }

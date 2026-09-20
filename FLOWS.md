@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-16.
+**Status**: living document. Last revised 2026-09-20.
 
 ---
 
@@ -47,21 +47,29 @@ clears the token; a transient failure does not.
 Login is passkey-only. LNURL-auth has been removed.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a name form, a Lightning Address form, and
-**Sign out**. Name and Lightning Address are each skippable via
-`POST /me/setup/skip`; living-room rules stay required.
+`/profile` route yet. It shows a name form, a username form, a Lightning
+Address form, and **Sign out**. Name and Lightning Address are each
+skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
+the handle with `POST /me/username`. Living-room rules stay required.
 
-After name/skip and address/skip, the app records living-room rules agreement
-via `POST /me/rules-agreement`. `GET /me` carries `setup` (wizard; skip counts
-as done), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch ms of
-the first agreement, or `null`).
+`GET /me` `setup` order is name, then username (unskippable), then
+lightning-address, then rules. When username is still blank,
+`POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
+free; a collision or uniqueness race leaves username null and `setup` at
+username.
+
+After name/skip, username, and address/skip, the app records living-room
+rules agreement via `POST /me/rules-agreement`. `GET /me` carries
+`setup` (wizard; skip counts as done for name and Lightning Address, not
+username), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch
+ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
 account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/setup/skip`, `/me/name`, `/me/rules-agreement`.
+`/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
 
 ---
 
@@ -76,8 +84,10 @@ or unlink a LUD-16 Lightning Address:
   resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
-- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp
-  so `setup` returns to `lightning-address` when a name is set or name-skipped)
+- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
+  does not clear `username`). After unlink, `setup` is `username` if the handle
+  is blank; `setup` is `lightning-address` only when name is done or skipped
+  **and** username is set
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):
@@ -171,7 +181,7 @@ pair above (`SPEC.md`).
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name + Lightning Address — missing requirements are
+(requires rules + name + username + Lightning Address — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }` and Bearer `SPEND_API_TOKEN`); replies and media replay do

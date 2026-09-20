@@ -141,4 +141,47 @@ describe('nip05', () => {
     const filtered = await buildNostrJson(auth, {}, local);
     expect(filtered.names[local]).toBe('aa'.repeat(32));
   });
+
+  it('uses a stored username instead of re-slugging the display name', async () => {
+    const auth = new InMemoryAuthStore();
+    const ada = account({
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'Ada Lovelace',
+      username: 'custom',
+      createdAt: 1,
+    });
+    await auth.createAccount(ada);
+    await auth.setNostrKeyIfAbsent(ada.id, {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array(16),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    expect(nip05Identifier(ada, [ada], '21.gifts')).toBe('custom@21.gifts');
+    const body = await buildNostrJson(auth, {}, 'custom');
+    expect(body.names['custom']).toBe('aa'.repeat(32));
+    expect(body.names['ada-lovelace']).toBeUndefined();
+  });
+
+  it('skips stored handles and nameless rows when allocating a fallback identifier', () => {
+    const named = account({
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'Ada',
+      username: 'custom',
+      createdAt: 1,
+    });
+    const blank = account({
+      id: '00000000-0000-4000-8000-000000000002',
+      name: '   ',
+      createdAt: 2,
+      viewKey: 'cc'.repeat(32),
+    });
+    const target = account({
+      id: '00000000-0000-4000-8000-000000000003',
+      name: 'Ada',
+      createdAt: 3,
+      viewKey: 'dd'.repeat(32),
+    });
+    expect(nip05Identifier(target, [named, blank, target], '21.gifts')).toBe('ada@21.gifts');
+  });
 });

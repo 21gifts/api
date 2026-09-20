@@ -278,7 +278,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
-  app.route('/.well-known', wellKnownRoutes({ auth: store }));
+  app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl }));
   app.route(
     '/auth',
     authRoutes({

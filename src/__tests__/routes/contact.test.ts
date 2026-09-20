@@ -79,7 +79,16 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   if (existing === undefined) {
     throw new Error('expected account');
   }
-  await store.updateAccount({ ...existing, name, rulesAgreedAt: now() });
+  await store.updateAccount({
+    ...existing,
+    name,
+    username:
+      name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-') || null,
+    rulesAgreedAt: now(),
+  });
   return store;
 }
 
@@ -219,7 +228,7 @@ describe('POST /contact', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name'],
+      missing: ['name', 'username'],
     });
   });
 
@@ -232,7 +241,7 @@ describe('POST /contact', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name'],
+      missing: ['name', 'username'],
     });
   });
 

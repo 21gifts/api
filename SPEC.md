@@ -71,6 +71,7 @@ Public base URLs used in examples:
 | ------ | -------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------- |
 | GET    | `/healthz`                                   | none                     | Liveness                                                                                                  |
 | GET    | `/info`                                      | none                     | Service identity                                                                                          |
+| GET    | `/.well-known/lnurlp/:username`              | none                     | LUD-16 payRequest for username@21.gifts; settlement stays on linked Wallet of Satoshi                     |
 | GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                                                                      |
 | GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                                                                  |
 | GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                                                                             |
@@ -84,7 +85,8 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey/about/photo`                 | none                     | Profile-note photo bytes for the view-key card                                                            |
 | GET    | `/view/:viewKey/activity`                    | none                     | Public given/received payload for the account behind the view key                                         |
 | POST   | `/me/setup/skip`                             | Bearer                   | Skip name or Lightning Address wizard step                                                                |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (profile note when name + LN are both set)                                       |
+| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (profile note when name + LN are both set); auto-assign username when free       |
+| POST   | `/me/username`                               | Bearer                   | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                       |
 | POST   | `/me/location`                               | Bearer                   | Set, change, or clear free-text profile location                                                          |
 | PUT    | `/me/about`                                  | Bearer                   | Set/clear About me text and optional photo on the profile note                                            |
 | GET    | `/me/about/photo`                            | Bearer                   | Owner profile-note photo bytes                                                                            |
@@ -106,8 +108,7 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)      | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)         | Founder: appoint a moderator directly                                                                     |
 | GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing                                              |
-| GET    | `/messages/hidden`                           | Bearer (moderator+)      | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |     | GET | `/messages/hidden` | Bearer (moderator+) | Staff log of soft-hidden notes (session, not DEBUG_TOKEN) |
 | GET    | `/messages/:id`                              | none                     | Public single-note JSON (visible external replies included)                                               |
 | GET    | `/messages/:id/replies`                      | none                     | Oldest-first member and entitled external replies (optional Bearer for member `accountId`)                |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                                                           |
@@ -196,6 +197,39 @@ Service identity for clients. Does not expose runtime configuration.
   "repository": "https://github.com/21gifts/api"
 }
 ```
+
+### `GET /.well-known/lnurlp/:username`
+
+Public LUD-16 payRequest for `username@21.gifts`. No auth. Looks up the
+stored username via `getAccountByUsername` after `normalizeUsername` on
+the path param. Passes through the linked Wallet of Satoshi LNURL-pay
+JSON unchanged (`resolveLnurlpDocument`; `c.json(resolved.body, 200,
+WELL_KNOWN_CORS)`). The callback stays on Wallet of Satoshi. 21.gifts
+does not mint invoices. Settlement stays on the linked Wallet of Satoshi
+address.
+
+CORS is the same `WELL_KNOWN_CORS` as `/.well-known/nostr.json`:
+`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`,
+`Cache-Control: public, max-age=60`.
+
+Username invalid (`normalizeUsername` returns null), unknown
+(`getAccountByUsername` undefined), or unlinked (no non-blank
+`lightningAddress`) → **Response** `404`:
+
+```json
+{ "error": "Not found" }
+```
+
+Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
+**Response** `502`:
+
+```json
+{ "error": "Lightning Address could not be resolved" }
+```
+
+Success → **Response** `200` with the provider payRequest JSON passed
+through unchanged. This service does not invent or rewrite Wallet of
+Satoshi fields.
 
 ### `GET /favicon.ico`
 
@@ -294,6 +328,7 @@ ID).
     "linkingKey": null,
     "role": "basis",
     "name": null,
+    "username": null,
     "location": null,
     "lightningAddress": null,
     "lightningAddressVerified": false,
@@ -302,7 +337,7 @@ ID).
     "createdAt": 0,
     "rulesAgreedAt": null,
     "setup": "name",
-    "missing": ["name", "lightning-address", "rules"],
+    "missing": ["name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
@@ -349,6 +384,7 @@ Missing or invalid bearer → **Response** `401`:
   "linkingKey": "<hex>",
   "role": "basis",
   "name": null,
+  "username": null,
   "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
@@ -357,7 +393,7 @@ Missing or invalid bearer → **Response** `401`:
   "createdAt": 0,
   "rulesAgreedAt": null,
   "setup": "name",
-  "missing": ["name", "lightning-address", "rules"],
+  "missing": ["name", "username", "lightning-address", "rules"],
   "hasPosted": false,
   "aboutMe": null,
   "aboutMeHasPhoto": false,
@@ -376,6 +412,7 @@ stays `null`)).
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                     |
 | `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                                                                                                              |
 | `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                           |
+| `username`                 | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`), or `null` until set. Cannot skip.                                                                                                                                                                                          |
 | `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                    |
 | `lightningAddress`         | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                                                                                                            |
 | `lightningAddressVerified` | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                                                                                                           |
@@ -383,8 +420,8 @@ stays `null`)).
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                               |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                    |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                    |
-| `setup`                    | string \| null | Next wizard step: `name`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done. Clients must not invent a parallel sequence.                                                                                                                |
-| `missing`                  | string[]       | Factually unset fields (`name`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                       |
+| `setup`                    | string \| null | Next wizard step: `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username, which cannot be skipped. Clients must not invent a parallel sequence.                                                           |
+| `missing`                  | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                           |
 | hasPosted                  | boolean        | True when this account has a live forum row that is not the auto-created profile note. Replies still count. Not the same predicate as GET /invoices/posted (that is top-level only).                                                                                        |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                          |
@@ -443,7 +480,8 @@ Bearer required. `:accountId` must be a UUID. After auth,
 `requireAction(caller, 'forum.read')` — missing rules → **409**
 `{ "error": "missing_requirements", "missing": ["rules"] }`. Unknown id →
 **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
-Success → live `id` / `name` / `location` / `role` / `lightningAddress` / ISO
+Success → live `id` / `name` / `username` (`string | null` LUD-16 / NIP-05
+local-part) / `location` / `role` / `lightningAddress` / ISO
 `createdAt` plus `profileMessage` (`serializeMessage` with `accountId` /
 `replyCount`, or `null`), derived `aboutMe` (profile-note text when it
 is a real bio, else `null` when the profile note is missing or
@@ -677,11 +715,13 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (eight fields only; omits `id`, `linkingKey`, `role`, `viewKey`):
+**Response** `200` (nine fields including `username` (`string | null`);
+omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
 {
   "name": null,
+  "username": null,
   "location": null,
   "lightningAddress": null,
   "lightningAddressVerified": false,
@@ -734,13 +774,59 @@ control / DEL character (`charCode < 32` or `=== 127`) → **Response** `400`:
 ```
 
 Success → **Response** `200` with the updated account (same shape as
-`GET /me`). The stored value is trimmed. Names are not unique. When a
-non-blank Lightning Address is already linked, the first persisted
-non-empty name also creates exactly one top-level profile forum note and
-claims `profileMessageId` via `claimProfileMessageId` (set only while the pointer still matches the missing/hidden read; not on owner JSON). Without a Lightning
-Address the name is stored and no profile note is inserted (linking the
-address later creates it). Rename does not create a second note and does
-not change the note text.
+`GET /me`). The stored value is trimmed. Names are not unique. The name
+is written without changing username. When username is still blank, a
+follow-up write stores `usernameFromDisplayName` if that handle is free.
+Collision or a uniqueness race leaves username null (setup stays
+`username`) and still returns 200; the display-name write is not rolled
+back. `POST /me/name` does not 409 for a taken handle (`POST /me/username`
+does). When a non-blank Lightning Address is already linked, the first
+persisted non-empty name also creates exactly one top-level profile
+forum note and claims `profileMessageId` via `claimProfileMessageId`
+(set only while the pointer still matches the missing/hidden read; not
+on owner JSON). Without a Lightning Address the name is stored and no
+profile note is inserted (linking the address later creates it). Rename
+does not create a second note and does not change the note text.
+
+### `POST /me/username`
+
+Set the unique LUD-16 / NIP-05 local-part. Body:
+
+```json
+{ "username": "ada" }
+```
+
+Charset is lowercase `a-z0-9-_.`, 1–32 characters, leading letter or
+digit. Cannot skip (no `POST /me/setup/skip` step for username; skip
+body is only `"name" | "lightning-address"`). Same handle on the same
+account is idempotent **200**.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is not JSON with a `username` string → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a \"username\" string" }
+```
+
+`normalizeUsername` fails (invalid charset / length / leading character /
+`_` alone) → **Response** `400`:
+
+```json
+{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }
+```
+
+Another account owns the handle, including a unique-index race
+(re-read after `updateAccount`: if the stored username lower/trim is
+not the requested handle) → **Response** `409`:
+
+```json
+{ "error": "Username is already in use" }
+```
+
+Success → **Response** `200` with the owner JSON (same shape as
+`GET /me`) via `serializeOwnerAccountWithPosts`. Logs
+`account.username.set`.
 
 ### `POST /me/location`
 
@@ -986,6 +1072,10 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
+Does not clear `username`. After unlink, `setup` is `username` if the
+handle is blank; `setup` is `lightning-address` only when name is done or
+skipped **and** username is set (and LN is blank / skip cleared).
+
 ### `POST /me/lightning-address/verification`
 
 Start proof-of-control for the linked Lightning Address. No request body.
@@ -1166,6 +1256,7 @@ Success → **Response** `200`:
       "linkingKey": "<hex>",
       "role": "basis",
       "name": null,
+      "username": null,
       "location": null,
       "lightningAddress": null,
       "lightningAddressVerified": false,
@@ -1178,7 +1269,7 @@ Success → **Response** `200`:
 }
 ```
 
-The listing uses `serializeDebugAccount` (the ten public fields plus
+The listing uses `serializeDebugAccount` (the eleven public fields plus
 `isPlatform`) and never includes `viewKey`. Member `GET /me` does not
 include `isPlatform`.
 
@@ -1232,10 +1323,14 @@ Success → **Response** `200`:
 }
 ```
 
-Existing address (`lower(trim)`): updates **only** `name` (atomic name-only
-write; `viewKey`, `role`, `rulesAgreedAt`, and other columns stay unchanged),
-`created` is `false`. New address: fresh `viewKey`, `created` is `true`. GET
-still omits `viewKey`.
+Existing address (`lower(trim)`): name-only write still goes through
+`updateAccountNameByLightningAddress` (name column only; `viewKey`, `role`,
+`rulesAgreedAt`, and other columns stay unchanged in that write). Then, if
+stored username is blank, `maybeSetProvisionUsername` fills it. A non-blank
+stored username is kept. `created` is `false`. New address: sets
+`provisionUsername` on the new `basis` row (fresh `viewKey`, `created` is
+`true`). GET still omits `viewKey` (provisioned `username` appears on GET
+`/debug/accounts`).
 
 ### `PATCH /debug/accounts/:id`
 
@@ -1257,9 +1352,11 @@ account) and, when a conversation store is wired, points every
 already this account. Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. `GET /me` then returns `setup: "lightning-address"` when a
-name is already stored, so any client that follows `setup` (or a missing
-`lightningAddress`) shows the address form. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns
+`setup: "username"` if the handle is blank, or `setup: "lightning-address"`
+only when name is done or skipped **and** username is set (and LN is blank
+/ skip cleared), so any client that follows `setup` shows the username or
+address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`
@@ -2027,7 +2124,7 @@ are converted at **that day's** close (not spot). CHF/EUR/PHP are USD × that
 UTC day's Frankfurter ECB rate (last business day if closed; persisted in
 `usd_fiat_daily`). A gift day that lacks a cross returns that currency as
 JSON `null`; a running total goes `null` if any selected gift lacks that
-cross. Gap days in `spendOverTime` are zero sats/BTC/USD and `"0.00"` fiat
+cross. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
 and need no rate. Gap months in `byMonth` are zero sats/BTC/USD and
 `"0.00"` fiat and need no rate.
 A query failure or a still-missing BTC-USD rate after ensure is **503**.
@@ -2068,22 +2165,22 @@ gifts' UTC days.
 }
 ```
 
-| Field            | Type                                                                                                                                  | Meaning                                                                                                                 |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `totalSats`      | number                                                                                                                                | Sum of gift amounts (sats; fees excluded)                                                                               |
-| `totalBtc`       | string                                                                                                                                | `totalSats` as BTC with eight decimals                                                                                  |
-| `totalUsd`       | string                                                                                                                                | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)                                                          |
-| `totalChf`       | string or null                                                                                                                        | USD × each gift day's ECB CHF; `"0.00"` when empty; `null` if any gift day lacks CHF                                    |
-| `totalEur`       | string or null                                                                                                                        | USD × each gift day's ECB EUR; `"0.00"` when empty; `null` if any gift day lacks EUR                                    |
-| `totalPhp`       | string or null                                                                                                                        | USD × each gift day's ECB PHP; `"0.00"` when empty; `null` if any gift day lacks PHP                                    |
-| `giftCount`      | number                                                                                                                                | Number of outbound gifts                                                                                                |
-| `recipientCount` | number                                                                                                                                | Distinct recipient handles                                                                                              |
-| `firstPaidAt`    | string or null                                                                                                                        | ISO-8601 of the earliest gift                                                                                           |
-| `lastPaidAt`     | string or null                                                                                                                        | ISO-8601 of the latest gift                                                                                             |
-| `spendOverTime`  | `{ day, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                          |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                           | Sorted by sats descending, then name; fiat `null` if any gift to that recipient lacks the cross                         |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                               | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                       |
-| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                 | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when any selected gift day has that cross |
+| Field            | Type                                                                                                                                             | Meaning                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                    |
+| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                       |
+| `totalUsd`       | string                                                                                                                                           | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)                                                               |
+| `totalChf`       | string or null                                                                                                                                   | USD × each gift day's ECB CHF; `"0.00"` when empty; `null` if any gift day lacks CHF                                         |
+| `totalEur`       | string or null                                                                                                                                   | USD × each gift day's ECB EUR; `"0.00"` when empty; `null` if any gift day lacks EUR                                         |
+| `totalPhp`       | string or null                                                                                                                                   | USD × each gift day's ECB PHP; `"0.00"` when empty; `null` if any gift day lacks PHP                                         |
+| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                     |
+| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                   |
+| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                |
+| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                  |
+| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; fiat `null` if any gift to that recipient lacks the cross                              |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                            |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when any selected gift day has that cross      |
 
 **Response** `503`:
 
@@ -2465,8 +2562,8 @@ caller is neither the parent author nor `verified` → **403**
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
-a non-blank display name, and a non-blank Lightning Address (skip timestamps
-do not satisfy). The api stores a **name snapshot** (trimmed account name at
+a non-blank display name, a non-blank username, and a non-blank Lightning
+Address (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
 post time), normalised text (possibly `""` for photo-only), optional
 JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **500** after trim, or
@@ -2513,12 +2610,12 @@ Missing/invalid/expired bearer → **Response** `401`:
 Missing required fields → **Response** `409`:
 
 ```json
-{ "error": "missing_requirements", "missing": ["rules", "name", "lightning-address"] }
+{ "error": "missing_requirements", "missing": ["rules", "name", "username", "lightning-address"] }
 ```
 
-(`missing` is never empty; order is `rules`, then `name`, then
-`lightning-address`. A named, rules-agreed account with null LN yields
-`["lightning-address"]` only.)
+(`missing` is never empty; order is `rules`, then `name`, then `username`,
+then `lightning-address`. A named, rules-agreed, username-set account with
+null LN yields `["lightning-address"]` only.)
 
 Body is not JSON with `text` and/or `photo` → **Response** `400`:
 
@@ -3057,7 +3154,7 @@ Body is not JSON with a `text` string → **Response** `400`:
 Missing required fields (`requireAction` `contact.post`) → **Response** `409`:
 
 ```json
-{ "error": "missing_requirements", "missing": ["rules", "name"] }
+{ "error": "missing_requirements", "missing": ["rules", "name", "username"] }
 ```
 
 Text empty, longer than 500 after trim, or contains a disallowed control →

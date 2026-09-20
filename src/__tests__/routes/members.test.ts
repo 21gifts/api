@@ -154,6 +154,7 @@ describe('GET /members/:accountId', () => {
     expect(body).toMatchObject({
       id: ACCOUNT_ID,
       name: 'Ada',
+      username: null,
       location: null,
       role: 'verified',
       lightningAddress: 'ada@walletofsatoshi.com',

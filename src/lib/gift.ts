@@ -29,6 +29,8 @@ export interface GiftRow {
 export interface SpendDay {
   /** UTC calendar day `YYYY-MM-DD`. */
   day: string;
+  /** Number of outbound gifts that UTC day (zero on gap days). */
+  giftCount: number;
   /** Sats paid that UTC day. */
   sats: number;
   /** Running total of sats through this day inclusive. */
@@ -526,8 +528,8 @@ function cumulativeFiat(running: number | null): string | null {
  * rates required. Non-empty input looks up each gift's UTC-day BTC-USD rate;
  * a missing BTC-USD rate throws `Error('fx.rate.missing')`. Missing CHF/EUR/PHP
  * does **not** throw: those fields are `null`. Gap days in `spendOverTime` and
- * gap months in `byMonth` use zero sats/BTC/USD and `"0.00"` fiat without
- * needing a rate.
+ * gap months in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
+ * without needing a rate.
  *
  * @param rows - Outbound gifts (order does not matter).
  * @param rates - UTC day → USD-per-BTC string for every gift day.
@@ -565,6 +567,7 @@ export function buildGiftStats(
   const last = sorted[sorted.length - 1] as GiftRow;
 
   const byDaySats = new Map<string, number>();
+  const byDayGiftCount = new Map<string, number>();
   const byDayUsdCents = new Map<string, number>();
   const byDayChfCents = new Map<string, number | null>();
   const byDayEurCents = new Map<string, number | null>();
@@ -591,6 +594,7 @@ export function buildGiftStats(
     totalEurCents = addMaybe(totalEurCents, converted.eur);
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
+    byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
     byDayUsdCents.set(day, (byDayUsdCents.get(day) ?? 0) + usdCents);
     byDayChfCents.set(day, addMaybe(byDayChfCents.get(day) ?? 0, converted.chf));
     byDayEurCents.set(day, addMaybe(byDayEurCents.get(day) ?? 0, converted.eur));
@@ -631,6 +635,7 @@ export function buildGiftStats(
     }
     spendOverTime.push({
       day,
+      giftCount: byDayGiftCount.get(day) ?? 0,
       sats,
       cumulativeSats,
       btc: satsToBtcString(sats),

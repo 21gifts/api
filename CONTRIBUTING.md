@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -53,7 +53,7 @@ api/
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
-│   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05)
+│   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-all, POST /notifications/:id/read
@@ -61,6 +61,7 @@ api/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
 │   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts (no required env for verify)
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
+│   │   ├── username.ts       # LUD-16 / NIP-05 username trim/validate + boot backfill
 │   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
@@ -134,6 +135,7 @@ api/
 │       │   ├── meta.test.ts
 │       │   ├── config.test.ts
 │       │   ├── name.test.ts
+│       │   ├── username.test.ts
 │       │   ├── location.test.ts
 │       │   ├── lightning-address.test.ts
 │       │   ├── invoice-payer.test.ts
