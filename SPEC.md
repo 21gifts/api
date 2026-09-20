@@ -105,14 +105,14 @@ Public base URLs used in examples:
 | GET    | `/trust/proposals`                           | Bearer (moderator+)      | Staff: list pending moderator proposals                                                                   |
 | POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)      | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)         | Founder: appoint a moderator directly                                                                     |
-| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing                         |
+| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
 | POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing                                              |
 | GET    | `/messages/hidden`                           | Bearer (moderator+)      | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
-| GET    | `/messages/:id`                              | none                     | Public single-note JSON (404 for Damus-only replies)                                                      |
-| GET    | `/messages/:id/replies`                      | none                     | Oldest-first 21.gifts-author replies (optional Bearer for `accountId`)                                    |
+| GET    | `/messages/:id`                              | none                     | Public single-note JSON (visible external replies included)                                               |
+| GET    | `/messages/:id/replies`                      | none                     | Oldest-first member and entitled external replies (optional Bearer for member `accountId`)                |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                                                           |
 | GET    | `/messages/:id/video.*`                      | none                     | Fetch forum video bytes (Range / 206)                                                                     |
-| DELETE | `/messages/:id`                              | Bearer (moderator+)      | Soft-hide note + direct replies (`deleted_at` / `deleted_by`)                                             |
+| DELETE | `/messages/:id`                              | Bearer (moderator+)      | Soft-hide note + direct replies; an external target also blocks that pubkey                               |
 | POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                                                       |
 | POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                                                                    |
 | GET    | `/conversations`                             | Bearer                   | List visible private threads                                                                              |
@@ -139,6 +139,7 @@ Public base URLs used in examples:
 | GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`  | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                               |
 | PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`  | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                             |
 | POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`  | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                               |
+| GET    | `/debug/external-pubkeys`                    | `Authorization: Bearer`  | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                      |
 | POST   | `/debug/trust-edges`                         | `Authorization: Bearer`  | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                      |
 | DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`  | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                        |
 | GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                                                                   |
@@ -1503,8 +1504,9 @@ Environment:
 
 ### `POST /debug/invoices/settle`
 
-Operator-only manual settlement for a successful forum invoice whose LNURL
-provider never published its NIP-57 receipt. The request body is:
+Operator-only manual settlement for a successful member-created forum invoice
+whose LNURL provider never published its NIP-57 receipt. It does not attribute
+or entitle an external payer. The request body is:
 
 ```json
 {
@@ -1770,7 +1772,13 @@ inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on
 the hidden target and stamp-matched **direct** children; already-live
 target is a no-op for children). Does not recreate the row via
 `POST /messages`, does not `DELETE FROM message`, and does not unlink
-media, invoices, zap receipts, Nostr, text, or photo.
+media, invoices, zap receipts, Nostr, text, or photo. It also removes a
+pubkey block whose `message_id` is this restored id. Restoring a different row
+hidden by that block's external-author cascade makes that row visible again but
+does not remove the block; the pubkey stays blocked and its new gift-replies
+and inbound replies keep being rejected. Restoring the original
+block-triggering row removes the block but does not automatically unhide rows
+hidden by its cascade. Those rows are restored individually.
 
 Same debug token gate as `GET /debug/messages`.
 
@@ -1803,6 +1811,22 @@ empty body. Public `GET /messages/:id` can then serve the note. Logs
 `debug.messages.restored` with `{ messageId }` only (never text, never
 `deletedBy`). Store throw logs `debug.messages.restore_failed`. Used by
 `gifts-debug restore`.
+
+### `GET /debug/external-pubkeys`
+
+Operator inspection of external Nostr identities. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`, using the same unset/blank
+**503** and missing/mismatched bearer **401** semantics as the other debug
+routes. This is the only HTTP response that intentionally exposes these
+external pubkeys.
+
+Returns **200** `{ "zappers": [ … ], "blocked": [ … ] }`. `zappers` rows are
+`{ pubkey, receiptEventId, createdAt }`; `blocked` rows are
+`{ pubkey, blockedAt, blockedBy, messageId }`. Each list is independently
+newest-first and capped at 200; equal timestamps are ordered by `pubkey`
+descending in both the in-memory and Postgres stores. Store failure returns **503**
+`{ "error": "External pubkeys are unavailable" }`. The operator helper is
+`gifts-debug external-pubkeys [--raw]`.
 
 ### `GET /push/vapid-public`
 
@@ -2258,12 +2282,16 @@ has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
-`"basis"` if the author is missing; omitted for Damus-only authors), and
-`replyCount` of live 21.gifts-author children (`parent_id` match,
-`deleted_at` null, `account_id IS NOT NULL`). Damus-only children do not
-increment it. List JSON never includes photo
+`"basis"` if the author is missing; omitted for external authors), and
+`replyCount` of live attributed children (`parent_id` match, `deleted_at`
+null, and `account_id` set, or `author_pubkey` set and that pubkey is a
+recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
+an `EXISTS` subquery)). Visible external rows
+include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
+and `payable` is false. Rows with neither an account nor an author pubkey stay
+invisible. List JSON never includes photo
 or video bytes. Signed-in list/replies/create may include `accountId`
-(21gifts author id; omitted for Damus-only top-level notes); public GET `/messages/:id`
+(21gifts author id; omitted for external rows); public GET `/messages/:id`
 never includes it. Nostr event ids are never included in the JSON.
 
 Missing/invalid/expired bearer → **Response** `401`:
@@ -2311,7 +2339,9 @@ An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`. List queries select top-level rows only
 (`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
-`replyCount` of live 21.gifts-author children (`account_id IS NOT NULL`),
+`replyCount` of live attributed children
+(`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
+(SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`),
 and must not select the `photo` bytea
 column.
 
@@ -2328,11 +2358,84 @@ payment, or an operator settle, is recorded as `rejected` / `settled`).
 The claim has no foreign key to `message` and survives `deleteById`.
 At Postgres boot, receipts credited before the claim table existed are
 backfilled so a second real receipt for the same payment cannot double-credit.
+The separate external-payer backfill pages through every currently
+unattributed indexed receipt newest-first in 200-row batches, stopping at a
+hard ceiling of 10,000 scanned receipts per boot. It uses a strict keyset cursor
+`(created_at, event_id)` that advances past every returned row, so a row attributed
+by another process between two pages is neither skipped nor processed twice.
+Equal ingest timestamps are ordered by receipt event id descending
+in both message-store implementations. Re-running it is idempotent; reaching
+the ceiling is logged, and a read or processing failure is logged without
+aborting boot. The payment-hash claim backfill remains boot-critical.
 Indexed receipts increment that row's `sats` (GET /messages then
 returns the new total). Kind:1 EVENT frames published to relays are JSON
-objects, not JSON strings. Inbound kind:1 `#e` replies are persisted only
-when the pubkey maps to a 21.gifts account; unknown npubs are skipped
-(they stay on Nostr).
+objects, not JSON strings.
+
+For a payer pubkey that does not map to a 21.gifts account, external
+attribution is stricter than the member path. The embedded kind:9734 must be a
+valid signed event; its exact tagged JSON must match the BOLT11 description
+hash; its `e` tag must match the paid note; and an optional decimal `amount`
+tag must equal the invoice msat. A verified zap of at least 1 sat permanently
+records the pubkey in `nostr_zapper`, including when the paid note is a reply
+or cannot receive a gift-reply. Later zaps from the same pubkey skip the repeated
+`recordZapper` write through a per-store process-local lowercase-pubkey memo.
+Attribution is recorded before the staff block check; a blocked payer is then
+durably dequeued by clearing `payer_pubkey` while retaining `zap_request_id`.
+Sats stay credited, nothing is shown, a later unblock does not resurrect zaps
+made while blocked. A kind:9734 request id may attribute only one receipt;
+replay on another receipt creates no second gift-reply.
+Replayed requests and credited receipts below the external minimum are remembered
+in a per-store process-local set of at most 10,000 receipt ids, so later worker
+ticks neither re-verify their embedded kind:9734 nor repeat store writes. An
+eligible live top-level note receives a
+deterministic external gift-reply (`accountId` null, `via: "nostr"`, comment and
+sats from the zap, receipt time clamped to now, Nostr publish skipped). Profile
+lookup failure falls back to a non-impersonating truncated-pubkey display name.
+Resolved profile names use the same fallback when any of these holds: they contain a
+C0 or DEL control character, an explicit bidirectional control character (U+061C,
+U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), or no letter or digit at all; they
+contain a default-ignorable Unicode code point (checked on the name and on its NFKD
+form too, so a compatibility character that decomposes to one is also caught), except
+the ZWNJ/ZWJ joiners U+200C/U+200D and the emoji variation selectors U+FE00–U+FE0F
+which stay allowed; they mix more than one of the Latin, Cyrillic and Greek
+scripts; they equal a member name in a plain comparison (NFKC, trimmed,
+case-insensitive); a reserved project/staff word
+appears in their look-alike fold or in their by-sound transliteration of Cyrillic
+letters (both folds are lossy here: unmapped letters are dropped, so a false positive
+only yields the fallback); or their look-alike fold or their transliteration equals
+that of a member name — this member comparison applies only when every letter of the
+candidate is ASCII or mapped by the respective table. Ordinary right-to-left names and
+zero-width-joiner emoji sequences are kept, and names written entirely in one
+non-Latin script otherwise remain eligible.
+
+Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
+unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
+unblocked, and within both per-pubkey and global ingest limits. The reply REQ
+has no `since`, so older replies become visible on the first tick after the
+first verified zap. Member ownership or external zapper entitlement plus
+not-blocked status is decided before verifying the inbound kind:1 signature and
+before any event-specific message-store read. A per-store in-flight event-id
+guard prevents overlapping ticks from concurrently persisting the same external
+reply. External profile names come only from signed kind:0 events whose content
+is at most 64 KiB. After profile resolution, a fresh single-pubkey block lookup
+runs inside the in-flight guard and before the ingest limiter. A block added
+while profile lookup is pending therefore wins, consumes no limiter budget, and
+the event id is still released by the guard's `finally`. Limiter budget is
+consumed immediately before `messages.create` and released when that write
+fails. External replies notify only the parent note's member author and only
+when `created_at` is numeric, at most one hour old, and no more than ten minutes
+in the future. Missing/non-numeric, farther-future, and older timestamps still
+persist but do not notify. The notification uses the generic actor name
+`Someone`, never the external reply's own display name, so a visitor-chosen name
+cannot appear in a notification. All inbound reply timestamps are clamped to
+the ingest clock so future-dated events cannot pin thread order; missing or
+non-numeric `created_at` retains the existing ingest-time storage fallback.
+Other unknown pubkeys remain on Nostr only.
+
+Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
+external zapper gains no website visibility. Operator manual settlement
+covers member-created forum invoices only; it cannot create an external
+zapper entitlement.
 
 ### `POST /messages`
 
@@ -2503,9 +2606,15 @@ zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
 paid row (`:id`, which may be a reply). After that increment (never in the same
 SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
 comment or `""`, `sats` = this zap) only when the paid row is top-level
-(`parentId` null). A zap on a signed reply is `addSats` only (no nested
-gift-reply). Gift-only replies (`text === ""`) stay `nostrPublishState`
-`skipped` (no kind:1). Parent `sats` is the aggregate; reply `sats` is this gift.
+(`parentId` null). Member invoices keep the existing relaxed signed-request
+attribution. An external payer must pass the strict description-hash, target,
+amount, signature, replay, and block checks described under `GET /messages`;
+its gift-reply has `accountId` null, `via: "nostr"`, and is never signed by the
+platform. A zap on a signed reply is `addSats` only (no nested gift-reply), but
+a verified external payer still gains durable zapper entitlement. Gift-only
+member replies (`text === ""`) and all external gift-replies stay
+`nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
+reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
 every account except the resolved payer, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
@@ -2553,7 +2662,9 @@ Other LNURL/zap failure (`unreachable`) →
 Fetch the optional photo bytes for one forum message. **No bearer** — Damus
 loads this URL from kind:1 `imeta`. Missing message, message-without-photo,
 and a non-UUID `id` are the same **404** (Postgres would otherwise throw on
-`uuid` and become 503).
+`uuid` and become 503). A live reply without an account whose author pubkey
+is not a recorded zapper (or that has no author pubkey) is the same **404**
+on every photo and video route, matching `GET /messages/:id`.
 
 No photo for `id` → **Response** `404`:
 
@@ -2585,8 +2696,9 @@ when extra bytes remain. Same headers as photo 0 (`Content-Type`
 jpeg/png/webp, `Cache-Control: public, max-age=86400`,
 `Access-Control-Allow-Origin: *`,
 `Content-Disposition: inline; filename="photo.jpg|png|webp"`). Missing
-message, missing extra, non-UUID id, index 0, or a file that does not
-match `^([1-9])\.(jpg|jpeg|png|webp)$` → **Response** `404`:
+message, missing extra, non-UUID id, index 0, a file that does not
+match `^([1-9])\.(jpg|jpeg|png|webp)$`, or a live reply without an account
+whose author pubkey is not a recorded zapper → **Response** `404`:
 
 ```json
 { "error": "Photo not found" }
@@ -2627,13 +2739,18 @@ Success → **Response** `200` or `206`: raw video body,
 
 ### `GET /messages/:id/replies`
 
-Public (Bearer optional). Lists **direct live 21.gifts-author replies**
-(`account_id IS NOT NULL`) for parent `:id` oldest-first (`createdAt`
-then `id` ascending), capped at **200**. Unknown-npub (Damus-only)
-children are omitted. Each item is the public message JSON (`photoCount` 0–10 always present;
+Public (Bearer optional). Lists **direct live attributed replies**
+(`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
+(SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`) for parent
+`:id` oldest-first (`createdAt` then `id` ascending), capped at **200**. Rows
+with no account and no recorded-zapper pubkey are omitted. Each item is the
+public message JSON (`photoCount` 0–10 always present;
 `hasPhoto` still means photo 0 exists) with
-`payable` when a non-empty `eventId` and a non-blank Lightning Address are set, and no `replyCount`. Unauthenticated items omit
-`accountId`; signed-in replies include `accountId` (21gifts author id).
+`payable` when a member row has a non-empty `eventId` and a non-blank
+Lightning Address, and no `replyCount`. Unauthenticated items omit
+`accountId`; signed-in member replies include `accountId`. External replies
+set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
+pubkey.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
@@ -2672,8 +2789,10 @@ Success → **Response** `200`:
 }
 ```
 
-An empty reply thread is **200** with `"messages": []`. Soft-hidden
-and Damus-only children (`accountId` null) are omitted from the list.
+An empty reply thread is **200** with `"messages": []`. Soft-hidden and
+unattributed null-account children (`accountId` and `authorPubkey` both null)
+are omitted from the list, as is a null-account child whose `authorPubkey` is
+set but is not a recorded zapper (retroactively included once that pubkey zaps).
 
 ### `GET /messages/:id`
 
@@ -2684,11 +2803,14 @@ captured as `:id`. Returns
 the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Never includes
-`accountId`, `deletedAt`, or `deletedBy`. Top-level Damus-only notes
-(`accountId` null, `parentId` null) omit `role` and set `payable` false.
-A live Damus-only **reply** (`parentId` set, `accountId` null) is **404**
-`{ "error": "Not found" }` (same body as missing/hidden). `replyCount` is
-omitted. Photo and video bytes are never included. Soft-hidden rows
+`accountId`, `deletedAt`, or `deletedBy`. A live reply with `accountId` null
+returns **200** only when `authorPubkey` is set and that pubkey is a recorded
+zapper (checked via `isZapperPubkey` on every read, including during a
+`sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
+and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
+that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
+(same body as missing/hidden). `replyCount` is omitted. Photo and video bytes
+are never included. Soft-hidden rows
 (`deletedAt` set) are treated as missing (404) before any missing-video
 hard-delete cleanup.
 
@@ -2703,7 +2825,8 @@ whitespace) → **400** after the UUID check (non-UUID `:id` stays **404**
 even when `sinceSats` is present). Soft-hidden / missing during the wait
 (including the first read) → **404**. Store throw on any read → **503**.
 
-Non-UUID `:id`, missing row, soft-hidden row, or live Damus-only reply →
+Non-UUID `:id`, missing row, soft-hidden row, or a live null-account reply
+whose pubkey is missing or not a recorded zapper →
 **Response** `404`:
 
 ```json
@@ -2753,6 +2876,16 @@ tagged targets keep their original stamps and still return 204.
 `getById` continues to return tagged rows for workers; public/member HTTP
 reads treat them as missing.
 
+When the target itself is an external Nostr row (`accountId` null and
+`authorPubkey` set), the same successful operation also records a durable
+staff block for that pubkey and soft-hides every other live external row by
+that author. The block prevents later gift-replies and inbound replies but
+does not remove `nostr_zapper` entitlement or reverse credited sats. Hiding a
+member note that merely has external children does not block those authors.
+Restore does not undo this author-wide cascade in bulk; see
+`POST /debug/messages/:id/restore` for its source-row unblock and per-row
+unhide semantics.
+
 After a successful stamp (including already tagged), the process best-effort
 publishes NIP-09 `kind: 5` for the target and each **direct** child that has a
 non-empty `eventId` and a non-null `accountId`, signed with **that row's**
@@ -2795,8 +2928,10 @@ Store failure → **Response** `503`:
 ```
 
 On success the process logs `messages.deleted` with `messageId`,
-`accountId`, and the staff `role` (never the post text). On store throw
-it logs `messages.delete.failed`.
+`accountId`, and the staff `role` (never the post text). An external-target
+block additionally logs `messages.external.blocked` with only `messageId` and
+the hidden-row count, never the pubkey. On store throw it logs
+`messages.delete.failed`.
 
 ### `GET /messages/hidden`
 
@@ -2804,7 +2939,10 @@ Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
 **session** required (moderator). This is **not** a
 `DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
 `"hidden"` is not captured as `:id`. No `forum.read` gate — a
-moderator without rules agreement is still **200**.
+moderator without rules agreement is still **200**. Listed rows
+include every hidden row regardless of external-zapper entitlement — the
+moderation view is intentionally unaffected by the public read-visibility
+rule.
 
 Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
 desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
@@ -2812,12 +2950,14 @@ via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
 `hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
-on top-level), and `deletedBy: { id, name, role }` resolved from
+on top-level), optional `via: "nostr"` exactly when `accountId === null &&
+authorPubkey !== null` (the same rule as public message JSON), and
+`deletedBy: { id, name, role }` resolved from
 `authStore.getAccount` (missing account keeps that id with `name` /
 `role` null; null `deletedBy` is `{ id: null, name: null, role: null }`).
-Never includes `accountId`, `eventId`, `nostrPublishState`, `payable`,
-author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or
-photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
+Never includes `accountId`, `authorPubkey`, `eventId`, `nostrPublishState`,
+`payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
+or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
 `DEBUG_TOKEN` only).
 

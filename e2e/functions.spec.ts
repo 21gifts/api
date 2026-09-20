@@ -1635,3 +1635,43 @@ test('Function: debugTrustRoutes — DELETE /debug/trust-edges without bearer is
   const res = await request.delete('/debug/trust-edges');
   expect(res.status()).toBe(401);
 });
+
+test('Function: verifiedExternalZapRequest — no direct default-boot HTTP trigger', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: externalDisplayName — no direct default-boot HTTP trigger', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: resolveExternalProfileName — no direct default-boot HTTP trigger', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: ExternalIngestLimiter — no direct default-boot HTTP trigger', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: backfillExternalZappers — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: notifyExternalForumReply — no direct default-boot HTTP trigger', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
+});

@@ -2,7 +2,9 @@ import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseNostrKek } from '@/lib/nostr/kek';
-import { backfillZapPayments } from '@/lib/nostr/zap-index';
+import { WebsocketNostrQuerier, type NostrQuerier } from '@/lib/nostr/query';
+import { resolveZapRelays } from '@/lib/nostr/relays';
+import { backfillExternalZappers, backfillZapPayments } from '@/lib/nostr/zap-index';
 import {
   InMemoryBtcUsdStore,
   PostgresBtcUsdStore,
@@ -90,7 +92,7 @@ export interface BootStores {
   trustStore: TrustStore | undefined;
 }
 
-/** Optional FX wiring so tests never hit the network. */
+/** Optional boot wiring so tests never hit the network. */
 export interface BootFxOptions {
   /** Injected fetch (default: `globalThis.fetch`). */
   fetchImpl?: FetchFn;
@@ -100,6 +102,12 @@ export interface BootFxOptions {
   frankfurterUrl?: string;
   /** Clock for boot range-fill (default: `Date.now`). */
   now?: () => number;
+  /** Nostr querier for the external-zapper backfill. */
+  nostrQuerier?: NostrQuerier;
+  /** Relay URLs for the external-zapper backfill. */
+  zapRelayUrls?: readonly string[];
+  /** Per-relay timeout for the external-zapper backfill. */
+  nostrRelayTimeoutMs?: number;
 }
 
 /**
@@ -126,8 +134,10 @@ export interface BootFxOptions {
  * best-effort fills rates for the outbound gift day range (BTC-USD failures
  * log `gifts.fx.boot_fill.failed`; fiat failures log
  * `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres message
- * store exists, it backfills zap-payment claims after the `db_change` triggers
- * are attached and before the remaining Postgres stores are constructed.
+ * store exists, it backfills zap-payment claims and best-effort backfills
+ * external zappers after the `db_change` triggers are attached and before the
+ * remaining Postgres stores are constructed. External-zapper backfill failures
+ * log `nostr.zapper.backfill.failed` and do not abort boot.
  * Memory boots omit
  * `notificationStore` and `trustStore`, leave `nostrKek` undefined, and do
  * not run the `db_change` migrate. SQL boots return
@@ -137,7 +147,7 @@ export interface BootFxOptions {
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
- * @param fx - Optional fetch / URL / clock overrides for tests.
+ * @param fx - Optional network, URL, timeout, and clock overrides for tests.
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
  *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
@@ -223,6 +233,17 @@ export async function openBootStores(
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient);
   await backfillZapPayments(messageStore);
+  try {
+    await backfillExternalZappers(messageStore, {
+      auth: authStore,
+      querier: fx?.nostrQuerier ?? new WebsocketNostrQuerier(),
+      urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
+      timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
+      now,
+    });
+  } catch {
+    logEvent('nostr.zapper.backfill.failed');
+  }
   const contactStore = new PostgresContactStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient);
   const pushStore = new PostgresPushStore(sqlClient);

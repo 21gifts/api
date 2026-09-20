@@ -22,6 +22,7 @@ import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
+import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
@@ -95,7 +96,7 @@ export interface AppDeps {
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
-   * and `POST /debug/trust-edges`
+   * `GET /debug/external-pubkeys`, and `POST /debug/trust-edges`
    * return 503.
    */
   debugToken?: string;
@@ -343,6 +344,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
+  app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
   app.route(
     '/debug',
     debugPaymentsRoutes({

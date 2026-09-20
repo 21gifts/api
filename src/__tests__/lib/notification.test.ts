@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import {
   fanoutToBellSubscribers,
   isStaffAccount,
+  notifyExternalForumReply,
   notifyForumPost,
   notifyForumReply,
   notifyModeratorAppointed,
@@ -456,6 +457,41 @@ describe('fanoutToBellSubscribers', () => {
     expect(await notifications.listByRecipient('member', 10)).toHaveLength(1);
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
+
+  it('applies onlyAccountIds to in-app and push recipients before level filtering', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'allowed');
+    await subscribe(pushStore, 'excluded');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'allowed', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'excluded', role: 'basis', notificationLevel: 'all' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      auth,
+      skipAccountId: null,
+      onlyAccountIds: ['allowed'],
+      match: {
+        actorIsStaff: false,
+        isActive: false,
+        mentionedAccountId: 'allowed',
+      },
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('allowed', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('excluded', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['allowed']);
+  });
 });
 
 describe('notifyForumReply', () => {
@@ -770,6 +806,117 @@ describe('notifyForumReply', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(2);
     expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
+  });
+});
+
+describe('notifyExternalForumReply', () => {
+  it('notifies only the parent author in-app and by push', async () => {
+    const parent = message({
+      id: 'parent-note',
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      sats: 0,
+    });
+    const created = message({
+      id: 'external-reply',
+      accountId: null,
+      parentId: parent.id,
+      name: 'Robin',
+      text: 'hello from nostr',
+      authorPubkey: 'ab'.repeat(32),
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent');
+    await subscribe(pushStore, 'bystander');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'parent', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'bystander', role: 'basis', notificationLevel: 'all' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyExternalForumReply({ parent, created, notifications, pushStore, auth });
+    const rows = await notifications.listByRecipient('parent', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorAccountId: 'parent',
+      type: 'forum_reply',
+      parentId: 'parent-note',
+      replyId: 'external-reply',
+      name: 'Someone',
+      text: 'hello from nostr',
+    });
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['parent']);
+    expect(claimed[0]?.payload).not.toContain('Robin');
+  });
+
+  it('notifies the parent author when auth is omitted', async () => {
+    const parent = message({
+      id: 'parent-without-auth',
+      accountId: 'parent-without-auth',
+      name: 'Pat',
+      text: 'parent',
+      sats: 0,
+    });
+    const created = message({
+      id: 'external-reply-without-auth',
+      accountId: null,
+      parentId: parent.id,
+      name: 'Robin',
+      text: 'hello without auth',
+      authorPubkey: 'cd'.repeat(32),
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent-without-auth');
+    await subscribe(pushStore, 'bystander-without-auth');
+
+    await expect(
+      notifyExternalForumReply({ parent, created, notifications, pushStore }),
+    ).resolves.toBeUndefined();
+
+    expect(await notifications.listByRecipient('parent-without-auth', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander-without-auth', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['parent-without-auth']);
+  });
+
+  it('does nothing when the parent has no account', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const create = vi.spyOn(notifications, 'create');
+    const listAccounts = vi.fn(async () => [] as Awaited<ReturnType<AuthStore['listAccounts']>>);
+    const upsertSubscription = vi.spyOn(pushStore, 'upsertSubscription');
+    const deleteSubscription = vi.spyOn(pushStore, 'deleteSubscription');
+    const listByAccount = vi.spyOn(pushStore, 'listByAccount');
+    const listAccountIdsWithSubscriptions = vi.spyOn(pushStore, 'listAccountIdsWithSubscriptions');
+    const enqueue = vi.spyOn(pushStore, 'enqueue');
+    const claimPending = vi.spyOn(pushStore, 'claimPending');
+    const markSent = vi.spyOn(pushStore, 'markSent');
+    const markFailed = vi.spyOn(pushStore, 'markFailed');
+    const recordDelivered = vi.spyOn(pushStore, 'recordDelivered');
+    await notifyExternalForumReply({
+      parent: message({ id: 'external-parent', accountId: null }),
+      created: message({ id: 'external-reply', accountId: null }),
+      notifications,
+      pushStore,
+      auth: { listAccounts },
+    });
+    expect(listAccounts).toHaveBeenCalledTimes(0);
+    expect(create).toHaveBeenCalledTimes(0);
+    expect(upsertSubscription).toHaveBeenCalledTimes(0);
+    expect(deleteSubscription).toHaveBeenCalledTimes(0);
+    expect(listByAccount).toHaveBeenCalledTimes(0);
+    expect(listAccountIdsWithSubscriptions).toHaveBeenCalledTimes(0);
+    expect(enqueue).toHaveBeenCalledTimes(0);
+    expect(claimPending).toHaveBeenCalledTimes(0);
+    expect(markSent).toHaveBeenCalledTimes(0);
+    expect(markFailed).toHaveBeenCalledTimes(0);
+    expect(recordDelivered).toHaveBeenCalledTimes(0);
   });
 });
 
