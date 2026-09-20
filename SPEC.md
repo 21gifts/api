@@ -2344,9 +2344,10 @@ At Postgres boot, receipts credited before the claim table existed are
 backfilled so a second real receipt for the same payment cannot double-credit.
 The separate external-payer backfill pages through every currently
 unattributed indexed receipt newest-first in 200-row batches, stopping at a
-hard ceiling of 10,000 scanned receipts per boot. Its offset advances only by
-rows that remain unattributed because successful attribution removes rows from
-later pages. Equal ingest timestamps are ordered by receipt event id descending
+hard ceiling of 10,000 scanned receipts per boot. It uses a strict keyset cursor
+`(created_at, event_id)` that advances past every returned row, so a row attributed
+by another process between two pages is neither skipped nor processed twice.
+Equal ingest timestamps are ordered by receipt event id descending
 in both message-store implementations. Re-running it is idempotent; reaching
 the ceiling is logged, and a read or processing failure is logged without
 aborting boot. The payment-hash claim backfill remains boot-critical.
