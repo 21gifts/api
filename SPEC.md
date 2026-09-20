@@ -36,10 +36,11 @@ verification payment requires an injected invoice payer; the default
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes (`GET /invoices/passkey`, `GET /invoices/posted`,
-`GET /invoices/eligible`, `POST /invoices`, `POST /invoices/proof`) check passkey
-eligibility, a funding-program grant (`eligibleToday`), and a live
-**top-level** forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
+Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
+report those gates; `GET /invoices/eligible` reports `eligibleToday`;
+`POST /invoices` requires passkey, a funding-program grant (`eligibleToday`), and a live
+**top-level** forum post, then fetches a BOLT11 via LNURL-pay;
+`POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
 requires a passkey-backed account for the address that is funding-eligible today
 and at least one live **top-level** forum
 message that is not the auto-created profile note. Replies do not count. They require `SPEND_API_TOKEN`;

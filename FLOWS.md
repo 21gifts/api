@@ -173,10 +173,10 @@ worker holds lightning.space LNDHub credentials and calls:
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note**, not on a daily timer, and only when
-that recipient is funding-eligible today. Invoice HTTP
-(`POST /invoices` and `GET /invoices/eligible`) 403s `Funding grant required`
-when not eligible; `GET /invoices/eligible?address=` is the spend lookup.
-`POST /invoices/proof` does not.
+that recipient is funding-eligible today. `POST /invoices` 403s
+`Funding grant required` when not eligible. `GET /invoices/eligible?address=`
+is the spend lookup and returns 200 `{ eligible }` (false when not eligible).
+`POST /invoices/proof` does not check the grant.
 Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
 `/me/recurring`, or scheduler paths. HTTP that exists today is the
 spend-worker invoice surface in `SPEC.md`.
