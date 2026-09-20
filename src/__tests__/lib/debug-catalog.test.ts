@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { InMemoryApiLogStore } from '@/lib/api-log';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
@@ -14,6 +15,7 @@ describe('isDebugCatalogTable', () => {
   it('accepts allowlisted names and rejects others', () => {
     expect(isDebugCatalogTable('account')).toBe(true);
     expect(isDebugCatalogTable('auth_session')).toBe(true);
+    expect(isDebugCatalogTable('api_log')).toBe(true);
     expect(isDebugCatalogTable('nope')).toBe(false);
   });
 });
@@ -541,6 +543,36 @@ describe('loadDebugTables', () => {
     expect(missingOptional.push_outbox).toEqual([]);
     expect(missingOptional.gift).toEqual([]);
     expect(missingOptional.trust_edge).toEqual([]);
+    expect(missingOptional.api_log).toEqual([]);
+    const audit = await loadDebugTables(
+      {
+        auth: new InMemoryAuthStore(),
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+        apiLog: new InMemoryApiLogStore([
+          {
+            id: 'llllllll-llll-4lll-8lll-llllllllllll',
+            createdAt: new Date('2026-09-01T00:00:00.000Z'),
+            method: 'GET',
+            path: '/healthz',
+            status: 200,
+            ms: 1,
+            accountId: null,
+            authKind: 'none',
+          },
+        ]),
+      },
+      'api_log',
+    );
+    expect(audit.api_log).toEqual([
+      expect.objectContaining({
+        id: 'llllllll-llll-4lll-8lll-llllllllllll',
+        method: 'GET',
+        path: '/healthz',
+        status: 200,
+        authKind: 'none',
+      }),
+    ]);
     const stripped = new InMemoryMessageStore() as MessageStore;
     Object.assign(stripped, {
       listZapReceipts: undefined,

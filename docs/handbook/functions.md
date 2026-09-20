@@ -1219,7 +1219,7 @@
 - **Purpose:** Project an `api_log` row to operator JSON (`createdAt` ISO-8601).
 - **Inputs:** `ApiLogRow`.
 - **Returns / side effects:** `DebugApiLog`. No I/O.
-- **Used by:** `debugApiLogRoutes`.
+- **Used by:** `debugApiLogRoutes`, `loadDebugTables`.
 
 ## Function: InMemoryApiLogStore
 

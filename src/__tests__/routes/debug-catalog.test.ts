@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { InMemoryApiLogStore } from '@/lib/api-log';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -101,6 +102,7 @@ describe('debugCatalogRoutes', () => {
     expect(body.tables['account']).toEqual([]);
     expect(body.tables['db_change']).toEqual([]);
     expect(body.tables['auth_session']).toEqual([]);
+    expect(body.tables['api_log']).toEqual([]);
   });
 
   it('dumps wired rate and db_change list ports', async () => {
@@ -125,6 +127,38 @@ describe('debugCatalogRoutes', () => {
       table: 'btc_usd_daily',
       rows: [{ day: '2026-09-01' }],
     });
+  });
+
+  it('dumps api_log rows from the audit store', async () => {
+    const res = await new Hono()
+      .route(
+        '/debug/dump',
+        debugCatalogRoutes({
+          auth: new InMemoryAuthStore(),
+          messages: new InMemoryMessageStore(),
+          contacts: new InMemoryContactStore(),
+          apiLog: new InMemoryApiLogStore([
+            {
+              id: 'llllllll-llll-4lll-8lll-llllllllllll',
+              createdAt: new Date('2026-09-01T00:00:00.000Z'),
+              method: 'GET',
+              path: '/healthz',
+              status: 200,
+              ms: 1,
+              accountId: null,
+              authKind: 'none',
+            },
+          ]),
+          debugToken: 'secret',
+        }),
+      )
+      .request('/debug/dump/api_log', {
+        headers: { authorization: 'Bearer secret' },
+      });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { table: string; rows: Array<{ path: string }> };
+    expect(body.table).toBe('api_log');
+    expect(body.rows).toEqual([expect.objectContaining({ path: '/healthz', authKind: 'none' })]);
   });
 
   it('returns 503 when a store throw escapes the dump', async () => {

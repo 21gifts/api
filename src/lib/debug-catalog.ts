@@ -8,6 +8,7 @@ import {
   serializeDebugSession,
 } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
+import { serializeDebugApiLog, type ApiLogStore } from '@/lib/api-log';
 import { serializeDebugContact } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -26,6 +27,7 @@ export const DEBUG_CATALOG_TABLES = [
   'passkey_challenge',
   'auth_session',
   'address_verification',
+  'api_log',
   'contact',
   'conversation',
   'conversation_message',
@@ -71,6 +73,8 @@ export interface DebugCatalogDeps {
   messages: MessageStore;
   /** Contact mailbox. */
   contacts: ContactStore;
+  /** HTTP audit log (`api_log`). */
+  apiLog?: ApiLogStore;
   /** Private threads (operator listAll, not listVisible). */
   conversations?: ConversationStore;
   /** In-app notifications. */
@@ -157,6 +161,8 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
       return (await deps.auth.listSessions()).map(serializeDebugSession);
     case 'address_verification':
       return (await deps.auth.listAddressVerifications()).map(serializeDebugAddressVerification);
+    case 'api_log':
+      return ((await deps.apiLog?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugApiLog);
     case 'contact':
       return (await deps.contacts.listLatest(MESSAGE_LIST_LIMIT)).map(serializeDebugContact);
     case 'conversation': {

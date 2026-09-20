@@ -413,6 +413,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       push: pushStore,
       trust: trustStore,
       gifts: giftStore,
+      apiLog: apiLogStore,
       listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
       listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),

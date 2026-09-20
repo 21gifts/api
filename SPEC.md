@@ -1518,10 +1518,11 @@ debug routes.
 ### `GET /debug/dump`
 
 Operator catalog of every allowlisted table as camelCase JSON (cap 200 per
-table). Media bytes stay off JSON. `nostrNsecCiphertext` is envelope hex.
-`btc_usd_daily`, `usd_fiat_daily`, and `db_change` dump stored rows when
-those list ports are wired (in-memory boots dump `[]` for `db_change`).
-Same `DEBUG_TOKEN` gate as the other debug routes.
+table), including `api_log`. Media bytes stay off JSON. `nostrNsecCiphertext`
+is envelope hex. `btc_usd_daily`, `usd_fiat_daily`, and `db_change` dump stored
+rows when those list ports are wired (in-memory boots dump `[]` for
+`db_change`). `api_log` dumps when an audit store is wired (same rows as
+`GET /debug/api-log`). Same `DEBUG_TOKEN` gate as the other debug routes.
 
 ### `GET /debug/dump/:table`
 

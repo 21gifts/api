@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ContactStore } from '@/lib/contact-store';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -20,6 +21,8 @@ export interface DebugCatalogRouteDeps {
   messages: MessageStore;
   /** Contact mailbox. */
   contacts: ContactStore;
+  /** Optional HTTP audit log. */
+  apiLog?: ApiLogStore;
   /** Optional private threads. */
   conversations?: ConversationStore;
   /** Optional notifications. */
@@ -59,6 +62,9 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
     messages: deps.messages,
     contacts: deps.contacts,
   };
+  if (deps.apiLog !== undefined) {
+    catalog.apiLog = deps.apiLog;
+  }
   if (deps.conversations !== undefined) {
     catalog.conversations = deps.conversations;
   }
