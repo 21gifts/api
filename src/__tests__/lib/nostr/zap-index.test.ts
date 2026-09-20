@@ -1521,6 +1521,68 @@ describe('manual invoice settlement', () => {
     );
   });
 
+  it('skips a platform-note inReplyTo prefix with an empty body', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const parentId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    await store.create({
+      id: parentId,
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const preimage = '18'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: `inReplyTo:${parentId}` },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'empty compose reply',
+      preimage,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect((await store.listLatest(20)).filter((row) => row.accountId === 'manual-payer')).toEqual(
+      [],
+    );
+  });
+
   it('falls back to a top-level post when inReplyTo is not a live parent', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

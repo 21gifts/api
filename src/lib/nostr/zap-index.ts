@@ -1864,7 +1864,7 @@ async function insertGiftReply(
 }
 
 const COMPOSE_REPLY_PREFIX =
-  /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n/i;
+  /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\n([\s\S]*))?$/i;
 
 function parsePlatformCompose(
   text: string,
@@ -1885,7 +1885,7 @@ function parsePlatformCompose(
   return {
     isFeeNote: true,
     parentId: replyParentId,
-    body: text.slice(match[0].length),
+    body: match[2] ?? '',
   };
 }
 
