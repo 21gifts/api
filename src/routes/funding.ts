@@ -13,6 +13,7 @@ import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { roleAtLeast } from '@/lib/auth/roles';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
@@ -164,7 +165,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (caller === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (caller.role === 'basis') {
+      if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
       }
       const nowMs = deps.now();

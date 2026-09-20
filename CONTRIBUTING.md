@@ -36,7 +36,7 @@ api/
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
 │   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
-│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
+│   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
@@ -76,7 +76,7 @@ api/
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
-│   │   ├── funding.ts        # Funding-grant types, utcDayKey, effectiveStatus, eligibleToday, owner/member JSON
+│   │   ├── funding.ts        # Funding-grant types, utcDayKey, effectiveStatus, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
@@ -406,7 +406,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
   named `trg_db_change` on every `public` table except `db_change` itself — **not**
   by application store methods. New public tables are covered on the next SQL boot
-  (`migrateDbChangeSchema` after `migrateApiLogSchema` / `migrateTrustSchema` / `migrateNotificationSchema` / `migratePushSchema`) once the table exists. A
+  (`migrateDbChangeSchema` after `migrateApiLogSchema` / `migrateFundingSchema` / `migrateTrustSchema` / `migrateNotificationSchema` / `migratePushSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
 - `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
   **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
