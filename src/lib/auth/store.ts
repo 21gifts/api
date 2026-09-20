@@ -127,11 +127,12 @@ export interface PasskeyCredential {
 }
 
 /** Kind of outstanding WebAuthn ceremony. */
-export type PasskeyChallengeType = 'register' | 'authenticate';
+export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace';
 
 /**
  * A one-time WebAuthn challenge. Registration stores the pending account id;
- * authentication looks the account up from the asserted credential.
+ * authentication looks the account up from the asserted credential; replace
+ * stores the signed-in account id (never null).
  */
 export interface PasskeyChallenge {
   /** Opaque id returned to the client as `challengeId`. */
@@ -140,7 +141,7 @@ export interface PasskeyChallenge {
   type: PasskeyChallengeType;
   /** WebAuthn challenge (base64url) from the ceremony generator. */
   challenge: string;
-  /** Pending account id for register; `null` for authenticate. */
+  /** Pending account id for register; signed-in id for replace; `null` for authenticate. */
   accountId: string | null;
   /** Whether finish has already consumed this challenge. */
   consumed: boolean;
@@ -300,6 +301,18 @@ export interface AuthStore {
   createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
+  /**
+   * Look up this account's single passkey credential, or `undefined` if none.
+   */
+  getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined>;
+  /**
+   * Replace this account's single credential.
+   * Returns false when the account has no credential, when the new
+   * credentialId is already stored for a different account, or when the
+   * delete+insert does not land.
+   * On success the old row is gone and `credential` is stored.
+   */
+  replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /**
    * Atomically advance `signCount` for clone detection.
    * Succeeds only when `(newCount === 0 && stored === 0)` or `newCount > stored`.
@@ -728,6 +741,31 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
     return this.#passkeyCredentials.get(credentialId);
+  }
+
+  async getPasskeyCredentialForAccount(
+    accountId: string,
+  ): Promise<PasskeyCredential | undefined> {
+    for (const credential of this.#passkeyCredentials.values()) {
+      if (credential.accountId === accountId) {
+        return credential;
+      }
+    }
+    return undefined;
+  }
+
+  async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const current = await this.getPasskeyCredentialForAccount(credential.accountId);
+    if (current === undefined) {
+      return false;
+    }
+    const taken = this.#passkeyCredentials.get(credential.credentialId);
+    if (taken !== undefined && taken.accountId !== credential.accountId) {
+      return false;
+    }
+    this.#passkeyCredentials.delete(current.credentialId);
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+    return true;
   }
 
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {

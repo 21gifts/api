@@ -49,6 +49,10 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
+A signed-in member can replace their one passkey (`POST /auth/passkey/replace/begin`
+then `…/finish` with Bearer) so a PRF-capable authenticator can own the account.
+The existing session stays valid. The api never sees PRF output or a mnemonic.
+
 The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a username form, a Lightning
 Address form, and **Sign out**. Name and Lightning Address are each
@@ -72,6 +76,7 @@ account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
+`/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
 `/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
 
 ---

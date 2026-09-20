@@ -239,6 +239,20 @@
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
 
+## Endpoint: POST /auth/passkey/replace/begin
+
+- **Purpose:** Issues WebAuthn creation options that exclude the signed-in account's current credential. JSON: challengeId, options (`excludeCredentials`, `extensions.prf`). The api never sees PRF output.
+- **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid Bearer; 400 `{ error: 'No passkey to replace' }` when the account has no credential; 500 `{ error: 'Server auth is not configured' }` if WebAuthn is unconfigured.
+- **Used by:** App passkey replace so a PRF-capable authenticator can own the account.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /auth/passkey/replace/finish
+
+- **Purpose:** Verifies the new attestation and replaces the account's one credential. Success JSON is `{ account }` owner JSON (same as register finish minus `token`). Existing session stays valid. Requires `Origin`.
+- **Errors:** 401 without session; 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey replace.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: GET /favicon.ico
 
 - **Purpose:** Windows ICO (RGBA PNG-in-ICO) of the 21.gifts mark. `Content-Type: image/x-icon`, `Cache-Control: public, max-age=86400`.

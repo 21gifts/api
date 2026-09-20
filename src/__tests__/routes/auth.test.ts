@@ -544,4 +544,280 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({ error: 'Invalid origin' });
     });
   });
+
+  describe('POST /auth/passkey/replace', () => {
+    async function register(
+      store: InMemoryAuthStore,
+    ): Promise<{ app: Hono; token: string; accountId: string }> {
+      const app = mount(store);
+      const begin = (await (
+        await app.request('/auth/passkey/register/begin', { method: 'POST' })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ challengeId: begin.challengeId, credential: { test: 'ok' } }),
+      });
+      const body = (await res.json()) as { token: string; account: { id: string } };
+      return { app, token: body.token, accountId: body.account.id };
+    }
+
+    it('returns 500 when WEBAUTHN_RP_ID is not configured', async () => {
+      const res = await mount(new InMemoryAuthStore(), '').request('/auth/passkey/replace/begin', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Server auth is not configured' });
+    });
+
+    it('returns 500 on finish when WEBAUTHN_RP_ID is not configured', async () => {
+      const res = await mount(new InMemoryAuthStore(), '').request('/auth/passkey/replace/finish', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(500);
+    });
+
+    it('returns 401 on begin without Authorization', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/replace/begin', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    });
+
+    it('returns 401 on begin with an invalid Bearer', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/replace/begin', {
+        method: 'POST',
+        headers: { authorization: 'Bearer nope' },
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    });
+
+    it('returns 401 on finish without Authorization', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: { origin: ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ challengeId: 'x', credential: { test: 'replace' } }),
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    });
+
+    it('returns 401 on finish with an invalid Bearer', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: 'Bearer nope',
+        },
+        body: JSON.stringify({ challengeId: 'x', credential: { test: 'replace' } }),
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    });
+
+    it('returns 400 on begin when the account has no passkey', async () => {
+      const store = new InMemoryAuthStore();
+      await store.createAccount({
+        id: 'provisioned',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'a'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await store.createSession({
+        token: 'b'.repeat(64),
+        accountId: 'provisioned',
+        createdAt: now(),
+      });
+      const res = await mount(store).request('/auth/passkey/replace/begin', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${'b'.repeat(64)}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'No passkey to replace' });
+    });
+
+    it('replaces the passkey and keeps the existing session', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token, accountId } = await register(store);
+      const begin = await app.request('/auth/passkey/replace/begin', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(begin.status).toBe(200);
+      const beginBody = (await begin.json()) as {
+        challengeId: string;
+        options: { excludeCredentials?: Array<{ id: string }> };
+      };
+      expect(beginBody.challengeId).toMatch(/^[0-9a-f]{64}$/);
+      expect(beginBody.options.excludeCredentials).toEqual([{ id: 'cred-1', type: 'public-key' }]);
+      const finish = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: beginBody.challengeId,
+          credential: { test: 'replace' },
+        }),
+      });
+      expect(finish.status).toBe(200);
+      const finishBody = (await finish.json()) as {
+        token?: unknown;
+        account: { id: string };
+      };
+      expect(finishBody).not.toHaveProperty('token');
+      expect(finishBody.account.id).toBe(accountId);
+      expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
+      expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe(accountId);
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'auth.passkey.replace.ok' && e['accountId'] === accountId,
+        ),
+      ).toBe(true);
+
+      const meApp = new Hono().route(
+        '/me',
+        meRoutes({
+          store,
+          messages: new InMemoryMessageStore(),
+          now,
+          payer: new UnconfiguredInvoicePayer(),
+          fetchImpl: globalThis.fetch,
+        }),
+      );
+      const me = await meApp.request('/me', { headers: { authorization: `Bearer ${token}` } });
+      expect(me.status).toBe(200);
+    });
+
+    it('rejects finish with the current credential id', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await register(store);
+      const begin = (await (
+        await app.request('/auth/passkey/replace/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ challengeId: begin.challengeId, credential: { test: 'ok' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid passkey' });
+    });
+
+    it('rejects a register challenge on replace finish', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await register(store);
+      const registerBegin = (await (
+        await app.request('/auth/passkey/register/begin', { method: 'POST' })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: registerBegin.challengeId,
+          credential: { test: 'replace' },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Wrong challenge type' });
+    });
+
+    it("rejects another account's Bearer on this replace challenge", async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token, accountId } = await register(store);
+      const begin = (await (
+        await app.request('/auth/passkey/replace/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      await store.createAccount({
+        id: 'other',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'c'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await store.createSession({
+        token: 'd'.repeat(64),
+        accountId: 'other',
+        createdAt: now(),
+      });
+      const res = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${'d'.repeat(64)}`,
+        },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'replace' },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Unknown or expired challenge' });
+      expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(accountId);
+    });
+
+    it('rejects a missing finish body', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await register(store);
+      const res = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with challengeId and credential',
+      });
+    });
+
+    it('rejects a missing origin on finish', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await register(store);
+      const begin = (await (
+        await app.request('/auth/passkey/replace/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/replace/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ challengeId: begin.challengeId, credential: { test: 'replace' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid origin' });
+    });
+  });
 });

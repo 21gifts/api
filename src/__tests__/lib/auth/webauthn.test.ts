@@ -27,6 +27,24 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect(generated.options.rp.id).toBe('localhost');
     expect(generated.options.authenticatorSelection?.residentKey).toBe('required');
     expect(generated.options.authenticatorSelection?.userVerification).toBe('required');
+    expect(
+      (generated.options.extensions as { prf?: unknown } | undefined)?.prf,
+    ).toEqual({});
+  });
+
+  it('copies excludeCredentials onto registration options', async () => {
+    const generated = await ceremony.generateRegistrationOptions({
+      rpName: '21.gifts',
+      rpID: 'localhost',
+      userID,
+      userName: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      userDisplayName: '21.gifts',
+      excludeCredentials: [{ id: 'cred-1', type: 'public-key' }],
+    });
+    expect(generated.options.excludeCredentials?.[0]?.id).toBe('cred-1');
+    expect(
+      (generated.options.extensions as { prf?: unknown } | undefined)?.prf,
+    ).toEqual({});
   });
 
   it('rejects a string registration response', async () => {
@@ -125,6 +143,12 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect(generated.challenge.length).toBeGreaterThan(8);
     expect(generated.options.userVerification).toBe('required');
     expect(generated.options.allowCredentials ?? []).toEqual([]);
+    const prf = (
+      generated.options.extensions as { prf?: { eval?: { first?: string } } } | undefined
+    )?.prf;
+    expect(prf?.eval?.first).toEqual(expect.any(String));
+    expect(typeof prf?.eval?.first).toBe('string');
+    expect((prf?.eval?.first ?? '').length).toBeGreaterThan(8);
   });
 
   it('rejects a string authentication response', async () => {

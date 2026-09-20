@@ -83,8 +83,11 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                         |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                            |
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                           |
+| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                       |
+| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                          |
 | GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
+| POST   | `/me/wallet-backup-seen`                             | Bearer                     | Record that the recovery phrase was shown (empty body)                                                    |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                           |
 | GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                            |
 | GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                         |
@@ -390,6 +393,44 @@ not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Success body matches register finish
 (`linkingKey` is whatever the account currently has).
+
+### `POST /auth/passkey/replace/begin`
+
+Signed-in members replace their one passkey. Requires `Authorization: Bearer`.
+Issues WebAuthn creation options with `excludeCredentials` set to the current
+credential and `extensions.prf` present so a PRF-capable authenticator can
+own the account. The api never sees PRF output or a mnemonic.
+
+Missing or invalid bearer → **Response** `401`: `{ "error": "Unauthorized" }`.
+
+Same **500** as register begin when WebAuthn is unconfigured.
+
+When the account has no credential → **Response** `400`:
+`{ "error": "No passkey to replace" }`.
+
+**Response** `200`: `{ "challengeId", "options" }` like register begin.
+
+### `POST /auth/passkey/replace/finish`
+
+Verifies a new registration attestation and replaces the account's one
+credential. Does not mint a session; the existing Bearer stays valid.
+
+Body matches register finish (`challengeId`, `credential`). Requires `Origin`.
+
+| Status | Body                                                                  | When                                                       |
+| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin |
+| 401    | `{ "error": "Unauthorized" }`                                         | Missing or invalid Bearer                                  |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                            |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId` or Bearer is not the challenge owner |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                         |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted                                   |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `replace`                                 |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                             |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed, same id, or duplicate           |
+
+**Response** `200`: `{ "account": { ... } }` — owner JSON via
+`serializeOwnerAccountWithPosts`, same shape as register finish minus `token`.
 
 ### `GET /me`
 

@@ -1002,6 +1002,65 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('looks up and replaces the account passkey credential', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.getPasskeyCredentialForAccount('acc')).toBeUndefined();
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createPasskeyCredential(first)).toBe(true);
+    expect((await store.getPasskeyCredentialForAccount('acc'))?.credentialId).toBe('cred-a');
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-other',
+        publicKey: new Uint8Array([9]),
+        signCount: 0,
+        accountId: 'other',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-other',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect((await store.getPasskeyCredential('cred-a'))?.accountId).toBe('acc');
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    expect(await store.getPasskeyCredential('cred-a')).toBeUndefined();
+    expect(await store.getPasskeyCredentialForAccount('acc')).toEqual({
+      credentialId: 'cred-b',
+      publicKey: new Uint8Array([2]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 2,
+    });
+  });
+
   it('refuses a second first-passkey for the same account', async () => {
     const store = new InMemoryAuthStore();
     const first = {

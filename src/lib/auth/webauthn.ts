@@ -8,6 +8,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
+import { prfEvalFirstSalt } from '@/lib/auth/prf';
 
 /**
  * Collaborator that talks to the WebAuthn library. Tests inject a fake so HTTP
@@ -26,6 +27,7 @@ export interface PasskeyCeremony {
     userID: Uint8Array;
     userName: string;
     userDisplayName: string;
+    excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }>;
 
   /**
@@ -87,6 +89,7 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     userID: Uint8Array;
     userName: string;
     userDisplayName: string;
+    excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }> {
     const options = await generateRegistrationOptions({
       rpName: input.rpName,
@@ -99,8 +102,16 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
         residentKey: 'required',
         userVerification: 'required',
       },
+      excludeCredentials: input.excludeCredentials?.map((credential) => ({
+        id: credential.id,
+      })),
+      // PRF is not on AuthenticationExtensionsClientInputs in this SimpleWebAuthn release.
+      extensions: { prf: {} } as never,
     });
-    return { challenge: options.challenge, options };
+    return {
+      challenge: options.challenge,
+      options: ensurePrfExtension(options, {}),
+    };
   }
 
   /**
@@ -153,12 +164,18 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
   async generateAuthenticationOptions(input: {
     rpID: string;
   }): Promise<{ challenge: string; options: PublicKeyCredentialRequestOptionsJSON }> {
+    const prfEval = { eval: { first: Buffer.from(prfEvalFirstSalt()).toString('base64url') } };
     const options = await generateAuthenticationOptions({
       rpID: input.rpID,
       userVerification: 'required',
       allowCredentials: [],
+      // PRF is not on AuthenticationExtensionsClientInputs in this SimpleWebAuthn release.
+      extensions: { prf: prfEval } as never,
     });
-    return { challenge: options.challenge, options };
+    return {
+      challenge: options.challenge,
+      options: ensurePrfExtension(options, prfEval),
+    };
   }
 
   /**
@@ -200,6 +217,24 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
       return { ok: false, reason: 'Invalid passkey' };
     }
   }
+}
+
+/**
+ * Guarantee `extensions.prf` is present on generated options JSON.
+ *
+ * @param options - SimpleWebAuthn creation or request options.
+ * @param prf - Registration `{}` or authentication `{ eval: { first } }`.
+ * @returns The same options object with `extensions.prf` set.
+ */
+function ensurePrfExtension<
+  T extends PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialRequestOptionsJSON,
+>(options: T, prf: unknown): T {
+  const current =
+    typeof options.extensions === 'object' && options.extensions !== null
+      ? options.extensions
+      : {};
+  Object.assign(options, { extensions: { ...current, prf } });
+  return options;
 }
 
 /**

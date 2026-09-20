@@ -21,6 +21,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
     userID: Uint8Array;
     userName: string;
     userDisplayName: string;
+    excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }> {
     return {
       challenge: 'test-challenge',
@@ -29,15 +30,19 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
         rp: { id: input.rpID, name: input.rpName },
         user: { id: input.userName, name: input.userName, displayName: input.userDisplayName },
         pubKeyCredParams: [],
+        ...(input.excludeCredentials === undefined
+          ? {}
+          : { excludeCredentials: input.excludeCredentials }),
       },
     };
   }
 
   /**
-   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed).
+   * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed) with
+   * `cred-1`, or `{ test: 'replace' }` with `cred-2`.
    *
    * @param input - Attestation payload from the finish body.
-   * @returns Fixed credential `cred-1`, or `{ ok: false }`.
+   * @returns Fixed credential `cred-1` or `cred-2`, or `{ ok: false }`.
    */
   async verifyRegistration(input: {
     response: unknown;
@@ -53,6 +58,14 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
         ok: true,
         credentialId: 'cred-1',
         publicKey: new Uint8Array([1, 2, 3]),
+        signCount: 0,
+      };
+    }
+    if (isSentinel(input.response, 'replace')) {
+      return {
+        ok: true,
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4, 5, 6]),
         signCount: 0,
       };
     }

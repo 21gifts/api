@@ -8,13 +8,18 @@ class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
+  nextQueryRows: unknown[][] = [];
   executeError: unknown | undefined;
   queryError: unknown | undefined;
+  queryErrorAfter = 0;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
-    if (this.queryError !== undefined) {
+    if (this.queryError !== undefined && this.queries.length > this.queryErrorAfter) {
       throw this.queryError;
+    }
+    if (this.nextQueryRows.length > 0) {
+      return this.nextQueryRows.shift() as T[];
     }
     return this.nextRows as T[];
   }
@@ -814,6 +819,28 @@ describe('PostgresAuthStore', () => {
     });
   });
 
+  it('maps a replace passkey challenge row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'replace',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toEqual({
+      id: 'ch',
+      type: 'replace',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1_000,
+    });
+  });
+
   it('returns undefined for a missing passkey challenge', async () => {
     expect(await new PostgresAuthStore(new MockSql()).getPasskeyChallenge('x')).toBeUndefined();
   });
@@ -992,6 +1019,118 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).rejects.toThrow(/disk full/);
+  });
+
+  it('looks up a passkey credential by account id', async () => {
+    const sql = new MockSql();
+    const key = new Uint8Array([1, 2, 3]);
+    sql.nextRows = [
+      {
+        credential_id: 'cred',
+        public_key: key,
+        sign_count: 0,
+        account_id: 'acc',
+        created_at: new Date(1),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyCredentialForAccount('acc')).toEqual({
+      credentialId: 'cred',
+      publicKey: key,
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(sql.queries[0]?.text).toMatch(/WHERE account_id = \$1/);
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).getPasskeyCredentialForAccount('missing'),
+    ).toBeUndefined();
+  });
+
+  it('replaces a passkey credential in one statement', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const next = {
+      credentialId: 'cred-2',
+      publicKey: new Uint8Array([4, 5, 6]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 2,
+    };
+    sql.nextRows = [{ credential_id: 'cred-2' }];
+    expect(await store.replacePasskeyCredential(next)).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const query = sql.queries[0];
+    expect(query?.text).toMatch(/WITH deleted AS/);
+    expect(query?.text).toMatch(/DELETE FROM passkey_credential WHERE account_id = \$4/);
+    expect(query?.text).toMatch(/INSERT INTO passkey_credential/);
+    expect(query?.text).toMatch(/WHERE EXISTS \(SELECT 1 FROM deleted\)/);
+    expect(query?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    expect(query?.text).toMatch(/RETURNING credential_id/);
+    expect(query?.params).toEqual(['cred-2', new Uint8Array([4, 5, 6]), 0, 'acc', 2]);
+  });
+
+  it('returns false when replace deletes no credential', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+  });
+
+  it('returns false when replace insert lands on no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+  });
+
+  it('returns false when replace insert hits unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('rethrows replace errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('disk full');
+    await expect(
+      new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).rejects.toThrow(/disk full/);
+    expect(sql.executes).toEqual([]);
   });
 
   it('returns undefined for a missing passkey credential', async () => {

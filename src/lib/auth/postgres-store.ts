@@ -549,6 +549,46 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapPasskeyCredential(row);
   }
 
+  async getPasskeyCredentialForAccount(
+    accountId: string,
+  ): Promise<PasskeyCredential | undefined> {
+    const rows = await this.#sql.query<PasskeyCredentialRow>(
+      `SELECT credential_id, public_key, sign_count, account_id, created_at
+       FROM passkey_credential WHERE account_id = $1`,
+      [accountId],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPasskeyCredential(row);
+  }
+
+  async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ credential_id: string }>(
+        `WITH deleted AS (
+           DELETE FROM passkey_credential WHERE account_id = $4 RETURNING credential_id
+         )
+         INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+         WHERE EXISTS (SELECT 1 FROM deleted)
+         ON CONFLICT (credential_id) DO NOTHING
+         RETURNING credential_id`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
     const rows = await this.#sql.query<{ credential_id: string }>(
       `UPDATE passkey_credential
@@ -703,7 +743,7 @@ function mapVerification(row: VerificationRow): AddressVerification {
 }
 
 function parsePasskeyChallengeType(raw: string): PasskeyChallengeType {
-  if (raw === 'register' || raw === 'authenticate') {
+  if (raw === 'register' || raw === 'authenticate' || raw === 'replace') {
     return raw;
   }
   throw new Error(`Unknown passkey challenge type "${raw}"`);
