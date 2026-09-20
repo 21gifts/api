@@ -731,7 +731,8 @@ const invoiceBody = z.object({
  * Build the `/messages` route group.
  *
  * Mounted at `/messages` so the public paths are `GET /messages`,
- * `POST /messages` (JSON photo or multipart `video` + optional `poster`),
+ * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
+ * optional `goalSats` whole-sat ask on a top-level note; replies 400),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
  * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide

@@ -196,6 +196,10 @@ export interface MessageStore {
    * or soft-hidden parent throws and does not insert. An existing-id hit still
    * returns the stored row even if that row's parent was later deleted.
    *
+   * Top-level rows persist `goalSats` when the value is a positive integer.
+   * A non-null `parentId` stores `goalSats` null even when the incoming row
+   * carried a positive ask.
+   *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage; index 0).
    * @param video - Optional forum video (MIME on the row; bytes via `writeForumVideo` / disk).
