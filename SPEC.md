@@ -3021,9 +3021,9 @@ The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
-verified / basis get **404** `{ "error": "Not found" }` on that
-id (no existence leak). Moderator or founder (`roleAtLeast` `moderator`)
-get **200**.
+verified, basis and the platform account get **404**
+`{ "error": "Not found" }` on that id (no existence leak). Moderator or
+founder (`isModeratorGroupMember`) get **200**.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
@@ -3070,7 +3070,8 @@ a founder posts on the moderator group. No such post → **200**, no ping,
 log `spend.ping.skipped` / `no_public_post`. Ping throw still **200**.
 Living-room lookup failure after persist is still **200**, no ping, log
 `spend.ping.skipped` / `posted_unreachable`. Empty or invalid text is
-**400** and does not ping. Verified / basis **404** on that id.
+**400** and does not ping. Verified, basis and the platform account **404**
+on that id.
 
 Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 **400** `{ "error": "Set a name before posting" }` when the sending member

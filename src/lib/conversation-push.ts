@@ -20,12 +20,12 @@ import type { PushOutboxRow, PushStore } from '@/lib/push-store';
 /**
  * Inbox unread callback for forum/zap fan-out.
  *
- * Staff and the `moderator` flag both come from `getAccount` +
- * `roleAtLeast(role, 'moderator')`, so founder and moderator are identical.
- * GET `/conversations` never lists `moderator_group` (fifth argument always
+ * Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the
+ * `moderator` flag from `isModeratorGroupMember` (at least moderator and not
+ * the platform account), so founder and moderator are identical. GET
+ * `/conversations` never lists `moderator_group` (fifth argument always
  * false); this helper still pins that thread in the badge unread count for
- * anyone at least moderator — the same former exact-moderator rule, now
- * including founder. Platform id from `listAccounts` / `isPlatform`. Lookup
+ * every group member. Platform id from `listAccounts` / `isPlatform`. Lookup
  * failure yields staff false, `moderator` false, and `platformId` null.
  *
  * @param conversations - Conversation store.

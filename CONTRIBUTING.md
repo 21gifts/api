@@ -111,7 +111,7 @@ api/
 │   │       ├── account-json.ts # Public account JSON (no nsec)
 │   │       ├── account-setup.ts # Next owner setup step + factual missing fields
 │   │       ├── requirements.ts # Action→fields gates (`requireAction`)
-│   │       ├── roles.ts       # ROLE_ORDER, roleRank, roleAtLeast (caller-role hierarchy)
+│   │       ├── roles.ts       # ROLE_ORDER, roleRank, roleAtLeast, isModeratorGroupMember (caller-role hierarchy)
 │   │       ├── profile-message.ts # Profile forum note when name + LN set (`ensureProfileMessage`)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
@@ -304,7 +304,7 @@ update stuff
 - **No `console.log`** in committed code — `console.warn` / `console.error` only, for legitimate operator-facing output
 - **Named exports**, no default exports
 - **Path alias `@/`** points at `src/` (configured in `tsconfig.json` and `vitest.config.ts`)
-- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect.
+- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect
 
 ### TSDoc
 

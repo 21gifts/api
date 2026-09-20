@@ -966,7 +966,7 @@
 
 ## Function: isStaffAccount
 
-- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles (`founder` / `moderator` true; `basis` / `verified` false). `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings take an explicit not-staff branch and never call `roleAtLeast`. Does not parse display names or @mentions out of post text.
+- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles (`founder` / `moderator` true; `basis` / `verified` false). `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings are not found in `ROLE_ORDER` and are therefore not staff. Does not parse display names or @mentions out of post text.
 - **Inputs:** `{ role: string; isPlatform?: boolean }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap` via `actorIsStaffFromAuth`.
@@ -987,7 +987,7 @@
 
 ## Function: inboxUnreadCountFor
 
-- **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff and the `moderator` flag both come from `getAccount` + `roleAtLeast(role, 'moderator')`, so founder and moderator are identical. GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for anyone at least moderator — the same former exact-moderator rule, now including founder. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
+- **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account), so founder and moderator are identical. GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
 - **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `invoiceRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
@@ -1833,7 +1833,7 @@
 - **Purpose:** Whether a caller's live role meets a minimum on the product hierarchy `founder > moderator > verified > basis`. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Checks on the _subject_ of an action stay exact (state, not permission).
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `notifyConversationMessage`.
+- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
 
 ## Function: isModeratorGroupMember
 
