@@ -456,9 +456,9 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
     expect(createSession).not.toHaveBeenCalled();
-    expect(
-      parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted'),
-    ).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted')).toBe(
+      false,
+    );
   });
 
   it('PATCH clears the Lightning Address and verification flag', async () => {
