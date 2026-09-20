@@ -1,7 +1,8 @@
 /**
  * Web Push for inbound private messages (bell subscribers only).
  *
- * Does not write in-app Notification rows. Inbox stays the DM surface.
+ * Does not write in-app Notification rows. Inbox stays the DM surface;
+ * the closed Moderators group opens `/moderate/group`.
  */
 
 import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
@@ -61,7 +62,8 @@ export function inboxUnreadCountFor(
 /**
  * Enqueue one conversation Web Push per 21.gifts recipient with a bell
  * subscription. No-op when `pushStore` is omitted. Does not persist
- * in-app notification rows. Per-recipient failures log
+ * in-app notification rows. `moderator_group` opens `/moderate/group`;
+ * other kinds keep `/messages?c=<id>`. Per-recipient failures log
  * `conversations.push.failed` and continue; throws after the loop when
  * any failed (same as forum fan-out). Callers still catch so HTTP/Nostr
  * ingest stays 200.
@@ -119,6 +121,7 @@ export async function notifyConversationMessage(args: {
           conversationId: args.thread.id,
           name: args.message.name,
           text: args.message.text,
+          ...(args.thread.kind === 'moderator_group' ? { url: '/moderate/group' } : {}),
         }),
         unreadCount,
       });

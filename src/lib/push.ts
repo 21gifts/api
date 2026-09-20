@@ -145,19 +145,22 @@ export function buildModeratorAppointedPushPayload(subjectId: string): PushPaylo
 /**
  * Private-message payload for one 21.gifts recipient with a bell subscription.
  *
- * @param args - Conversation id, sender display name, message body.
+ * @param args - Conversation id, sender display name, message body, optional
+ *   open URL (inbox `/messages?c=<id>` when omitted or empty).
  * @returns Payload object; callers `JSON.stringify` and add `unreadCount`.
  */
 export function buildConversationPushPayload(args: {
   conversationId: string;
   name: string;
   text: string;
+  url?: string;
 }): PushPayload {
   return {
     type: 'conversation',
     title: args.name !== '' ? args.name : '21.gifts',
     body: args.text,
-    url: `/messages?c=${args.conversationId}`,
+    url:
+      args.url !== undefined && args.url !== '' ? args.url : `/messages?c=${args.conversationId}`,
     tag: `conversation:${args.conversationId}`,
   };
 }

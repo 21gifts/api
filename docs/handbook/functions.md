@@ -519,8 +519,8 @@
 
 ## Function: buildConversationPushPayload
 
-- **Purpose:** English private-message payload for one 21.gifts bell subscriber (`type: 'conversation'`, title sender `name` or `21.gifts` when empty, body message text, url `/messages?c=<conversationId>`, tag `conversation:<conversationId>`). Shared template: omits optional `unreadCount` (`notifyConversationMessage` adds notification unread + listed inbox unread).
-- **Inputs:** `{ conversationId, name, text }`.
+- **Purpose:** English private-message payload for one 21.gifts bell subscriber (`type: 'conversation'`, title sender `name` or `21.gifts` when empty, body message text, url `/messages?c=<conversationId>` when `url` is omitted or empty, tag `conversation:<conversationId>`). Optional `url` (non-empty) overrides the inbox path (`notifyConversationMessage` passes `/moderate/group` for `moderator_group`). Shared template: omits optional `unreadCount` (`notifyConversationMessage` adds notification unread + listed inbox unread).
+- **Inputs:** `{ conversationId, name, text, url? }`.
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` and merge `unreadCount`.
 - **Used by:** `notifyConversationMessage`.
 
@@ -1074,9 +1074,9 @@
 
 ## Function: notifyConversationMessage
 
-- **Purpose:** Enqueue one `type: 'conversation'` Web Push per 21.gifts recipient with at least one `push_subscription`. No-op when `pushStore` is omitted. Does not write in-app Notification rows. Payload from `buildConversationPushPayload` plus `unreadCount` = notification unread + listed inbox unread (missing source 0). `messageId` is the conversation message UUID. For `moderator_group`, recipients are every account with `roleAtLeast(role, 'moderator')` and `isPlatform !== true` from `listAccounts` (the platform account is omitted). Per-recipient failures log `conversations.push.failed` and continue; throws after the loop when any failed. Callers still catch so HTTP/Nostr ingest stays 200.
+- **Purpose:** Enqueue one `type: 'conversation'` Web Push per 21.gifts recipient with at least one `push_subscription`. No-op when `pushStore` is omitted. Does not write in-app Notification rows. Payload from `buildConversationPushPayload` plus `unreadCount` = notification unread + listed inbox unread (missing source 0). `messageId` is the conversation message UUID. For `moderator_group`, recipients are every account with `roleAtLeast(role, 'moderator')` and `isPlatform !== true` from `listAccounts` (the platform account is omitted) and the payload URL is `/moderate/group`; other kinds keep `/messages?c=<conversationId>`. Per-recipient failures log `conversations.push.failed` and continue; throws after the loop when any failed. Callers still catch so HTTP/Nostr ingest stays 200.
 - **Inputs:** `{ pushStore?, notifications?, conversations, authStore, thread, message, nowMs }`.
-- **Returns / side effects:** Void. Skip recipients with zero subscriptions. Title is `message.name` or `21.gifts` when empty. URL `/messages?c=<conversationId>`. Tag `conversation:<conversationId>`.
+- **Returns / side effects:** Void. Skip recipients with zero subscriptions. Title is `message.name` or `21.gifts` when empty. URL `/messages?c=<conversationId>` for member threads; `/moderate/group` when `thread.kind` is `moderator_group`. Tag `conversation:<conversationId>`.
 - **Used by:** `conversationRoutes` `POST /:id`; `contactRoutes` after conversation append; `indexInboundDirectMessages` after inbound persist.
 
 ## Function: serializeConversationMessage
