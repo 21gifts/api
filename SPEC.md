@@ -514,7 +514,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set).
+`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set;
+optional `goalSats` omitted when unset).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -523,8 +524,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
-`parentId` when set; omits `replyCount`. Top-level notes by that member
-are not listed.
+`parentId` when set; omits `replyCount`. Replies never include `goalSats`.
+Top-level notes by that member are not listed.
 
 ### `GET /members/:accountId/activity`
 
@@ -1808,7 +1809,9 @@ Environment:
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
-JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Never includes
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Optional `goalSats`
+is a positive integer on a top-level note and is omitted on replies and when
+the stored value is unset, null, or 0. Never includes
 `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -1839,8 +1842,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 ```
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
-(not wrapped). Never includes `nostrEvent`, `contentFp`, nsec, or photo/video
-bytes.
+(not wrapped). Optional `goalSats` is a positive integer on a top-level note
+and is omitted on replies and when the stored value is unset, null, or 0.
+Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 Store throw → **Response** `503`:
 
@@ -2485,6 +2489,8 @@ the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+optional `goalSats` (positive integer on a top-level note; omitted when
+unset/null/0),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -2649,11 +2655,28 @@ zapper entitlement.
 
 Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
-each `{ contentType, data }` same shape as singular `photo`), and an
-optional parent UUID:
+each `{ contentType, data }` same shape as singular `photo`), an
+optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
+on a top-level note only):
+
+Top-level with a goal:
 
 ```json
-{ "text": "…", "inReplyTo": "<uuid>", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
+{
+  "text": "…",
+  "goalSats": 21000,
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
+```
+
+Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400):
+
+```json
+{
+  "text": "…",
+  "inReplyTo": "<uuid>",
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
 ```
 
 Non-empty `photos` wins over singular `photo`. Dual-send `{ photo, photos }`
@@ -2669,7 +2692,13 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. A valid parent where the
 caller is neither the parent author nor `verified` → **403**
 `{ "error": "A reply needs a Bitcoin payment" }` (pay via
-`POST /messages/:id/invoice` instead). Multipart video posts do not
+`POST /messages/:id/invoice` instead). Optional `goalSats` omitted, JSON
+`null`, or a missing/empty multipart field means no goal. Multipart accepts
+`goalSats` as a decimal digit string. A positive `goalSats` together with
+`inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`. An
+invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
+JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
+Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
@@ -2682,7 +2711,8 @@ with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
-`videoContentType`. May include `accountId` (21gifts author id). No
+`videoContentType`. May include `goalSats` (positive integer on a top-level
+note; omitted when unset). May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
@@ -2969,7 +2999,7 @@ public message JSON (`photoCount` 0–10 always present;
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
-pubkey.
+pubkey. Replies never include `goalSats`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
@@ -3025,7 +3055,8 @@ Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
 captured as `:id`. A live GET returns
-the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
+the public message JSON (`sats`, optional `goalSats` on a top-level note
+when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors) and omits
 `accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
@@ -3183,7 +3214,8 @@ desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
-`hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
+`hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
+top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from

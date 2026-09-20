@@ -203,3 +203,6 @@ CREATE TABLE IF NOT EXISTS message_extra_photo (
   PRIMARY KEY (message_id, idx),
   CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 );
+
+-- Optional whole-sat ask on top-level notes; null means no goal.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint;
