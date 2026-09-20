@@ -1829,7 +1829,10 @@ async function insertGiftReply(
   const pubkey = (await args.auth.getNostrPublicKey(args.payer.id)) ?? '';
   const nameTrim = args.payer.name?.trim() ?? '';
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
-  const text = args.text;
+  const parentAuthor =
+    args.parent.accountId === null ? undefined : await args.auth.getAccount(args.parent.accountId);
+  const compose = parsePlatformCompose(args.text, parentAuthor, args.parent);
+  const text = compose.body;
   const created = await args.store.create({
     id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: args.payer.id,
@@ -1840,13 +1843,32 @@ async function insertGiftReply(
     hasVideo: false,
     videoContentType: null,
     ...unsignedNostrDefaults(),
-    parentId: args.parent.id,
+    parentId: compose.parentId,
     authorPubkey: pubkey === '' ? null : pubkey,
     sats: args.amountSats,
     nostrPublishState: text === '' ? 'skipped' : 'pending',
     contentFp: null,
   });
   await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
+}
+
+const COMPOSE_REPLY_PREFIX = /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n/i;
+
+function parsePlatformCompose(
+  text: string,
+  parentAuthor: Account | undefined,
+  parent: MessageRow,
+): { parentId: string | null; body: string } {
+  const isFeeNote =
+    parentAuthor?.isPlatform === true && parentAuthor.profileMessageId === parent.id;
+  if (!isFeeNote) {
+    return { parentId: parent.id, body: text };
+  }
+  const match = COMPOSE_REPLY_PREFIX.exec(text);
+  if (match === null) {
+    return { parentId: null, body: text };
+  }
+  return { parentId: match[1] ?? null, body: text.slice(match[0].length) };
 }
 
 /**

@@ -379,6 +379,12 @@
 - **Used by:** App public comment thread.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /messages/compose-target
+
+- **Purpose:** Bearer + `forum.post`. Returns `{ messageId, sats }` for the official platform profile note so a basis account can invoice 1 sat to 21.gifts before writing. Ensures the platform profile note exists. 400 when that note is not yet payable.
+- **Auth:** Bearer session.
+- **Errors:** 401, 409 `missing_requirements`, 400 `This message cannot be paid yet`, 503.
+
 ## Endpoint: GET /messages/:id
 
 - **Purpose:** Public single-note fetch (no Bearer for a live row). Returns the public message JSON via `serializeMessage` (`sats`, optional `goalSats` on a top-level note when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount` (0–10; `hasPhoto` still means photo 0 exists), `hasVideo`, `videoContentType`; live `role` for 21gifts authors; `payable` is true when a non-empty `eventId` and a non-blank author Lightning Address are set (top-level or signed reply); an external Nostr-authored row with `accountId` null and a recorded `authorPubkey` omits `role`, sets `payable` false, and includes `via: 'nostr'`). A live reply with `accountId` null is 200 only when `authorPubkey` is set AND recorded as a zapper (checked via `isZapperPubkey`, including on every `sinceSats` poll iteration); otherwise — no `authorPubkey`, or one not yet a recorded zapper — it is 404 `{ "error": "Not found" }` (same body as missing/hidden). Live GET omits `deletedAt` / `deletedBy`; unauthenticated live GET still omits `accountId`. Omits `goalSats` when unset (null/0/absent); includes the key only when a positive whole-sat goal is stored on a top-level note. Photo/video bytes are never included. Unsigned visitors and non-staff still 404 `{ error: 'Not found' }` for soft-hidden rows (`deletedAt` set) before any missing-video cleanup (same body as today; no `deletedAt` in the 404 body). A founder or moderator Bearer (`roleAtLeast(..., 'moderator')`, no `forum.read`) is 200 public JSON plus `deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`, and `accountId` for 21gifts authors; skip missing-video drop; do not long-poll `sinceSats` on hidden rows. A live `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404. Optional query `sinceSats` (non-negative integer) long-polls until `sats` is strictly greater than that value (pay sheet / Lightning zap confirmation); timeout still returns 200 with the current body.

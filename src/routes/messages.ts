@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { roleAtLeast } from '@/lib/auth/roles';
@@ -527,6 +528,15 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
+  if (!roleAtLeast(account.role, 'verified')) {
+    return c.json(
+      {
+        error:
+          parentId === null ? 'A post needs a Bitcoin payment' : 'A reply needs a Bitcoin payment',
+      },
+      403,
+    );
+  }
   if (!postLimiter.allow(account.id, deps.now())) {
     logEvent('messages.rate_limited', { accountId: account.id });
     c.header('Retry-After', '10');
@@ -986,10 +996,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (parent === undefined || parent.parentId !== null || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const exempt = account.id === parent.accountId || roleAtLeast(account.role, 'verified');
-        if (!exempt) {
-          return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
-        }
         parentId = parent.id;
       }
       const goalSats = parsed.data.goalSats ?? null;
@@ -1024,6 +1030,44 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       }
       return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
+    })
+    .get('/compose-target', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const gate = requireAction(account, 'forum.post');
+      if (!gate.ok) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
+      }
+      try {
+        const accounts = await deps.authStore.listAccounts();
+        const platform = accounts.find((row) => row.isPlatform === true);
+        if (platform === undefined) {
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        const live = await ensureProfileMessage({
+          auth: deps.authStore,
+          messages: deps.store,
+          account: platform,
+          now: deps.now,
+        });
+        const messageId = live.profileMessageId;
+        if (typeof messageId !== 'string' || messageId.trim() === '') {
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        const row = await deps.store.getById(messageId);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        if (!payableOf(row, live) || row.eventId === null || row.eventId === '') {
+          return c.json({ error: 'This message cannot be paid yet' }, 400);
+        }
+        return c.json({ messageId: row.id, sats: row.sats }, 200);
+      } catch {
+        logEvent('messages.compose_target.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
     })
     .get('/:id/photo/:file', (c) => {
       const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));

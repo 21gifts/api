@@ -123,6 +123,7 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   }
   await store.updateAccount({
     ...existing,
+    role: 'verified',
     name,
     username: (() => {
       const slug = name
@@ -498,7 +499,7 @@ describe('GET /messages', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
     expect(body.messages[0]?.payable).toBe(true);
-    expect(body.messages[0]?.role).toBe('basis');
+    expect(body.messages[0]?.role).toBe('verified');
   });
 
   it('includes the live author role for moderator, founder, and verified', async () => {
@@ -1051,13 +1052,27 @@ describe('GET /messages', () => {
 });
 
 describe('POST /messages', () => {
+  it('returns 403 when a basis account posts without paying', async () => {
+    const store = await namedStore('Ada');
+    const acc = await store.getAccount('acc');
+    expect(acc).toBeDefined();
+    await store.updateAccount({ ...acc!, role: 'basis' });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
   it('returns 429 on a burst of posts', async () => {
     const limiter = new PostRateLimiter();
     const app = new Hono().route(
       '/messages',
       messagesRoutes({
         store: new InMemoryMessageStore(),
-        authStore: await namedStore('Ada'),
+        authStore: await staffStore('Ada'),
         now,
         postLimiter: limiter,
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -1140,7 +1155,7 @@ describe('POST /messages', () => {
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
-    expect(created.role).toBe('basis');
+    expect(created.role).toBe('verified');
     expect(created.accountId).toBe('acc');
     expect(created).not.toHaveProperty('goalSats');
     expect(created.id.length).toBeGreaterThan(8);
@@ -1435,7 +1450,7 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+    const res = await mount(await staffStore('Ada'), messageStore).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
@@ -1475,6 +1490,9 @@ describe('POST /messages', () => {
 
   it('returns 403 when a basis account replies without paying', async () => {
     const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
     await authStore.createAccount({
       id: 'parent',
       linkingKey: null,
@@ -1814,6 +1832,10 @@ describe('POST /messages', () => {
   });
 
   it('rejects an unpaid reply to a Damus-only parent', async () => {
+    const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
@@ -1836,7 +1858,7 @@ describe('POST /messages', () => {
       auth: 'authkey',
       createdAt: new Date(now()),
     });
-    const res = await mount(await namedStore('Ada'), messageStore, {
+    const res = await mount(authStore, messageStore, {
       notificationStore,
       pushStore,
     }).request('/messages', {
@@ -4616,7 +4638,7 @@ describe('GET /messages/:id', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { payable: boolean; role: string };
     expect(body.payable).toBe(true);
-    expect(body.role).toBe('basis');
+    expect(body.role).toBe('verified');
   });
 
   it('marks a signed reply with a Lightning Address as payable', async () => {
@@ -4662,7 +4684,7 @@ describe('GET /messages/:id', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { payable: boolean; role: string; parentId?: string };
     expect(body.payable).toBe(true);
-    expect(body.role).toBe('basis');
+    expect(body.role).toBe('verified');
     expect(body.parentId).toBe(parentId);
   });
 
@@ -5304,11 +5326,11 @@ describe('GET /messages/:id/replies', () => {
     expect(external).not.toHaveProperty('role');
     expect(external).not.toHaveProperty('accountId');
     const member = body.messages.find((row) => row.text === 'member reply');
-    expect(member?.role).toBe('basis');
+    expect(member?.role).toBe('verified');
     expect(member?.accountId).toBe('acc');
     expect(member).not.toHaveProperty('via');
     const giftReply = body.messages.find((row) => row.text === 'member gift reply');
-    expect(giftReply?.role).toBe('basis');
+    expect(giftReply?.role).toBe('verified');
     expect(giftReply?.accountId).toBe('acc');
     expect(giftReply).not.toHaveProperty('via');
     const orphan = body.messages.find((row) => row.text === 'orphan reply');

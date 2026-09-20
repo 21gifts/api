@@ -206,8 +206,10 @@ the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 validated kind:9735 is indexed, a payer gift-reply is inserted only when the
 paid row is top-level (`parentId` null). A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies from `basis` (not the parent author) are **403**; `verified` stays
-unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
+posts and replies from `basis` (including the parent author) are **403** until
+the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
+`POST /messages/:id/invoice` on the platform profile note). `verified` stays
+unpaid-write exempt. Do not invent `/events` or `/comments` paths.
 
 **External zap → gift reply.** A kind:9735 first credits the addressed member
 note under the existing receipt and payment-hash checks. If its embedded
