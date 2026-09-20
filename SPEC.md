@@ -1072,6 +1072,10 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
+Does not clear `username`. After unlink, `setup` is `username` if the
+handle is blank; `setup` is `lightning-address` only when name is done or
+skipped **and** username is set (and LN is blank / skip cleared).
+
 ### `POST /me/lightning-address/verification`
 
 Start proof-of-control for the linked Lightning Address. No request body.
@@ -1319,10 +1323,14 @@ Success → **Response** `200`:
 }
 ```
 
-Existing address (`lower(trim)`): updates **only** `name` (atomic name-only
-write; `viewKey`, `role`, `rulesAgreedAt`, and other columns stay unchanged),
-`created` is `false`. New address: fresh `viewKey`, `created` is `true`. GET
-still omits `viewKey`.
+Existing address (`lower(trim)`): name-only write still goes through
+`updateAccountNameByLightningAddress` (name column only; `viewKey`, `role`,
+`rulesAgreedAt`, and other columns stay unchanged in that write). Then, if
+stored username is blank, `maybeSetProvisionUsername` fills it. A non-blank
+stored username is kept. `created` is `false`. New address: sets
+`provisionUsername` on the new `basis` row (fresh `viewKey`, `created` is
+`true`). GET still omits `viewKey` (provisioned `username` appears on GET
+`/debug/accounts`).
 
 ### `PATCH /debug/accounts/:id`
 
@@ -1344,9 +1352,11 @@ account) and, when a conversation store is wired, points every
 already this account. Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. `GET /me` then returns `setup: "lightning-address"` when a
-name is already stored, so any client that follows `setup` (or a missing
-`lightningAddress`) shows the address form. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns
+`setup: "username"` if the handle is blank, or `setup: "lightning-address"`
+only when name is done or skipped **and** username is set (and LN is blank
+/ skip cleared), so any client that follows `setup` shows the username or
+address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`

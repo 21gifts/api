@@ -84,8 +84,10 @@ or unlink a LUD-16 Lightning Address:
   resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
-- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp
-  so `setup` returns to `lightning-address` when a name is set or name-skipped)
+- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
+  does not clear `username`). After unlink, `setup` is `username` if the handle
+  is blank; `setup` is `lightning-address` only when name is done or skipped
+  **and** username is set
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):

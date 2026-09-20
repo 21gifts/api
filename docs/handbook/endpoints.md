@@ -2,7 +2,7 @@
 
 ## Endpoint: DELETE /me/lightning-address
 
-- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt` so owner `setup` returns to `lightning-address` when a name is set or name-skipped.
+- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt`. Does not clear `username`. After unlink, owner `setup` is `username` if the handle is blank; `setup` is `lightning-address` only when name is done or skipped **and** username is set.
 - **Errors:** 401 without session.
 - **Used by:** `unlinkLightningAddress` in the app.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -44,7 +44,7 @@
 
 ## Endpoint: GET /.well-known/nostr.json
 
-- **Purpose:** NIP-05 directory `{ names, relays }`. CORS `*`. Optional `?name=`.
+- **Purpose:** NIP-05 directory `{ names, relays }`. `names` keys are those locals (stored username wins over display-name slug; nameless accounts with a stored username are included). CORS `*`. Optional `?name=`.
 - **Errors:** 503 `{ error: 'Directory is unavailable' }`.
 - **Used by:** Damus verification; app proxies this from the site apex.
 - **Auth:** none.
@@ -72,7 +72,7 @@
 
 ## Endpoint: POST /debug/accounts
 
-- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). **All** new addresses are NIP-57 mint-probed (`probeNip57Mint`) first, unless `NIP57_PROBE=0` (e2e only); only then is any row persisted. Name-only updates (address already in store) do **not** probe and run after every new-address probe has passed. Creates a new `basis` row with a fresh `viewKey`, or updates **only** `name` when the address already exists (`lower(trim)` match; other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it.
+- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). **All** new addresses are NIP-57 mint-probed (`probeNip57Mint`) first, unless `NIP57_PROBE=0` (e2e only); only then is any row persisted. Name-only updates (address already in store) do **not** probe and run after every new-address probe has passed. Creates a new `basis` row with a fresh `viewKey` and sets `provisionUsername`, or when the address already exists (`lower(trim)` match) updates **only** `name` via `updateAccountNameByLightningAddress` (other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged in that write) then, if stored username is blank, `maybeSetProvisionUsername` fills it (a non-blank stored username is kept). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it (provisioned `username` appears on GET `/debug/accounts`).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body, C0/DEL names, or non-LUD-16 addresses (no row is written); 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }` when any new address fails the NIP-57 mint probe (`not_zap`; no new address in that request is saved); 400 `{ error: 'Lightning Address could not be resolved' }` when any new-address probe is unreachable (no new address in that request is saved); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name.
 - **Used by:** Operator provisioning before passkey claim.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
