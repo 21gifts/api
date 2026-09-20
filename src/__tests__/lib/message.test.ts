@@ -556,9 +556,9 @@ describe('serializeDebugMessage', () => {
     expect(serializeDebugMessage(row)).not.toHaveProperty('goalSats');
     expect(serializeDebugMessage({ ...row, goalSats: null })).not.toHaveProperty('goalSats');
     expect(serializeDebugMessage({ ...row, goalSats: 0 })).not.toHaveProperty('goalSats');
-    expect(serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 })).not.toHaveProperty(
-      'goalSats',
-    );
+    expect(
+      serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 }),
+    ).not.toHaveProperty('goalSats');
   });
 });
 
