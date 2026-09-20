@@ -2375,11 +2375,18 @@ eligible live top-level note receives a
 deterministic external gift-reply (`accountId` null, `via: "nostr"`, comment and
 sats from the zap, receipt time clamped to now, Nostr publish skipped). Profile
 lookup failure falls back to a non-impersonating truncated-pubkey display name.
-Resolved profile names use the same fallback when they contain control characters or
-no letter or digit at all, mix more than one of the Latin, Cyrillic and Greek scripts,
-equal a member name, or collide with a member name or reserved project/staff identity
-after diacritic and common Cyrillic/Greek look-alike folding or after a by-sound
-transliteration of Cyrillic letters. Names written entirely in one non-Latin script remain eligible when none of these comparisons (plain, look-alike fold, by-sound transliteration) collides with a reserved word or an account name.
+Resolved profile names use the same fallback when any of these holds: they contain a
+C0 or DEL control character, an explicit bidirectional control character (U+061C,
+U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), or no letter or digit at all; they mix
+more than one of the Latin, Cyrillic and Greek scripts; they equal a member name in a
+plain comparison (NFKC, trimmed, case-insensitive); a reserved project/staff word
+appears in their look-alike fold or in their by-sound transliteration of Cyrillic
+letters (both folds are lossy here: unmapped letters are dropped, so a false positive
+only yields the fallback); or their look-alike fold or their transliteration equals
+that of a member name — this member comparison applies only when every letter of the
+candidate is ASCII or mapped by the respective table. Ordinary right-to-left names and
+zero-width-joiner emoji sequences are kept, and names written entirely in one
+non-Latin script otherwise remain eligible.
 
 Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
