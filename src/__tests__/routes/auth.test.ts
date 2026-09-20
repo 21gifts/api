@@ -447,6 +447,27 @@ describe('auth routes', () => {
       expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.login.ok')).toBe(false);
     });
 
+    it('returns 403 when tryCreateSession fails concurrently', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store);
+      await register(app);
+      vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+      const begin = (await (
+        await app.request('/auth/passkey/authenticate/begin', { method: 'POST' })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/authenticate/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'ok', id: 'cred-1' },
+        }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.login.ok')).toBe(false);
+    });
+
     it('rejects an unknown credential', async () => {
       const app = mount(new InMemoryAuthStore());
       await register(app);

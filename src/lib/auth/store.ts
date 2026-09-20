@@ -395,10 +395,7 @@ export class InMemoryAuthStore implements AuthStore {
     }
     this.#accounts.set(account.id, {
       ...account,
-      sessionRefused:
-        account.sessionRefused !== undefined
-          ? account.sessionRefused === true
-          : previous?.sessionRefused === true,
+      sessionRefused: previous?.sessionRefused === true,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {

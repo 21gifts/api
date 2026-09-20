@@ -425,7 +425,7 @@ describe('passkey claim', () => {
     expect(await store.getNostrPublicKey('provisioned')).toBeUndefined();
   });
 
-  it('refuses a listed existing account before issuing a session', async () => {
+  it('refuses a sessionRefused account before binding a credential', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
       id: REFUSED_ID,
@@ -450,6 +450,7 @@ describe('passkey claim', () => {
       createdAt: T0,
     });
     const createSession = vi.spyOn(store, 'createSession');
+    const createFirst = vi.spyOn(store, 'createFirstPasskeyCredential');
     const finish = await finishPasskeyRegistration(
       store,
       new FakePasskeyCeremony(),
@@ -461,6 +462,7 @@ describe('passkey claim', () => {
     );
     expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
     expect(createSession).not.toHaveBeenCalled();
+    expect(createFirst).not.toHaveBeenCalled();
   });
 });
 
@@ -696,5 +698,21 @@ describe('passkey authentication', () => {
     );
     expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('maps a concurrent tryCreateSession failure to the wrong-account error', async () => {
+    const { store, ceremony } = await seed();
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+    const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok', id: 'cred-1' },
+    );
+    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
   });
 });

@@ -204,6 +204,9 @@ export async function finishPasskeyRegistration(
   }
   const existing = await store.getAccount(accountId);
   if (existing !== undefined) {
+    if (isWrongAccount(existing)) {
+      return { ok: false, error: WRONG_ACCOUNT_ERROR };
+    }
     if (await store.accountHasPasskey(accountId)) {
       return { ok: false, error: 'Invalid passkey' };
     }
@@ -224,11 +227,7 @@ export async function finishPasskeyRegistration(
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }
     }
-    if (isWrongAccount(existing)) {
-      return { ok: false, error: WRONG_ACCOUNT_ERROR };
-    }
-    const issued = await issueSession(store, now, existing);
-    return { ok: true, value: issued };
+    return mintSession(store, now, existing);
   }
   const account: Account = {
     id: accountId,
@@ -274,8 +273,7 @@ export async function finishPasskeyRegistration(
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
   }
-  const issued = await issueSession(store, now, account);
-  return { ok: true, value: issued };
+  return mintSession(store, now, account);
 }
 
 /**
@@ -391,8 +389,22 @@ export async function finishPasskeyAuthentication(
       logEvent('nostr.keygen.backfill.failed', { accountId: account.id });
     }
   }
-  const issued = await issueSession(store, now, account);
-  return { ok: true, value: issued };
+  return mintSession(store, now, account);
+}
+
+async function mintSession(
+  store: AuthStore,
+  now: number,
+  account: Account,
+): Promise<
+  | { ok: true; value: { token: string; account: Account } }
+  | { ok: false; error: typeof WRONG_ACCOUNT_ERROR }
+> {
+  try {
+    return { ok: true, value: await issueSession(store, now, account) };
+  } catch {
+    return { ok: false, error: WRONG_ACCOUNT_ERROR };
+  }
 }
 
 /**

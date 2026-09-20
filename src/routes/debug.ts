@@ -420,8 +420,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
       const now = deps.now ?? Date.now;
-      const minted = await issueSession(deps.store, now(), existing);
-      logEvent('debug.accounts.session_minted', { accountId: existing.id });
-      return c.json({ token: minted.token }, 200);
+      try {
+        const minted = await issueSession(deps.store, now(), existing);
+        logEvent('debug.accounts.session_minted', { accountId: existing.id });
+        return c.json({ token: minted.token }, 200);
+      } catch {
+        return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
+      }
     });
 }

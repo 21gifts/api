@@ -300,6 +300,8 @@ describe('InMemoryAuthStore', () => {
     await store.updateAccount(nameOnly);
     expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
     expect((await store.getAccount('acc'))?.name).toBe('Bob');
+    await store.updateAccount({ ...(await store.getAccount('acc'))!, sessionRefused: false });
+    expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
     expect((await store.setSessionRefused('acc', false))?.sessionRefused).toBe(false);
   });
 

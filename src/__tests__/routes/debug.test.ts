@@ -501,6 +501,42 @@ describe('debugRoutes', () => {
     );
   });
 
+  it('POST /:id/session is 403 when tryCreateSession fails concurrently', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const res = await app.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted')).toBe(
+      false,
+    );
+  });
+
   it('PATCH clears the Lightning Address and verification flag', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
