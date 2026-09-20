@@ -1832,7 +1832,18 @@ async function insertGiftReply(
   const parentAuthor =
     args.parent.accountId === null ? undefined : await args.auth.getAccount(args.parent.accountId);
   const compose = parsePlatformCompose(args.text, parentAuthor, args.parent);
+  let parentId = compose.parentId;
   const text = compose.body;
+  if (compose.isFeeNote && parentId !== null) {
+    const target = await args.store.getById(parentId);
+    if (target === undefined || target.parentId !== null || target.deletedAt !== null) {
+      parentId = null;
+    }
+  }
+  if (compose.isFeeNote && text.trim() === '') {
+    await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+    return;
+  }
   const created = await args.store.create({
     id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: args.payer.id,
@@ -1843,9 +1854,9 @@ async function insertGiftReply(
     hasVideo: false,
     videoContentType: null,
     ...unsignedNostrDefaults(),
-    parentId: compose.parentId,
+    parentId,
     authorPubkey: pubkey === '' ? null : pubkey,
-    sats: args.amountSats,
+    sats: compose.isFeeNote ? 0 : args.amountSats,
     nostrPublishState: text === '' ? 'skipped' : 'pending',
     contentFp: null,
   });
@@ -1859,18 +1870,23 @@ function parsePlatformCompose(
   text: string,
   parentAuthor: Account | undefined,
   parent: MessageRow,
-): { parentId: string | null; body: string } {
+): { isFeeNote: boolean; parentId: string | null; body: string } {
   const isFeeNote =
     parentAuthor?.isPlatform === true && parentAuthor.profileMessageId === parent.id;
   if (!isFeeNote) {
-    return { parentId: parent.id, body: text };
+    return { isFeeNote: false, parentId: parent.id, body: text };
   }
   const match = COMPOSE_REPLY_PREFIX.exec(text);
   if (match === null) {
-    return { parentId: null, body: text };
+    return { isFeeNote: true, parentId: null, body: text };
   }
   /* v8 ignore next -- the UUID capture is always set when the prefix matches */
-  return { parentId: match[1] ?? null, body: text.slice(match[0].length) };
+  const replyParentId = match[1] ?? null;
+  return {
+    isFeeNote: true,
+    parentId: replyParentId,
+    body: text.slice(match[0].length),
+  };
 }
 
 /**

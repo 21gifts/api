@@ -762,6 +762,7 @@ const invoiceBody = z.object({
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
  * optional `goalSats` whole-sat ask on a top-level note; replies 400),
+ * `GET /messages/compose-target` (platform profile note for a 1-sat write),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
  * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide
@@ -795,11 +796,12 @@ const invoiceBody = z.object({
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
- * @returns A Hono app with `GET /`, `POST /`, `GET /:id/photo` plus `.jpg` /
- * `.jpeg` / `.png` / `.webp`, `GET /:id/video.mp4|.webm|.mov`,
- * public `GET /:id/replies` (optional Bearer for `accountId`), `DELETE /:id`,
- * staff `GET /hidden` (moderator session; no `forum.read`),
- * public `GET /:id` (optional `?sinceSats=`), and `POST /:id/invoice`.
+ * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
+ * `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
+ * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
+ * for `accountId`), `DELETE /:id`, staff `GET /hidden` (moderator session; no
+ * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
+ * `POST /:id/invoice`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;

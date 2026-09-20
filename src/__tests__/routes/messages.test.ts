@@ -1640,6 +1640,32 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
+  it('returns 403 when the parent author is below verified', async () => {
+    const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
   it('lets a verified account reply without paying', async () => {
     const authStore = await namedStore('Ada');
     const acc = await authStore.getAccount('acc');

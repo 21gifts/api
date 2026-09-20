@@ -2824,6 +2824,51 @@ external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external
 zapper entitlement.
 
+### `GET /messages/compose-target`
+
+Bearer session required. After auth, `requireAction(account, 'forum.post')`
+(rules + name + username + Lightning Address). Returns the official platform
+profile note so a basis account can invoice 1 sat to 21.gifts before posting
+or replying:
+
+```json
+{ "messageId": "<uuid>", "sats": 0 }
+```
+
+Ensures that profile note exists. The client then calls
+`POST /messages/:id/invoice` on `messageId`. A later indexed zap on that note
+turns the zap comment into the payer’s top-level post (`sats` 0 on the new
+row). A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
+top-level parent; a missing, hidden, or nested parent falls back to a
+top-level post with the remaining body. An empty comment does not create a
+blank living-room post.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Missing required fields → **Response** `409`:
+
+```json
+{ "error": "missing_requirements", "missing": ["rules", "name", "username", "lightning-address"] }
+```
+
+Platform note not yet payable (unsigned or missing Lightning Address) →
+**Response** `400`:
+
+```json
+{ "error": "This message cannot be paid yet" }
+```
+
+No platform account, missing profile note, or store failure → **Response**
+`503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
 ### `POST /messages`
 
 Post to the public member forum. Bearer session required. JSON body (not
@@ -3008,7 +3053,7 @@ Success → **Response** `200`:
   "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
-  "role": "basis"
+  "role": "verified"
 }
 ```
 
@@ -3025,7 +3070,10 @@ zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
 paid row (`:id`, which may be a reply). After that increment (never in the same
 SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
 comment or `""`, `sats` = this zap) only when the paid row is top-level
-(`parentId` null). Member invoices keep the existing relaxed signed-request
+(`parentId` null) and is not the official platform profile note. A zap on
+that platform note (`GET /messages/compose-target`) instead creates the
+payer’s post or `inReplyTo:` reply with `sats` 0 — the sat paid 21.gifts,
+not the new row. Member invoices keep the existing relaxed signed-request
 attribution. An external payer must pass the strict description-hash, target,
 amount, signature, replay, and block checks described under `GET /messages`;
 its gift-reply has `accountId` null, `via: "nostr"`, and is never signed by the
