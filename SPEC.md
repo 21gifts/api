@@ -2314,7 +2314,12 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 Moderator stipend form (never together with `messageId`):
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "groupMessageId": "<uuid>" }
+{
+  "address": "name@domain.tld",
+  "amountMsat": 100000,
+  "comment": "optional",
+  "groupMessageId": "<uuid>"
+}
 ```
 
 `comment` is optional and at most 255 characters. `amountMsat` must be an

@@ -320,10 +320,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         logEvent('invoice.group_gift.failed');
         return;
       }
-      const recipient =
-        row.senderAccountId === null
-          ? undefined
-          : await deps.authStore.getAccount(row.senderAccountId);
+      const recipient = await deps.authStore.getAccountByLightningAddress(invoice.address);
       const recipientName = recipient?.name?.trim() ?? '';
       const comment = invoice.comment ?? '';
       const text =
