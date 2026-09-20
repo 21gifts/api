@@ -10,7 +10,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { invoiceRoutes } from '@/routes/invoices';
-import { createApp } from '@/server';
+import { createApp as createAppRaw } from '@/server';
 import type { FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -19,6 +19,30 @@ import type { FetchFn } from '@/lib/lnurlp';
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
+
+function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+      decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: Date.parse('2026-09-15T18:00:00.000Z'),
+      note: null,
+    },
+  ]);
+}
+
+function createApp(
+  deps: Parameters<typeof createAppRaw>[0] = {},
+): ReturnType<typeof createAppRaw> {
+  return createAppRaw({
+    fundingStore: admittedStore(),
+    ...deps,
+  });
+}
 
 const spendApp = createApp;
 const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
@@ -90,7 +114,7 @@ async function seedPasskeyAccount(
   await authStore.createAccount({
     id: 'acc-alice',
     linkingKey: null,
-    role: 'basis',
+    role: 'verified',
     name: 'Ada',
     lightningAddress: address,
     lightningAddressVerified: true,
