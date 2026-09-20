@@ -247,6 +247,19 @@ test('POST /conversations/:id/read without bearer is 401', async ({ request }) =
   expect(res.status()).toBe(401);
 });
 
+test('GET /conversations/:id/messages/:messageId/photo without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations/:id/messages/:messageId/photo')).status()).toBe(401);
+});
+test('GET /conversations/:id/messages/:messageId/photo/:file without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations/:id/messages/:messageId/photo/:file')).status()).toBe(
+    401,
+  );
+});
+
 test('POST /messages with a photo without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: {

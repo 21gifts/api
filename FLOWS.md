@@ -290,7 +290,10 @@ via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs. Lightning gifts in a Direct/Contact thread use
+with PNs. `moderator_group` POST may include `{ photo }` / `{ photos }`
+(JPEG/PNG/WebP, ≤10, empty text allowed); Direct/Contact/Damus remain
+text-only; bytes via authenticated GET
+`/conversations/:id/messages/:messageId/photo`. Lightning gifts in a Direct/Contact thread use
 `POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed
 when a matching zap receipt is ingested: the api appends a conversation
 message (`text` + `sats`, or empty `text` with `sats` only) and does **not**

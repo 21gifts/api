@@ -14,7 +14,7 @@ import {
   type ConversationMessageRow,
   type ConversationThread,
 } from '@/lib/conversation';
-import type { NostrPublishState } from '@/lib/message';
+import type { ForumPhoto, ForumPhotoContentType, NostrPublishState } from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
 /** Keyset query for one messenger-style conversation page. */
@@ -207,11 +207,39 @@ export interface ConversationStore {
 
   /**
    * Persist a message and bump `lastMessageAt`. Duplicate message `id` or
-   * `eventId` returns the existing row.
+   * `eventId` returns the existing row and does not insert extras.
+   *
+   * `extraPhotos` are indices 1..length (max 9). Empty/omitted = none. When
+   * extras are non-empty, `photo` (index 0) is required.
    *
    * @param row - Fully formed message.
+   * @param photo - Optional decoded photo (copied into storage; index 0).
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @returns The stored row (a copy) with `hasPhoto` / `photoCount` from
+   *   stored stills. On duplicate id / eventId, the existing row.
    */
-  appendMessage(row: ConversationMessageRow): Promise<ConversationMessageRow>;
+  appendMessage(
+    row: ConversationMessageRow,
+    photo?: ForumPhoto,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<ConversationMessageRow>;
+
+  /**
+   * Load photo bytes for a conversation message id (index 0).
+   *
+   * @param id - Message id.
+   * @returns A copy of the photo, or `null` when missing / no photo.
+   */
+  getPhoto(id: string): Promise<ForumPhoto | null>;
+
+  /**
+   * Load one extra still (indices 1–9) for a conversation message id.
+   *
+   * @param id - Message id.
+   * @param index - Extra index (1–9). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range.
+   */
+  getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null>;
 
   /**
    * Claim unsigned pending rows (`eventId` null, sender account set) for wrap.
@@ -344,6 +372,16 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
 )`,
   `CREATE INDEX IF NOT EXISTS conversation_read_conversation_id_idx
   ON conversation_read (conversation_id)`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo bytea`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo_content_type text`,
+  `CREATE TABLE IF NOT EXISTS conversation_message_extra_photo (
+  message_id uuid NOT NULL REFERENCES conversation_message (id) ON DELETE CASCADE,
+  idx smallint NOT NULL,
+  photo bytea NOT NULL,
+  photo_content_type text NOT NULL,
+  PRIMARY KEY (message_id, idx),
+  CONSTRAINT conversation_message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
+)`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -450,7 +488,9 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
   ), 0) AS last_sats`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
-  event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name, gift_for_message_id`;
+  event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name, gift_for_message_id,
+  (photo IS NOT NULL) AS has_photo,
+  ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM conversation_message_extra_photo e WHERE e.message_id = conversation_message.id), 0)) AS photo_count`;
 
 /**
  * Apply {@link CONVERSATION_SCHEMA_SQL} in order. Idempotent.
@@ -472,6 +512,9 @@ export class InMemoryConversationStore implements ConversationStore {
   readonly #threads: ConversationThread[];
   readonly #messages: ConversationMessageRow[];
   readonly #lastRead: Map<string, Date>;
+  readonly #photos = new Map<string, ForumPhoto>();
+  /** Extra stills; array index 0 = idx 1. */
+  readonly #extraPhotos = new Map<string, ForumPhoto[]>();
 
   /**
    * @param seedThreads - Optional seed threads; copied into private storage.
@@ -712,14 +755,23 @@ export class InMemoryConversationStore implements ConversationStore {
     );
   }
 
+  /** Copy a row and set `hasPhoto` / `photoCount` from the photo maps. */
+  #withListedMedia(row: ConversationMessageRow): ConversationMessageRow {
+    const copy = copyMessage(row);
+    const hasPhoto0 = this.#photos.has(row.id) || row.hasPhoto === true;
+    copy.hasPhoto = hasPhoto0;
+    copy.photoCount = (hasPhoto0 ? 1 : 0) + (this.#extraPhotos.get(row.id)?.length ?? 0);
+    return copy;
+  }
+
   getMessageById(id: string): Promise<ConversationMessageRow | undefined> {
     const row = this.#messages.find((item) => item.id === id);
-    return Promise.resolve(row === undefined ? undefined : copyMessage(row));
+    return Promise.resolve(row === undefined ? undefined : this.#withListedMedia(row));
   }
 
   getMessageByEventId(eventId: string): Promise<ConversationMessageRow | undefined> {
     const row = this.#messages.find((item) => item.eventId === eventId);
-    return Promise.resolve(row === undefined ? undefined : copyMessage(row));
+    return Promise.resolve(row === undefined ? undefined : this.#withListedMedia(row));
   }
 
   listMessages(conversationId: string, limit: number): Promise<ConversationMessageRow[]> {
@@ -727,7 +779,7 @@ export class InMemoryConversationStore implements ConversationStore {
       .filter((row) => row.conversationId === conversationId)
       .sort(compareMessagesOldestFirst)
       .slice(0, limit)
-      .map((row) => copyMessage(row));
+      .map((row) => this.#withListedMedia(row));
     return Promise.resolve(listed);
   }
 
@@ -746,28 +798,90 @@ export class InMemoryConversationStore implements ConversationStore {
       .sort(compareMessagesNewestFirst)
       .slice(0, query.limit)
       .reverse()
-      .map((row) => copyMessage(row));
+      .map((row) => this.#withListedMedia(row));
     return Promise.resolve(listed);
   }
 
-  appendMessage(row: ConversationMessageRow): Promise<ConversationMessageRow> {
+  /**
+   * Persist a message and optional stills; return a copy.
+   *
+   * @param row - Message to store.
+   * @param photo - Optional photo (bytes copied; index 0).
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @returns A copy of the stored row with `hasPhoto` / `photoCount` from
+   *   stored stills. Duplicate `id` / `eventId` returns the existing row
+   *   without inserting extras.
+   */
+  appendMessage(
+    row: ConversationMessageRow,
+    photo?: ForumPhoto,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<ConversationMessageRow> {
     const existingById = this.#messages.find((item) => item.id === row.id);
     if (existingById !== undefined) {
-      return Promise.resolve(copyMessage(existingById));
+      return Promise.resolve(this.#withListedMedia(existingById));
     }
     if (row.eventId !== null) {
       const existing = this.#messages.find((item) => item.eventId === row.eventId);
       if (existing !== undefined) {
-        return Promise.resolve(copyMessage(existing));
+        return Promise.resolve(this.#withListedMedia(existing));
       }
     }
-    const stored = copyMessage(row);
+    const extras = [...(extraPhotos ?? [])];
+    if (extras.length > 0 && photo === undefined) {
+      return Promise.reject(new Error('extra photos require photo 0'));
+    }
+    if (extras.length > 9) {
+      return Promise.reject(new Error('at most 9 extra photos'));
+    }
+    const hasPhoto = photo !== undefined;
+    const stored = copyMessage({
+      ...row,
+      hasPhoto,
+      photoCount: (hasPhoto ? 1 : 0) + extras.length,
+    });
     this.#messages.push(stored);
+    if (photo !== undefined) {
+      this.#photos.set(stored.id, copyPhoto(photo));
+    }
+    if (extras.length > 0) {
+      this.#extraPhotos.set(
+        stored.id,
+        extras.map((item) => copyPhoto(item)),
+      );
+    }
     const thread = this.#threads.find((item) => item.id === row.conversationId);
     if (thread !== undefined && row.createdAt.getTime() >= thread.lastMessageAt.getTime()) {
       thread.lastMessageAt = new Date(row.createdAt.getTime());
     }
-    return Promise.resolve(copyMessage(stored));
+    return Promise.resolve(this.#withListedMedia(stored));
+  }
+
+  /**
+   * Return a copy of the photo for `id`, or `null`.
+   *
+   * @param id - Message id.
+   * @returns Photo copy or `null`.
+   */
+  getPhoto(id: string): Promise<ForumPhoto | null> {
+    const photo = this.#photos.get(id);
+    return Promise.resolve(photo === undefined ? null : copyPhoto(photo));
+  }
+
+  /**
+   * Load one extra still (indices 1–9) for a message id.
+   *
+   * @param id - Message id.
+   * @param index - Extra index (1–9). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range.
+   */
+  getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null> {
+    if (index < 1 || index > 9) {
+      return Promise.resolve(null);
+    }
+    const list = this.#extraPhotos.get(id);
+    const photo = list?.[index - 1];
+    return Promise.resolve(photo === undefined ? null : copyPhoto(photo));
   }
 
   claimUnsigned(limit: number, nowMs: number, leaseMs: number): Promise<ConversationMessageRow[]> {
@@ -934,7 +1048,17 @@ interface ConversationMessageSqlRow {
   actor_account_id: string | null;
   actor_name: string | null;
   gift_for_message_id: string | null;
+  has_photo?: boolean | number | string | null;
+  photo_count?: number | string | null;
 }
+
+/** Row shape for `getPhoto` / `getExtraPhoto`. */
+interface ConversationPhotoSqlRow {
+  photo: Uint8Array | Buffer | number[] | null;
+  photo_content_type: string | null;
+}
+
+const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 /**
  * Durable {@link ConversationStore} backed by Postgres.
@@ -1299,30 +1423,59 @@ export class PostgresConversationStore implements ConversationStore {
     return rows.slice().reverse().map(mapMessage);
   }
 
-  async appendMessage(row: ConversationMessageRow): Promise<ConversationMessageRow> {
+  /**
+   * Persist a message and optional stills; return a copy.
+   *
+   * @param row - Message to store.
+   * @param photo - Optional photo (bytes copied; index 0).
+   * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @returns The stored row with `hasPhoto` / `photoCount` from stored
+   *   stills. Duplicate `id` / `eventId` returns the existing row without
+   *   inserting extras.
+   */
+  async appendMessage(
+    row: ConversationMessageRow,
+    photo?: ForumPhoto,
+    extraPhotos?: readonly ForumPhoto[],
+  ): Promise<ConversationMessageRow> {
+    const extras = [...(extraPhotos ?? [])];
+    if (extras.length > 0 && photo === undefined) {
+      throw new Error('extra photos require photo 0');
+    }
+    if (extras.length > 9) {
+      throw new Error('at most 9 extra photos');
+    }
+    const hasPhoto = photo !== undefined;
+    const stored = copyMessage({
+      ...row,
+      hasPhoto,
+      photoCount: (hasPhoto ? 1 : 0) + extras.length,
+    });
     try {
       await this.#sql.execute(
         `INSERT INTO conversation_message (
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
            event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name,
-           gift_for_message_id
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15)`,
+           gift_for_message_id, photo, photo_content_type
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17)`,
         [
-          row.id,
-          row.conversationId,
-          row.text,
-          row.createdAt,
-          row.senderAccountId,
-          row.senderPubkey,
-          row.name,
-          row.sats,
-          row.eventId,
-          row.nostrPublishState,
-          row.nostrEvent,
-          row.claimedUntil === null ? null : new Date(row.claimedUntil),
+          stored.id,
+          stored.conversationId,
+          stored.text,
+          stored.createdAt,
+          stored.senderAccountId,
+          stored.senderPubkey,
+          stored.name,
+          stored.sats,
+          stored.eventId,
+          stored.nostrPublishState,
+          stored.nostrEvent,
+          stored.claimedUntil === null ? null : new Date(stored.claimedUntil),
           row.actorAccountId ?? null,
           row.actorName ?? '',
           row.giftForMessageId ?? null,
+          photo === undefined ? null : photo.bytes,
+          photo === undefined ? null : photo.contentType,
         ],
       );
     } catch (error: unknown) {
@@ -1340,11 +1493,74 @@ export class PostgresConversationStore implements ConversationStore {
       }
       throw error;
     }
+    for (const [i, extra] of extras.entries()) {
+      try {
+        await this.#sql.execute(
+          `INSERT INTO conversation_message_extra_photo (message_id, idx, photo, photo_content_type) VALUES ($1,$2,$3,$4)`,
+          [stored.id, i + 1, extra.bytes, extra.contentType],
+        );
+      } catch (error: unknown) {
+        await this.#sql.execute(`DELETE FROM conversation_message WHERE id = $1`, [stored.id]);
+        throw error;
+      }
+    }
     await this.#sql.execute(
       `UPDATE conversation SET last_message_at = GREATEST(last_message_at, $2) WHERE id = $1`,
-      [row.conversationId, row.createdAt],
+      [stored.conversationId, stored.createdAt],
     );
-    return copyMessage(row);
+    return stored;
+  }
+
+  /**
+   * Load photo bytes for a conversation message id (index 0).
+   *
+   * @param id - Message id (`$1`).
+   * @returns Photo copy, or `null` when missing / null photo / bad type.
+   */
+  async getPhoto(id: string): Promise<ForumPhoto | null> {
+    const rows = await this.#sql.query<ConversationPhotoSqlRow>(
+      `SELECT photo, photo_content_type FROM conversation_message WHERE id = $1`,
+      [id],
+    );
+    const row = rows[0];
+    if (row === undefined || row.photo === null || row.photo_content_type === null) {
+      return null;
+    }
+    if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+      return null;
+    }
+    return {
+      contentType: row.photo_content_type as ForumPhotoContentType,
+      bytes: toUint8Array(row.photo),
+    };
+  }
+
+  /**
+   * Load one extra still (indices 1–9) for a conversation message id.
+   *
+   * @param id - Message id (`$1`).
+   * @param index - Extra index (1–9) (`$2`). Values outside that range return `null`.
+   * @returns A copy of the extra photo, or `null` when missing / out of range / bad type.
+   */
+  async getExtraPhoto(id: string, index: number): Promise<ForumPhoto | null> {
+    if (index < 1 || index > 9) {
+      return null;
+    }
+    const rows = await this.#sql.query<ConversationPhotoSqlRow>(
+      `SELECT photo, photo_content_type FROM conversation_message_extra_photo WHERE message_id = $1 AND idx = $2`,
+      [id, index],
+    );
+    const row = rows[0];
+    if (row === undefined || row.photo === null || row.photo_content_type === null) {
+      return null;
+    }
+    if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+      return null;
+    }
+    return {
+      contentType: row.photo_content_type as ForumPhotoContentType,
+      bytes: toUint8Array(row.photo),
+    };
   }
 
   async claimUnsigned(
@@ -1489,6 +1705,10 @@ function copyThread(thread: ConversationThread): ConversationThread {
   };
 }
 
+function copyPhoto(photo: ForumPhoto): ForumPhoto {
+  return { contentType: photo.contentType, bytes: photo.bytes.slice() };
+}
+
 function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
   return {
     ...row,
@@ -1496,7 +1716,18 @@ function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
     actorAccountId: row.actorAccountId ?? null,
     actorName: row.actorName ?? '',
+    hasPhoto: row.hasPhoto === true,
+    /* v8 ignore next -- older in-memory rows omit photoCount */
+    photoCount: typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto === true ? 1 : 0,
   };
+}
+
+/** Coerce Postgres bytea drivers into a fresh {@link Uint8Array}. */
+function toUint8Array(value: Uint8Array | Buffer | number[]): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value.slice();
+  }
+  return Uint8Array.from(value);
 }
 
 function parseKind(raw: string): ConversationKind {
@@ -1557,6 +1788,7 @@ async function alignMemberPlatformAccountB(
 
 function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
   const state = row.nostr_publish_state;
+  const hasPhoto = Boolean(row.has_photo);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -1569,6 +1801,9 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     actorName: row.actor_name ?? '',
     giftForMessageId: row.gift_for_message_id,
     sats: Number(row.sats ?? 0),
+    hasPhoto,
+    /* v8 ignore next -- photo_count is selected; null only on a pre-migration row */
+    photoCount: Number(row.photo_count ?? (hasPhoto ? 1 : 0)),
     eventId: row.event_id,
     nostrPublishState:
       state === 'pending' || state === 'published' || state === 'failed' || state === 'skipped'
