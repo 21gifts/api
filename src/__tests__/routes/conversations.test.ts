@@ -1752,6 +1752,37 @@ describe('POST /conversations/:id', () => {
     expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
   });
 
+  it('returns 400 when a member_platform thread includes a photo', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: [{ contentType: 'image/jpeg', data: JPEG_B64 }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+  });
+
+  it('returns 400 when a member_damus thread includes a photo', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+  });
+
   it('returns 400 for an empty text string', async () => {
     const auth = await seeded();
     await withOther(auth);
@@ -2823,6 +2854,9 @@ describe('moderator-group photos', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 1, text: '' });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
   });
 
   it('POST photos array of 10 is 200 photoCount 10', async () => {
@@ -2842,6 +2876,9 @@ describe('moderator-group photos', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 10 });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
   });
 
   it('POST 11 photos is 400 At most 10 photos', async () => {
@@ -2861,6 +2898,20 @@ describe('moderator-group photos', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'At most 10 photos' });
+  });
+
+  it('POST video without text or photo is 400', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ video: { contentType: 'video/mp4', data: 'AAAA' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
   });
 
   it('POST invalid still is 400', async () => {
@@ -2937,6 +2988,8 @@ describe('moderator-group photos', () => {
       { headers: AUTH },
     );
     expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG.bytes);
   });
 
@@ -2991,6 +3044,8 @@ describe('moderator-group photos', () => {
       { headers: AUTH },
     );
     expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG2.bytes);
   });
 

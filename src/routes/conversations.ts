@@ -426,7 +426,10 @@ async function serveConversationPhoto(
     if (photo === null) {
       return Response.json({ error: 'Photo not found' }, { status: 404 });
     }
-    return forumPhotoResponse(photo);
+    const res = forumPhotoResponse(photo);
+    res.headers.set('Cache-Control', 'private, no-store');
+    res.headers.delete('Access-Control-Allow-Origin');
+    return res;
   } catch {
     logEvent('conversations.photo.failed');
     return Response.json({ error: 'Conversations are unavailable' }, { status: 503 });
@@ -789,7 +792,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           decodedGallery.push(decoded);
         }
         const [first, ...rest] = decodedGallery;
-        /* v8 ignore next 3 */
+        /* v8 ignore next 3 -- gallery.length > 0 after successful decode */
         if (first === undefined) {
           return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
         }

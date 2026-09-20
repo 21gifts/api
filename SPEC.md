@@ -131,7 +131,9 @@ Public base URLs used in examples:
 | GET    | `/conversations/moderator-group`             | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                   |
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
-| POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
+| GET    | `/conversations/:id/messages/:messageId/photo` | Bearer                   | Private photo 0 bytes                                                                                     |
+| GET    | `/conversations/:id/messages/:messageId/photo/:file` | Bearer             | Private extra stills 1–9 (`{1-9}.{jpg, jpeg, png, webp}`)                                                 |
+| POST   | `/conversations/:id`                         | Bearer                     | Send `{ text?, photo?, photos? }` (photos only on moderator_group)                                        |
 | POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
 | POST   | `/conversations/:id/read`                    | Bearer                     | Stamp last-read for the viewer                                                                            |
 | GET    | `/notifications`                             | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                  |
@@ -3586,6 +3588,8 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:00.000Z",
       "fromMe": true,
       "sats": 0,
+      "hasPhoto": false,
+      "photoCount": 0,
       "accountId": "<uuid>"
     },
     {
@@ -3608,12 +3612,15 @@ for another message (never JSON `null`). Members always receive the stored
 sender (typically `21.gifts` on a platform send). Staff receive the actor
 when `actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor
 when set, otherwise the sender; there is no staff-as-platform shortcut.
+`hasPhoto` / `photoCount` (0–10) flag stills; bytes are never in this JSON.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
 
-Bearer session required. Body `{ "text": "…" }` 1–500 via
-`normalizeForumText`. Moderator replies on a
+Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data" }, "photos"?: [{ "contentType", "data" }] }`
+(at most 10 stills; non-empty `photos` wins over singular `photo`). Text 1–500 via
+`normalizeForumText`. Empty text is allowed only on `moderator_group` when a still is present;
+photos on Direct/Contact/Damus are 400. Moderator replies on a
 platform thread persist as the platform account (sender + Nostr nsec) and
 record the logged-in staff as `actorAccountId` / `actorName`. Staff JSON
 uses the actor; members still see `21.gifts`. The worker signs with the
