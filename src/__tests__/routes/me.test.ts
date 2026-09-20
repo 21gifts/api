@@ -808,6 +808,31 @@ describe('POST /me/name', () => {
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
     expect((await store.getAccount('acc'))?.username ?? null).toBeNull();
   });
+
+  it('does not overwrite a handle stored after the free-check', async () => {
+    const store = await seededStore();
+    let afterLookup = false;
+    vi.spyOn(store, 'getAccountByUsername').mockImplementation(async () => {
+      afterLookup = true;
+      return undefined;
+    });
+    const realGet = store.getAccount.bind(store);
+    vi.spyOn(store, 'getAccount').mockImplementation(async (id: string) => {
+      const row = await realGet(id);
+      if (afterLookup && row !== undefined) {
+        return { ...row, username: 'manual' };
+      }
+      return row;
+    });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { username: string | null };
+    expect(body.username).toBe('manual');
+  });
 });
 
 describe('POST /me/username', () => {

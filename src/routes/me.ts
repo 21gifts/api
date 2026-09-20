@@ -283,7 +283,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             if (latest === null) {
               return c.json({ error: 'Unauthorized' }, 401);
             }
-            await deps.store.updateAccount({ ...latest, username: derived });
+            const latestBlank =
+              latest.username === null ||
+              latest.username === undefined ||
+              latest.username.trim() === '';
+            if (latestBlank) {
+              await deps.store.updateAccount({ ...latest, username: derived });
+            }
           }
         }
       }
@@ -322,8 +328,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (owner !== undefined && owner.id !== current.id) {
         return c.json({ error: 'Username is already in use' }, 409);
       }
-      const updated: Account = { ...current, username };
-      await deps.store.updateAccount(updated);
+      const latest = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (latest === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      await deps.store.updateAccount({ ...latest, username });
       const stored = await storedAccount(deps, current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (stored === null) {
