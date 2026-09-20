@@ -431,8 +431,7 @@ async function serveForumVideo(
     const headers: Record<string, string> = {
       'Content-Type': mime,
       'Accept-Ranges': 'bytes',
-      'Cache-Control':
-        row.deletedAt !== null ? 'private, no-store' : 'public, max-age=86400',
+      'Cache-Control': row.deletedAt !== null ? 'private, no-store' : 'public, max-age=86400',
       ...(row.deletedAt !== null ? { Vary: 'Authorization' } : {}),
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': `inline; filename="video.${ext}"`,

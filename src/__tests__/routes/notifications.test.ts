@@ -497,6 +497,85 @@ describe('GET /notifications', () => {
     expect(body.notifications).toEqual([]);
     expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeUndefined();
   });
+
+  it('drops a forum_reply when the child is missing and the parent is live', async () => {
+    const parentLive = '11111111-1111-4111-8111-111111111111';
+    const missingReply = '55555555-5555-4555-8555-555555555555';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: parentLive,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'live parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'forum_reply',
+        parentId: parentLive,
+        replyId: missingReply,
+        text: 'orphan reply',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notifications: Array<Record<string, unknown>> };
+    expect(body.notifications).toEqual([]);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeUndefined();
+  });
+
+  it('drops a forum_reply when the child is hidden and the parent is live', async () => {
+    const parentLive = '11111111-1111-4111-8111-111111111111';
+    const childHidden = '33333333-3333-4333-8333-333333333333';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: parentLive,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'live parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: childHidden,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: parentLive,
+    });
+    expect(await messages.markDeleted(childHidden, new Date(now()), 'acc')).toBe(true);
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'forum_reply',
+        parentId: parentLive,
+        replyId: childHidden,
+        text: 'about hidden reply',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notifications: Array<Record<string, unknown>> };
+    expect(body.notifications).toEqual([]);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeUndefined();
+  });
 });
 
 describe('POST /notifications/read-all', () => {
