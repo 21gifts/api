@@ -1709,6 +1709,16 @@ describe('InMemoryMessageStore', () => {
     expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-b', at)).toBe(false);
   });
 
+  it('lists zap receipts by event id descending', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('aa', 'a', 1);
+    await store.recordZapReceipt('cc', 'a', 3);
+    await store.recordZapReceipt('bb', 'a', 2);
+    expect((await store.listZapReceipts(10)).map((row) => row.eventId)).toEqual(['cc', 'bb', 'aa']);
+    expect(await store.listZapReceipts(2)).toHaveLength(2);
+  });
+
   it('tracks gift-reply receipts and finds ok invoices', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -3361,6 +3371,7 @@ describe('PostgresMessageStore', () => {
         comment: '',
       },
     ]);
+    expect(sql.queries.at(-1)?.text).toContain('ORDER BY event_id DESC');
     sql.nextRows = [
       {
         payment_hash: 'aa'.repeat(32),

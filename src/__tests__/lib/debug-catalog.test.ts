@@ -4,8 +4,8 @@ import { InMemoryContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { isDebugCatalogTable, loadDebugTables } from '@/lib/debug-catalog';
 import { InMemoryGiftStore } from '@/lib/gift-store';
-import { InMemoryMessageStore } from '@/lib/message-store';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
@@ -33,6 +33,19 @@ describe('loadDebugTables', () => {
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await auth.createAccount({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
       rulesAgreedAt: null,
     });
     await auth.createPasskeyCredential({
@@ -146,6 +159,15 @@ describe('loadDebugTables', () => {
       undefined,
       [{ contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) }],
     );
+    await messages.create({
+      id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
+      accountId,
+      name: 'Ada',
+      text: 'plain',
+      createdAt: new Date('2026-09-01T00:01:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
     await messages.recordInvoiceAttempt({
       id: 'inv',
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
@@ -165,6 +187,24 @@ describe('loadDebugTables', () => {
       lnurlResponse: null,
       conversationId: threadId,
       conversationMessageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    });
+    await messages.recordInvoiceAttempt({
+      id: 'inv-forum',
+      createdAt: new Date('2026-09-01T00:00:01.000Z'),
+      messageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      payerAccountId: accountId,
+      authorAccountId: accountId,
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: null,
+      paymentHash: null,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: false,
+      lnurlResponse: null,
     });
     await messages.recordZapIngest({
       id: 'ing',
@@ -225,7 +265,7 @@ describe('loadDebugTables', () => {
         name: 'Ada',
         text: '21',
         createdAt: new Date('2026-09-01T04:00:00.000Z'),
-        readAt: null,
+        readAt: new Date('2026-09-01T05:00:00.000Z'),
       },
     ]);
     const push = new InMemoryPushStore();
@@ -287,6 +327,13 @@ describe('loadDebugTables', () => {
       kind: 'verify',
       createdAt: 9,
     });
+    await trust.insertEdge({
+      id: 'edge-0',
+      subjectId: accountId,
+      actorId: accountId,
+      kind: 'moderator_propose',
+      createdAt: 11,
+    });
     const gifts = new InMemoryGiftStore([
       {
         paidAt: new Date('2026-09-01T00:00:00.000Z'),
@@ -304,8 +351,20 @@ describe('loadDebugTables', () => {
       trust,
       gifts,
     });
-    expect(tables.account[0]).toEqual(
-      expect.objectContaining({ id: accountId, viewKey: 'a'.repeat(64) }),
+    expect(tables.account).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: accountId,
+          viewKey: 'a'.repeat(64),
+          nostrPubkey: 'ab'.repeat(32),
+          nostrNsecCiphertext: '0908',
+        }),
+        expect.objectContaining({
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          nostrPubkey: null,
+          nostrNsecCiphertext: null,
+        }),
+      ]),
     );
     expect(tables.passkey_credential).toHaveLength(1);
     expect(tables.auth_session[0]).toEqual(expect.objectContaining({ token: 'sess' }));
@@ -313,22 +372,54 @@ describe('loadDebugTables', () => {
     expect(tables.conversation).toHaveLength(1);
     expect(tables.conversation_message).toHaveLength(3);
     expect(tables.conversation_read).toHaveLength(1);
-    expect(tables.message[0]).toEqual(
-      expect.objectContaining({
-        photoBytes: 3,
-        extraPhotos: [expect.objectContaining({ idx: 1, bytes: 2 })],
-      }),
+    expect(tables.message).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          photoBytes: 3,
+          extraPhotos: [expect.objectContaining({ idx: 1, bytes: 2 })],
+        }),
+      ]),
     );
     expect(tables.message_extra_photo).toEqual([expect.objectContaining({ idx: 1, bytes: 2 })]);
-    expect(tables.message_invoice[0]).toEqual(
-      expect.objectContaining({ conversationId: threadId }),
+    expect(tables.message_invoice).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'inv',
+          conversationId: threadId,
+          conversationMessageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        }),
+        expect.objectContaining({
+          id: 'inv-forum',
+          conversationId: null,
+          conversationMessageId: null,
+        }),
+      ]),
     );
     expect(tables.nostr_zap_ingest).toHaveLength(1);
     expect(tables.nostr_zap_receipt).toHaveLength(1);
     expect(tables.notification).toHaveLength(3);
+    expect(tables.notification).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'zap',
+          readAt: '2026-09-01T05:00:00.000Z',
+        }),
+      ]),
+    );
+    expect(tables.message).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'ffffffff-ffff-4fff-8fff-fffffffffffe',
+          photoBytes: 0,
+          photoContentType: null,
+        }),
+      ]),
+    );
+    expect(tables.trust_edge[0]).toEqual(expect.objectContaining({ id: 'edge-0' }));
     expect(tables.push_subscription).toHaveLength(1);
     expect(tables.push_outbox).toHaveLength(3);
-    expect(tables.trust_edge).toHaveLength(2);
+    expect(tables.trust_edge).toHaveLength(3);
     expect(tables.gift[0]).toEqual(
       expect.objectContaining({ direction: 'outbound', amountSats: 1000 }),
     );
@@ -351,5 +442,33 @@ describe('loadDebugTables', () => {
     expect(missingOptional.push_outbox).toEqual([]);
     expect(missingOptional.gift).toEqual([]);
     expect(missingOptional.trust_edge).toEqual([]);
+    const stripped = new InMemoryMessageStore() as MessageStore;
+    Object.assign(stripped, {
+      listZapReceipts: undefined,
+      listZapPayments: undefined,
+      listExtraPhotoMeta: undefined,
+    });
+    const omitted = await loadDebugTables({
+      auth: new InMemoryAuthStore(),
+      messages: stripped,
+      contacts: new InMemoryContactStore(),
+    });
+    expect(omitted.nostr_zap_receipt).toEqual([]);
+    expect(omitted.nostr_zap_payment).toEqual([]);
+    expect(omitted.message_extra_photo).toEqual([]);
+    const cappedAuth = new InMemoryAuthStore();
+    for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
+      await cappedAuth.createSession({
+        token: `sess-${i}`,
+        accountId: accountId,
+        createdAt: i,
+      });
+    }
+    const capped = await loadDebugTables({
+      auth: cappedAuth,
+      messages: new InMemoryMessageStore(),
+      contacts: new InMemoryContactStore(),
+    });
+    expect(capped.auth_session).toHaveLength(MESSAGE_LIST_LIMIT);
   });
 });

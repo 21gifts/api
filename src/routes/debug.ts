@@ -463,7 +463,10 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.platform === true && deps.conversationStore !== undefined) {
         await deps.conversationStore.retargetMemberPlatform(updated.id);
       }
-      return c.json(serializeDebugAccount(updated), 200);
+      const nostr = debugNostrFieldsFromListRow(
+        (await deps.store.listNostrKeys()).find((row) => row.accountId === updated.id),
+      );
+      return c.json(serializeDebugAccount(updated, nostr), 200);
     })
     .post('/:id/session', async (c) => {
       const existing = await deps.store.getAccount(c.req.param('id'));

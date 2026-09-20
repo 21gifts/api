@@ -224,7 +224,7 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
  * public `GET /view/:viewKey` alongside `/me`, Web Push subscription routes,
- * `/notifications`, and the rest of the surface.
+ * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,

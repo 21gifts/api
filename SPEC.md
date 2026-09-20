@@ -1403,8 +1403,8 @@ Existing address (`lower(trim)`): name-only write still goes through
 stored username is blank, `maybeSetProvisionUsername` fills it. A non-blank
 stored username is kept. `created` is `false`. New address: sets
 `provisionUsername` on the new `basis` row (fresh `viewKey`, `created` is
-`true`). GET still omits `viewKey` (provisioned `username` appears on GET
-`/debug/accounts`).
+`true`). `GET /debug/accounts` and `GET /debug/accounts/:id` also include
+`viewKey` (and provisioned `username`).
 
 ### `PATCH /debug/accounts/:id`
 
@@ -1868,10 +1868,11 @@ Environment:
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
-JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Optional `goalSats`
-is a positive integer on a top-level note and is omitted on replies and when
-the stored value is unset, null, or 0. Never includes
-`nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
+`nostrEvent`, `claimedUntil`, `contentFp`, and photo MIME/byte lengths.
+Optional `goalSats` is a positive integer on a top-level note and is omitted
+on replies and when the stored value is unset, null, or 0. Never includes
+nsec or photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -1901,9 +1902,10 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 ```
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
-(not wrapped). Optional `goalSats` is a positive integer on a top-level note
-and is omitted on replies and when the stored value is unset, null, or 0.
-Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+(not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, and
+photo MIME/byte lengths. Optional `goalSats` is a positive integer on a
+top-level note and is omitted on replies and when the stored value is unset,
+null, or 0. Never includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   EMPTY_DEBUG_NOSTR,
+  debugNostrFieldsFromListRow,
   serializeAccount,
   serializeDebugAccount,
   serializeDebugAccountDetail,
@@ -63,6 +64,52 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('notificationLevel');
     expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
+  });
+});
+
+describe('debugNostrFieldsFromListRow', () => {
+  it('hex-encodes the stored envelope and never decrypts', () => {
+    const fields = debugNostrFieldsFromListRow({
+      accountId: 'acc',
+      record: {
+        pubkey: 'ab'.repeat(32),
+        ciphertext: new Uint8Array([9, 8, 7]),
+        kekId: 1,
+        custody: 'custodial',
+      },
+      createdAt: 42,
+    });
+    expect(fields).toEqual({
+      nostrPubkey: 'ab'.repeat(32),
+      nostrNsecCiphertext: '090807',
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: 42,
+    });
+    expect(fields.nostrNsecCiphertext).toMatch(/^[0-9a-f]+$/);
+    expect(fields.nostrNsecCiphertext).not.toMatch(/nsec/i);
+  });
+
+  it('emits null ciphertext for an empty envelope and EMPTY_DEBUG_NOSTR when missing', () => {
+    expect(
+      debugNostrFieldsFromListRow({
+        accountId: 'acc',
+        record: {
+          pubkey: 'cd'.repeat(32),
+          ciphertext: new Uint8Array(),
+          kekId: 1,
+          custody: 'custodial',
+        },
+        createdAt: null,
+      }),
+    ).toEqual({
+      nostrPubkey: 'cd'.repeat(32),
+      nostrNsecCiphertext: null,
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: null,
+    });
+    expect(debugNostrFieldsFromListRow(undefined)).toEqual(EMPTY_DEBUG_NOSTR);
   });
 });
 

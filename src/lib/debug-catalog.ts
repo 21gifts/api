@@ -85,11 +85,8 @@ function cap<T>(rows: T[]): T[] {
   return rows.length > MESSAGE_LIST_LIMIT ? rows.slice(0, MESSAGE_LIST_LIMIT) : rows;
 }
 
-function iso(value: Date | null | undefined): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  return value.toISOString();
+function iso(value: Date | null): string | null {
+  return value === null ? null : value.toISOString();
 }
 
 function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
@@ -263,7 +260,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
     }
     case 'trust_edge': {
       const edges = [...((await deps.trust?.listEdges()) ?? [])].sort(
-        (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        (a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id),
       );
       return cap(edges).map(serializeTrustEdge);
     }

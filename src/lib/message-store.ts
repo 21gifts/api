@@ -608,7 +608,8 @@ export interface MessageStore {
   ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>>;
 
   /**
-   * Zap receipts newest-first, capped at `limit`. Operator dump.
+   * Zap receipts by `eventId` descending, capped at `limit`. Operator dump.
+   * `nostr_zap_receipt` has no `created_at`; dump order is the event id.
    *
    * @param limit - Maximum rows.
    * @returns Receipt JSON rows.
@@ -2156,14 +2157,16 @@ export class InMemoryMessageStore implements MessageStore {
       comment: string;
     }>
   > {
-    const rows = [...this.#receipts.entries()].map(([eventId, receipt]) => ({
-      eventId,
-      messageId: receipt.messageId,
-      sats: receipt.sats,
-      payerAccountId: receipt.payerAccountId,
-      giftReplyId: receipt.giftReplyId,
-      comment: receipt.comment,
-    }));
+    const rows = [...this.#receipts.entries()]
+      .map(([eventId, receipt]) => ({
+        eventId,
+        messageId: receipt.messageId,
+        sats: receipt.sats,
+        payerAccountId: receipt.payerAccountId,
+        giftReplyId: receipt.giftReplyId,
+        comment: receipt.comment,
+      }))
+      .sort((a, b) => (a.eventId < b.eventId ? 1 : -1));
     return Promise.resolve(rows.slice(0, limit));
   }
 
@@ -3760,6 +3763,7 @@ export class PostgresMessageStore implements MessageStore {
     }>(
       `SELECT event_id, message_id, sats, payer_account_id, gift_reply_id, comment
        FROM nostr_zap_receipt
+       ORDER BY event_id DESC
        LIMIT $1`,
       [limit],
     );

@@ -136,6 +136,14 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]).toHaveProperty('viewKey');
     expect(body.accounts[0]).toHaveProperty('isPlatform');
     expect(body.accounts[0]).toHaveProperty('sessionRefused');
+    expect(body.accounts[0]).toEqual(
+      expect.objectContaining({
+        nostrPubkey: 'cc'.repeat(32),
+        nostrNsecCiphertext: '02',
+        nostrKekId: 1,
+        nostrKeyCustody: 'custodial',
+      }),
+    );
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
@@ -168,6 +176,12 @@ describe('debugRoutes', () => {
       address: 'ada@walletofsatoshi.com',
       nonce: 'ab'.repeat(16),
       createdAt: 4,
+    });
+    await store.setNostrKeyIfAbsent(id, {
+      pubkey: 'dd'.repeat(32),
+      ciphertext: new Uint8Array([1, 2]),
+      kekId: 1,
+      custody: 'custodial',
     });
     const app = new Hono().route(
       '/debug/accounts',
@@ -202,7 +216,8 @@ describe('debugRoutes', () => {
     expect(body.addressVerification).toEqual(
       expect.objectContaining({ address: 'ada@walletofsatoshi.com' }),
     );
-    expect(body.nostrPubkey).toBeNull();
+    expect(body.nostrPubkey).toBe('dd'.repeat(32));
+    expect(body).toEqual(expect.objectContaining({ nostrNsecCiphertext: '0102' }));
   });
 
   it('PATCH returns 503 when debug is not configured', async () => {
@@ -353,6 +368,13 @@ describe('debugRoutes', () => {
     ).toBe(true);
     expect(body).toHaveProperty('isPlatform');
     expect(body).toHaveProperty('sessionRefused');
+    expect(body).toHaveProperty('viewKey');
+    expect(body).toEqual(
+      expect.objectContaining({
+        nostrPubkey: null,
+        nostrNsecCiphertext: null,
+      }),
+    );
   });
 
   it('PATCH sets sessionRefused', async () => {
@@ -382,8 +404,8 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(200);
     expect(updateAccount).not.toHaveBeenCalled();
-    const body = (await res.json()) as { id: string; sessionRefused: boolean };
-    expect(body.sessionRefused).toBe(true);
+    const refused = (await res.json()) as { id: string; sessionRefused: boolean };
+    expect(refused.sessionRefused).toBe(true);
     expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
     const off = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -392,6 +414,48 @@ describe('debugRoutes', () => {
     });
     expect(off.status).toBe(200);
     expect(((await off.json()) as { sessionRefused: boolean }).sessionRefused).toBe(false);
+  });
+
+  it('PATCH returns envelope hex when the account has a stored nsec', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.setNostrKeyIfAbsent('acc', {
+      pubkey: 'ee'.repeat(32),
+      ciphertext: new Uint8Array([3, 4]),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'verified' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(
+      expect.objectContaining({
+        id: 'acc',
+        role: 'verified',
+        viewKey: 'b'.repeat(64),
+        nostrPubkey: 'ee'.repeat(32),
+        nostrNsecCiphertext: '0304',
+      }),
+    );
   });
 
   it('PATCH sets the platform flag and clears any other platform account', async () => {
