@@ -722,6 +722,7 @@ describe('GET /conversations', () => {
           name: '',
           lastText: '',
           lastSenderAccountId: null,
+          lastActorAccountId: null,
           lastSats: 0,
         },
       ],
@@ -768,6 +769,7 @@ describe('GET /conversations', () => {
           name: '',
           lastText: '',
           lastSenderAccountId: null,
+          lastActorAccountId: null,
           lastSats: 0,
         },
       ],
@@ -1588,12 +1590,15 @@ describe('POST /conversations/:id', () => {
       fromMe: boolean;
       accountId?: string;
     };
-    expect(body.name).toBe('21.gifts');
+    expect(body.name).toBe('Ada');
     expect(body.text).toBe('official');
     expect(body.fromMe).toBe(true);
-    expect(body.accountId).toBe('plat');
+    expect(body.accountId).toBe('acc');
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
+    expect(rows[0]?.name).toBe('21.gifts');
+    expect(rows[0]?.actorAccountId).toBe('acc');
+    expect(rows[0]?.actorName).toBe('Ada');
   });
 
   it('labels staff-as-platform replies 21.gifts when the platform has no name', async () => {
@@ -1620,11 +1625,13 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: 'official' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string };
-    expect(body.name).toBe('21.gifts');
+    const body = (await res.json()) as { name: string; accountId?: string };
+    expect(body.name).toBe('Ada');
+    expect(body.accountId).toBe('acc');
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
     expect(rows[0]?.name).toBe('21.gifts');
+    expect(rows[0]?.actorAccountId).toBe('acc');
   });
 
   it('lets staff reply on a member_member thread where the platform is a party as the platform', async () => {

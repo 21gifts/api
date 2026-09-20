@@ -3189,8 +3189,8 @@ Success → **Response** `200`:
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
 the role is at least `moderator`) every platform thread. Empty threads
-and outbound-only member/Damus threads (every stored sender is
-`conversationFromMe` for the viewer, including staff-as-platform) are
+and outbound-only member/Damus threads (every stored message is
+`conversationFromMe` for the viewer — the actor, else the sender) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. This list never includes `moderator_group` regardless of

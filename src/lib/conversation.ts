@@ -45,6 +45,8 @@ export interface ConversationThread {
   lastText: string;
   /** Sender account of the newest message, or null when the thread has no messages / Damus inbound. */
   lastSenderAccountId: string | null;
+  /** Actor account of the newest message, or null when the thread has no messages / no actor. */
+  lastActorAccountId: string | null;
   /** Last message sats; `0` when the thread has no messages or the last row is unpaid text. */
   lastSats: number;
 }
@@ -65,6 +67,10 @@ export interface ConversationMessageRow {
   senderPubkey: string | null;
   /** Sender display name snapshotted at send time. */
   name: string;
+  /** Logged-in actor account id when known; null for Damus-only inbound or legacy rows. */
+  actorAccountId?: string | null;
+  /** Actor display name snapshotted at send time; empty when unknown. */
+  actorName?: string;
   /** Credited sats on this row; `0` for unpaid text. Gift-only rows use `text: ''` and `sats >= 1`. */
   sats: number;
   /** Signed/wrapped event id, or null until published. */
@@ -89,7 +95,7 @@ export interface PublicConversation {
   lastText: string;
   /** ISO-8601 last message time. */
   lastAt: string;
-  /** True when the last message was sent by the viewer (or staff-as-platform). */
+  /** True when the last message's actor (else sender) is the viewer. */
   lastFromMe: boolean;
   /** Last message sats; `0` when none / unpaid text. */
   lastSats: number;
@@ -109,7 +115,7 @@ export interface PublicConversationMessage {
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
-  /** True when this message was sent by the viewer (or staff-as-platform). */
+  /** True when this message's actor (else sender) is the viewer. */
   fromMe: boolean;
   /** Credited sats; `0` for unpaid text. */
   sats: number;
@@ -118,39 +124,40 @@ export interface PublicConversationMessage {
 }
 
 /**
- * Whether a stored sender is the viewer (or the platform identity a staff
- * viewer is acting as).
+ * Whether a stored message is from the viewer.
  *
- * @param args - Sender account, viewer, staff flag, and platform id.
- * @returns True when the sender is the viewer or staff-as-platform.
+ * Uses `actorAccountId` when set, otherwise `senderAccountId`. There is no
+ * staff-as-platform shortcut: a platform send is fromMe only when the
+ * actor (or sender) is the viewer.
+ *
+ * @param args - Sender account, actor account, and viewer id.
+ * @returns True when the effective account is the viewer.
  */
 export function conversationFromMe(args: {
   senderAccountId: string | null;
+  actorAccountId: string | null;
   viewerId: string;
-  staff: boolean;
-  platformId: string | null;
 }): boolean {
-  if (args.senderAccountId === null) {
+  const effective = args.actorAccountId ?? args.senderAccountId;
+  if (effective === null || effective === '') {
     return false;
   }
-  if (args.senderAccountId === args.viewerId) {
-    return true;
-  }
-  return args.staff && args.platformId !== null && args.senderAccountId === args.platformId;
+  return effective === args.viewerId;
 }
 
 /**
- * Whether a stored sender is inbound for the viewer (not the viewer, and
- * not staff-as-platform). Null Damus sender is inbound.
+ * Whether a stored message is inbound for the viewer.
  *
- * @param args - Sender account, viewer, staff flag, and platform id.
- * @returns True when the sender is inbound for the viewer.
+ * Negation of {@link conversationFromMe}. Null actor and sender (Damus) is
+ * inbound.
+ *
+ * @param args - Sender account, actor account, and viewer id.
+ * @returns True when the message is inbound for the viewer.
  */
 export function conversationIsInbound(args: {
   senderAccountId: string | null;
+  actorAccountId: string | null;
   viewerId: string;
-  staff: boolean;
-  platformId: string | null;
 }): boolean {
   return !conversationFromMe(args);
 }
@@ -189,25 +196,39 @@ export function serializeConversation(
 /**
  * Project a message row to its public JSON shape.
  *
+ * Members always see the stored sender (`name` / `accountId` from
+ * `senderAccountId`, typically 21.gifts on a platform send). Staff see the
+ * actor when `actorAccountId` is set.
+ *
  * @param row - Persisted message.
  * @param fromMe - Whether this message was sent by the viewer.
- * @returns Public fields only (event id omitted; `accountId` when the
- *   sender is a 21.gifts account).
+ * @param opts - `{ staff: true }` projects actor identity when present.
+ * @returns Public fields only (event id omitted; `accountId` when a
+ *   21.gifts account is shown).
  */
 export function serializeConversationMessage(
   row: ConversationMessageRow,
   fromMe: boolean,
+  opts?: { staff?: boolean },
 ): PublicConversationMessage {
+  const staffActor =
+    opts?.staff === true && typeof row.actorAccountId === 'string' && row.actorAccountId !== '';
+  const name = staffActor
+    ? typeof row.actorName === 'string' && row.actorName !== ''
+      ? row.actorName
+      : row.name
+    : row.name;
+  const accountId = staffActor ? row.actorAccountId : row.senderAccountId;
   const json: PublicConversationMessage = {
     id: row.id,
-    name: row.name,
+    name,
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     fromMe,
     sats: row.sats,
   };
-  if (typeof row.senderAccountId === 'string' && row.senderAccountId !== '') {
-    json.accountId = row.senderAccountId;
+  if (typeof accountId === 'string' && accountId !== '') {
+    json.accountId = accountId;
   }
   return json;
 }
@@ -219,7 +240,13 @@ export function serializeConversationMessage(
  */
 export function unsignedConversationDefaults(): Pick<
   ConversationMessageRow,
-  'sats' | 'eventId' | 'nostrPublishState' | 'nostrEvent' | 'claimedUntil'
+  | 'sats'
+  | 'eventId'
+  | 'nostrPublishState'
+  | 'nostrEvent'
+  | 'claimedUntil'
+  | 'actorAccountId'
+  | 'actorName'
 > {
   return {
     sats: 0,
@@ -227,6 +254,8 @@ export function unsignedConversationDefaults(): Pick<
     nostrPublishState: 'pending',
     nostrEvent: null,
     claimedUntil: null,
+    actorAccountId: null,
+    actorName: '',
   };
 }
 

@@ -122,6 +122,8 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
         senderPubkey: (await deps.authStore.getNostrPublicKey(account.id)) ?? null,
         name: row.name,
         ...unsignedConversationDefaults(),
+        actorAccountId: account.id,
+        actorName: row.name,
       });
       void notifyConversationMessage({
         conversations: deps.conversationStore,

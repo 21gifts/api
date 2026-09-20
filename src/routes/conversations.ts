@@ -327,9 +327,8 @@ async function publicThread(
     },
     conversationFromMe({
       senderAccountId: thread.lastSenderAccountId,
+      actorAccountId: thread.lastActorAccountId,
       viewerId: account.id,
-      staff: roleAtLeast(account.role, 'moderator'),
-      platformId,
     }),
     unread,
     counterpartAccountId(thread, account.id, platformId),
@@ -517,7 +516,6 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           await sleep(pollMs);
         }
         const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
-        const platformId = platform?.id ?? null;
         return c.json(
           {
             messages: rows.map((row) =>
@@ -525,10 +523,10 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 row,
                 conversationFromMe({
                   senderAccountId: row.senderAccountId,
+                  actorAccountId: row.actorAccountId,
                   viewerId: account.id,
-                  staff: roleAtLeast(account.role, 'moderator'),
-                  platformId,
                 }),
+                { staff: roleAtLeast(account.role, 'moderator') },
               ),
             ),
           },
@@ -612,8 +610,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 nostrPublishState: 'skipped' as const,
                 nostrEvent: null,
                 claimedUntil: null,
+                actorAccountId: account.id,
+                actorName: account.name?.trim() ?? '',
               }
-            : unsignedConversationDefaults()),
+            : {
+                ...unsignedConversationDefaults(),
+                actorAccountId: account.id,
+                actorName: account.name?.trim() ?? '',
+              }),
         });
         if (thread.kind === 'moderator_group') {
           try {
@@ -659,10 +663,10 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             created,
             conversationFromMe({
               senderAccountId: created.senderAccountId,
+              actorAccountId: created.actorAccountId,
               viewerId: account.id,
-              staff: roleAtLeast(account.role, 'moderator'),
-              platformId: platform?.id ?? null,
             }),
+            { staff: roleAtLeast(account.role, 'moderator') },
           ),
           200,
         );

@@ -1082,21 +1082,21 @@
 ## Function: serializeConversationMessage
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
-- **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, sats, accountId? }`. `sats` is the message amount (`0` when unpaid). Includes `accountId` from `senderAccountId` when that value is a non-empty string; omits the key when it is null or empty. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
+- **Inputs:** `ConversationMessageRow`, `fromMe` boolean, optional `{ staff: true }`.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, sats, accountId? }`. `sats` is the message amount (`0` when unpaid). Staff with `actorAccountId` get actor `name`/`accountId`; members get sender fields. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: conversationFromMe
 
-- **Purpose:** Viewer-relative direction for a stored sender: true when the sender is the session account, or when staff is acting as the platform identity that sent the message.
-- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`. `senderAccountId` null (empty thread / Damus inbound) is false.
+- **Purpose:** Viewer-relative direction for a stored message: true when the actor (else sender) is the session account. No staff-as-platform shortcut.
+- **Inputs:** `{ senderAccountId, actorAccountId, viewerId }`. Null actor and sender is false.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `conversationRoutes` (list `lastFromMe`, thread `fromMe`); `conversationIsInbound`.
 
 ## Function: conversationIsInbound
 
-- **Purpose:** Whether a stored sender is inbound for the viewer (not the viewer, and not staff-as-platform). Null Damus sender is inbound.
-- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`.
+- **Purpose:** Whether a stored message is inbound for the viewer (not the actor). Null Damus sender/actor is inbound.
+- **Inputs:** `{ senderAccountId, actorAccountId, viewerId }`.
 - **Returns / side effects:** `!conversationFromMe(args)`. No I/O.
 - **Used by:** `InMemoryConversationStore.hasInboundMessage`.
 
@@ -1186,10 +1186,52 @@
 
 ## Function: requestLog
 
-- **Purpose:** Hono middleware: `http.request` JSON after the handler. Skips `/healthz` and OPTIONS. Never logs the query string. Path is passed through `requestLogPath` so `/view/<segment>` is redacted.
-- **Inputs:** None.
+- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. Store write failure logs `api_log.write.failed` and does not replace the response.
+- **Inputs:** `{ apiLogStore, authStore, debugToken, spendApiToken, now? }`.
 - **Returns / side effects:** `MiddlewareHandler`.
 - **Used by:** `createApp`.
+
+## Function: serializeDebugApiLog
+
+- **Purpose:** Project an `api_log` row to operator JSON (`createdAt` ISO-8601).
+- **Inputs:** `ApiLogRow`.
+- **Returns / side effects:** `DebugApiLog`. No I/O.
+- **Used by:** `debugApiLogRoutes`.
+
+## Function: InMemoryApiLogStore
+
+- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc).
+- **Inputs:** Optional seed rows.
+- **Returns / side effects:** `append` / `listLatest` copies.
+- **Used by:** `createApp` default; tests.
+
+## Function: PostgresApiLogStore
+
+- **Purpose:** Durable `ApiLogStore` over `api_log`.
+- **Inputs:** Parameter-bound `SqlClient` (already migrated).
+- **Returns / side effects:** Inserts and newest-first selects. No UPDATE/DELETE.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: migrateApiLogSchema
+
+- **Purpose:** Idempotent DDL for `api_log`. Must run after `account` exists and before `migrateDbChangeSchema`.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Executes `API_LOG_SCHEMA_SQL` in order.
+- **Used by:** `openBootStores`.
+
+## Function: resolveRequestAuth
+
+- **Purpose:** Classify Authorization as `debug`, `spend`, `session`, or `none`. Debug and spend use the constant-time debug-token compare. Session goes through `resolveSession`. Never returns the token.
+- **Inputs:** Header, `AuthStore`, `now`, optional debug and spend tokens.
+- **Returns / side effects:** `{ accountId, authKind }`.
+- **Used by:** `requestLog`.
+
+## Function: debugApiLogRoutes
+
+- **Purpose:** Hono app for `GET /debug/api-log`.
+- **Inputs:** `ApiLogStore` and optional `debugToken`.
+- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 200 `{ logs }` cap 200; 503 `Log is unavailable` on store throw.
+- **Used by:** `createApp` at `/debug/api-log`.
 
 ## Function: requestLogPath
 

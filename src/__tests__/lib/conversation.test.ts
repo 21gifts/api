@@ -22,6 +22,7 @@ const THREAD: ConversationThread = {
   name: 'Ada',
   lastText: 'hello',
   lastSenderAccountId: 'acc-a',
+  lastActorAccountId: null,
   lastSats: 0,
 };
 
@@ -33,6 +34,8 @@ const ROW: ConversationMessageRow = {
   senderAccountId: 'acc-a',
   senderPubkey: 'aa'.repeat(32),
   name: 'Ada',
+  actorAccountId: 'acc-a',
+  actorName: 'Ada',
   sats: 0,
   eventId: 'ef'.repeat(32),
   nostrPublishState: 'published',
@@ -41,116 +44,79 @@ const ROW: ConversationMessageRow = {
 };
 
 describe('conversationFromMe', () => {
-  it('is false when the sender is unknown', () => {
+  it('is false when actor and sender are null', () => {
     expect(
       conversationFromMe({
         senderAccountId: null,
+        actorAccountId: null,
         viewerId: 'acc',
-        staff: true,
-        platformId: 'plat',
       }),
     ).toBe(false);
   });
 
-  it('is true when the sender is the viewer', () => {
+  it('is true when actor is null and sender is the viewer', () => {
     expect(
       conversationFromMe({
         senderAccountId: 'acc',
+        actorAccountId: null,
         viewerId: 'acc',
-        staff: false,
-        platformId: null,
       }),
     ).toBe(true);
   });
 
-  it('is true when staff is acting as the platform sender', () => {
+  it('is true when actor is the viewer even if sender is the platform', () => {
     expect(
       conversationFromMe({
         senderAccountId: 'plat',
+        actorAccountId: 'staff',
         viewerId: 'staff',
-        staff: true,
-        platformId: 'plat',
       }),
     ).toBe(true);
   });
 
-  it('is false when staff is viewing a member sender', () => {
+  it('is false when another staff is the actor of a platform send', () => {
     expect(
       conversationFromMe({
-        senderAccountId: 'mem',
+        senderAccountId: 'plat',
+        actorAccountId: 'other-staff',
         viewerId: 'staff',
-        staff: true,
-        platformId: 'plat',
       }),
     ).toBe(false);
   });
 
-  it('is false when a member views the platform sender', () => {
+  it('is false when a member views a staff actor on a platform send', () => {
     expect(
       conversationFromMe({
         senderAccountId: 'plat',
+        actorAccountId: 'staff',
         viewerId: 'acc',
-        staff: false,
-        platformId: 'plat',
-      }),
-    ).toBe(false);
-  });
-
-  it('is false when staff has no platform id', () => {
-    expect(
-      conversationFromMe({
-        senderAccountId: 'plat',
-        viewerId: 'staff',
-        staff: true,
-        platformId: null,
       }),
     ).toBe(false);
   });
 });
 
 describe('conversationIsInbound', () => {
-  it('is true when the sender is unknown', () => {
+  it('is the negation of conversationFromMe', () => {
+    const inbound = {
+      senderAccountId: 'plat' as string | null,
+      actorAccountId: 'staff' as string | null,
+      viewerId: 'acc',
+    };
+    expect(conversationIsInbound(inbound)).toBe(!conversationFromMe(inbound));
     expect(
       conversationIsInbound({
         senderAccountId: null,
+        actorAccountId: null,
         viewerId: 'acc',
-        staff: true,
-        platformId: 'plat',
       }),
     ).toBe(true);
-  });
-
-  it('is false when the sender is the viewer', () => {
     expect(
       conversationIsInbound({
         senderAccountId: 'acc',
+        actorAccountId: null,
         viewerId: 'acc',
-        staff: false,
-        platformId: null,
       }),
     ).toBe(false);
-  });
-
-  it('is false when staff is acting as the platform sender', () => {
-    expect(
-      conversationIsInbound({
-        senderAccountId: 'plat',
-        viewerId: 'staff',
-        staff: true,
-        platformId: 'plat',
-      }),
-    ).toBe(false);
-  });
-
-  it('is true when a member views the platform sender', () => {
-    expect(
-      conversationIsInbound({
-        senderAccountId: 'plat',
-        viewerId: 'acc',
-        staff: false,
-        platformId: 'plat',
-      }),
-    ).toBe(true);
   });
 });
 
@@ -236,6 +202,47 @@ describe('serializeConversationMessage', () => {
 
   it('sets fromMe from the viewer-relative flag', () => {
     expect(serializeConversationMessage(ROW, true).fromMe).toBe(true);
+  });
+
+  it('uses sender name and accountId for members even when an actor is set', () => {
+    const json = serializeConversationMessage(
+      {
+        ...ROW,
+        name: '21.gifts',
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Mod',
+      },
+      false,
+    );
+    expect(json.name).toBe('21.gifts');
+    expect(json.accountId).toBe('plat');
+  });
+
+  it('uses actor name and accountId for staff when actorAccountId is set', () => {
+    const json = serializeConversationMessage(
+      {
+        ...ROW,
+        name: '21.gifts',
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Mod',
+      },
+      true,
+      { staff: true },
+    );
+    expect(json.name).toBe('Mod');
+    expect(json.accountId).toBe('staff');
+  });
+
+  it('falls back to sender fields for staff when actorAccountId is missing', () => {
+    const json = serializeConversationMessage(
+      { ...ROW, name: '21.gifts', senderAccountId: 'plat' },
+      false,
+      { staff: true },
+    );
+    expect(json.name).toBe('21.gifts');
+    expect(json.accountId).toBe('plat');
   });
 });
 

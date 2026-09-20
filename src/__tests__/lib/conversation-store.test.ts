@@ -55,6 +55,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: '',
     lastText: '',
     lastSenderAccountId: null,
+    lastActorAccountId: null,
     lastSats: 0,
     ...partial,
   };
@@ -77,9 +78,11 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(16);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(18);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
+    expect(joined).toMatch(/actor_account_id/);
+    expect(joined).toMatch(/actor_name/);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_read/i);
     expect(joined).toMatch(/conversation_read_conversation_id_idx/);
     expect(joined).toMatch(/conversation_member_member_uidx/);

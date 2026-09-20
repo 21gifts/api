@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { InMemoryApiLogStore } from '@/lib/api-log';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import { errorLogFields, logEvent, requestLog, requestLogPath } from '@/lib/log';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -124,9 +126,17 @@ describe('requestLog', () => {
     warn.mockRestore();
   });
 
-  function appWithRequestLog(): Hono {
+  function appWithRequestLog(store = new InMemoryApiLogStore()): Hono {
     const app = new Hono();
-    app.use('*', requestLog());
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
     app.get('/healthz', (c) => c.text('ok'));
     app.get('/info', (c) => c.text('info'));
     app.options('/info', (c) => c.body(null, 204));
@@ -135,8 +145,10 @@ describe('requestLog', () => {
   }
 
   it('skips http.request for GET /healthz', async () => {
-    await appWithRequestLog().request('/healthz');
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/healthz');
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+    expect(await store.listLatest(10)).toEqual([]);
   });
 
   it('skips http.request for OPTIONS', async () => {
@@ -145,7 +157,8 @@ describe('requestLog', () => {
   });
 
   it('emits http.request for GET /info', async () => {
-    await appWithRequestLog().request('/info');
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info');
     const httpEvents = parsedEvents(warn).filter((e) => e['event'] === 'http.request');
     expect(httpEvents).toHaveLength(1);
     const line = httpEvents[0];
@@ -153,6 +166,12 @@ describe('requestLog', () => {
     expect(line?.['path']).toBe('/info');
     expect(typeof line?.['status']).toBe('number');
     expect(Number.isInteger(line?.['ms'])).toBe(true);
+    const rows = await store.listLatest(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.method).toBe('GET');
+    expect(rows[0]?.path).toBe('/info');
+    expect(rows[0]?.authKind).toBe('none');
+    expect(rows[0]?.accountId).toBeNull();
   });
 
   it('emits http.request for GET /view/<64-hex> with redacted path', async () => {
@@ -166,6 +185,29 @@ describe('requestLog', () => {
       .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
     expect(raw).toBeDefined();
     expect(raw).not.toContain(key);
+  });
+
+  it('logs api_log.write.failed when append throws and keeps the response', async () => {
+    const store = {
+      append: async () => {
+        throw new Error('disk');
+      },
+      listLatest: async () => [],
+    };
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info');
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.write.failed')).toBe(true);
   });
 
   it('omits the query string from path and the JSON line', async () => {

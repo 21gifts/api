@@ -1,4 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
+import type { ApiLogStore } from '@/lib/api-log';
+import type { AuthStore } from '@/lib/auth/store';
+import { resolveRequestAuth } from '@/lib/request-auth';
 
 /** JSON-serialisable event fields. No nested objects. */
 export type LogFields = { readonly [key: string]: string | number | boolean };
@@ -63,15 +66,31 @@ export function requestLogPath(path: string): string {
   return path.replace(/^\/view\/[^/]+/, '/view/:viewKey');
 }
 
+/** Collaborators {@link requestLog} needs to persist `api_log` rows. */
+export interface RequestLogDeps {
+  /** HTTP audit log persistence. */
+  apiLogStore: ApiLogStore;
+  /** Auth persistence for session classification. */
+  authStore: AuthStore;
+  /** Configured operator token, or `undefined` when debug is disabled. */
+  debugToken: string | undefined;
+  /** Spend-worker shared secret, or `undefined` when spend auth is disabled. */
+  spendApiToken: string | undefined;
+  /** Clock returning epoch milliseconds (default: `Date.now`). */
+  now?: () => number;
+}
+
 /**
- * Hono middleware: one `http.request` event after the handler.
- * Skips `/healthz` and `OPTIONS`. Never includes the query string
- * (LNURL-pay callbacks would leak invoice query params). Redacts
- * `/view/<segment>` via {@link requestLogPath}.
+ * Hono middleware: one `http.request` event after the handler, then one
+ * `api_log` row. Skips `/healthz` and `OPTIONS` (stdout and store). Never
+ * includes the query string, body, Authorization, or tokens. Redacts
+ * `/view/<segment>` via {@link requestLogPath}. A store write failure logs
+ * `api_log.write.failed` and does not replace the response.
  *
+ * @param deps - Audit store, auth store, tokens, and optional clock.
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
  */
-export function requestLog(): MiddlewareHandler {
+export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
   return async (c, next) => {
     const started = Date.now();
     await next();
@@ -84,5 +103,27 @@ export function requestLog(): MiddlewareHandler {
       status: c.res.status,
       ms: Date.now() - started,
     });
+    try {
+      const clock = deps.now ?? Date.now;
+      const auth = await resolveRequestAuth({
+        authorizationHeader: c.req.header('authorization'),
+        debugToken: deps.debugToken,
+        spendApiToken: deps.spendApiToken,
+        authStore: deps.authStore,
+        now: clock(),
+      });
+      await deps.apiLogStore.append({
+        id: crypto.randomUUID(),
+        createdAt: new Date(clock()),
+        method: c.req.method,
+        path: requestLogPath(c.req.path),
+        status: c.res.status,
+        ms: Date.now() - started,
+        accountId: auth.accountId,
+        authKind: auth.authKind,
+      });
+    } catch {
+      logEvent('api_log.write.failed');
+    }
   };
 }

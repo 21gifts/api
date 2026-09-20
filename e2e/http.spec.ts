@@ -421,6 +421,11 @@ test('GET /debug/contacts without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /debug/api-log without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
 test('PUT /debug/messages/:id/video without bearer is 401', async ({ request }) => {
   const res = await request.put('/debug/messages/:id/video');
   expect(res.status()).toBe(401);
@@ -457,6 +462,15 @@ test('GET /debug/contacts with the e2e token lists contacts', async ({ request }
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { contacts: unknown[] };
   expect(Array.isArray(body.contacts)).toBe(true);
+});
+
+test('GET /debug/api-log with the e2e token lists logs', async ({ request }) => {
+  const res = await request.get('/debug/api-log', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { logs: unknown[] };
+  expect(Array.isArray(body.logs)).toBe(true);
 });
 
 test('GET /lightning-address without address is 400', async ({ request }) => {

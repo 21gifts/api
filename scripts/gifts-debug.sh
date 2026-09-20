@@ -23,6 +23,7 @@
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
+#   gifts-debug api-log [--raw]      # HTTP audit log table (default) or JSON
 #   gifts-debug external-pubkeys [--raw]  # entitled/blocked pubkeys table or JSON
 #   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
@@ -196,6 +197,42 @@ fetch_messages() {
     die "HTTP ${status}: ${body}"
   fi
   printf '%s' "$body"
+}
+
+fetch_api_log() {
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_API_URL}/debug/api-log") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_api_log() {
+  local body
+  body=$(fetch_api_log)
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+rows = data.get("logs") or []
+keys = ["id", "createdAt", "method", "path", "status", "ms", "accountId", "authKind"]
+print("\t".join(keys))
+for row in rows:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("%s rows" % len(rows), file=sys.stderr)
+'
 }
 
 cmd_messages() {
@@ -446,6 +483,7 @@ case "${1:-}" in
   role) shift; cmd_role "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
+  api-log) cmd_api_log ;;
   external-pubkeys) cmd_external_pubkeys ;;
   message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;
