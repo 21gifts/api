@@ -25,55 +25,66 @@ describe('accountSetup', () => {
     expect(accountSetup({ ...base, name: '  ' })).toBe('name');
   });
 
-  it('asks for a Lightning Address after a name', () => {
-    expect(accountSetup({ ...base, name: 'Ada' })).toBe('lightning-address');
+  it('asks for a username after a name', () => {
+    expect(accountSetup({ ...base, name: 'Ada' })).toBe('username');
+  });
+
+  it('treats a blank username as missing', () => {
+    expect(accountSetup({ ...base, name: 'Ada', username: '  ' })).toBe('username');
+  });
+
+  it('asks for a Lightning Address after a name and username', () => {
+    expect(accountSetup({ ...base, name: 'Ada', username: 'ada' })).toBe('lightning-address');
   });
 
   it('treats a blank Lightning Address as missing', () => {
-    expect(accountSetup({ ...base, name: 'Ada', lightningAddress: '  ' })).toBe(
+    expect(accountSetup({ ...base, name: 'Ada', username: 'ada', lightningAddress: '  ' })).toBe(
       'lightning-address',
     );
   });
 
-  it('asks for rules after name and Lightning Address', () => {
+  it('asks for rules after name, username, and Lightning Address', () => {
     expect(
       accountSetup({
         ...base,
         name: 'Ada',
+        username: 'ada',
         lightningAddress: 'ada@walletofsatoshi.com',
       }),
     ).toBe('rules');
   });
 
-  it('is complete when name, Lightning Address, and rules are set', () => {
+  it('is complete when name, username, Lightning Address, and rules are set', () => {
     expect(
       accountSetup({
         ...base,
         name: 'Ada',
+        username: 'ada',
         lightningAddress: 'ada@walletofsatoshi.com',
         rulesAgreedAt: 2,
       }),
     ).toBeNull();
   });
 
-  it('treats a skipped name as done and asks for Lightning Address', () => {
-    expect(accountSetup({ ...base, nameSkippedAt: 10 })).toBe('lightning-address');
+  it('treats a skipped name as done and asks for a username', () => {
+    expect(accountSetup({ ...base, nameSkippedAt: 10 })).toBe('username');
   });
 
-  it('asks for rules when name and Lightning Address are skipped', () => {
+  it('cannot skip username even when name and Lightning Address are skipped', () => {
     expect(
       accountSetup({
         ...base,
         nameSkippedAt: 10,
         lightningAddressSkippedAt: 11,
       }),
-    ).toBe('rules');
+    ).toBe('username');
   });
 
-  it('is complete when both steps are skipped and rules are agreed', () => {
+  it('is complete when name is skipped, username is set, Lightning Address is skipped, and rules are agreed', () => {
     expect(
       accountSetup({
         ...base,
+        username: 'ada',
         nameSkippedAt: 10,
         lightningAddressSkippedAt: 11,
         rulesAgreedAt: 12,
@@ -90,7 +101,7 @@ describe('accountMissing', () => {
         nameSkippedAt: 10,
         lightningAddressSkippedAt: 11,
       }),
-    ).toEqual(['name', 'lightning-address', 'rules']);
+    ).toEqual(['name', 'username', 'lightning-address', 'rules']);
   });
 
   it('omits set fields', () => {
@@ -98,6 +109,7 @@ describe('accountMissing', () => {
       accountMissing({
         ...base,
         name: 'Ada',
+        username: 'ada',
         lightningAddress: 'ada@walletofsatoshi.com',
         rulesAgreedAt: 2,
       }),
@@ -108,6 +120,7 @@ describe('accountMissing', () => {
     const afterUnlink: Account = {
       ...base,
       name: 'Ada',
+      username: 'ada',
       lightningAddress: null,
       lightningAddressSkippedAt: null,
       rulesAgreedAt: 2,

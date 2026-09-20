@@ -102,6 +102,13 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   await store.updateAccount({
     ...existing,
     name,
+    username: (() => {
+      const slug = name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-');
+      return slug === '' ? null : slug;
+    })(),
     rulesAgreedAt: now(),
     lightningAddress: 'ada@walletofsatoshi.com',
   });
@@ -130,9 +137,17 @@ async function rulesStore(
   if (existing === undefined) {
     throw new Error('expected account');
   }
+  const name = overrides.name === undefined ? existing.name : overrides.name;
   await store.updateAccount({
     ...existing,
-    name: overrides.name === undefined ? existing.name : overrides.name,
+    name,
+    username:
+      name !== null && name.trim() !== ''
+        ? name
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+        : (existing.username ?? null),
     rulesAgreedAt: now(),
     ...(overrides.nameSkippedAt === undefined ? {} : { nameSkippedAt: overrides.nameSkippedAt }),
   });
@@ -775,7 +790,7 @@ describe('POST /messages', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name'],
+      missing: ['name', 'username'],
     });
   });
 
@@ -788,7 +803,7 @@ describe('POST /messages', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name'],
+      missing: ['name', 'username'],
     });
   });
 
@@ -5467,7 +5482,7 @@ describe('forum video', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name'],
+      missing: ['name', 'username'],
     });
   });
 

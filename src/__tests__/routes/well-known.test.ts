@@ -64,3 +64,86 @@ describe('GET /.well-known/nostr.json', () => {
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
   });
 });
+
+describe('GET /.well-known/lnurlp/:username', () => {
+  it('passes through the linked Wallet of Satoshi payRequest', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: '00000000-0000-4000-8000-000000000001',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'alice@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'cd'.repeat(32),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const fetchImpl = async (input: string | URL | Request) => {
+      expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
+      return new Response(
+        JSON.stringify({
+          tag: 'payRequest',
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000_000,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const app = createApp({ authStore: auth, fetchImpl });
+    const res = await app.request('/.well-known/lnurlp/Ada');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    const body = (await res.json()) as { tag: string; callback: string };
+    expect(body.tag).toBe('payRequest');
+    expect(body.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');
+  });
+
+  it('returns 404 when the username is unknown or has no linked address', async () => {
+    const app = createApp({ authStore: new InMemoryAuthStore() });
+    const missing = await app.request('/.well-known/lnurlp/ada');
+    expect(missing.status).toBe(404);
+    const invalid = await app.request('/.well-known/lnurlp/_');
+    expect(invalid.status).toBe(404);
+  });
+
+  it('returns 502 when Wallet of Satoshi is unreachable', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: '00000000-0000-4000-8000-000000000001',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'alice@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'cd'.repeat(32),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = createApp({
+      authStore: auth,
+      fetchImpl: async () => {
+        throw new Error('offline');
+      },
+    });
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(res.status).toBe(502);
+  });
+
+  it('returns 502 when the username lookup throws', async () => {
+    const auth = new InMemoryAuthStore();
+    auth.getAccountByUsername = async () => {
+      throw new Error('db');
+    };
+    const app = createApp({ authStore: auth });
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(res.status).toBe(502);
+  });
+});

@@ -60,6 +60,13 @@ describe('AUTH_SCHEMA_SQL', () => {
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS notification_level/i,
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_notification_level_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS username text/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx\s+ON account \(lower\(trim\(username\)\)\) WHERE username IS NOT NULL AND trim\(username\) <> ''/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/DROP INDEX IF EXISTS account_username_uidx/);
     expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/account_profile_message_id_fkey/);
   });
 });

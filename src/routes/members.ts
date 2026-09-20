@@ -292,6 +292,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           {
             id: account.id,
             name: account.name,
+            username: account.username ?? null,
             location: account.location,
             role: account.role,
             lightningAddress: account.lightningAddress,

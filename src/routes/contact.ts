@@ -16,8 +16,8 @@ import { bearerToken } from '@/routes/me';
 
 /**
  * `/contact` — signed-in member private mailbox to 21.gifts. Requires rules
- * agreement and a display name (`requireAction` `contact.post`). Shares the
- * {@link AuthStore} with `/auth` and `/me`. Never listed publicly.
+ * agreement, a display name, and a username (`requireAction` `contact.post`).
+ * Shares the {@link AuthStore} with `/auth` and `/me`. Never listed publicly.
  */
 
 /** Collaborators the `/contact` routes need. */

@@ -78,7 +78,7 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the eight-field public profile without Authorization', async () => {
+  it('returns the nine-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
@@ -86,6 +86,7 @@ describe('GET /view/:viewKey', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
       name: 'Ada',
+      username: null,
       location: null,
       lightningAddress: 'ada@walletofsatoshi.com',
       lightningAddressVerified: true,
@@ -109,6 +110,7 @@ describe('GET /view/:viewKey', () => {
       'lightningAddressVerified',
       'location',
       'name',
+      'username',
     ]);
   });
 
@@ -126,6 +128,7 @@ describe('GET /view/:viewKey', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       name: 'Ada',
+      username: null,
       location: null,
       lightningAddress: null,
       lightningAddressVerified: false,
