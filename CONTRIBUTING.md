@@ -122,9 +122,10 @@ api/
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
+│   │       ├── wrong-account.ts  # sessionRefused: refuse a bearer when the account flag is set
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
-│   │       ├── schema.ts     # AUTH_SCHEMA_SQL
+│   │       ├── schema.ts     # AUTH_SCHEMA_SQL (incl. session_refused)
 │   │       ├── postgres-store.ts  # Durable AuthStore
 │   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
 │   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
@@ -198,6 +199,7 @@ api/
 │       │       ├── hex.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
+│       │       ├── wrong-account.test.ts
 │       │       ├── store.test.ts
 │       │       ├── schema.test.ts
 │       │       ├── sql.test.ts
@@ -253,7 +255,7 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
-│   └── gifts-debug.sh        # Operator CLI: list, set role, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
+│   └── gifts-debug.sh        # Operator CLI: list, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount

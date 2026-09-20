@@ -2370,6 +2370,7 @@ describe('POST /invoices/proof', () => {
     expect(attached?.eventId).toBeNull();
     expect(attached?.nostrEvent).toBeNull();
     expect(attached?.claimedUntil).toBeNull();
+    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'invoice.group_gift.attached' && e['id'] === unpaid().id,
@@ -2463,6 +2464,7 @@ describe('POST /invoices/proof', () => {
     expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
     expect(attached?.text).toBe('21gifts moderator');
+    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
   });
 
   it('attaches a group stipend with recipient-name-only text when comment is empty', async () => {
@@ -2484,6 +2486,7 @@ describe('POST /invoices/proof', () => {
     expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
     expect(attached?.text).toBe('Ada');
+    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
   });
 
   it('attaches a group stipend with empty text when comment and recipient name are empty', async () => {
@@ -2538,6 +2541,7 @@ describe('POST /invoices/proof', () => {
     expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
     expect(attached?.text).toBe('');
+    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
   });
 
   it('does not attach a second group stipend on the same preimage', async () => {

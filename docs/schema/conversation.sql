@@ -6,8 +6,16 @@
 -- conversation_message.nostr_event values stored as jsonb string scalars; it
 -- matches no rows once complete. The repair is skipped until the db_change audit
 -- trigger is attached and retried on the next boot. A value that cannot be parsed
--- is skipped with a warning instead of failing the migration. The statement
--- lives in the store's CONVERSATION_SCHEMA_SQL array, not in this file.
+-- is skipped with a warning instead of failing the migration. After that unwrap,
+-- a second idempotent repair backfills gift_for_message_id on moderator_group
+-- stipend rows written before that column existed. It links a row only when
+-- exactly one message of someone else precedes it within five minutes; an
+-- ambiguous row stays NULL and is not written, and a row that already has the
+-- column set is never touched. It is skipped until the db_change audit trigger
+-- is attached, like the unwrap, and the partial index
+-- conversation_message_gift_unlinked_idx keeps its per-boot check off a full
+-- scan. Both
+-- statements live in the store's CONVERSATION_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
@@ -51,6 +59,7 @@ CREATE TABLE IF NOT EXISTS conversation_message (
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0;
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id);
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid;
 CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC);
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
@@ -60,6 +69,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
 CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
   ON conversation_message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
+
+CREATE INDEX IF NOT EXISTS conversation_message_gift_unlinked_idx
+  ON conversation_message (conversation_id, created_at)
+  WHERE gift_for_message_id IS NULL AND sats > 0 AND actor_account_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS conversation_read (
   account_id uuid NOT NULL REFERENCES account (id),

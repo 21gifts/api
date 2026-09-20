@@ -64,10 +64,14 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
       try {
         const rows = await deps.store.listByRecipient(account.id, NOTIFICATION_FILTER_SCAN_LIMIT);
         const accounts = await deps.authStore.listAccounts();
-        const parentIds = [...new Set(rows.map((row) => row.parentId))];
+        const lookupIds = [...new Set(rows.flatMap((row) => [row.parentId, row.replyId]))];
+        const messageById = new Map<string, MessageRow | undefined>();
+        for (const id of lookupIds) {
+          messageById.set(id, await deps.messages.getById(id));
+        }
         const parentById = new Map<string, MessageRow>();
-        for (const id of parentIds) {
-          const parent = await deps.messages.getById(id);
+        for (const id of new Set(rows.map((row) => row.parentId))) {
+          const parent = messageById.get(id);
           if (parent !== undefined) {
             parentById.set(id, parent);
           }
@@ -79,10 +83,40 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
           accounts,
           parentById,
         });
-        const notifications: PublicNotification[] = matched
+        const kept = [];
+        const droppedMessageIds = new Set<string>();
+        for (const row of matched) {
+          if (row.type === 'moderator_appointed') {
+            kept.push(row);
+            continue;
+          }
+          const parent = messageById.get(row.parentId);
+          if (parent === undefined || parent.deletedAt !== null) {
+            droppedMessageIds.add(row.parentId);
+            continue;
+          }
+          // zap replyId is a receipt-derived UUID, not a message id.
+          if (row.type === 'forum_reply' && row.replyId !== row.parentId) {
+            const reply = messageById.get(row.replyId);
+            if (reply === undefined || reply.deletedAt !== null) {
+              droppedMessageIds.add(row.replyId);
+              continue;
+            }
+          }
+          kept.push(row);
+        }
+        if (droppedMessageIds.size > 0) {
+          try {
+            await deps.store.deleteByMessageIds([...droppedMessageIds]);
+            logEvent('notifications.hidden.purged', { count: droppedMessageIds.size });
+          } catch {
+            logEvent('notifications.hidden.purge_failed');
+          }
+        }
+        const notifications: PublicNotification[] = kept
           .slice(0, NOTIFICATION_LIST_LIMIT)
           .map(serializeNotification);
-        const unreadCount = matched.filter((row) => row.readAt === null).length;
+        const unreadCount = kept.filter((row) => row.readAt === null).length;
         return c.json({ notifications, unreadCount }, 200);
       } catch {
         logEvent('notifications.list.failed');

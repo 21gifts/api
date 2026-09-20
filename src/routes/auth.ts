@@ -9,6 +9,7 @@ import {
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
@@ -107,7 +108,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
-        return c.json({ error: result.error }, 400);
+        const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
+        return c.json({ error: result.error }, status);
       }
       logEvent('auth.passkey.register.ok', { accountId: result.value.account.id });
       return c.json(
@@ -151,7 +153,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
-        return c.json({ error: result.error }, 400);
+        const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
+        return c.json({ error: result.error }, status);
       }
       logEvent('auth.passkey.login.ok', { accountId: result.value.account.id });
       return c.json(

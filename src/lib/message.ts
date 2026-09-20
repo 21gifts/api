@@ -88,6 +88,10 @@ export interface MessageRow {
   nostrPublishState: NostrPublishState;
   /** Validated zap total in whole sats. */
   sats: number;
+  /**
+   * Optional whole-sat ask on a top-level note. Omit or `null` means no goal.
+   */
+  goalSats?: number | null;
   /** Stored signed event JSON, or `null` until signed. */
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or `null`. */
@@ -135,6 +139,11 @@ export interface PublicMessage {
   createdAt: string;
   /** Validated zap total in whole sats (always present). */
   sats: number;
+  /**
+   * Optional whole-sat ask on a top-level note. Included only when the stored
+   * value is a positive integer; omitted on replies and when unset.
+   */
+  goalSats?: number;
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
@@ -165,6 +174,15 @@ export interface PublicMessage {
    * Parent note id for a reply. Omitted on top-level notes (`parentId` null).
    */
   parentId?: string;
+  /**
+   * ISO-8601 hide timestamp. Set only when staff serialize a hidden row.
+   * Omitted on live JSON.
+   */
+  deletedAt?: string;
+  /**
+   * Staff member who hid the note. Set only with {@link PublicMessage.deletedAt}.
+   */
+  deletedBy?: { id: string | null; name: string | null; role: AccountRole | null };
 }
 
 /**
@@ -200,6 +218,18 @@ export function forumContentFingerprint(
 /** Public/debug/hidden JSON `photoCount` (0–10). */
 function photoCountOf(row: MessageRow): number {
   return typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto ? 1 : 0;
+}
+
+/**
+ * Public/debug/hidden JSON `goalSats` when the stored value is a positive
+ * integer on a top-level note. Omitted on replies and when unset/0.
+ */
+function publicGoalSats(row: MessageRow): number | undefined {
+  if (row.parentId !== null) {
+    return undefined;
+  }
+  const value = row.goalSats;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 /**
@@ -266,14 +296,20 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param replyCount - Optional reply count for top-level list rows.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
+ * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
+ * `payable` false (the `payable` argument is ignored). Omit on live JSON so
+ * those keys are absent.
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
  * `hasVideo`, `videoContentType`; live `role` for 21gifts authors; optional
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
- * `row.parentId !== null`); `createdAt` ISO-8601. Never includes photo or
- * video bytes, and never includes `contentFp`. Omits the `parentId` key on
- * top-level notes.
+ * `row.parentId !== null`; optional `goalSats` when the stored value is a
+ * positive integer on a top-level note; optional hide stamps when `hidden`
+ * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
+ * never includes `contentFp`. Omits the `parentId` key on top-level notes.
+ * Omits `goalSats` on replies and when the stored value is null, 0, or unset.
+ * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
@@ -282,6 +318,10 @@ export function serializeMessage(
   role: AccountRole | undefined,
   replyCount?: number,
   includeAccountId?: boolean,
+  hidden?: {
+    deletedAt: Date;
+    deletedBy: { id: string | null; name: string | null; role: AccountRole | null };
+  },
 ): PublicMessage {
   const body: PublicMessage = {
     id: row.id,
@@ -289,7 +329,7 @@ export function serializeMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
-    payable,
+    payable: hidden === undefined ? payable : false,
     hasPhoto: row.hasPhoto,
     photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
@@ -310,6 +350,14 @@ export function serializeMessage(
   if (row.parentId !== null) {
     body.parentId = row.parentId;
   }
+  const goalSats = publicGoalSats(row);
+  if (goalSats !== undefined) {
+    body.goalSats = goalSats;
+  }
+  if (hidden !== undefined) {
+    body.deletedAt = hidden.deletedAt.toISOString();
+    body.deletedBy = hidden.deletedBy;
+  }
   return body;
 }
 
@@ -322,11 +370,13 @@ export function serializeMessage(
  *
  * @param row - Persisted message (including hidden rows and replies).
  * @returns Debug fields; `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null
- *   when live).
+ *   when live). Optional `goalSats` when the stored value is a positive
+ *   integer on a top-level note (omitted otherwise).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(row: MessageRow): Record<string, unknown> {
   const deletedAt = row.deletedAt ?? null;
+  const goalSats = publicGoalSats(row);
   return {
     id: row.id,
     name: row.name,
@@ -345,6 +395,7 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
     authorPubkey: row.authorPubkey ?? null,
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
+    ...(goalSats === undefined ? {} : { goalSats }),
   };
 }
 
@@ -362,8 +413,10 @@ export function serializeDebugMessage(row: MessageRow): Record<string, unknown> 
  * @param row - Persisted message (including hidden rows and replies).
  * @param deletedBy - Resolved deleter `{ id, name, role }` from the route.
  * @returns Hidden-log fields (`id`, `name`, `text`, `createdAt`, `sats`,
- *   media flags, `parentId`, `deletedAt`, `deletedBy`, and optional `via`);
- *   `createdAt` / `deletedAt` are ISO-8601 (`deletedAt` null when live).
+ *   media flags, `parentId`, `deletedAt`, `deletedBy`, optional `via`, and
+ *   optional `goalSats`); `createdAt` / `deletedAt` are ISO-8601
+ *   (`deletedAt` null when live). Optional `goalSats` when the stored value
+ *   is a positive integer on a top-level note (omitted otherwise).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
@@ -371,6 +424,7 @@ export function serializeHiddenMessage(
   deletedBy: { id: string | null; name: string | null; role: AccountRole | null },
 ): Record<string, unknown> & { via?: 'nostr' } {
   const deletedAt = row.deletedAt ?? null;
+  const goalSats = publicGoalSats(row);
   const body: Record<string, unknown> & { via?: 'nostr' } = {
     id: row.id,
     name: row.name,
@@ -384,6 +438,7 @@ export function serializeHiddenMessage(
     parentId: row.parentId ?? null,
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy,
+    ...(goalSats === undefined ? {} : { goalSats }),
   };
   if (row.accountId === null && row.authorPubkey !== null) {
     body.via = 'nostr';
@@ -394,13 +449,14 @@ export function serializeHiddenMessage(
 /**
  * Default Nostr columns for a freshly posted row (unsigned, pending).
  *
- * @returns The unsigned/pending defaults.
+ * @returns The unsigned/pending defaults (`goalSats: null`).
  */
 export function unsignedNostrDefaults(): Pick<
   MessageRow,
   | 'eventId'
   | 'nostrPublishState'
   | 'sats'
+  | 'goalSats'
   | 'nostrEvent'
   | 'claimedUntil'
   | 'nostrFirstAttemptAt'
@@ -415,6 +471,7 @@ export function unsignedNostrDefaults(): Pick<
     eventId: null,
     nostrPublishState: 'pending',
     sats: 0,
+    goalSats: null,
     nostrEvent: null,
     claimedUntil: null,
     nostrFirstAttemptAt: null,

@@ -134,16 +134,27 @@ export interface MessageStore {
   listLatest(limit: number): Promise<MessageListRow[]>;
 
   /**
-   * Oldest live attributed replies first for a parent note id (`deletedAt`
-   * null and either an account or a recorded zapper pubkey). Null-account
-   * rows whose pubkey is not a zapper, and rows with neither identity, are
-   * omitted; `getById` still returns them.
+   * Oldest attributed replies first for a parent note id (either an account
+   * or a recorded zapper pubkey). Null-account rows whose pubkey is not a
+   * zapper, and rows with neither identity, are omitted; `getById` still
+   * returns them. When `includeHidden` is not `true`, live rows only
+   * (`deletedAt` null). When `true`, hidden children are included.
    *
    * @param parentId - Parent message id.
    * @param limit - Maximum rows (default 200).
+   * @param includeHidden - When `true`, omit the live-only filter.
    * @returns Reply rows (caller-owned copies).
    */
-  listReplies(parentId: string, limit?: number): Promise<MessageRow[]>;
+  listReplies(parentId: string, limit?: number, includeHidden?: boolean): Promise<MessageRow[]>;
+
+  /**
+   * Direct-child ids of `parentId` (any `deletedAt`), newest not required.
+   * Empty array when the parent id is unknown or has no children.
+   *
+   * @param parentId - Parent message id.
+   * @returns Child id strings (any hide stamp).
+   */
+  listChildIds(parentId: string): Promise<string[]>;
 
   /**
    * Newest-first forum rows for operator debug (`createdAt` desc, then `id`
@@ -184,6 +195,10 @@ export interface MessageStore {
    * A non-null `parentId` requires a live parent (`deletedAt` null). A missing
    * or soft-hidden parent throws and does not insert. An existing-id hit still
    * returns the stored row even if that row's parent was later deleted.
+   *
+   * Top-level rows persist `goalSats` when the value is a positive integer.
+   * A non-null `parentId` stores `goalSats` null even when the incoming row
+   * carried a positive ask.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage; index 0).
@@ -1041,6 +1056,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 )`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -1252,19 +1268,24 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first live attributed replies for `parentId` (`deletedAt` null
-   * and either an account or a recorded zapper pubkey).
+   * Oldest-first attributed replies for `parentId` (account or zapper
+   * pubkey). Live-only unless `includeHidden` is `true`.
    *
    * @param parentId - Parent note id.
    * @param limit - Max rows (default 200).
+   * @param includeHidden - When `true`, include hidden children.
    * @returns Reply row copies.
    */
-  listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+  listReplies(
+    parentId: string,
+    limit: number = 200,
+    includeHidden?: boolean,
+  ): Promise<MessageRow[]> {
     const replies = this.#rows
       .filter(
         (row) =>
           row.parentId === parentId &&
-          row.deletedAt === null &&
+          (includeHidden === true || row.deletedAt === null) &&
           (row.accountId !== null ||
             (row.authorPubkey !== null && this.#zappers.has(row.authorPubkey.toLowerCase()))),
       )
@@ -1278,6 +1299,18 @@ export class InMemoryMessageStore implements MessageStore {
       .slice(0, limit)
       .map((row) => this.#withListedMedia(row));
     return Promise.resolve(replies);
+  }
+
+  /**
+   * Direct-child ids of `parentId` (any `deletedAt`).
+   *
+   * @param parentId - Parent note id.
+   * @returns Child ids; empty when unknown or childless.
+   */
+  listChildIds(parentId: string): Promise<string[]> {
+    return Promise.resolve(
+      this.#rows.filter((row) => row.parentId === parentId).map((row) => row.id),
+    );
   }
 
   /**
@@ -1347,7 +1380,8 @@ export class InMemoryMessageStore implements MessageStore {
    * media (`eventId` null) with the same account, parent, and fingerprint
    * returns the existing row without appending or writing a second video file.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
-   * or soft-hidden parent throws and does not append.
+   * or soft-hidden parent throws and does not append. Replies store
+   * `goalSats` null even when the row carried a positive ask.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -1410,6 +1444,7 @@ export class InMemoryMessageStore implements MessageStore {
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
+    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
       if (parent === undefined || parent.deletedAt !== null) {
@@ -2402,6 +2437,7 @@ interface MessageSqlRow {
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
+  goal_sats?: string | number | null;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
   nostr_first_attempt_at?: Date | string | null;
@@ -2459,6 +2495,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
+    goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
@@ -2488,7 +2525,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM message_extra_photo e WHERE e.message_id = message.id), 0)) AS photo_count,
               video_content_type,
               parent_id, author_pubkey,
-              event_id, nostr_publish_state, sats,
+              event_id, nostr_publish_state, sats, goal_sats,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               deleted_at, deleted_by`;
 
@@ -2539,18 +2576,24 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Oldest-first live attributed replies for a parent note
-   * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
+   * Oldest-first attributed replies for a parent note (account or zapper
+   * pubkey). Live-only (`deleted_at IS NULL`) unless `includeHidden` is `true`.
    *
    * @param parentId - Parent message id (`$1`).
    * @param limit - Max rows (`$2`, default 200).
+   * @param includeHidden - When `true`, omit the `deleted_at IS NULL` predicate.
    * @returns Mapped reply rows.
    */
-  async listReplies(parentId: string, limit: number = 200): Promise<MessageRow[]> {
+  async listReplies(
+    parentId: string,
+    limit: number = 200,
+    includeHidden?: boolean,
+  ): Promise<MessageRow[]> {
+    const hiddenFilter = includeHidden === true ? '' : ' AND deleted_at IS NULL';
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
-       WHERE parent_id = $1 AND deleted_at IS NULL
+       WHERE parent_id = $1${hiddenFilter}
          AND (account_id IS NOT NULL
            OR (author_pubkey IS NOT NULL
              AND EXISTS (
@@ -2561,6 +2604,20 @@ export class PostgresMessageStore implements MessageStore {
       [parentId, limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Direct-child ids of `parentId` (any `deleted_at`).
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @returns Child ids; empty when unknown or childless.
+   */
+  async listChildIds(parentId: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id FROM message WHERE parent_id = $1`,
+      [parentId],
+    );
+    return rows.map((row) => row.id);
   }
 
   /**
@@ -2734,7 +2791,8 @@ export class PostgresMessageStore implements MessageStore {
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
-   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. A 0-row insert calls
+   * (`deletedAt` null): INSERT SELECT WHERE EXISTS. Replies bind `goal_sats`
+   * SQL null even when the row carried a positive `goalSats`. A 0-row insert calls
    * `getById(stored.id)` and returns that row when present (gift-reply retry
    * after the parent was later deleted); otherwise throws, no insert. On unique
    * violation (`23505`), if `getById(stored.id)` matches that id, return that
@@ -2785,6 +2843,7 @@ export class PostgresMessageStore implements MessageStore {
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
     });
+    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -2804,15 +2863,16 @@ export class PostgresMessageStore implements MessageStore {
       stored.eventId,
       stored.nostrEvent,
       contentFp,
+      stored.goalSats ?? null,
     ];
     try {
       if (stored.parentId !== null) {
         const inserted = await this.#sql.query<{ id: string }>(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
          )
-         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -2828,9 +2888,9 @@ export class PostgresMessageStore implements MessageStore {
         await this.#sql.execute(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
          )`,
           params,
         );

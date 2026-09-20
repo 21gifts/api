@@ -2078,6 +2078,21 @@ describe('moderator_group', () => {
     await withPlatform(auth);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const triggerId = '6e8b1a0d-3f2c-4b4a-9d5e-9f0a1b2c3d4e';
+    await conversations.appendMessage({
+      id: triggerId,
+      conversationId: thread.id,
+      text: 'hello mods',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
     await conversations.appendMessage({
       id: '7f9c2b1e-4a3d-4c5b-8e6f-0a1b2c3d4e5f',
       conversationId: thread.id,
@@ -2091,20 +2106,35 @@ describe('moderator_group', () => {
       nostrPublishState: 'skipped',
       nostrEvent: null,
       claimedUntil: null,
+      giftForMessageId: triggerId,
     });
     const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       headers: AUTH,
     });
     expect(get.status).toBe(200);
     const body = (await get.json()) as {
-      messages: Array<{ name: string; text: string; sats: number; fromMe: boolean }>;
+      messages: Array<{
+        name: string;
+        text: string;
+        sats: number;
+        fromMe: boolean;
+        giftFor?: string;
+      }>;
     };
-    expect(body.messages).toHaveLength(1);
+    expect(body.messages).toHaveLength(2);
     expect(body.messages[0]).toMatchObject({
+      name: 'Ada',
+      text: 'hello mods',
+      sats: 0,
+      fromMe: true,
+    });
+    expect(body.messages[0]).not.toHaveProperty('giftFor');
+    expect(body.messages[1]).toMatchObject({
       name: '21.gifts',
       text: '21gifts moderator · Ada',
       sats: 1233,
       fromMe: false,
+      giftFor: triggerId,
     });
     const group = await mount(auth, conversations).request('/conversations/moderator-group', {
       headers: AUTH,

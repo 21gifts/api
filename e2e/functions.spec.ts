@@ -1051,6 +1051,11 @@ test('Function: issueSession — GET /me without bearer is 401', async ({ reques
   expect(me.status()).toBe(401);
 });
 
+test('Function: isWrongAccount — GET /me without bearer is 401', async ({ request }) => {
+  const me = await request.get('/me');
+  expect(me.status()).toBe(401);
+});
+
 test('Function: openBootStores — default boot has no DATABASE_URL and serves HTTP', async ({
   request,
 }) => {

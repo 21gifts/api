@@ -7,6 +7,8 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import * as authService from '@/lib/auth/service';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -127,6 +129,7 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
     expect(body.accounts[0]).not.toHaveProperty('viewKey');
     expect(body.accounts[0]).toHaveProperty('isPlatform');
+    expect(body.accounts[0]).toHaveProperty('sessionRefused');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
@@ -182,7 +185,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -203,7 +206,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -277,6 +280,46 @@ describe('debugRoutes', () => {
       ),
     ).toBe(true);
     expect(body).toHaveProperty('isPlatform');
+    expect(body).toHaveProperty('sessionRefused');
+  });
+
+  it('PATCH sets sessionRefused', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const updateAccount = vi.spyOn(store, 'updateAccount');
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionRefused: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateAccount).not.toHaveBeenCalled();
+    const body = (await res.json()) as { id: string; sessionRefused: boolean };
+    expect(body.sessionRefused).toBe(true);
+    expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
+    const off = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionRefused: false }),
+    });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { sessionRefused: boolean }).sessionRefused).toBe(false);
   });
 
   it('PATCH sets the platform flag and clears any other platform account', async () => {
@@ -422,6 +465,113 @@ describe('debugRoutes', () => {
     expect(again.status).toBe(200);
   });
 
+  it('POST /:id/session refuses a sessionRefused account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '00000000-0000-4000-8000-0000000000ff';
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    const createSession = vi.spyOn(store, 'createSession');
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const res = await app.request(`/debug/accounts/${id}/session`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted')).toBe(
+      false,
+    );
+  });
+
+  it('POST /:id/session is 403 when tryCreateSession fails concurrently', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const res = await app.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.session_minted')).toBe(
+      false,
+    );
+  });
+
+  it('POST /:id/session rethrows a non-wrong-account issueSession failure', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    vi.spyOn(authService, 'issueSession').mockRejectedValue(new Error('disk'));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({
+        store,
+        debugToken: 'secret',
+        fetchImpl: unusedFetch,
+        now: () => 1_700_000_000_000,
+      }),
+    );
+    const res = await app.request('/debug/accounts/acc/session', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(500);
+  });
+
   it('PATCH clears the Lightning Address and verification flag', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -545,7 +695,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 

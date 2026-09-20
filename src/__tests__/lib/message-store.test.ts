@@ -95,7 +95,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(53);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(54);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -165,6 +165,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     ).toBe(true);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_top_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_reply_content_fp_uidx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint/,
+    );
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -999,6 +1002,39 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-legacy', 'r-member']);
   });
 
+  it('listChildIds returns children of any deletedAt and listReplies includeHidden keeps 21gifts hidden children', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'c-live',
+      parentId: 'a',
+      text: 'live child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'c-hidden',
+      parentId: 'a',
+      text: 'hidden child',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'c-damus',
+      parentId: 'a',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'damus child',
+    });
+    expect((await store.listChildIds('a')).sort()).toEqual(['c-damus', 'c-hidden', 'c-live']);
+    expect(await store.listChildIds('missing')).toEqual([]);
+    expect((await store.listReplies('a', 10, true)).map((row) => row.id)).toEqual([
+      'c-hidden',
+      'c-live',
+    ]);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['c-live']);
+  });
+
   it('listDebug includes hidden rows and replies newest-first', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({
@@ -1186,8 +1222,33 @@ describe('InMemoryMessageStore', () => {
     const created = await store.create(EARLY);
     expect(created.text).toBe('first');
     expect(created.hasPhoto).toBe(false);
+    expect(created.goalSats).toBeNull();
     expect(created).not.toBe(EARLY);
     expect((await store.listLatest(10))[0]?.id).toBe('a');
+  });
+
+  it('create round-trips a top-level goalSats and defaults null without one', async () => {
+    const store = new InMemoryMessageStore();
+    const withGoal = await store.create({ ...EARLY, id: 'goal', goalSats: 21000 });
+    expect(withGoal.goalSats).toBe(21000);
+    expect((await store.getById('goal'))?.goalSats).toBe(21000);
+    const without = await store.create({ ...LATE, id: 'nogoal' });
+    expect(without.goalSats).toBeNull();
+    expect((await store.getById('nogoal'))?.goalSats).toBeNull();
+  });
+
+  it('create stores null goalSats on a reply even when the row asked for one', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    const child = await store.create({
+      ...LATE,
+      id: 'child-goal',
+      parentId: 'a',
+      text: 'reply',
+      goalSats: 21000,
+    });
+    expect(child.goalSats).toBeNull();
+    expect((await store.getById('child-goal'))?.goalSats).toBeNull();
   });
 
   it('create with non-null parentId when the parent is missing throws and does not append', async () => {
@@ -3087,6 +3148,7 @@ describe('PostgresMessageStore', () => {
     const listed = await store.listLatest(50);
     expect(sql.queries[0]?.text).toMatch(/has_photo/);
     expect(sql.queries[0]?.text).toMatch(/event_id/);
+    expect(sql.queries[0]?.text).toMatch(/goal_sats/);
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL AND deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(/child\.deleted_at IS NULL/);
@@ -3100,6 +3162,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.hasPhoto).toBe(true);
     expect(listed[0]?.hasVideo).toBe(true);
     expect(listed[0]?.sats).toBe(0);
+    expect(listed[0]?.goalSats).toBeNull();
     expect(listed[0]?.replyCount).toBe(0);
     expect(listed[1]?.id).toBe('m2');
     expect(listed[1]?.hasPhoto).toBe(false);
@@ -3264,7 +3327,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[1]?.videoContentType).toBe('video/mp4');
   });
 
-  it('create binds fifteen params including content_fp, video_content_type, parent_id and author_pubkey', async () => {
+  it('create binds sixteen params including content_fp, video_content_type, parent_id, author_pubkey and goal_sats', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -3278,9 +3341,9 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
     );
-    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15/);
+    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15,\$16/);
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
       'm1',
@@ -3298,11 +3361,44 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(15);
+    expect(sql.executes[0]?.params).toHaveLength(16);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
+    expect(created.goalSats).toBeNull();
     expect(created).not.toBe(row);
+  });
+
+  it('create binds a positive goalSats and listLatest maps goal_sats', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'm-goal',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    const created = await store.create(row);
+    expect(sql.executes[0]?.params[15]).toBe(21000);
+    expect(created.goalSats).toBe(21000);
+    sql.nextRows = [
+      {
+        id: 'm-goal',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '21000',
+      },
+    ];
+    const listed = await store.listLatest(10);
+    expect(listed[0]?.goalSats).toBe(21000);
   });
 
   it('create with non-null parentId uses INSERT SELECT WHERE EXISTS on a live parent', async () => {
@@ -3322,10 +3418,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -3348,10 +3444,31 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(15);
+    expect(sql.queries[0]?.params).toHaveLength(16);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
+  });
+
+  it('create with non-null parentId binds goal_sats null even when the row asked', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'child-goal' }];
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'child-goal',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      goalSats: 21000,
+    };
+    const created = await store.create(row);
+    expect(sql.queries[0]?.params.at(-1)).toBeNull();
+    expect(created.goalSats).toBeNull();
   });
 
   it('create with non-null parentId throws when the query returns zero rows and unlinks video', async () => {
@@ -4475,6 +4592,33 @@ describe('PostgresMessageStore', () => {
     expect(await store.listPublishedEventIds(7)).toEqual(['ee'.repeat(32)]);
     expect(sql.queries[1]?.text).toMatch(/event_id IS NOT NULL AND parent_id IS NULL/);
     expect(sql.queries[1]?.params).toEqual([7]);
+  });
+
+  it('listChildIds selects ids by parent_id with any deleted_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'c1' }, { id: 'c2' }];
+    const ids = await new PostgresMessageStore(sql).listChildIds('p1');
+    expect(ids).toEqual(['c1', 'c2']);
+    expect(sql.queries[0]?.text).toBe('SELECT id FROM message WHERE parent_id = $1');
+    expect(sql.queries[0]?.params).toEqual(['p1']);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+  });
+
+  it('listReplies includeHidden omits deleted_at IS NULL and keeps member oldest-first order', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    await store.listReplies('p1', 10, true);
+    expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1\s+AND \(account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zapper/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
+    expect(sql.queries[0]?.params).toEqual(['p1', 10]);
+    await store.listReplies('p1', 10);
+    expect(sql.queries[1]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[1]?.text).toMatch(/account_id IS NOT NULL/);
+    expect(sql.queries[1]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
   });
 
   it('recordInvoiceAttempt inserts into message_invoice with jsonb zap_request and lnurl_response', async () => {

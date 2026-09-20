@@ -68,93 +68,94 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                         | Auth                     | Purpose                                                                                                   |
-| ------ | -------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------- |
-| GET    | `/healthz`                                   | none                     | Liveness                                                                                                  |
-| GET    | `/info`                                      | none                     | Service identity                                                                                          |
-| GET    | `/.well-known/lnurlp/:username`              | none                     | LUD-16 payRequest for username@21.gifts; settlement stays on linked Wallet of Satoshi                     |
-| GET    | `/favicon.ico`                               | none                     | Brand mark (favicon)                                                                                      |
-| GET    | `/favicon.svg`                               | none                     | Brand mark (SVG favicon)                                                                                  |
-| GET    | `/apple-touch-icon.png`                      | none                     | Brand mark (Apple touch icon)                                                                             |
-| POST   | `/auth/passkey/register/begin`               | none                     | Issue WebAuthn creation options                                                                           |
-| POST   | `/auth/passkey/register/finish`              | none                     | Verify attestation, issue session                                                                         |
-| POST   | `/auth/passkey/authenticate/begin`           | none                     | Issue WebAuthn request options                                                                            |
-| POST   | `/auth/passkey/authenticate/finish`          | none                     | Verify assertion, issue session                                                                           |
-| GET    | `/me`                                        | `Authorization: Bearer`  | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
-| GET    | `/me/activity`                               | Bearer                   | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
-| GET    | `/view/:viewKey`                             | none                     | Public profile card by view key                                                                           |
-| GET    | `/view/:viewKey/about/photo`                 | none                     | Profile-note photo bytes for the view-key card                                                            |
-| GET    | `/view/:viewKey/activity`                    | none                     | Public given/received payload for the account behind the view key                                         |
-| POST   | `/me/setup/skip`                             | Bearer                   | Skip name or Lightning Address wizard step                                                                |
-| POST   | `/me/name`                                   | Bearer                   | Set/replace display name (profile note when name + LN are both set); auto-assign username when free       |
-| POST   | `/me/username`                               | Bearer                   | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                       |
-| POST   | `/me/location`                               | Bearer                   | Set, change, or clear free-text profile location                                                          |
-| PUT    | `/me/about`                                  | Bearer                   | Set/clear About me text and optional photo on the profile note                                            |
-| GET    | `/me/about/photo`                            | Bearer                   | Owner profile-note photo bytes                                                                            |
-| POST   | `/me/forum-laws-dismissed`                   | Bearer                   | Dismiss welcome-forum living-room laws                                                                    |
-| POST   | `/me/notification-level`                     | Bearer                   | Set owner fan-out filter (`all` / `active` / `mentions`)                                                  |
-| POST   | `/me/rules-agreement`                        | Bearer                   | Record living-room rules agreement                                                                        |
-| POST   | `/me/lightning-address`                      | Bearer                   | Link/replace after live LNURL resolve + NIP-57 mint probe                                                 |
-| DELETE | `/me/lightning-address`                      | Bearer                   | Unlink address (clears LN skip)                                                                           |
-| POST   | `/me/lightning-address/verification`         | Bearer                   | Start address proof-of-control payment                                                                    |
-| POST   | `/me/lightning-address/verification/confirm` | Bearer                   | Confirm nonce from wallet history                                                                         |
-| GET    | `/members/:accountId`                        | Bearer                   | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                |
-| GET    | `/members/:accountId/activity`               | Bearer                   | Same given/received payload as `/me/activity` for that member                                             |
-| GET    | `/members/:accountId/posts`                  | Bearer                   | Live member top-level notes (latest 200)                                                                  |
-| GET    | `/members/:accountId/replies`                | Bearer                   | Live member replies (latest 200)                                                                          |
-| GET    | `/trust-chain`                               | Bearer                   | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                |
-| POST   | `/trust/verify`                              | Bearer (moderator+)      | Staff: confirm a person in real life (`verified`)                                                         |
-| POST   | `/trust/propose-moderator`                   | Bearer (moderator+)      | Staff: propose a verified member as moderator                                                             |
-| GET    | `/trust/proposals`                           | Bearer (moderator+)      | Staff: list pending moderator proposals                                                                   |
-| POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)      | Staff: second, independent confirmation → `moderator`                                                     |
-| POST   | `/trust/appoint-moderator`                   | Bearer (founder)         | Founder: appoint a moderator directly                                                                     |
-| GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |     | GET | `/messages/hidden` | Bearer (moderator+) | Staff log of soft-hidden notes (session, not DEBUG_TOKEN) |
-| GET    | `/messages/:id`                              | none                     | Public single-note JSON (visible external replies included)                                               |
-| GET    | `/messages/:id/replies`                      | none                     | Oldest-first member and entitled external replies (optional Bearer for member `accountId`)                |
-| GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                                                           |
-| GET    | `/messages/:id/video.*`                      | none                     | Fetch forum video bytes (Range / 206)                                                                     |
-| DELETE | `/messages/:id`                              | Bearer (moderator+)      | Soft-hide note + direct replies; an external target also blocks that pubkey                               |
-| POST   | `/messages/:id/invoice`                      | Bearer                   | NIP-57 zap / BOLT11                                                                                       |
-| POST   | `/contact`                                   | Bearer                   | Send private in-app contact `{ text }`                                                                    |
-| GET    | `/conversations`                             | Bearer                   | List visible private threads                                                                              |
-| GET    | `/conversations/moderator-group`             | Bearer (moderator+)      | Open/ensure closed moderator-group tool                                                                   |
-| POST   | `/conversations`                             | Bearer                   | Open thread from a forum note (`forumMessageId`)                                                          |
-| GET    | `/conversations/:id`                         | Bearer                   | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
-| POST   | `/conversations/:id`                         | Bearer                   | Send `{ text }` in a private thread                                                                       |
-| POST   | `/conversations/:id/invoice`                 | Bearer                   | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
-| POST   | `/conversations/:id/read`                    | Bearer                   | Stamp last-read for the viewer                                                                            |
-| GET    | `/notifications`                             | Bearer                   | List recipient notifications + unreadCount                                                                |
-| POST   | `/notifications/read-all`                    | Bearer                   | Mark all notifications read                                                                               |
-| POST   | `/notifications/:id/read`                    | Bearer                   | Mark one notification read                                                                                |
-| GET    | `/lightning-address`                         | none                     | Resolve LUD-16 metadata (cached)                                                                          |
-| GET    | `/debug/accounts`                            | `Authorization: Bearer`  | Operator account listing (`DEBUG_TOKEN`)                                                                  |
-| POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                                |
-| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
-| GET    | `/debug/api-log`                             | `Authorization: Bearer`  | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
-| GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
-| GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
-| POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`  | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
-| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`  | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                             |
-| GET    | `/debug/messages`                            | `Authorization: Bearer`  | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                  |
-| GET    | `/debug/messages/:id`                        | `Authorization: Bearer`  | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                          |
-| GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`  | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                               |
-| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`  | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                             |
-| POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`  | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                               |
-| GET    | `/debug/external-pubkeys`                    | `Authorization: Bearer`  | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                      |
-| POST   | `/debug/trust-edges`                         | `Authorization: Bearer`  | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                      |
-| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`  | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                        |
-| GET    | `/push/vapid-public`                         | Bearer                   | VAPID public key for Web Push subscribe                                                                   |
-| POST   | `/me/push-subscriptions`                     | Bearer                   | Upsert a browser PushSubscription                                                                         |
-| DELETE | `/me/push-subscriptions`                     | Bearer                   | Remove a browser PushSubscription                                                                         |
-| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`     | Enqueue a test push for one account                                                                       |
-| GET    | `/gifts`                                     | none                     | Outbound gifts for one UTC day (`?day=`)                                                                  |
-| GET    | `/gifts/stats`                               | none                     | Aggregated outbound gift statistics                                                                       |
-| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a passkey-backed account                                                  |
-| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN` | Whether a Lightning Address has a live top-level non-profile forum post                                   |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN` | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
-| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN` | Accept payment preimage as proof                                                                          |
+| Method | Path                                         | Auth                       | Purpose                                                                                                   |
+| ------ | -------------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| GET    | `/healthz`                                   | none                       | Liveness                                                                                                  |
+| GET    | `/info`                                      | none                       | Service identity                                                                                          |
+| GET    | `/.well-known/lnurlp/:username`              | none                       | LUD-16 payRequest for username@21.gifts; settlement stays on linked Wallet of Satoshi                     |
+| GET    | `/favicon.ico`                               | none                       | Brand mark (favicon)                                                                                      |
+| GET    | `/favicon.svg`                               | none                       | Brand mark (SVG favicon)                                                                                  |
+| GET    | `/apple-touch-icon.png`                      | none                       | Brand mark (Apple touch icon)                                                                             |
+| POST   | `/auth/passkey/register/begin`               | none                       | Issue WebAuthn creation options                                                                           |
+| POST   | `/auth/passkey/register/finish`              | none                       | Verify attestation, issue session                                                                         |
+| POST   | `/auth/passkey/authenticate/begin`           | none                       | Issue WebAuthn request options                                                                            |
+| POST   | `/auth/passkey/authenticate/finish`          | none                       | Verify assertion, issue session                                                                           |
+| GET    | `/me`                                        | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
+| GET    | `/me/activity`                               | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
+| GET    | `/view/:viewKey`                             | none                       | Public profile card by view key                                                                           |
+| GET    | `/view/:viewKey/about/photo`                 | none                       | Profile-note photo bytes for the view-key card                                                            |
+| GET    | `/view/:viewKey/activity`                    | none                       | Public given/received payload for the account behind the view key                                         |
+| POST   | `/me/setup/skip`                             | Bearer                     | Skip name or Lightning Address wizard step                                                                |
+| POST   | `/me/name`                                   | Bearer                     | Set/replace display name (profile note when name + LN are both set); auto-assign username when free       |
+| POST   | `/me/username`                               | Bearer                     | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                       |
+| POST   | `/me/location`                               | Bearer                     | Set, change, or clear free-text profile location                                                          |
+| PUT    | `/me/about`                                  | Bearer                     | Set/clear About me text and optional photo on the profile note                                            |
+| GET    | `/me/about/photo`                            | Bearer                     | Owner profile-note photo bytes                                                                            |
+| POST   | `/me/forum-laws-dismissed`                   | Bearer                     | Dismiss welcome-forum living-room laws                                                                    |
+| POST   | `/me/notification-level`                     | Bearer                     | Set owner fan-out filter (`all` / `active` / `mentions`)                                                  |
+| POST   | `/me/rules-agreement`                        | Bearer                     | Record living-room rules agreement                                                                        |
+| POST   | `/me/lightning-address`                      | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                                                 |
+| DELETE | `/me/lightning-address`                      | Bearer                     | Unlink address (clears LN skip)                                                                           |
+| POST   | `/me/lightning-address/verification`         | Bearer                     | Start address proof-of-control payment                                                                    |
+| POST   | `/me/lightning-address/verification/confirm` | Bearer                     | Confirm nonce from wallet history                                                                         |
+| GET    | `/members/:accountId`                        | Bearer                     | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                |
+| GET    | `/members/:accountId/activity`               | Bearer                     | Same given/received payload as `/me/activity` for that member                                             |
+| GET    | `/members/:accountId/posts`                  | Bearer                     | Live member top-level notes (latest 200)                                                                  |
+| GET    | `/members/:accountId/replies`                | Bearer                     | Live member replies (latest 200)                                                                          |
+| GET    | `/trust-chain`                               | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                |
+| POST   | `/trust/verify`                              | Bearer (moderator+)        | Staff: confirm a person in real life (`verified`)                                                         |
+| POST   | `/trust/propose-moderator`                   | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                             |
+| GET    | `/trust/proposals`                           | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                   |
+| POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
+| POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
+| GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
+| POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |
+| GET    | `/messages/hidden`                           | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
+| GET    | `/messages/:id`                              | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
+| GET    | `/messages/:id/replies`                      | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
+| GET    | `/messages/:id/photo`                        | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
+| GET    | `/messages/:id/video.*`                      | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
+| DELETE | `/messages/:id`                              | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey    |
+| POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                                                       |
+| POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                                                    |
+| GET    | `/conversations`                             | Bearer                     | List visible private threads                                                                              |
+| GET    | `/conversations/moderator-group`             | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                   |
+| POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
+| GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
+| POST   | `/conversations/:id`                         | Bearer                     | Send `{ text }` in a private thread                                                                       |
+| POST   | `/conversations/:id/invoice`                 | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
+| POST   | `/conversations/:id/read`                    | Bearer                     | Stamp last-read for the viewer                                                                            |
+| GET    | `/notifications`                             | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                  |
+| POST   | `/notifications/read-all`                    | Bearer                     | Mark all notifications read                                                                               |
+| POST   | `/notifications/:id/read`                    | Bearer                     | Mark one notification read                                                                                |
+| GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                                          |
+| GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                  |
+| POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
+| POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
+| GET    | `/debug/api-log`                             | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
+| GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
+| GET    | `/debug/invoices`                            | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
+| POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
+| GET    | `/debug/zap-ingests`                         | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                             |
+| GET    | `/debug/messages`                            | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                  |
+| GET    | `/debug/messages/:id`                        | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                          |
+| GET    | `/debug/messages/:id/photo`                  | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                               |
+| PUT    | `/debug/messages/:id/video`                  | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                             |
+| POST   | `/debug/messages/:id/restore`                | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                               |
+| GET    | `/debug/external-pubkeys`                    | `Authorization: Bearer`    | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                      |
+| POST   | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                      |
+| DELETE | `/debug/trust-edges`                         | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                        |
+| GET    | `/push/vapid-public`                         | Bearer                     | VAPID public key for Web Push subscribe                                                                   |
+| POST   | `/me/push-subscriptions`                     | Bearer                     | Upsert a browser PushSubscription                                                                         |
+| DELETE | `/me/push-subscriptions`                     | Bearer                     | Remove a browser PushSubscription                                                                         |
+| POST   | `/debug/push-ping`                           | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                       |
+| GET    | `/gifts`                                     | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
+| GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                                                       |
+| GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
+| GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
+| POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -309,16 +310,17 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                  | When                                                                |
-| ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                                     |
-| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                                               |
-| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                                  |
-| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted; challenge is consumed before verification |
-| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                                         |
-| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                                      |
-| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential                   |
+| Status | Body                                                                                              | When                                                                |
+| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Body parse fail                                                     |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                         |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                      |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                   |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted               |
 
 **Response** `200`:
 
@@ -365,8 +367,10 @@ issues a session. A non-increasing `signCount` is refused as
 `{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
 Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
-not stored. Success body matches register finish (`linkingKey` is whatever
-the account currently has).
+not stored. An account with `sessionRefused` is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+and does not persist a bearer. Success body matches register finish
+(`linkingKey` is whatever the account currently has).
 
 ### `GET /me`
 
@@ -376,6 +380,12 @@ Missing or invalid bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+An account with `sessionRefused` and a still-valid minted token → **Response** `403`:
+
+```json
+{ "error": "You signed in with the wrong account. Please try again with the correct account." }
 ```
 
 **Response** `200`:
@@ -504,7 +514,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set).
+`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set;
+optional `goalSats` omitted when unset).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -513,8 +524,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
-`parentId` when set; omits `replyCount`. Top-level notes by that member
-are not listed.
+`parentId` when set; omits `replyCount`. Replies never include `goalSats`.
+Top-level notes by that member are not listed.
 
 ### `GET /members/:accountId/activity`
 
@@ -1266,15 +1277,16 @@ Success → **Response** `200`:
       "forumLawsDismissed": false,
       "createdAt": 0,
       "rulesAgreedAt": null,
-      "isPlatform": false
+      "isPlatform": false,
+      "sessionRefused": false
     }
   ]
 }
 ```
 
 The listing uses `serializeDebugAccount` (the eleven public fields plus
-`isPlatform`) and never includes `viewKey`. Member `GET /me` does not
-include `isPlatform`.
+`isPlatform` and `sessionRefused`) and never includes `viewKey`. Member `GET /me` does not
+include `isPlatform` or `sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1338,13 +1350,14 @@ stored username is kept. `created` is `false`. New address: sets
 ### `PATCH /debug/accounts/:id`
 
 Operator assignment of the account's forum display role, unlinking the
-Lightning Address, and/or the official platform flag (`isPlatform`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (same
-gate as `GET /debug/accounts`). Body is one or more of `role`,
-`lightningAddress: null`, and `platform`:
+Lightning Address, the official platform flag (`isPlatform`), and/or
+session refusal (`sessionRefused`). Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
+`GET /debug/accounts`). Body is one or more of `role`,
+`lightningAddress: null`, `platform`, and `sessionRefused`:
 
 ```json
-{ "role": "basis", "lightningAddress": null, "platform": true }
+{ "role": "basis", "lightningAddress": null, "platform": true, "sessionRefused": true }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, or `founder`.
@@ -1352,7 +1365,9 @@ gate as `GET /debug/accounts`). Body is one or more of `role`,
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every
 `member_platform` thread at this account except a thread whose member is
-already this account. Setting a new address is not supported here
+already this account. `sessionRefused` is a boolean; `true` makes passkey
+finish and this route's session mint return 403 with the wrong-account
+copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. It does not clear `username`. `GET /me` then returns
@@ -1379,12 +1394,12 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role`, `lightningAddress: null`, and/or
-`platform` boolean → **Response** `400`:
+Body is not JSON with a known `role`, `lightningAddress: null`,
+`platform` boolean, and/or `sessionRefused` boolean → **Response** `400`:
 
 ```json
 {
-  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, and/or platform boolean"
+  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, platform boolean, and/or sessionRefused boolean"
 }
 ```
 
@@ -1396,19 +1411,24 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`; no `viewKey`). Role changes log `debug.accounts.role_set`
+`isPlatform` and `sessionRefused`; no `viewKey`). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
+Session-refusal changes log `debug.accounts.session_refused_set` with the
+account id and the new flag.
 
 ### `POST /debug/accounts/:id/session`
 
 Operator mint of a member bearer for the given account id. Authenticated
 with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
-Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
-the other debug account routes. Not a member login path; for e2e and
-operator debugging.
+Unknown account id → **404** `{ "error": "Not found" }`. An account with
+`sessionRefused` is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+with no minted bearer and no `debug.accounts.session_minted` log. Same
+503/401 gate as the other debug account routes. Not a member login path;
+for e2e and operator debugging.
 
 ### `POST /debug/trust-edges`
 
@@ -1789,7 +1809,9 @@ Environment:
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
-JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Never includes
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Optional `goalSats`
+is a positive integer on a top-level note and is omitted on replies and when
+the stored value is unset, null, or 0. Never includes
 `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -1820,8 +1842,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 ```
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
-(not wrapped). Never includes `nostrEvent`, `contentFp`, nsec, or photo/video
-bytes.
+(not wrapped). Optional `goalSats` is a positive integer on a top-level note
+and is omitted on replies and when the stored value is unset, null, or 0.
+Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 Store throw → **Response** `503`:
 
@@ -2442,10 +2465,11 @@ idempotent. Parent missing/deleted or platform missing: skip attach, log
 When the invoice has `groupMessageId`, the api then inserts one platform
 conversation message in that closed `moderator_group` thread (name trimmed
 or `21.gifts`, `sats` = `floor(msat/1000)`, text = comment · recipient
-name). Repeat proof with the same preimage is idempotent on the
-deterministic id. Triggering row missing, thread missing or not
-`moderator_group`, platform missing, or store throw: skip attach, log
-`invoice.group_gift.failed`, still **200** + gift persist.
+name, `giftForMessageId` set to the triggering message's id). Repeat proof
+with the same preimage is idempotent on the deterministic id. Triggering
+row missing, thread missing or not `moderator_group`, platform missing, or
+store throw: skip attach, log `invoice.group_gift.failed`, still **200** +
+gift persist.
 
 Success → **Response** `200`:
 
@@ -2465,6 +2489,8 @@ the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
+optional `goalSats` (positive integer on a top-level note; omitted when
+unset/null/0),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -2629,11 +2655,28 @@ zapper entitlement.
 
 Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
-each `{ contentType, data }` same shape as singular `photo`), and an
-optional parent UUID:
+each `{ contentType, data }` same shape as singular `photo`), an
+optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
+on a top-level note only):
+
+Top-level with a goal:
 
 ```json
-{ "text": "…", "inReplyTo": "<uuid>", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
+{
+  "text": "…",
+  "goalSats": 21000,
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
+```
+
+Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400):
+
+```json
+{
+  "text": "…",
+  "inReplyTo": "<uuid>",
+  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+}
 ```
 
 Non-empty `photos` wins over singular `photo`. Dual-send `{ photo, photos }`
@@ -2649,7 +2692,13 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. A valid parent where the
 caller is neither the parent author nor `verified` → **403**
 `{ "error": "A reply needs a Bitcoin payment" }` (pay via
-`POST /messages/:id/invoice` instead). Multipart video posts do not
+`POST /messages/:id/invoice` instead). Optional `goalSats` omitted, JSON
+`null`, or a missing/empty multipart field means no goal. Multipart accepts
+`goalSats` as a decimal digit string. A positive `goalSats` together with
+`inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`. An
+invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
+JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
+Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
@@ -2662,7 +2711,8 @@ with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
-`videoContentType`. May include `accountId` (21gifts author id). No
+`videoContentType`. May include `goalSats` (positive integer on a top-level
+note; omitted when unset). May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
@@ -2848,12 +2898,16 @@ Other LNURL/zap failure (`unreachable`) →
 
 ### `GET /messages/:id/photo`
 
-Fetch the optional photo bytes for one forum message. **No bearer** — Damus
-loads this URL from kind:1 `imeta`. Missing message, message-without-photo,
-and a non-UUID `id` are the same **404** (Postgres would otherwise throw on
-`uuid` and become 503). A live reply without an account whose author pubkey
-is not a recorded zapper (or that has no author pubkey) is the same **404**
-on every photo and video route, matching `GET /messages/:id`.
+Fetch the optional photo bytes for one forum message. Live rows need **no
+bearer** — Damus loads this URL from kind:1 `imeta`. Missing message,
+message-without-photo, and a non-UUID `id` are the same **404** (Postgres
+would otherwise throw on `uuid` and become 503). A live reply without an
+account whose author pubkey is not a recorded zapper (or that has no author
+pubkey) is the same **404** on every photo and video route, matching
+`GET /messages/:id`. Soft-hidden rows are **404** without a founder/moderator
+Bearer. A founder/moderator Bearer serves hidden-row bytes with
+`Cache-Control: private, no-store` and `Vary: Authorization` instead of the
+live public cache header.
 
 No photo for `id` → **Response** `404`:
 
@@ -2869,7 +2923,9 @@ Store failure → **Response** `503`:
 
 Success → **Response** `200`: raw image body, `Content-Type` one of
 `image/jpeg` / `image/png` / `image/webp` (from stored magic-derived type),
-`Cache-Control: public, max-age=86400`. Not JSON.
+`Cache-Control: public, max-age=86400` on a live public GET, or
+`Cache-Control: private, no-store` plus `Vary: Authorization` on a staff
+hidden GET. Not JSON.
 
 Photo, video, and replies register **before** the public single-note
 `GET /messages/:id` so `/photo`, `/video.mp4` (and `.webm` / `.mov`), and
@@ -2881,7 +2937,9 @@ Public extra still (no bearer). Same handler for `.jpeg` / `.png` /
 `.webp` and indices **1–9**
 (`GET /messages/:id/photo/{1-9}.{jpg|jpeg|png|webp}`). There is **no**
 `/photo/0.jpg` (photo 0 remains `/photo.jpg`). Soft-hidden rows 404 even
-when extra bytes remain. Same headers as photo 0 (`Content-Type`
+when extra bytes remain, unless a founder/moderator Bearer is present
+(then the same staff `Cache-Control: private, no-store` as photo 0).
+Same live headers as photo 0 (`Content-Type`
 jpeg/png/webp, `Cache-Control: public, max-age=86400`,
 `Access-Control-Allow-Origin: *`,
 `Content-Disposition: inline; filename="photo.jpg|png|webp"`). Missing
@@ -2923,8 +2981,10 @@ Store failure → **Response** `503`:
 
 Success → **Response** `200` or `206`: raw video body,
 `Content-Type` one of `video/mp4` / `video/webm` / `video/quicktime`,
-`Accept-Ranges: bytes`, `Cache-Control: public, max-age=86400`,
-`Access-Control-Allow-Origin: *`. Not JSON.
+`Accept-Ranges: bytes`, `Access-Control-Allow-Origin: *`,
+`Cache-Control: public, max-age=86400` on a live public GET, or
+`Cache-Control: private, no-store` plus `Vary: Authorization` on a staff
+hidden GET. Not JSON.
 
 ### `GET /messages/:id/replies`
 
@@ -2939,11 +2999,17 @@ public message JSON (`photoCount` 0–10 always present;
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
-pubkey.
+pubkey. Replies never include `goalSats`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
-`:id` is not a UUID, the parent is missing, or the parent is soft-hidden
+Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
+is **200** `{ "messages" }` from `listReplies(id, limit, true)` including
+hidden attributed children with hide stamps and `payable: false`, whether
+the parent is live or hidden (live children stay live serialize).
+
+`:id` is not a UUID, the parent is missing, or (unsigned/non-staff) the
+parent is soft-hidden
 → **Response** `404`:
 
 ```json
@@ -2985,14 +3051,20 @@ set but is not a recorded zapper (retroactively included once that pubkey zaps).
 
 ### `GET /messages/:id`
 
-Public single-note fetch. **No Bearer.** `:id` is a UUID. Registered
-**after** photo, video, `GET /messages/:id/replies`,
+Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
+Registered **after** photo, video, `GET /messages/:id/replies`,
 `DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
-captured as `:id`. Returns
-the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
+captured as `:id`. A live GET returns
+the public message JSON (`sats`, optional `goalSats` on a top-level note
+when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
-`videoContentType`; live `role` for 21gifts authors). Never includes
-`accountId`, `deletedAt`, or `deletedBy`. A live reply with `accountId` null
+`videoContentType`; live `role` for 21gifts authors) and omits
+`accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
+soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
+stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
+'moderator')`, no `forum.read`) of a hidden row is **200** public JSON plus
+`deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`, and
+`accountId` for 21gifts authors. A live reply with `accountId` null
 returns **200** only when `authorPubkey` is set and that pubkey is a recorded
 zapper (checked via `isZapperPubkey` on every read, including during a
 `sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
@@ -3063,7 +3135,11 @@ Postgres row, photo bytes, on-disk video, invoices, zap receipts, or gift
 records; does **not** call `deleteById` / `DELETE FROM message`. Already
 tagged targets keep their original stamps and still return 204.
 `getById` continues to return tagged rows for workers; public/member HTTP
-reads treat them as missing.
+reads treat them as missing. After a successful stamp (including already
+tagged), best-effort `listChildIds` then
+`deleteByMessageIds([id, ...childIds])` retracts in-app notifications
+whose `parentId` or `replyId` is the note or a direct child. Retract
+failure still **204**.
 
 When the target itself is an external Nostr row (`accountId` null and
 `authorPubkey` set), the same successful operation also records a durable
@@ -3138,7 +3214,8 @@ desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
-`hasVideo` / `videoContentType`, always-present `parentId` (JSON `null`
+`hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
+top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
@@ -3147,6 +3224,7 @@ authorPubkey !== null` (the same rule as public message JSON), and
 Never includes `accountId`, `authorPubkey`, `eventId`, `nostrPublishState`,
 `payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
+A founder/moderator session may GET the hidden permalink and photo/video.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
 `DEBUG_TOKEN` only).
 
@@ -3364,7 +3442,9 @@ Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional `accountId`: members
 always see the stored sender; staff see the actor when `actorAccountId`
-is set, otherwise the sender.
+is set, otherwise the sender. A paid moderator stipend also includes
+optional `giftFor`: the id of the group message that triggered it
+(omitted on every other row).
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
@@ -3373,7 +3453,8 @@ verified, basis and the platform account get **404**
 
 A platform stipend row in `moderator_group` (`POST /invoices/proof` with
 `groupMessageId`) has no actor and the platform account as sender, so it is
-`fromMe: false` and inbound for every member.
+`fromMe: false` and inbound for every member. That row's `giftFor` is the
+triggering message id so the app can render it attached under that message.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
@@ -3394,16 +3475,27 @@ Success → **Response** `200`:
       "fromMe": true,
       "sats": 0,
       "accountId": "<uuid>"
+    },
+    {
+      "id": "<uuid>",
+      "name": "21.gifts",
+      "text": "21gifts moderator · Ada",
+      "createdAt": "2026-08-29T12:00:02.000Z",
+      "fromMe": false,
+      "sats": 6158,
+      "accountId": "<uuid>",
+      "giftFor": "<uuid of the message above>"
     }
   ]
 }
 ```
 
 `accountId` is omitted when the projected account is null (Damus inbound;
-never JSON `null`). Members always receive the stored sender (typically
-`21.gifts` on a platform send). Staff receive the actor when
-`actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor when
-set, otherwise the sender; there is no staff-as-platform shortcut.
+never JSON `null`). `giftFor` is omitted when the row is not a paid gift
+for another message (never JSON `null`). Members always receive the stored
+sender (typically `21.gifts` on a platform send). Staff receive the actor
+when `actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor
+when set, otherwise the sender; there is no staff-as-platform shortcut.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
@@ -3488,14 +3580,19 @@ Success → **Response** `200`:
 ### `GET /notifications`
 
 Bearer session required. Lists the recipient's notifications newest-first
-(cap **200**) plus `unreadCount` for matching unread in the newest 1000
-(not the unfiltered store count, and not necessarily the page length).
-Fan-out already applied the owner's `notificationLevel` when the row was
-written; this list applies the same `notificationLevel` filter to stored
-rows (`notificationsMatchingLevel` on the newest 1000, then cap **200**).
-Each item `type` is `"forum_post"`, `"forum_reply"`, `"zap"`, or
-`"moderator_appointed"`. Member JSON never includes recipient or actor
-account ids.
+plus `unreadCount`. Fan-out already applied the owner's
+`notificationLevel` when the row was written; this list applies the same
+`notificationLevel` filter to stored rows (`notificationsMatchingLevel`
+on the newest 1000). After the level filter, drop `forum_post` /
+`forum_reply` whose parent message is missing or hidden; also drop
+`forum_reply` when the child (`replyId`) is missing or hidden. Never drop
+`moderator_appointed`. Zap only checks the parent (`replyId` is a
+receipt-derived UUID, not a message id). Best-effort purge of those
+message ids. Then cap the kept list at **200**. `unreadCount` is unread
+among kept rows after the hidden filter (not the unfiltered matching
+unread of the 1000, and not necessarily the page length). Member JSON
+never includes recipient or actor account ids. Each item `type` is
+`"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
