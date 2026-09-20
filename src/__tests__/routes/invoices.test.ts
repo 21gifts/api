@@ -1871,17 +1871,14 @@ describe('POST /invoices/proof', () => {
     expect(hidden?.deletedAt).not.toBeNull();
   });
 
-  it('returns 200 and logs messages.reply.notify.failed when notifyForumReply throws', async () => {
+  it('returns 200 with a gift-reply and writes no in-app or push rows for the platform actor', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
     const notifications = new InMemoryNotificationStore();
-    notifications.create = async () => {
-      throw new Error('notify');
-    };
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
-      endpoint: 'https://push.example/plat',
+      endpoint: 'https://push.example/alice',
       accountId: 'acc-alice',
       p256dh: 'p',
       auth: 'a',
@@ -1901,11 +1898,10 @@ describe('POST /invoices/proof', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.reply.notify.failed')).toBe(
-      true,
-    );
-    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
+    expect(await notifications.listByRecipient('acc-alice', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, 100, 60_000)).toEqual([]);
   });
 
   it('treats a missing invoice comment as empty gift-reply text', async () => {

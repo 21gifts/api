@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`).
+**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -47,7 +47,8 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
-platform-account gift-reply first, then `addSats` (idempotent). When that
+platform-account gift-reply first, then `addSats` (idempotent). That path does
+not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
 only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
@@ -907,8 +908,9 @@ creates a new live note even without a Lightning Address and claims
 `profileMessageId` via `claimProfileMessageId` only while the pointer
 still matches the missing/hidden read (not on owner JSON); a lost claim
 deletes the insert and adopts a live winner. A won inline create calls
-`notifyForumPost` after the writes (best-effort; enqueue failure still
-200). Updating an already-live note does not notify. The hidden row
+`notifyForumPost` after the writes (best-effort; no-op when the actor is
+the official platform account; enqueue failure still 200). Updating an
+already-live note does not notify. The hidden row
 stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
 so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
@@ -2348,7 +2350,7 @@ response.
 When the invoice has `messageId`, the api inserts a platform-account
 gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post, then `notifyForumReply`. When `messageId` is already a reply,
+on that post. That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
 attach persists a deterministic `spendGiftReplyId` marker under that reply,
 `markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
 existing marker is `markDeleted` only and does not `addSats`; no nested
@@ -2578,7 +2580,7 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 `forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor, then filter recipients by each account's `notificationLevel`
+actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
 fan out. A self-reply skips only the actor. `GET /notifications` applies the
@@ -2713,7 +2715,8 @@ member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
 After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer, then filtered by each account's
+every account except the resolved payer, no-op when that payer is the official
+platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
 failure logs `push.enqueue.failed`). `GET /notifications` applies the same

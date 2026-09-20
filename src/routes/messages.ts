@@ -210,7 +210,8 @@ export interface MessagesRouteDeps {
   /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
-   * account except the actor; Web Push still uses `pushStore` subscriptions.
+   * account except the actor (no-op when the actor is the official platform
+   * account); Web Push still uses `pushStore` subscriptions.
    */
   notificationStore?: NotificationStore;
   /** Optional inbox store; forum/zap payloads include listed unread when set. */
@@ -405,9 +406,9 @@ async function serveForumVideo(
 
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
- * (every account except the actor) for a top-level note, or
- * {@link notifyForumReply} (every account except the actor) when
- * `parentId` is set. Web Push still uses `pushStore` subscriptions.
+ * (every account except the actor; no-op when the actor is the official
+ * platform account) for a top-level note, or {@link notifyForumReply} (same
+ * skip) when `parentId` is set. Web Push still uses `pushStore` subscriptions.
  * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
