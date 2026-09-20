@@ -1533,10 +1533,10 @@ in-memory store starts empty; when set, rows come from Postgres `api_log`.
 
 Environment:
 
-| Variable       | Meaning                                                                |
-| -------------- | ---------------------------------------------------------------------- |
+| Variable       | Meaning                                                                  |
+| -------------- | ------------------------------------------------------------------------ |
 | `DATABASE_URL` | When set, audit rows are stored in Postgres; when unset, in-memory only. |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.      |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.        |
 
 ### `GET /debug/contacts`
 
