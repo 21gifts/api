@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { roleAtLeast } from '@/lib/auth/roles';
+import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
@@ -194,7 +194,7 @@ function canAccess(
   platformId: string | null,
 ): boolean {
   if (thread.kind === 'moderator_group') {
-    return roleAtLeast(account.role, 'moderator');
+    return isModeratorGroupMember(account);
   }
   if (thread.accountA === account.id || thread.accountB === account.id) {
     return true;
@@ -459,7 +459,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (!roleAtLeast(account.role, 'moderator')) {
+      if (!isModeratorGroupMember(account)) {
         return c.json({ error: 'Not found' }, 404);
       }
       try {

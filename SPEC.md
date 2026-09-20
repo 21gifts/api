@@ -100,10 +100,10 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/posts`                  | Bearer                   | Live member top-level notes (latest 200)                                                                  |
 | GET    | `/members/:accountId/replies`                | Bearer                   | Live member replies (latest 200)                                                                          |
 | GET    | `/trust-chain`                               | Bearer                   | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                |
-| POST   | `/trust/verify`                              | Bearer                   | Staff: confirm a person in real life (`verified`)                                                         |
-| POST   | `/trust/propose-moderator`                   | Bearer                   | Staff: propose a verified member as moderator                                                             |
+| POST   | `/trust/verify`                              | Bearer (moderator+)      | Staff: confirm a person in real life (`verified`)                                                         |
+| POST   | `/trust/propose-moderator`                   | Bearer (moderator+)      | Staff: propose a verified member as moderator                                                             |
 | GET    | `/trust/proposals`                           | Bearer (moderator+)      | Staff: list pending moderator proposals                                                                   |
-| POST   | `/trust/confirm-moderator`                   | Bearer                   | Staff: second, independent confirmation → `moderator`                                                     |
+| POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)      | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)         | Founder: appoint a moderator directly                                                                     |
 | GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ 21.gifts-author `replyCount`); 409 if rules missing                         |
 | POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing                                              |
@@ -2988,10 +2988,12 @@ for Damus-only counterparts (never JSON `null`).
 
 ### `GET /conversations/moderator-group`
 
-Bearer session required. Confirmed moderator or founder (`roleAtLeast`
-`moderator`) open or insert the closed singleton and receive it as
+Bearer session required. Moderator or founder (`roleAtLeast` `moderator`;
+the platform account is never a member of the group, whatever role it
+carries) open or insert the closed singleton and receive it as
 `{ "conversation": { ... } }` (same public row as a list item, `kind`
-`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Verified / basis get
+`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Verified, basis
+and the platform account get
 **404** `{ "error": "Not found" }` (no existence leak). Missing platform
 account or store failure → **503** `{ "error": "Conversations are unavailable" }`.
 Unauthenticated → **401**.
@@ -3222,7 +3224,7 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 `GET /lightning-address` is in-memory only. Gift statistics read Postgres
 when `DATABASE_URL` is set.
 
-**Moderator-only endpoints.** Soft-hide is implemented as
+**Staff endpoints (moderator+).** Soft-hide is implemented as
 `DELETE /messages/:id` (founder/moderator session). The staff hidden log
 is implemented as `GET /messages/hidden` (founder/moderator **session**,
 not `DEBUG_TOKEN`; registered before `GET /messages/:id`). Operator debug

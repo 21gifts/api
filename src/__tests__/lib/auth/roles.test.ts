@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ROLE_ORDER, roleAtLeast, roleRank } from '@/lib/auth/roles';
+import { ROLE_ORDER, isModeratorGroupMember, roleAtLeast, roleRank } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 
 const roles: readonly AccountRole[] = ['basis', 'verified', 'moderator', 'founder'];
@@ -45,5 +45,23 @@ describe('roleAtLeast', () => {
       expect(roleAtLeast(role, min)).toBe(want);
       expect(roleAtLeast(role, min)).toBe(roleRank(role) >= roleRank(min));
     }
+  });
+});
+
+describe('isModeratorGroupMember', () => {
+  it('admits moderators and founders', () => {
+    expect(isModeratorGroupMember({ role: 'moderator' })).toBe(true);
+    expect(isModeratorGroupMember({ role: 'founder' })).toBe(true);
+    expect(isModeratorGroupMember({ role: 'founder', isPlatform: false })).toBe(true);
+  });
+
+  it('keeps verified and basis members out', () => {
+    expect(isModeratorGroupMember({ role: 'verified' })).toBe(false);
+    expect(isModeratorGroupMember({ role: 'basis' })).toBe(false);
+  });
+
+  it('keeps the platform account out whatever role it carries', () => {
+    expect(isModeratorGroupMember({ role: 'founder', isPlatform: true })).toBe(false);
+    expect(isModeratorGroupMember({ role: 'moderator', isPlatform: true })).toBe(false);
   });
 });

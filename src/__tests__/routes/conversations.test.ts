@@ -1989,6 +1989,23 @@ describe('moderator_group', () => {
     expect(rows[0]?.eventId).toBeNull();
   });
 
+  it('keeps the platform account out of the Moderators group even with a founder role', async () => {
+    const auth = await seeded('founder');
+    await withPlatform(auth);
+    await auth.createSession({ token: 'plat-tok', accountId: 'plat', createdAt: now() });
+    const platformAuth = { authorization: 'Bearer plat-tok' };
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: platformAuth,
+    });
+    expect(group.status).toBe(404);
+    const read = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: platformAuth,
+    });
+    expect(read.status).toBe(404);
+  });
+
   it('returns 404 for verified and basis GET /moderator-group', async () => {
     for (const role of ['verified', 'basis'] as const) {
       const auth = new InMemoryAuthStore();

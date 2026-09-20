@@ -10,7 +10,7 @@
  * account ids. Callers catch failures so persist still succeeds.
  */
 
-import { roleAtLeast } from '@/lib/auth/roles';
+import { ROLE_ORDER, roleAtLeast } from '@/lib/auth/roles';
 import type { AuthStore, NotificationLevel } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
@@ -132,15 +132,8 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
   if (account.isPlatform === true) {
     return true;
   }
-  switch (account.role) {
-    case 'basis':
-    case 'verified':
-    case 'moderator':
-    case 'founder':
-      return roleAtLeast(account.role, 'moderator');
-    default:
-      return false;
-  }
+  const role = ROLE_ORDER.find((item) => item === account.role);
+  return role !== undefined && roleAtLeast(role, 'moderator');
 }
 
 /**

@@ -155,12 +155,12 @@ write trust edges; `POST /debug/trust-edges` backfills stored edges and
 `DELETE /debug/trust-edges` removes one `(subjectId, kind)` row, both
 without changing `role`.
 
-| Role      | Capabilities                                                                                                                                                            |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                      |
-| Verified  | Everything Basis can, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment. |
-| Moderator | Everything Verified can, plus content moderation, the staff inbox and the closed Moderators group. Forum tag.                                                           |
-| Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                               |
+| Role      | Capabilities                                                                                                                                                                            |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                                      |
+| Verified  | Everything Basis can, plus a forum tag: a founder or moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment.                 |
+| Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose or confirm a moderator). Forum tag. |
+| Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                               |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator, and

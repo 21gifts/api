@@ -28,3 +28,19 @@ export function roleRank(role: AccountRole): number {
 export function roleAtLeast(role: AccountRole, min: AccountRole): boolean {
   return roleRank(role) >= roleRank(min);
 }
+
+/**
+ * Whether an account belongs to the closed Moderators group.
+ *
+ * Every moderator and founder does. The platform account is a house identity,
+ * not a person in the staff room, whatever role it carries.
+ *
+ * @param account - Role plus optional platform flag.
+ * @returns `true` for a non-platform account that is at least a moderator.
+ */
+export function isModeratorGroupMember(account: {
+  role: AccountRole;
+  isPlatform?: boolean;
+}): boolean {
+  return account.isPlatform !== true && roleAtLeast(account.role, 'moderator');
+}

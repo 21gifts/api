@@ -4,7 +4,7 @@
  * Does not write in-app Notification rows. Inbox stays the DM surface.
  */
 
-import { roleAtLeast } from '@/lib/auth/roles';
+import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import type { AuthStore } from '@/lib/auth/store';
 import {
   conversationPushRecipientIds,
@@ -44,7 +44,7 @@ export function inboxUnreadCountFor(
       const account = await auth.getAccount(accountId);
       const atLeastModerator = account !== undefined && roleAtLeast(account.role, 'moderator');
       staff = atLeastModerator;
-      moderator = atLeastModerator;
+      moderator = account !== undefined && isModeratorGroupMember(account);
       const accounts = await auth.listAccounts();
       const platform = accounts.find((item) => item.isPlatform === true);
       platformId = platform === undefined ? null : platform.id;
@@ -93,10 +93,7 @@ export async function notifyConversationMessage(args: {
   let moderatorIds: string[] = [];
   if (args.thread.kind === 'moderator_group') {
     const accounts = await args.authStore.listAccounts();
-    moderatorIds = accounts
-      // The platform account is a house identity, not a person in the staff room.
-      .filter((item) => item.isPlatform !== true && roleAtLeast(item.role, 'moderator'))
-      .map((item) => item.id);
+    moderatorIds = accounts.filter((item) => isModeratorGroupMember(item)).map((item) => item.id);
   }
   const recipientIds = conversationPushRecipientIds(
     args.thread,

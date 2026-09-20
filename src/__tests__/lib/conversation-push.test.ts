@@ -71,6 +71,14 @@ async function subscribe(push: InMemoryPushStore, accountId: string): Promise<vo
   });
 }
 
+/** Listed unread for a staff viewer with the Moderators-group flag off. */
+function unreadOfWithoutGroup(
+  conversations: InMemoryConversationStore,
+  accountId: string,
+): Promise<number> {
+  return conversations.unreadCount(accountId, true, 'plat', false);
+}
+
 describe('conversationPushRecipientIds', () => {
   it('notifies accountA for Damus inbound (null sender)', () => {
     expect(
@@ -241,10 +249,23 @@ describe('inboxUnreadCountFor', () => {
       message({ conversationId: opened.id, senderAccountId: 'mem' }),
     );
     const unreadOf = inboxUnreadCountFor(conversations, auth);
+    expect(await unreadOf('mod')).toBe(1);
+    expect(await unreadOf('founder')).toBe(1);
+    // A staff-room message from someone else counts for every group member, founder included.
+    const group = await conversations.ensureModeratorGroup('plat', NOW);
+    await conversations.appendMessage(
+      message({
+        id: '33333333-3333-4333-8333-333333333333',
+        conversationId: group.id,
+        senderAccountId: 'someone-else',
+      }),
+    );
     const moderatorUnread = await unreadOf('mod');
     const founderUnread = await unreadOf('founder');
-    expect(moderatorUnread).toBe(1);
+    expect(moderatorUnread).toBe(2);
     expect(founderUnread).toBe(moderatorUnread);
+    // The platform account is not in the staff room, whatever role it carries.
+    expect(await unreadOf('plat')).toBe(await unreadOfWithoutGroup(conversations, 'plat'));
   });
 });
 

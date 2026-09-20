@@ -567,7 +567,7 @@
 
 ## Function: InMemoryConversationStore
 
-- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, member↔Damus, and closed `moderator_group` singleton threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`. `hasUnread` is inbound `conversationIsInbound` with `createdAt` strictly greater than last-read (missing stamp = never read). `markRead` upserts a private last-read map keyed by accountId + conversationId (Dates copied on construct and store). `ensureModeratorGroup` opens or inserts the singleton (`accountA` = platform; `accountB` and `counterpartPubkey` null). `listVisible` 5th arg `moderator` defaults false. `visibleTo` returns `moderator === true` for that kind first (staff founder never sees it via platform-id).
+- **Purpose:** Process-local `ConversationStore` for member↔member, member↔platform, member↔Damus, and closed `moderator_group` singleton threads. Default empty so the process boots without a database. `hasInboundMessage` is inbound = `conversationIsInbound`. `hasUnread` is inbound `conversationIsInbound` with `createdAt` strictly greater than last-read (missing stamp = never read). `markRead` upserts a private last-read map keyed by accountId + conversationId (Dates copied on construct and store). `ensureModeratorGroup` opens or inserts the singleton (`accountA` = platform; `accountB` and `counterpartPubkey` null). `listVisible` 5th arg `moderator` defaults false. `visibleTo` returns `moderator === true` for that kind first (the `moderator` flag decides, not the staff/platform-id branch; callers pass `roleAtLeast(role, 'moderator')`, so founder and moderator are alike).
 - **Inputs:** Optional seed threads and messages (copied). Optional third constructor seed of last-read rows is copied. Open helpers are idempotent per unique counterpart. `openMemberPlatform` updates `accountB` when the stored platform id differs. `retargetMemberPlatform` points every member→platform thread at the new official account except rows whose member is that account. `listVisible(accountId, staff, platformId, limit, moderator = false)` is newest `lastMessageAt` then `id` DESC. `hasInboundMessage` is true when any message on that conversation id is inbound for the viewer (`conversationIsInbound`). `unreadCount(accountId, staff, platformId, moderator = false)` uses the same list filter as GET `/conversations` (including `moderator_group` when the 4th arg is true).
 - **Returns / side effects:** Promise of copies; mutating results does not change the store. Duplicate `id` or `eventId` append returns the existing row. No I/O.
 - **Used by:** `createApp` default `conversationStore`.
@@ -1834,6 +1834,13 @@
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `notifyConversationMessage`.
+
+## Function: isModeratorGroupMember
+
+- **Purpose:** Whether an account belongs to the closed Moderators group: at least a moderator on the role hierarchy (so every founder too) and not the platform account. The platform account is a house identity, not a person in the staff room, whatever role it carries.
+- **Inputs:** `{ role: AccountRole, isPlatform?: boolean }`.
+- **Returns / side effects:** boolean (`isPlatform !== true && roleAtLeast(role, 'moderator')`). No I/O.
+- **Used by:** `conversationRoutes` (`canAccess` on `moderator_group`, `GET /conversations/moderator-group`), `inboxUnreadCountFor` (group pin in the badge count), `notifyConversationMessage` (group push recipients).
 
 ## Function: isStaffRole
 
