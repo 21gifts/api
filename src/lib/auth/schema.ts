@@ -79,7 +79,6 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD CONSTRAINT account_notification_level_chk
     CHECK (notification_level IN ('all', 'active', 'mentions'))`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS username text`,
-  `DROP INDEX IF EXISTS account_username_uidx`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx
     ON account (lower(trim(username))) WHERE username IS NOT NULL AND trim(username) <> ''`,
 ];
