@@ -2630,11 +2630,12 @@ zapper entitlement.
 
 Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
-each `{ contentType, data }` same shape as singular `photo`), and an
-optional parent UUID:
+each `{ contentType, data }` same shape as singular `photo`), an
+optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
+on a top-level note only):
 
 ```json
-{ "text": "…", "inReplyTo": "<uuid>", "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
+{ "text": "…", "inReplyTo": "<uuid>", "goalSats": 21000, "photo": { "contentType": "image/jpeg", "data": "<base64>" } }
 ```
 
 Non-empty `photos` wins over singular `photo`. Dual-send `{ photo, photos }`
@@ -2650,7 +2651,13 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. A valid parent where the
 caller is neither the parent author nor `verified` → **403**
 `{ "error": "A reply needs a Bitcoin payment" }` (pay via
-`POST /messages/:id/invoice` instead). Multipart video posts do not
+`POST /messages/:id/invoice` instead). Optional `goalSats` omitted, JSON
+`null`, or a missing/empty multipart field means no goal. Multipart accepts
+`goalSats` as a decimal digit string. A positive `goalSats` together with
+`inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`. An
+invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
+JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
+Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
@@ -2663,7 +2670,8 @@ with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
-`videoContentType`. May include `accountId` (21gifts author id). No
+`videoContentType`. May include `goalSats` (positive integer on a top-level
+note; omitted when unset). May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
