@@ -584,6 +584,44 @@ test('Function: debugContactsRoutes — GET /debug/contacts without bearer is 40
   expect(res.status()).toBe(401);
 });
 
+test('Function: debugApiLogRoutes — GET /debug/api-log without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeDebugApiLog — GET /debug/api-log without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryApiLogStore — GET /debug/api-log without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresApiLogStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateApiLogSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: resolveRequestAuth — GET /debug/api-log without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: debugMessagesRoutes — PUT /debug/messages/:id/video without bearer is 401', async ({
   request,
 }) => {

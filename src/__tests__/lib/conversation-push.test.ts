@@ -42,6 +42,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     name: 'Bob',
     lastText: 'hi',
     lastSenderAccountId: 'acc-a',
+    lastActorAccountId: null,
     lastSats: 0,
     ...partial,
   };
@@ -460,7 +461,12 @@ describe('notifyConversationMessage', () => {
       notifications,
       conversations,
       authStore: auth,
-      thread: { ...opened, lastText: 'hello', lastSenderAccountId: 'acc-a' },
+      thread: {
+        ...opened,
+        lastText: 'hello',
+        lastSenderAccountId: 'acc-a',
+        lastActorAccountId: null,
+      },
       message: message({
         conversationId: opened.id,
         senderAccountId: 'acc-a',

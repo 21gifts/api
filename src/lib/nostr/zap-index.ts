@@ -1941,6 +1941,8 @@ async function appendConversationGift(args: {
     senderPubkey: pubkey === '' ? null : pubkey,
     name,
     ...unsignedConversationDefaults(),
+    actorAccountId: args.invoice.payerAccountId,
+    actorName: name,
     sats: args.invoice.amountSats,
     nostrPublishState: text === '' ? 'skipped' : 'pending',
   });

@@ -59,7 +59,7 @@ export interface ConversationStore {
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
-   * @param staff - Moderator (platform sends count as fromMe).
+   * @param staff - Moderator (kept for callers; direction uses actor).
    * @param platformId - Official platform account id, or `null` when none.
    * @returns Whether any stored message is inbound for that viewer.
    */
@@ -78,7 +78,7 @@ export interface ConversationStore {
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
-   * @param staff - Moderator (platform sends count as fromMe).
+   * @param staff - Moderator (kept for callers; direction uses actor).
    * @param platformId - Official platform account id, or `null` when none.
    * @returns Whether the viewer has unread inbound messages in that thread.
    */
@@ -290,6 +290,8 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   claimed_until timestamptz
 )`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id)`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
@@ -357,6 +359,10 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
    WHERE m.conversation_id = c.id
    ORDER BY m.created_at DESC, m.id DESC
    LIMIT 1) AS last_sender_account_id,
+  (SELECT m.actor_account_id FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_actor_account_id,
   COALESCE((
     SELECT m.sats FROM conversation_message m
     WHERE m.conversation_id = c.id
@@ -365,7 +371,7 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
   ), 0) AS last_sats`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
-  event_id, nostr_publish_state, nostr_event, claimed_until`;
+  event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name`;
 
 /**
  * Apply {@link CONVERSATION_SCHEMA_SQL} in order. Idempotent.
@@ -440,8 +446,8 @@ export class InMemoryConversationStore implements ConversationStore {
   hasInboundMessage(
     conversationId: string,
     viewerId: string,
-    staff: boolean,
-    platformId: string | null,
+    _staff: boolean,
+    _platformId: string | null,
   ): Promise<boolean> {
     return Promise.resolve(
       this.#messages.some(
@@ -449,9 +455,8 @@ export class InMemoryConversationStore implements ConversationStore {
           row.conversationId === conversationId &&
           conversationIsInbound({
             senderAccountId: row.senderAccountId,
+            actorAccountId: row.actorAccountId ?? null,
             viewerId,
-            staff,
-            platformId,
           }),
       ),
     );
@@ -460,8 +465,8 @@ export class InMemoryConversationStore implements ConversationStore {
   hasUnread(
     conversationId: string,
     viewerId: string,
-    staff: boolean,
-    platformId: string | null,
+    _staff: boolean,
+    _platformId: string | null,
   ): Promise<boolean> {
     const stamp = this.#lastRead.get(lastReadKey(viewerId, conversationId));
     return Promise.resolve(
@@ -472,9 +477,8 @@ export class InMemoryConversationStore implements ConversationStore {
         if (
           !conversationIsInbound({
             senderAccountId: row.senderAccountId,
+            actorAccountId: row.actorAccountId ?? null,
             viewerId,
-            staff,
-            platformId,
           })
         ) {
           return false;
@@ -727,6 +731,7 @@ export class InMemoryConversationStore implements ConversationStore {
       lastText: '',
       lastSenderAccountId: null,
       lastSats: 0,
+      lastActorAccountId: null,
     };
     this.#threads.push(stored);
     return this.#hydrate(stored);
@@ -741,6 +746,7 @@ export class InMemoryConversationStore implements ConversationStore {
       lastText: last?.text ?? '',
       lastSenderAccountId: last?.senderAccountId ?? null,
       lastSats: last?.sats ?? 0,
+      lastActorAccountId: last?.actorAccountId ?? null,
     };
   }
 
@@ -780,6 +786,7 @@ interface ConversationSqlRow {
   last_message_at: Date | string;
   last_text?: string | null;
   last_sender_account_id?: string | null;
+  last_actor_account_id?: string | null;
   last_sats?: string | number | null;
 }
 
@@ -797,6 +804,8 @@ interface ConversationMessageSqlRow {
   nostr_publish_state: string | null;
   nostr_event: Record<string, unknown> | string | null;
   claimed_until: Date | string | null;
+  actor_account_id: string | null;
+  actor_name: string | null;
 }
 
 /**
@@ -866,13 +875,8 @@ export class PostgresConversationStore implements ConversationStore {
          SELECT 1
          FROM conversation_message
          WHERE conversation_id = $1
-           AND (
-             sender_account_id IS NULL
-             OR (
-               sender_account_id IS DISTINCT FROM $2
-               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
-             )
-           )
+           AND COALESCE(actor_account_id, sender_account_id) IS DISTINCT FROM $2
+           AND ($3::boolean IS DISTINCT FROM NULL OR $4::uuid IS NULL OR TRUE)
        ) AS exists`,
       [conversationId, viewerId, staff, platformId],
     );
@@ -893,13 +897,8 @@ export class PostgresConversationStore implements ConversationStore {
            ON conversation_read.account_id = $2
           AND conversation_read.conversation_id = conversation_message.conversation_id
          WHERE conversation_message.conversation_id = $1
-           AND (
-             sender_account_id IS NULL
-             OR (
-               sender_account_id IS DISTINCT FROM $2
-               AND NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)
-             )
-           )
+           AND COALESCE(actor_account_id, sender_account_id) IS DISTINCT FROM $2
+           AND ($3::boolean IS DISTINCT FROM NULL OR $4::uuid IS NULL OR TRUE)
            AND (
              conversation_read.last_read_at IS NULL
              OR conversation_message.created_at > conversation_read.last_read_at
@@ -1130,8 +1129,8 @@ export class PostgresConversationStore implements ConversationStore {
       await this.#sql.execute(
         `INSERT INTO conversation_message (
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
-           event_id, nostr_publish_state, nostr_event, claimed_until
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)`,
+           event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)`,
         [
           row.id,
           row.conversationId,
@@ -1145,6 +1144,8 @@ export class PostgresConversationStore implements ConversationStore {
           row.nostrPublishState,
           row.nostrEvent,
           row.claimedUntil === null ? null : new Date(row.claimedUntil),
+          row.actorAccountId ?? null,
+          row.actorName ?? '',
         ],
       );
     } catch (error: unknown) {
@@ -1316,6 +1317,8 @@ function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
+    actorAccountId: row.actorAccountId ?? null,
+    actorName: row.actorName ?? '',
   };
 }
 
@@ -1355,6 +1358,7 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     lastText: row.last_text ?? '',
     lastSenderAccountId: row.last_sender_account_id ?? null,
     lastSats: Number(row.last_sats ?? 0),
+    lastActorAccountId: row.last_actor_account_id ?? null,
   };
 }
 
@@ -1384,6 +1388,8 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     senderAccountId: row.sender_account_id,
     senderPubkey: row.sender_pubkey,
     name: row.name,
+    actorAccountId: row.actor_account_id,
+    actorName: row.actor_name ?? '',
     sats: Number(row.sats ?? 0),
     eventId: row.event_id,
     nostrPublishState:

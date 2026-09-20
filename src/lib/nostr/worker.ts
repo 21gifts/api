@@ -1217,6 +1217,8 @@ async function indexInboundDirectMessages(
             senderPubkey,
             name: senderName,
             ...unsignedConversationDefaults(),
+            actorAccountId: sender?.id ?? null,
+            actorName: sender === undefined ? '' : senderName,
             eventId: event.id,
             nostrPublishState: 'published',
             nostrEvent: {

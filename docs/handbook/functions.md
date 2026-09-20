@@ -178,7 +178,7 @@
 
 ## Function: migrateConversationSchema
 
-- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` + `conversation_read` tables and unique indexes, including `conversation_read_conversation_id_idx`). CREATE CHECK includes `moderator_group`; ALTER DROP/ADD `conversation_kind_check`; unique partial index `conversation_moderator_group_uidx`. Additive `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`. Unwrap `DO` block still last. The partial index `conversation_message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The repair is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
+- **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` + `conversation_read` tables and unique indexes, including `conversation_read_conversation_id_idx`). CREATE CHECK includes `moderator_group`; ALTER DROP/ADD `conversation_kind_check`; unique partial index `conversation_moderator_group_uidx`. Additive `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`, `actor_account_id uuid REFERENCES account (id)`, and `actor_name text NOT NULL DEFAULT ''` (logged-in staff on a platform send; sender stays the platform account). Unwrap `DO` block still last. The partial index `conversation_message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The repair is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment (the `DO $unwrap$` block lives only in `CONVERSATION_SCHEMA_SQL`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
@@ -322,9 +322,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX tables, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `PostgresFiatStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateTrustSchema`, `PostgresTrustStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore` undefined, `nostrKek` undefined, empty `InMemoryBtcUsdStore`, and empty `InMemoryFiatStore` when unset.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX tables, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `PostgresFiatStore`, `migrateMessageSchema`, `PostgresMessageStore`, `migrateContactSchema`, `PostgresContactStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateTrustSchema`, `PostgresTrustStore`, `migrateApiLogSchema`, `PostgresApiLogStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`apiLogStore` undefined, `nostrKek` undefined, empty `InMemoryBtcUsdStore`, and empty `InMemoryFiatStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, frankfurterUrl, now, nostrQuerier, zapRelayUrls, nostrRelayTimeoutMs }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`; `frankfurterUrl` defaults via `resolveFrankfurterUrl(process.env)`; the last three feed `backfillExternalZappers` and default to a `WebsocketNostrQuerier`, `resolveZapRelays(process.env)` and a 5000 ms per-relay timeout). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, messageStore, contactStore, conversationStore, notificationStore, pushStore, trustStore, nostrKek }`. Migrates `btc_usd_daily` then `usd_fiat_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification and before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, and `PostgresTrustStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateDbChangeSchema`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, messageStore, contactStore, conversationStore, notificationStore, pushStore, trustStore, apiLogStore, nostrKek }`. Migrates `btc_usd_daily` then `usd_fiat_daily`, `message`, `contact`, `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `api_log` (via `migrateApiLogSchema`) immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge` and `api_log`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, and `PostgresApiLogStore`; memory path returns `giftRecorder`/`messageStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`apiLogStore`/`nostrKek` undefined and skips migrates including `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateApiLogSchema` / `migrateDbChangeSchema`.
 - **Payment and external-zapper backfills:** Only after `migrateDbChangeSchema` has attached `trg_db_change` to every public table (so the payment backfill's `nostr_zap_payment` inserts are logged), constructs `PostgresMessageStore`, runs `backfillZapPayments`, and immediately runs `backfillExternalZappers` before constructing the remaining Postgres stores and returning. The external-zapper backfill pages through unattributed receipts with a 10,000-row ceiling and logs `nostr.zapper.backfill.done` with its aggregate counts; a failure logs `nostr.zapper.backfill.failed` and boot continues. Payment-backfill failures still propagate. In-memory boots call neither backfill.
 - **Used by:** `src/index.ts` boot.
 
@@ -333,7 +333,7 @@
 - **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
 - **Inputs:** Configured token (non-empty) and raw header or `undefined`.
 - **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
-- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugMessagesRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`.
+- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugApiLogRoutes`, `debugMessagesRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`, `debugTrustRoutes`, `resolveRequestAuth`.
 
 ## Function: compareAccountsForList
 
@@ -787,8 +787,8 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/messages`, `/debug/external-pubkeys`, `/debug/invoices`, `/debug/invoices/settle`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / appoint-moderator), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, `/notifications`, and invoices.
-- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, optional `nostrPublisher` (without `nostrKek` staff hide skips NIP-09), optional `env` (default `process.env`; relays / `PUBLIC_BASE_URL` / Cloudflare on `DELETE /messages/:id`), spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator" }` without `messageId`; forum `POST /messages` still two-arg daily ping), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, and parsed KEK. `messagesRoutes`, `meRoutes`, and `trustRoutes` receive `conversationStore`. `contactRoutes` and `conversationRoutes` receive `pushStore` plus `notificationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/api-log`, `/debug/external-pubkeys`, `/debug/messages`, `/debug/invoices`, `/debug/invoices/settle`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / appoint-moderator), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/conversations`, `/notifications`, and invoices.
+- **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), optional `apiLogStore` (default `InMemoryApiLogStore`), `pushStore`, `trustStore`, `vapidPublicKey`, `nostrKek`, optional `nostrPublisher` (without `nostrKek` staff hide skips NIP-09), optional `env` (default `process.env`; relays / `PUBLIC_BASE_URL` / Cloudflare on `DELETE /messages/:id`), spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator" }` without `messageId`; forum `POST /messages` still two-arg daily ping), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted `apiLogStore` → `InMemoryApiLogStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, `PostgresApiLogStore`, and parsed KEK. `messagesRoutes`, `meRoutes`, `invoiceRoutes`, and `trustRoutes` receive `conversationStore`. `contactRoutes` and `conversationRoutes` receive `pushStore` plus `notificationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
 
@@ -857,9 +857,9 @@
 
 ## Function: conversationRoutes
 
-- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists `{ conversations, unreadCount }` (`unreadCount` = listed rows with `unread` true) for visible inbox threads and always passes `moderator: false` into `listVisible` (never ensures, pins, or returns `moderator_group`); `POST /` opens a thread from `{ forumMessageId }`; `GET /moderator-group` (before `GET /:id`) is the closed-group tool for `roleAtLeast(..., 'moderator')`: `ensureModeratorGroup` then `{ conversation }` (with `unread` from `hasUnread`); verified/basis 404; missing platform / store failure 503 `conversations.moderator_group.failed`; `GET /:id` lists messages oldest-first (`?sinceMessageId=` long-poll); `POST /:id/read` stamps last-read (mount before `POST /:id`); `POST /:id` appends `{ text }`; `POST /:id/invoice` issues a NIP-57 gift invoice. Moderators see all platform threads and reply as the platform nsec. `moderator_group` ACL is `roleAtLeast(..., 'moderator')` (moderator 200; verified/basis 404). `POST /:id` on this kind persists as the caller (moderator, not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` only when Lightning Address is non-empty after trim **and** a live living-room top-level post exists on this UTC day; no living-room post today → 200, no ping, `spend.ping.skipped` / `no_public_post`; living-room lookup failure after persist → 200, no ping, `spend.ping.skipped` / `posted_unreachable`; ping throw still 200.
+- **Purpose:** Hono sub-app for the signed-in PN channel: `GET /` lists `{ conversations, unreadCount }` (`unreadCount` = listed rows with `unread` true) for visible inbox threads and always passes `moderator: false` into `listVisible` (never ensures, pins, or returns `moderator_group`); `POST /` opens a thread from `{ forumMessageId }`; `GET /moderator-group` (before `GET /:id`) is the closed-group tool for `roleAtLeast(..., 'moderator')`: `ensureModeratorGroup` then `{ conversation }` (with `unread` from `hasUnread`); verified/basis 404; missing platform / store failure 503 `conversations.moderator_group.failed`; `GET /:id` lists messages oldest-first (`?sinceMessageId=` long-poll); `POST /:id/read` stamps last-read (mount before `POST /:id`); `POST /:id` appends `{ text }`; `POST /:id/invoice` issues a NIP-57 gift invoice. Moderators see all platform threads. Staff replies on a platform thread persist the platform sender (worker signs with the platform nsec) and store `actorAccountId`/`actorName` as the logged-in staff. Staff JSON `name`/`accountId` use the actor when set; members still see the sender (`21.gifts`). `fromMe` is the actor, else the sender — no staff-as-platform shortcut. `moderator_group` ACL is `roleAtLeast(..., 'moderator')` (moderator 200; verified/basis 404). `POST /:id` on this kind persists as the caller (moderator, not staff-as-platform) with `nostrPublishState: 'skipped'`, then `spendPing.ping(address, created.id, 'moderator')` only when Lightning Address is non-empty after trim **and** a live living-room top-level post exists on this UTC day; no living-room post today → 200, no ping, `spend.ping.skipped` / `no_public_post`; living-room lookup failure after persist → 200, no ping, `spend.ping.skipped` / `posted_unreachable`; ping throw still 200.
 - **Inputs:** `ConversationRouteDeps`: conversation `store`, shared `authStore`, forum `messageStore`, `now`, optional `spendPing`, optional `fetchImpl` / `nostrKek` / `invoiceLimiter` / wait injects, optional `pushStore` and `notificationStore`.
-- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet; 404 when not allowed; 429 Too many payments; 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw (`conversations.list.failed` / `conversations.read.failed`). After a successful `POST /:id` append, `notifyConversationMessage` is void-caught (`conversations.push.failed`) so 200 is unchanged. Public list/open JSON includes `unread` and `lastSats` and may include optional counterpart `accountId`; thread messages may include optional sender `accountId`. Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`.
+- **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet; 404 when not allowed; 429 Too many payments; 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw (`conversations.list.failed` / `conversations.read.failed`). After a successful `POST /:id` append, `notifyConversationMessage` is void-caught (`conversations.push.failed`) so 200 is unchanged. Public list/open JSON includes `unread` and `lastSats` and may include optional counterpart `accountId`; thread messages may include optional `accountId` (actor for staff when set, otherwise sender). Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`.
 - **Used by:** `createApp`.
 
 ## Function: notificationRoutes
@@ -1082,21 +1082,21 @@
 ## Function: serializeConversationMessage
 
 - **Purpose:** Project a stored conversation message to its public JSON shape.
-- **Inputs:** `ConversationMessageRow`, `fromMe` boolean.
-- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, sats, accountId? }`. `sats` is the message amount (`0` when unpaid). Includes `accountId` from `senderAccountId` when that value is a non-empty string; omits the key when it is null or empty. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
+- **Inputs:** `ConversationMessageRow`, `fromMe` boolean, optional `{ staff: true }`.
+- **Returns / side effects:** `{ id, name, text, createdAt, fromMe, sats, accountId? }`. `sats` is the message amount (`0` when unpaid). Staff with `actorAccountId` get actor `name`/`accountId`; members get sender fields. Omits event ids, `senderAccountId`, and `senderPubkey`. No I/O.
 - **Used by:** `conversationRoutes`.
 
 ## Function: conversationFromMe
 
-- **Purpose:** Viewer-relative direction for a stored sender: true when the sender is the session account, or when staff is acting as the platform identity that sent the message.
-- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`. `senderAccountId` null (empty thread / Damus inbound) is false.
+- **Purpose:** Viewer-relative direction for a stored message: true when the actor (else sender) is the session account. No staff-as-platform shortcut.
+- **Inputs:** `{ senderAccountId, actorAccountId, viewerId }`. Null actor and sender is false.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `conversationRoutes` (list `lastFromMe`, thread `fromMe`); `conversationIsInbound`.
 
 ## Function: conversationIsInbound
 
-- **Purpose:** Whether a stored sender is inbound for the viewer (not the viewer, and not staff-as-platform). Null Damus sender is inbound.
-- **Inputs:** `{ senderAccountId, viewerId, staff, platformId }`.
+- **Purpose:** Whether a stored message is inbound for the viewer (not the actor). Null Damus sender/actor is inbound.
+- **Inputs:** `{ senderAccountId, actorAccountId, viewerId }`.
 - **Returns / side effects:** `!conversationFromMe(args)`. No I/O.
 - **Used by:** `InMemoryConversationStore.hasInboundMessage`.
 
@@ -1104,7 +1104,7 @@
 
 - **Purpose:** Unsigned/pending defaults for a locally persisted conversation message.
 - **Inputs:** none.
-- **Returns / side effects:** `{ sats: 0, eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null }`.
+- **Returns / side effects:** `{ sats: 0, eventId: null, nostrPublishState: 'pending', nostrEvent: null, claimedUntil: null, actorAccountId: null, actorName: '' }`.
 - **Used by:** `contactRoutes`, `conversationRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick` (inbound conversation persist).
 
 ## Function: moderatorGroupDisplayName
@@ -1186,10 +1186,52 @@
 
 ## Function: requestLog
 
-- **Purpose:** Hono middleware: `http.request` JSON after the handler. Skips `/healthz` and OPTIONS. Never logs the query string. Path is passed through `requestLogPath` so `/view/<segment>` is redacted.
-- **Inputs:** None.
+- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. `ms` is handler duration (captured once after `next`). Auth-classification failure still stores `authKind: 'none'` with `accountId` null. Store write failure logs `api_log.write.failed` and does not replace the response.
+- **Inputs:** `{ apiLogStore, authStore, debugToken, spendApiToken, now? }`.
 - **Returns / side effects:** `MiddlewareHandler`.
 - **Used by:** `createApp`.
+
+## Function: serializeDebugApiLog
+
+- **Purpose:** Project an `api_log` row to operator JSON (`createdAt` ISO-8601).
+- **Inputs:** `ApiLogRow`.
+- **Returns / side effects:** `DebugApiLog`. No I/O.
+- **Used by:** `debugApiLogRoutes`.
+
+## Function: InMemoryApiLogStore
+
+- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc).
+- **Inputs:** Optional seed rows.
+- **Returns / side effects:** `append` / `listLatest` copies.
+- **Used by:** `createApp` default; tests.
+
+## Function: PostgresApiLogStore
+
+- **Purpose:** Durable `ApiLogStore` over `api_log`.
+- **Inputs:** Parameter-bound `SqlClient` (already migrated).
+- **Returns / side effects:** Inserts and newest-first selects. No UPDATE/DELETE.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: migrateApiLogSchema
+
+- **Purpose:** Idempotent DDL for `api_log`. Must run after `account` exists and before `migrateDbChangeSchema`.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Executes `API_LOG_SCHEMA_SQL` in order.
+- **Used by:** `openBootStores`.
+
+## Function: resolveRequestAuth
+
+- **Purpose:** Classify Authorization as `debug`, `spend`, `session`, or `none`. Debug and spend use the constant-time debug-token compare. Session goes through `resolveSession`. Never returns the token.
+- **Inputs:** Header, `AuthStore`, `now`, optional debug and spend tokens.
+- **Returns / side effects:** `{ accountId, authKind }`.
+- **Used by:** `requestLog`.
+
+## Function: debugApiLogRoutes
+
+- **Purpose:** Hono app for `GET /debug/api-log`.
+- **Inputs:** `ApiLogStore` and optional `debugToken`.
+- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 200 `{ logs }` cap 200; 503 `Log is unavailable` on store throw.
+- **Used by:** `createApp` at `/debug/api-log`.
 
 ## Function: requestLogPath
 
