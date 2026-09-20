@@ -452,6 +452,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
+      conversationStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

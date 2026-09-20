@@ -20,8 +20,8 @@ export interface SpendPing {
    * (`kind === 'moderator'`).
    *
    * @param address - Recipient Lightning Address.
-   * @param messageId - Forum post id (daily) or conversation message id
-   *   (moderator; omitted from the HTTP body).
+   * @param messageId - Forum post id (daily JSON `messageId`) or
+   *   conversation message id (moderator JSON `groupMessageId`).
    * @param kind - `'daily'` (default) or `'moderator'`.
    */
   ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void>;
@@ -32,7 +32,8 @@ export interface SpendPing {
  */
 export class NoopSpendPing implements SpendPing {
   /**
-   * Ignore the address, message id, and optional kind.
+   * Ignore the address, message id (daily `messageId` / moderator
+   * `groupMessageId`), and optional kind.
    *
    * @param _address - Unused.
    * @param _messageId - Unused.
@@ -44,8 +45,9 @@ export class NoopSpendPing implements SpendPing {
 }
 
 /**
- * POST `{ address, messageId }` (daily) or `{ address, kind: "moderator" }`
- * to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`.
+ * POST `{ address, messageId }` (daily) or
+ * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`
+ * with Bearer `SPEND_API_TOKEN`.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
  * Network, abort, and non-2xx log `spend.ping.failed` and resolve.
@@ -69,16 +71,20 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * POST `{ address, messageId }` (daily) or `{ address, kind: "moderator" }`
-   * to `{spendUrl}/ping`. Resolves on success and failure.
+   * POST `{ address, messageId }` (daily) or
+   * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`.
+   * Resolves on success and failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
-   * @param messageId - Forum post id for daily pings (JSON body); unused in
-   *   the moderator body.
+   * @param messageId - Forum post id for daily pings (JSON `messageId`);
+   *   conversation message id for moderator pings (JSON `groupMessageId`).
    * @param kind - `'daily'` (default) or `'moderator'`.
    */
   async ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void> {
-    const body = kind === 'moderator' ? { address, kind: 'moderator' } : { address, messageId };
+    const body =
+      kind === 'moderator'
+        ? { address, kind: 'moderator', groupMessageId: messageId }
+        : { address, messageId };
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',

@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
+import { Hono } from 'hono';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { invoiceRoutes } from '@/routes/invoices';
 import { createApp } from '@/server';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -28,6 +31,8 @@ const OTHER_POST_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const REPLY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const PROFILE_NOTE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const UNKNOWN_POST_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const GROUP_MSG_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_GROUP_MSG_ID = '22222222-2222-4222-8222-222222222222';
 
 const mockedDecode = vi.mocked(decodeBolt11);
 
@@ -172,6 +177,36 @@ function spendGiftReplyId(invoiceId: string): string {
   const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
   const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Same derivation as production `spendGroupGiftId` (not exported). */
+function spendGroupGiftId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-group-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
+async function seedGroupTrigger(
+  conversations: InMemoryConversationStore,
+  senderAccountId: string | null = 'acc-alice',
+  messageId: string = GROUP_MSG_ID,
+): Promise<string> {
+  const thread = await conversations.ensureModeratorGroup('plat', new Date(1));
+  await conversations.appendMessage({
+    id: messageId,
+    conversationId: thread.id,
+    text: 'mod note',
+    createdAt: new Date(1),
+    senderAccountId,
+    senderPubkey: null,
+    name: 'Ada',
+    sats: 0,
+    eventId: null,
+    nostrPublishState: 'skipped',
+    nostrEvent: null,
+    claimedUntil: null,
+  });
+  return thread.id;
 }
 
 function uuidReplyStore(): InMemoryMessageStore {
@@ -1191,6 +1226,387 @@ describe('POST /invoices', () => {
     expect(await res.json()).toEqual({ error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('stores groupMessageId and comment when issuing against a group message', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+          comment: '21gifts moderator',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(invoiceStore.get(body.id)?.comment).toBe('21gifts moderator');
+  });
+
+  it('stores an empty comment when groupMessageId is set and comment is omitted', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(invoiceStore.get(body.id)?.comment).toBe('');
+  });
+
+  it('returns 400 when groupMessageId is not a UUID', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: 'nope',
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with address and amountMsat',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when both messageId and groupMessageId are set', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with address and amountMsat',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 and ignores an unknown groupMessageId', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: OTHER_GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores a groupMessageId outside the moderator group', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    const thread = await conversationStore.openMemberPlatform('acc-alice', 'plat', new Date(1));
+    await conversationStore.appendMessage({
+      id: GROUP_MSG_ID,
+      conversationId: thread.id,
+      text: 'mod note',
+      createdAt: new Date(1),
+      senderAccountId: 'acc-alice',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores a groupMessageId from another sender', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore, 'someone-else');
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores groupMessageId when no conversation store is wired', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const app = new Hono().route(
+      '/invoices',
+      invoiceRoutes({
+        spendApiToken: TOKEN,
+        store: invoiceStore,
+        authStore,
+        messageStore: uuidPostStore(),
+        now: () => 1,
+        fetchImpl: happyFetch(),
+      }),
+    );
+    const res = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores groupMessageId when the conversation lookup throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const conversationStore: Pick<
+      ConversationStore,
+      'getById' | 'getMessageById' | 'appendMessage'
+    > = {
+      getById: () => Promise.resolve(undefined),
+      getMessageById: () => Promise.reject(new Error('db')),
+      appendMessage: () => Promise.reject(new Error('db')),
+    };
+    const app = new Hono().route(
+      '/invoices',
+      invoiceRoutes({
+        spendApiToken: TOKEN,
+        store: invoiceStore,
+        authStore,
+        messageStore: uuidPostStore(),
+        conversationStore,
+        now: () => 1,
+        fetchImpl: happyFetch(),
+      }),
+    );
+    const res = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores groupMessageId when the platform account is missing', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 403 when groupMessageId is set but the account has no live forum post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: new InMemoryMessageStore([]),
+      fetchImpl,
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /invoices/proof', () => {
@@ -1923,5 +2339,357 @@ describe('POST /invoices/proof', () => {
     const replies = await messageStore.listReplies(POST_ID, 200);
     expect(replies[0]?.text).toBe('');
     expect(replies[0]?.nostrPublishState).toBe('skipped');
+  });
+
+  it('attaches a platform group stipend with comment and recipient name', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    const threadId = await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
+    expect(attached).toBeDefined();
+    expect(attached?.conversationId).toBe(threadId);
+    expect(attached?.senderAccountId).toBe('plat');
+    expect(attached?.name).toBe('21.gifts');
+    expect(attached?.sats).toBe(Math.floor(unpaid().amountMsat / 1000));
+    expect(attached?.text).toBe('21gifts moderator · Ada');
+    expect(attached?.createdAt.getTime()).toBe(100);
+    expect(attached?.nostrPublishState).toBe('skipped');
+    expect(attached?.eventId).toBeNull();
+    expect(attached?.nostrEvent).toBeNull();
+    expect(attached?.claimedUntil).toBeNull();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_gift.attached' && e['id'] === unpaid().id,
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back to 21.gifts when the platform account has no name', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    expect(platform).toBeDefined();
+    if (platform === undefined) {
+      return;
+    }
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    for (const [index, name] of ['  ', null].entries()) {
+      await authStore.updateAccount({ ...platform, name });
+      const invoice = unpaid({
+        id: `${index}`.padStart(32, 'a'),
+        groupMessageId: GROUP_MSG_ID,
+        comment: '21gifts moderator',
+      });
+      store.put(invoice);
+      const res = await createApp({
+        spendApiToken: TOKEN,
+        invoiceStore: store,
+        authStore,
+        conversationStore,
+        now: () => 100,
+      }).request(
+        '/invoices/proof',
+        auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+      );
+      expect(res.status).toBe(200);
+      const attached = await conversationStore.getMessageById(spendGroupGiftId(invoice.id));
+      expect(attached?.name).toBe('21.gifts');
+    }
+  });
+
+  it('attaches a group stipend with comment-only text when the recipient name is empty', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
+    expect(attached?.text).toBe('21gifts moderator');
+  });
+
+  it('attaches a group stipend with recipient-name-only text when comment is empty', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
+    expect(attached?.text).toBe('Ada');
+  });
+
+  it('attaches a group stipend with empty text when comment and recipient name are empty', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: '  ',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
+    expect(attached?.text).toBe('');
+  });
+
+  it('does not attach a second group stipend on the same preimage', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    const threadId = await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const app = createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    });
+    const body = auth({
+      method: 'POST',
+      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
+    });
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    const messages = await conversationStore.listMessages(threadId, 200);
+    expect(messages).toHaveLength(2);
+    expect(messages.filter((row) => row.id === spendGroupGiftId(unpaid().id))).toHaveLength(1);
+  });
+
+  it('returns 200 and logs invoice.group_gift.failed when the triggering group message is missing', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
+  });
+
+  it('returns 200 and logs invoice.group_gift.failed when the thread is not moderator_group', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    const thread = await conversationStore.openMemberPlatform('acc-alice', 'plat', new Date(1));
+    await conversationStore.appendMessage({
+      id: GROUP_MSG_ID,
+      conversationId: thread.id,
+      text: 'mod note',
+      createdAt: new Date(1),
+      senderAccountId: 'acc-alice',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
+  });
+
+  it('returns 200 and logs invoice.group_gift.failed when the platform is missing at proof', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
+  });
+
+  it('returns 200 and logs invoice.group_gift.failed when the conversation store throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = {
+      getById: () => Promise.resolve(undefined),
+      getMessageById: () => Promise.reject(new Error('db')),
+      appendMessage: () => Promise.reject(new Error('db')),
+    } as unknown as ConversationStore;
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      authStore,
+      conversationStore,
+      now: () => 100,
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
+  });
+
+  it('records 21gifts moderator as the gift description when groupMessageId is set', async () => {
+    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
+    const recorded: unknown[] = [];
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      now: () => 100,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded).toEqual([
+      {
+        paidAt: new Date(100),
+        amountSats: 1,
+        feeSats: 0,
+        recipientWosUser: 'alice',
+        lightningInvoice: PR,
+        description: '21gifts moderator',
+        sourceWallet: 'lightning.space',
+      },
+    ]);
   });
 });
