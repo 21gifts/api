@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
@@ -24,6 +24,10 @@ const CONFIG: WebAuthnRuntimeConfig = {
   expectedOrigins: ['http://localhost:3000'],
 };
 const ORIGIN = 'http://localhost:3000';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('credentialIdFrom', () => {
   it('returns null for non-objects and missing ids', () => {
