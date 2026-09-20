@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { paymentHashFromReceipt } from '@/lib/account-activity';
+import { requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
@@ -25,7 +26,9 @@ import {
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
-import { notifyZap } from '@/lib/notification';
+import { notifyForumPost, notifyForumReply, notifyZap } from '@/lib/notification';
+import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import type { SpendPing } from '@/lib/spend-ping';
 import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
@@ -477,6 +480,9 @@ export async function settleInvoiceManually(args: {
   preimage?: string;
   pushStore?: PushStore;
   notificationStore?: NotificationStore;
+  spendPing?: SpendPing;
+  postLimiter?: PostRateLimiter;
+  conversations?: ConversationStore;
 }): Promise<SettleInvoiceResult> {
   const paymentHash = normalizeHex32(args.paymentHash);
   if (paymentHash === null) {
@@ -574,7 +580,16 @@ export async function settleInvoiceManually(args: {
     payer = undefined;
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-  if (!hidden && message.accountId !== null) {
+  let parentAuthor: Account | undefined;
+  if (message.accountId !== null) {
+    try {
+      parentAuthor = await args.auth.getAccount(message.accountId);
+    } catch {
+      parentAuthor = undefined;
+    }
+  }
+  const feeNote = isPlatformFeeNote(parentAuthor, message);
+  if (!hidden && message.accountId !== null && !feeNote) {
     try {
       await notifyZap({
         note: message,
@@ -603,6 +618,13 @@ export async function settleInvoiceManually(args: {
         amountSats: invoice.amountSats,
         payer,
         text: commentFromZapRequest(invoice.zapRequest),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(args.notificationStore === undefined
+          ? {}
+          : { notificationStore: args.notificationStore }),
+        ...(args.spendPing === undefined ? {} : { spendPing: args.spendPing }),
+        ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
+        ...(args.conversations === undefined ? {} : { conversations: args.conversations }),
       });
     } catch {
       logEvent('nostr.zap.gift_reply.failed', { receiptId });
@@ -759,7 +781,8 @@ export async function indexZapReceipt(args: {
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore`, `notificationStore`, and `conversations` (PN
- *   invoices append here; omitted → `rejected`/`conversation`).
+ *   invoices append here; omitted → `rejected`/`conversation`); optional
+ *   `spendPing` and `postLimiter` for platform-note compose.
  * @returns Resolves when the tick's ingest pass finishes.
  * @throws Propagates relay-query and unguarded store failures.
  */
@@ -779,6 +802,10 @@ export async function indexOpenZapReceipts(args: {
   notificationStore?: NotificationStore;
   /** Optional PN store; conversation invoices append here instead of forum sats. Zap payloads include listed unread when set. */
   conversations?: ConversationStore;
+  /** Optional spend ping after a platform-note compose creates a top-level post. */
+  spendPing?: SpendPing;
+  /** Optional post limiter; platform-note compose counts against the same caps as `POST /messages`. */
+  postLimiter?: PostRateLimiter;
 }): Promise<void> {
   if (args.urls.length === 0) {
     await retryGiftReplies(args);
@@ -894,6 +921,8 @@ async function ingestOneReceipt(
     pushStore?: PushStore;
     notificationStore?: NotificationStore;
     conversations?: ConversationStore;
+    spendPing?: SpendPing;
+    postLimiter?: PostRateLimiter;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -1325,25 +1354,30 @@ async function ingestOneReceipt(
     } catch {
       payer = undefined;
     }
-    try {
-      await notifyZap({
-        note: row,
-        receiptId: event.id,
-        amountSats,
-        nowMs: args.now(),
-        auth: args.auth,
-        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
-        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-        /* v8 ignore next 3 -- production worker always has conversationStore */
-        ...(args.conversations === undefined
-          ? {}
-          : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
-        ...(payer === undefined
-          ? {}
-          : { payerAccountId: payer.id, payerName: payer.name ?? 'Someone' }),
-      });
-    } catch {
-      logEvent('push.enqueue.failed');
+    const parentAuthor = await args.auth.getAccount(row.accountId);
+    if (!isPlatformFeeNote(parentAuthor, row)) {
+      try {
+        await notifyZap({
+          note: row,
+          receiptId: event.id,
+          amountSats,
+          nowMs: args.now(),
+          auth: args.auth,
+          ...(args.notificationStore === undefined
+            ? {}
+            : { notifications: args.notificationStore }),
+          ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+          /* v8 ignore next 3 -- production worker always has conversationStore */
+          ...(args.conversations === undefined
+            ? {}
+            : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+          ...(payer === undefined
+            ? {}
+            : { payerAccountId: payer.id, payerName: payer.name ?? 'Someone' }),
+        });
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
     }
   }
   await tryEnsureGiftReply(event, args);
@@ -1390,6 +1424,11 @@ interface BaseGiftReplyDeps {
   store: MessageStore;
   auth: AuthStore;
   now: () => number;
+  pushStore?: PushStore;
+  notificationStore?: NotificationStore;
+  conversations?: ConversationStore;
+  spendPing?: SpendPing;
+  postLimiter?: PostRateLimiter;
 }
 
 /** Collaborators for creating a gift-reply after a zap is indexed. */
@@ -1443,9 +1482,7 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
         return;
       }
       await insertGiftReply({
-        store: args.store,
-        auth: args.auth,
-        now: args.now,
+        ...args,
         receiptEventId: event.id,
         parent,
         amountSats: receipt.sats,
@@ -1596,9 +1633,7 @@ async function ensureGiftReplyFromReceipt(
       return;
     }
     await insertGiftReply({
-      store: args.store,
-      auth: args.auth,
-      now: args.now,
+      ...args,
       receiptEventId: args.receiptEventId,
       parent: args.parent,
       amountSats: args.amountSats,
@@ -1666,9 +1701,7 @@ async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
         continue;
       }
       await insertGiftReply({
-        store: args.store,
-        auth: args.auth,
-        now: args.now,
+        ...args,
         receiptEventId: row.receiptEventId,
         parent,
         amountSats: row.sats,
@@ -1797,8 +1830,11 @@ async function insertExternalGiftReply(
  * Persist the gift-reply row. `store.create` throws when the parent is
  * missing or soft-hidden. Create/link failures propagate so
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
- * Does not call `notifyForumReply`; zap ingest already called `notifyZap`
- * after indexing. When the parent is itself a reply, sets `payerAccountId`
+ * Gift-replies on a member note do not call `notifyForumReply`; zap ingest
+ * already called `notifyZap` after indexing. A zap on the platform profile
+ * note is a compose fee: `forum.post` + `postLimiter` gate the create, then
+ * `notifyForumPost` / `notifyForumReply` (not `notifyZap`) and a top-level
+ * `spendPing`. When the parent is itself a reply, sets `payerAccountId`
  * to null and returns without `store.create` so the receipt never occupies
  * the awaiting-gift-reply queue.
  *
@@ -1844,6 +1880,18 @@ async function insertGiftReply(
     await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
     return;
   }
+  if (compose.isFeeNote) {
+    const gate = requireAction(args.payer, 'forum.post');
+    if (!gate.ok) {
+      await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+      return;
+    }
+    if (args.postLimiter !== undefined && !args.postLimiter.allow(args.payer.id, args.now())) {
+      logEvent('messages.rate_limited', { accountId: args.payer.id });
+      await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
+      return;
+    }
+  }
   const created = await args.store.create({
     id: giftReplyIdForReceipt(args.receiptEventId),
     accountId: args.payer.id,
@@ -1861,18 +1909,60 @@ async function insertGiftReply(
     contentFp: null,
   });
   await args.store.updateZapReceiptGift(args.receiptEventId, { giftReplyId: created.id });
+  if (!compose.isFeeNote) {
+    return;
+  }
+  try {
+    if (parentId === null) {
+      await notifyForumPost({
+        account: args.payer,
+        created,
+        auth: args.auth,
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(args.conversations === undefined
+          ? {}
+          : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+      });
+    } else {
+      await notifyForumReply({
+        messages: args.store,
+        account: args.payer,
+        created,
+        parentId,
+        auth: args.auth,
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(args.conversations === undefined
+          ? {}
+          : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+      });
+    }
+  } catch {
+    logEvent(parentId === null ? 'push.enqueue.failed' : 'messages.reply.notify.failed');
+  }
+  if (parentId === null && args.payer.lightningAddress !== null && args.spendPing !== undefined) {
+    try {
+      await args.spendPing.ping(args.payer.lightningAddress, created.id);
+    } catch {
+      logEvent('spend.ping.failed');
+    }
+  }
 }
 
 const COMPOSE_REPLY_PREFIX =
   /^inReplyTo:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\n([\s\S]*))?$/i;
+
+function isPlatformFeeNote(author: Account | undefined, note: MessageRow): boolean {
+  return author?.isPlatform === true && author.profileMessageId === note.id;
+}
 
 function parsePlatformCompose(
   text: string,
   parentAuthor: Account | undefined,
   parent: MessageRow,
 ): { isFeeNote: boolean; parentId: string | null; body: string } {
-  const isFeeNote =
-    parentAuthor?.isPlatform === true && parentAuthor.profileMessageId === parent.id;
+  const isFeeNote = isPlatformFeeNote(parentAuthor, parent);
   if (!isFeeNote) {
     return { isFeeNote: false, parentId: parent.id, body: text };
   }

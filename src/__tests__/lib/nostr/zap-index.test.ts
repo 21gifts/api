@@ -28,6 +28,7 @@ import {
   manualReceiptIdForPaymentHash,
   settleInvoiceManually,
 } from '@/lib/nostr/zap-index';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -1378,13 +1379,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '12'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -1392,6 +1394,8 @@ describe('manual invoice settlement', () => {
       conversationId: null,
       zapRequest: { content: 'Hello from Ada' },
     });
+    const notifications = new InMemoryNotificationStore();
+    const spendPing = { ping: vi.fn(async () => undefined) };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const result = await settleInvoiceManually({
       store,
@@ -1400,6 +1404,10 @@ describe('manual invoice settlement', () => {
       paymentHash,
       note: 'compose fee',
       preimage,
+      notificationStore: notifications,
+      spendPing,
+      postLimiter: new PostRateLimiter(),
+      conversations: new InMemoryConversationStore(),
     });
     warn.mockRestore();
     expect(result.ok).toBe(true);
@@ -1407,6 +1415,242 @@ describe('manual invoice settlement', () => {
     expect(created?.parentId).toBeNull();
     expect(created?.accountId).toBe('manual-payer');
     expect(created?.sats).toBe(0);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('payer@example.com', created?.id);
+    const kinds = (await notifications.listByRecipient('manual-author', 10)).map((row) => row.type);
+    expect(kinds).toEqual(['forum_post']);
+  });
+
+  it('skips a platform-note compose when the payer is missing forum.post fields', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const preimage = '19'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: 'Needs a username' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose missing username',
+      preimage,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.listLatest(20)).filter((row) => row.accountId === 'manual-payer')).toEqual(
+      [],
+    );
+  });
+
+  it('skips a platform-note compose when the post limiter denies', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const preimage = '1a'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: 'Rate limited' },
+    });
+    const limiter = new PostRateLimiter();
+    vi.spyOn(limiter, 'allow').mockReturnValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose limited',
+      preimage,
+      postLimiter: limiter,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.listLatest(20)).filter((row) => row.accountId === 'manual-payer')).toEqual(
+      [],
+    );
+  });
+
+  it('still creates a platform-note post when notify or spendPing throw', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const preimage = '1b'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: 'Notify boom' },
+    });
+    const notifications = new InMemoryNotificationStore();
+    vi.spyOn(notifications, 'create').mockRejectedValue(new Error('notify boom'));
+    const spendPing = {
+      ping: vi.fn(async () => {
+        throw new Error('ping boom');
+      }),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose notify boom',
+      preimage,
+      notificationStore: notifications,
+      spendPing,
+      pushStore: new InMemoryPushStore(),
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect(
+      (await store.listLatest(20)).some((row) => row.text === 'Notify boom' && row.sats === 0),
+    ).toBe(true);
+  });
+
+  it('still creates a platform-note reply when notifyForumReply throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const feeId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const parentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    await store.create({
+      id: parentId,
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const platform = await auth.getAccount('manual-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: feeId,
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const preimage = '1c'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: `inReplyTo:${parentId}\nThanks boom` },
+    });
+    const notifications = new InMemoryNotificationStore();
+    vi.spyOn(notifications, 'create').mockRejectedValue(new Error('reply notify boom'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose reply notify boom',
+      preimage,
+      notificationStore: notifications,
+      pushStore: new InMemoryPushStore(),
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.listReplies(parentId))[0]?.text).toBe('Thanks boom');
   });
 
   it('turns a platform-note inReplyTo comment into a reply', async () => {
@@ -1440,13 +1684,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '13'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -1462,6 +1707,7 @@ describe('manual invoice settlement', () => {
       paymentHash,
       note: 'compose reply fee',
       preimage,
+      conversations: new InMemoryConversationStore(),
     });
     warn.mockRestore();
     expect(result.ok).toBe(true);
@@ -1491,13 +1737,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '14'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -1552,13 +1799,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '18'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -1604,13 +1852,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const missingParent = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const preimage = '15'.repeat(32);
@@ -1678,13 +1927,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '16'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -1740,13 +1990,14 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
+      username: 'ada',
       lightningAddress: 'payer@example.com',
       lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
-      rulesAgreedAt: null,
+      rulesAgreedAt: 1,
     });
     const preimage = '17'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');

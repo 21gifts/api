@@ -43,8 +43,10 @@ import {
   type ResolvedWriteSet,
 } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
+import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import type { SpendPing } from '@/lib/spend-ping';
 import {
   EXTERNAL_REPLY_FUTURE_SKEW_MS,
   EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
@@ -98,6 +100,10 @@ export interface NostrWorkerDeps {
   conversations?: ConversationStore;
   /** Optional in-app store: inbound replies, notifyZap, profile-note notifyForumPost. */
   notificationStore?: NotificationStore;
+  /** Optional spend ping after a platform-note compose creates a top-level post. */
+  spendPing?: SpendPing;
+  /** Optional post limiter shared with `POST /messages`. */
+  postLimiter?: PostRateLimiter;
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
@@ -228,6 +234,9 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
     ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
+    /* v8 ignore next 2 -- compose deps are injected at boot; unit ticks omit them */
+    ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+    ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
