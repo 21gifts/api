@@ -10,9 +10,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
@@ -33,7 +31,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * a reply, the proof persists a deterministic `spendGiftReplyId` marker
  * under that reply, `markDeleted` so live `listReplies` omits it, then
  * `addSats`s the reply. A live existing marker is `markDeleted` only and
- * does not `addSats`. The api does not pay.
+ * does not `addSats`. Platform gift-replies do not notify. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -77,10 +75,8 @@ export interface InvoiceRouteDeps {
    */
   giftRecorder?: GiftRecorder;
   /**
-   * Optional in-app notification store. A spend gift-reply fans out via
-   * {@link notifyForumReply} with `auth` so `notificationLevel` filters
-   * in-app rows when this store is set, and Web Push when `pushStore` is
-   * set. Missing `pushStore` still writes in-app rows.
+   * Optional in-app notification store. Spend gift-replies are always the
+   * platform actor and do not notify (no in-app rows, no Web Push).
    */
   notificationStore?: NotificationStore;
   /**
@@ -252,7 +248,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (existing !== undefined) {
         return;
       }
-      const created = await deps.messageStore.create({
+      await deps.messageStore.create({
         id: replyId,
         accountId: platform.id,
         name,
@@ -269,28 +265,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         authorPubkey,
       });
       await deps.messageStore.addSats(invoice.messageId, sats);
-      try {
-        await notifyForumReply({
-          messages: deps.messageStore as MessageStore,
-          account: platform,
-          created,
-          parentId: invoice.messageId,
-          auth: deps.authStore,
-          /* v8 ignore next 4 -- createApp always injects notificationStore and pushStore */
-          ...(deps.notificationStore === undefined
-            ? {}
-            : { notifications: deps.notificationStore }),
-          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-          /* v8 ignore next 4 -- createApp always injects conversationStore */
-          ...(deps.conversationStore === undefined
-            ? {}
-            : {
-                inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
-              }),
-        });
-      } catch {
-        logEvent('messages.reply.notify.failed');
-      }
     } catch {
       logEvent('invoice.gift_reply.failed');
     }

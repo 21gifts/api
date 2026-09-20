@@ -808,6 +808,35 @@ describe('notifyForumReply', () => {
     expect(claimed).toHaveLength(2);
     expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
   });
+
+  it('is a no-op when the reply actor is the platform account', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages);
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'plat', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'other');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'plat', role: 'basis', isPlatform: true, notificationLevel: 'all' },
+          { id: 'other', role: 'basis', isPlatform: false, notificationLevel: 'all' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumReply({
+      messages,
+      notifications,
+      pushStore,
+      auth,
+      account: { id: 'plat' },
+      created,
+      parentId: 'parent-note',
+    });
+    expect(await notifications.listByRecipient('other', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
 });
 
 describe('notifyExternalForumReply', () => {
@@ -994,6 +1023,50 @@ describe('notifyForumPost', () => {
     });
     expect(await notifications.listByRecipient('other', 10)).toEqual([]);
   });
+
+  it('is a no-op when the actor is the platform account', async () => {
+    const created = message({ id: 'post-1', accountId: 'plat', name: '21.gifts', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'other');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'plat', role: 'basis', isPlatform: true, notificationLevel: 'all' },
+          { id: 'other', role: 'basis', isPlatform: false, notificationLevel: 'all' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      auth,
+      account: { id: 'plat' },
+      created,
+    });
+    expect(await notifications.listByRecipient('other', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('still notifies when the actor is founder without isPlatform', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'all-user', role: 'basis', notificationLevel: 'all' },
+          { id: 'mentions-user', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'actor', role: 'founder' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumPost({
+      notifications,
+      auth,
+      account: { id: 'actor' },
+      created,
+    });
+    expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+  });
 });
 
 describe('notifyZap', () => {
@@ -1134,6 +1207,32 @@ describe('notifyZap', () => {
       nowMs: NOW.getTime(),
     });
     expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+  });
+
+  it('is a no-op when payerAccountId is the platform account', async () => {
+    const note = message({ id: 'note-1', accountId: 'author', name: 'Pat', text: 'post' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'plat', role: 'basis', isPlatform: true, notificationLevel: 'all' },
+          { id: 'author', role: 'basis', isPlatform: false, notificationLevel: 'all' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyZap({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      amountSats: 21,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'plat',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 });
 

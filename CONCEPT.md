@@ -3,7 +3,7 @@
 > Peer-to-peer donation platform. Direct human-to-human giving over Bitcoin
 > Lightning, with NOSTR as the invisible communication substrate.
 
-**Status**: draft, in active iteration. Last revised 2026-09-17.
+**Status**: draft, in active iteration. Last revised 2026-09-20.
 
 ---
 
@@ -847,6 +847,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-18 | External NOSTR identities become visible on the website only after a verified zap of at least 1 sat on a 21.gifts forum note; the protocol remains open. The zap creates an external gift-reply on an eligible top-level note and permanently entitles that pubkey's kind:1 replies. Staff hiding an external row blocks the pubkey and hides its other live rows. Public JSON marks these rows with `via: "nostr"` and never exposes the pubkey. **Supersedes** the 2026-09-11 rule that all unknown-pubkey replies are omitted.                  |
 | 2026-09-20 | Roles are a strict hierarchy founder > moderator > verified > basis; every permission is a minimum role (roleAtLeast), and text names only that minimum role. The closed Moderators group follows the same rule.                                                                                                                                                                                                                                                                                                                                   |
 | 2026-09-20 | Staff `DELETE /messages/:id` still only soft-hides on 21.gifts, then best-effort publishes NIP-09 `kind: 5` (author nsec, durability relay plus Damus/Primal/nos.lol, not gated on `NOSTR_PUBLISH*`) and purges cached public photo/video URLs at Cloudflare when `CLOUDFLARE_ZONE_ID` + `CLOUDFLARE_API_TOKEN` are set. Failure still 204. Debug restore does not undelete Nostr. **Supersedes** the 2026-09-12 “soft-hide remains a public-API filter only” note.                                                                                |
+| 2026-09-20 | Official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap` (in-app or Web Push). House daily gift-replies still persist. **Supersedes** the 2026-09-14/15/16 living-room fan-out for the platform actor only.                                                                                                                                                                                                                                                                                        |
 
 ## Next Steps
 
