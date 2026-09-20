@@ -753,7 +753,13 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
-    const current = await this.getPasskeyCredentialForAccount(credential.accountId);
+    let current: PasskeyCredential | undefined;
+    for (const stored of this.#passkeyCredentials.values()) {
+      if (stored.accountId === credential.accountId) {
+        current = stored;
+        break;
+      }
+    }
     if (current === undefined) {
       return false;
     }

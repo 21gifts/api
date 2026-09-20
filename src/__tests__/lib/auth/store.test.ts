@@ -1061,6 +1061,43 @@ describe('InMemoryAuthStore', () => {
     });
   });
 
+  it('keeps one passkey when two replaces run together', async () => {
+    const store = new InMemoryAuthStore();
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    const [first, second] = await Promise.all([
+      store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+      store.replacePasskeyCredential({
+        credentialId: 'cred-c',
+        publicKey: new Uint8Array([3]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 3,
+      }),
+    ]);
+    expect(first || second).toBe(true);
+    const remaining = [
+      await store.getPasskeyCredential('cred-a'),
+      await store.getPasskeyCredential('cred-b'),
+      await store.getPasskeyCredential('cred-c'),
+    ].filter((row) => row !== undefined);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.accountId).toBe('acc');
+  });
+
   it('refuses a second first-passkey for the same account', async () => {
     const store = new InMemoryAuthStore();
     const first = {
