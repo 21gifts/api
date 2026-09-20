@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore } from '@/lib/contact-store';
-import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { isDebugCatalogTable, loadDebugTables } from '@/lib/debug-catalog';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
@@ -137,8 +137,6 @@ describe('loadDebugTables', () => {
           senderAccountId: accountId,
           senderPubkey: null,
           name: 'Ada',
-          actorAccountId: accountId,
-          actorName: 'Ada',
           sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
@@ -443,6 +441,11 @@ describe('loadDebugTables', () => {
           actorAccountId: accountId,
           actorName: 'Ada',
         }),
+        expect.objectContaining({
+          id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeed',
+          actorAccountId: null,
+          actorName: '',
+        }),
       ]),
     );
     expect(tables.conversation_read).toHaveLength(1);
@@ -552,6 +555,37 @@ describe('loadDebugTables', () => {
     expect(omitted.nostr_zap_receipt).toEqual([]);
     expect(omitted.nostr_zap_payment).toEqual([]);
     expect(omitted.message_extra_photo).toEqual([]);
+    const bareActor = await loadDebugTables(
+      {
+        auth: new InMemoryAuthStore(),
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+        conversations: {
+          listAll: async () => [],
+          listAllMessages: async () => [
+            {
+              id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeed',
+              conversationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+              text: 'earlier',
+              createdAt: new Date('2026-09-01T00:00:00.000Z'),
+              senderAccountId: accountId,
+              senderPubkey: null,
+              name: 'Ada',
+              sats: 0,
+              eventId: null,
+              nostrPublishState: 'pending' as const,
+              nostrEvent: null,
+              claimedUntil: null,
+            },
+          ],
+          listAllReads: async () => [],
+        } as unknown as ConversationStore,
+      },
+      'conversation_message',
+    );
+    expect(bareActor.conversation_message).toEqual([
+      expect.objectContaining({ actorAccountId: null, actorName: '' }),
+    ]);
     const cappedAuth = new InMemoryAuthStore();
     for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
       await cappedAuth.createSession({
