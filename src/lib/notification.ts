@@ -10,6 +10,7 @@
  * account ids. Callers catch failures so persist still succeeds.
  */
 
+import { ROLE_ORDER, roleAtLeast } from '@/lib/auth/roles';
 import type { AuthStore, NotificationLevel } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
@@ -122,12 +123,17 @@ export function parseNotificationLevel(raw: unknown): NotificationLevel {
 /**
  * Whether this account is a staff/admin actor for `mentions` fan-out.
  * `verified` is not staff. `isPlatform === true` is staff even when `role` is `basis`.
+ * Unknown role strings are not staff.
  *
  * @param account - Role plus optional platform flag.
- * @returns True when `role` is `founder` or `moderator`, or `isPlatform` is true.
+ * @returns True when `role` is at least `moderator`, or `isPlatform` is true.
  */
 export function isStaffAccount(account: { role: string; isPlatform?: boolean }): boolean {
-  return account.role === 'founder' || account.role === 'moderator' || account.isPlatform === true;
+  if (account.isPlatform === true) {
+    return true;
+  }
+  const role = ROLE_ORDER.find((item) => item === account.role);
+  return role !== undefined && roleAtLeast(role, 'moderator');
 }
 
 /**
