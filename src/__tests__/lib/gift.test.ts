@@ -136,6 +136,7 @@ describe('buildGiftStats', () => {
     expect(stats.spendOverTime).toEqual([
       {
         day: '2026-06-01',
+        giftCount: 1,
         sats: 1000,
         cumulativeSats: 1000,
         btc: '0.00001000',
@@ -178,6 +179,7 @@ describe('buildGiftStats', () => {
     expect(stats.totalSats).toBe(0);
     expect(stats.totalChf).toBeNull();
     expect(stats.spendOverTime[0]?.sats).toBe(0);
+    expect(stats.spendOverTime[0]?.giftCount).toBe(1);
     expect(stats.spendOverTime[0]?.chf).toBeNull();
     expect(stats.byMonth[0]?.giftCount).toBe(1);
     expect(stats.byMonth[0]?.chf).toBeNull();
@@ -196,6 +198,7 @@ describe('buildGiftStats', () => {
     expect(stats.spendOverTime).toEqual([
       {
         day: '2026-06-01',
+        giftCount: 1,
         sats: 1000,
         cumulativeSats: 1000,
         btc: '0.00001000',
@@ -284,6 +287,7 @@ describe('buildGiftStats', () => {
     expect(stats.spendOverTime).toEqual([
       {
         day: '2026-06-01',
+        giftCount: 1,
         sats: 10,
         cumulativeSats: 10,
         btc: '0.00000010',
@@ -294,6 +298,7 @@ describe('buildGiftStats', () => {
       },
       {
         day: '2026-06-02',
+        giftCount: 0,
         sats: 0,
         cumulativeSats: 10,
         btc: '0.00000000',
@@ -309,6 +314,7 @@ describe('buildGiftStats', () => {
       },
       {
         day: '2026-06-03',
+        giftCount: 1,
         sats: 30,
         cumulativeSats: 40,
         btc: '0.00000030',
@@ -342,6 +348,7 @@ describe('buildGiftStats', () => {
     );
     expect(stats.spendOverTime[1]).toEqual({
       day: '2026-06-02',
+      giftCount: 0,
       sats: 0,
       cumulativeSats: 1000,
       btc: '0.00000000',
@@ -377,6 +384,28 @@ describe('buildGiftStats', () => {
     );
     expect(stats.byRecipient.map((r) => r.recipient)).toEqual(['mid', 'alpha', 'zeta']);
     expect(stats.recipientCount).toBe(3);
+    expect(stats.spendOverTime[0]?.giftCount).toBe(3);
+  });
+
+  it('counts two outbound gifts on the same UTC day', () => {
+    const stats = buildGiftStats(
+      [row('2026-06-01T08:00:00.000Z', 1000, 'alice'), row('2026-06-01T20:00:00.000Z', 500, 'bob')],
+      RATE_100K,
+    );
+    expect(stats.giftCount).toBe(2);
+    expect(stats.spendOverTime).toEqual([
+      {
+        day: '2026-06-01',
+        giftCount: 2,
+        sats: 1500,
+        cumulativeSats: 1500,
+        btc: '0.00001500',
+        cumulativeBtc: '0.00001500',
+        usd: '1.50',
+        cumulativeUsd: '1.50',
+        ...NULL_FIAT_DAY,
+      },
+    ]);
   });
 
   it('groups months chronologically with BTC and USD', () => {
