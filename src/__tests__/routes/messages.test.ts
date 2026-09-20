@@ -9,6 +9,9 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { MESSAGE_MAX_LENGTH, truncatePubkeyDisplay, unsignedNostrDefaults } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
+import { parseNostrKek } from '@/lib/nostr/kek';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { RecordingPublisher } from '@/lib/nostr/publish';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
@@ -145,6 +148,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listReplies: boom,
     listDebug: boom,
     listHidden: boom,
+    listDirectChildren: boom,
     listPublishedEventIds: boom,
     create: boom,
     findLiveByAccountContent: boom,
@@ -1824,6 +1828,7 @@ describe('POST /messages', () => {
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
+      listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       create: (row, photo, video) => base.create(row, photo, video),
       findLiveByAccountContent: async () => {
@@ -1913,6 +1918,7 @@ describe('POST /messages', () => {
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
+      listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       findLiveByAccountContent: async () => undefined,
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
@@ -3450,6 +3456,7 @@ describe('POST /messages/:id/invoice', () => {
       listLatest: (limit) => base.listLatest(limit),
       listDebug: (limit) => base.listDebug(limit),
       listHidden: (limit) => base.listHidden(limit),
+      listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listReplies: (parentId, limit) => base.listReplies(parentId, limit),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
@@ -5573,6 +5580,172 @@ describe('DELETE /messages/:id', () => {
     ).toBe(204);
     expect((await app.request(`/messages/${videoId}/video.mp4`)).status).toBe(404);
     expect(await messages.getById(videoId)).toBeDefined();
+  });
+
+  it('publishes NIP-09 for the target and a child author, skips gift-only, still 204 on purge failure', async () => {
+    const kek = parseNostrKek('ef'.repeat(32));
+    const auth = await namedStore('Ada');
+    const founder = await auth.getAccount('acc');
+    expect(founder).toBeDefined();
+    if (founder === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...founder, role: 'founder' });
+    const messages = new InMemoryMessageStore();
+    await ensureAccountNostrKey(auth, 'acc', kek);
+    await auth.createAccount({
+      id: 'child',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Bea',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'child', kek);
+    await messages.create(
+      {
+        id: NOTE_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hide me',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+        eventId: 'aa'.repeat(32),
+        nostrPublishState: 'published',
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    await messages.create({
+      id: '33333333-3333-4333-8333-333333333333',
+      accountId: 'child',
+      name: 'Bea',
+      text: 'reply',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: NOTE_ID,
+      eventId: 'bb'.repeat(32),
+      nostrPublishState: 'published',
+    });
+    await messages.create({
+      id: '44444444-4444-4444-8444-444444444444',
+      accountId: 'child',
+      name: 'Bea',
+      text: '',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: NOTE_ID,
+      eventId: null,
+      nostrPublishState: 'skipped',
+    });
+    const publisher = new RecordingPublisher();
+    const parentPub = await auth.getNostrPublicKey('acc');
+    const childPub = await auth.getNostrPublicKey('child');
+    const app = mount(auth, messages, {
+      nostrKek: kek,
+      nostrPublisher: publisher,
+      env: {
+        PUBLIC_BASE_URL: 'https://21.gifts',
+        CLOUDFLARE_ZONE_ID: 'zone',
+        CLOUDFLARE_API_TOKEN: 'secret-token',
+      },
+      fetchImpl: async () => new Response('nope', { status: 500 }),
+    });
+    warn.mockClear();
+    const res = await app.request(`/messages/${NOTE_ID}`, { method: 'DELETE', headers: AUTH });
+    expect(res.status).toBe(204);
+    expect(publisher.calls).toHaveLength(2);
+    expect(publisher.calls[0]?.event['kind']).toBe(5);
+    expect(publisher.calls[0]?.event['pubkey']).toBe(parentPub);
+    expect((publisher.calls[0]?.event['tags'] as string[][])[0]).toEqual(['e', 'aa'.repeat(32)]);
+    expect(publisher.calls[1]?.event['pubkey']).toBe(childPub);
+    expect((publisher.calls[1]?.event['tags'] as string[][])[0]).toEqual(['e', 'bb'.repeat(32)]);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.delete.purge_failed')).toBe(
+      true,
+    );
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain('secret-token');
+  });
+
+  it('still returns 204 and logs messages.delete.retract_failed when retract throws', async () => {
+    const kek = parseNostrKek('ef'.repeat(32));
+    const auth = await namedStore('Ada');
+    const founder = await auth.getAccount('acc');
+    expect(founder).toBeDefined();
+    if (founder === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...founder, role: 'founder' });
+    await ensureAccountNostrKey(auth, 'acc', kek);
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hide me',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+      nostrPublishState: 'published',
+    });
+    const store = throwingStore({
+      markDeleted: (id, at, by) => messages.markDeleted(id, at, by),
+      getById: (id) => messages.getById(id),
+      listDirectChildren: async () => {
+        throw new Error('children boom');
+      },
+    });
+    const app = mount(auth, store, {
+      nostrKek: kek,
+      nostrPublisher: new RecordingPublisher(),
+      env: {},
+    });
+    warn.mockClear();
+    expect(
+      (await app.request(`/messages/${NOTE_ID}`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(204);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.delete.retract_failed')).toBe(
+      true,
+    );
+  });
+
+  it('retries NIP-09 on an already-tagged note', async () => {
+    const kek = parseNostrKek('ef'.repeat(32));
+    const auth = await namedStore('Ada');
+    const founder = await auth.getAccount('acc');
+    expect(founder).toBeDefined();
+    if (founder === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...founder, role: 'founder' });
+    const messages = new InMemoryMessageStore();
+    await ensureAccountNostrKey(auth, 'acc', kek);
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hide me',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'aa'.repeat(32),
+      nostrPublishState: 'published',
+    });
+    expect(await messages.markDeleted(NOTE_ID, new Date(now() - 1_000), 'acc')).toBe(true);
+    const publisher = new RecordingPublisher();
+    const app = mount(auth, messages, { nostrKek: kek, nostrPublisher: publisher });
+    expect(
+      (await app.request(`/messages/${NOTE_ID}`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(204);
+    expect(publisher.calls).toHaveLength(1);
+    expect(publisher.calls[0]?.event['kind']).toBe(5);
   });
 });
 

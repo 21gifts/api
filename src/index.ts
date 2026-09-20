@@ -68,15 +68,21 @@ if (import.meta.main) {
       console.warn(JSON.stringify({ event: 'push.vapid.invalid' }));
     }
   }
+  const publisher =
+    nostrKek !== undefined && messageStore !== undefined
+      ? new WebsocketNostrPublisher()
+      : undefined;
   const app = createApp({
     authStore,
     btcUsdRates,
     fiatRates,
     pushStore,
+    env: process.env,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(messageStore === undefined ? {} : { messageStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
+    ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
     ...(notificationStore === undefined ? {} : { notificationStore }),
@@ -88,8 +94,7 @@ if (import.meta.main) {
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }
-  if (nostrKek !== undefined && messageStore !== undefined) {
-    const publisher = new WebsocketNostrPublisher();
+  if (publisher !== undefined && nostrKek !== undefined && messageStore !== undefined) {
     startNostrWorker(
       {
         messages: messageStore,
