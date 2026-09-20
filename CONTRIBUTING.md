@@ -371,7 +371,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,
 `migrateApiLogSchema`, `migrateDbChangeSchema`,
-`DB_CHANGE_SCHEMA_SQL`,
+`listDbChanges`, `DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fillFiatRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
