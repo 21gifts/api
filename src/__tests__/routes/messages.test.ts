@@ -5111,6 +5111,51 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.['accountId']).toBe('acc');
   });
 
+  it('returns hidden children under a live parent for a moderator session', async () => {
+    const parentId = '88888888-8888-4888-8888-888888888888';
+    const childId = '89898989-8989-4989-8989-898989898989';
+    const auth = await staffStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: childId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden child',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await store.markDeleted(childId, new Date(now()), 'acc')).toBe(true);
+    expect((await store.getById(parentId))?.deletedAt).toBeNull();
+    const unsigned = await mount(auth, store).request(`/messages/${parentId}/replies`);
+    expect(unsigned.status).toBe(200);
+    expect(
+      ((await unsigned.json()) as { messages: Array<{ id: string }> }).messages.map((row) => row.id),
+    ).toEqual([]);
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.['id']).toBe(childId);
+    expect(body.messages[0]?.['deletedAt']).toBe(new Date(now()).toISOString());
+  });
+
   it('omits a hidden child that cannot serialize and still 200', async () => {
     const parentId = '88888888-8888-4888-8888-888888888888';
     const childId = '89898989-8989-4989-8989-898989898989';

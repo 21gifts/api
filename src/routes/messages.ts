@@ -897,12 +897,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (parent === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const staffHidden =
-          parent.deletedAt !== null && account !== null && roleAtLeast(account.role, 'moderator');
-        if (parent.deletedAt !== null && !staffHidden) {
+        const isStaff = account !== null && roleAtLeast(account.role, 'moderator');
+        if (parent.deletedAt !== null && !isStaff) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT, staffHidden);
+        const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT, isStaff);
         const messages = [];
         for (const row of rows) {
           if (row.deletedAt !== null) {
