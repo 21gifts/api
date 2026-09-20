@@ -147,4 +147,32 @@ describe('buildConversationPushPayload', () => {
       buildConversationPushPayload({ conversationId: 'c-1', name: '', text: 'hi' }).title,
     ).toBe('21.gifts');
   });
+
+  it('uses a provided non-empty url', () => {
+    expect(
+      buildConversationPushPayload({
+        conversationId: 'c-1',
+        name: 'Ada',
+        text: 'hello',
+        url: '/moderate/group',
+      }),
+    ).toEqual({
+      type: 'conversation',
+      title: 'Ada',
+      body: 'hello',
+      url: '/moderate/group',
+      tag: 'conversation:c-1',
+    });
+  });
+
+  it('keeps the inbox url when url is empty', () => {
+    expect(
+      buildConversationPushPayload({
+        conversationId: 'c-1',
+        name: 'Ada',
+        text: 'hello',
+        url: '',
+      }).url,
+    ).toBe('/messages?c=c-1');
+  });
 });
