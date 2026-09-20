@@ -11,7 +11,7 @@ import { SESSION_TTL_MS } from '@/lib/config';
 
 /**
  * Mint a bearer session for an already-authenticated account.
- * Listed duplicate ids ({@link isWrongAccount}) throw `Error` with
+ * Accounts with {@link Account.sessionRefused} throw `Error` with
  * {@link WRONG_ACCOUNT_ERROR} and do not write a session row.
  *
  * @param store - Auth persistence port.
@@ -26,7 +26,7 @@ export async function issueSession(
   now: number,
   account: Account,
 ): Promise<{ token: string; account: Account }> {
-  if (isWrongAccount(account.id)) {
+  if (isWrongAccount(account)) {
     throw new Error(WRONG_ACCOUNT_ERROR);
   }
   const token = randomHex(32);
@@ -57,7 +57,7 @@ export async function resolveSession(
   if (account === undefined) {
     return null;
   }
-  if (isWrongAccount(account.id)) {
+  if (isWrongAccount(account)) {
     return null;
   }
   return account;

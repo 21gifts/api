@@ -26,7 +26,7 @@ import type { PushStore } from '@/lib/push-store';
  * Operator debug surface for registered accounts.
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `POST /` (provision), `PATCH /:id`
- * (set role, unlink Lightning Address, and/or the official platform flag),
+ * (set role, unlink Lightning Address, the official platform flag, and/or sessionRefused),
  * and `POST /:id/session` (mint a member bearer).
  */
 
@@ -129,16 +129,20 @@ async function maybeSetProvisionUsername(
   return updated;
 }
 
-/** Body schema for operator role, Lightning Address unlink, and platform flag. */
+/** Body schema for operator role, Lightning Address unlink, platform flag, and session refusal. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'founder']).optional(),
     lightningAddress: z.null().optional(),
     platform: z.boolean().optional(),
+    sessionRefused: z.boolean().optional(),
   })
   .refine(
     (body) =>
-      body.role !== undefined || body.lightningAddress === null || body.platform !== undefined,
+      body.role !== undefined ||
+      body.lightningAddress === null ||
+      body.platform !== undefined ||
+      body.sessionRefused !== undefined,
   );
 
 /** One row in the operator provision body. */
@@ -355,7 +359,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         return c.json(
           {
             error:
-              'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+              'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
           },
           400,
         );
@@ -376,6 +380,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;
       }
+      if (parsed.data.sessionRefused !== undefined) {
+        updated.sessionRefused = parsed.data.sessionRefused;
+      }
       await deps.store.updateAccount(updated);
       if (parsed.data.lightningAddress === null) {
         await deps.store.deleteVerification(updated.id);
@@ -390,6 +397,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           platform: updated.isPlatform === true,
         });
       }
+      if (parsed.data.sessionRefused !== undefined) {
+        logEvent('debug.accounts.session_refused_set', {
+          accountId: updated.id,
+          sessionRefused: updated.sessionRefused === true,
+        });
+      }
       if (parsed.data.platform === true && deps.conversationStore !== undefined) {
         await deps.conversationStore.retargetMemberPlatform(updated.id);
       }
@@ -400,7 +413,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }
-      if (isWrongAccount(existing.id)) {
+      if (isWrongAccount(existing)) {
         return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
       const now = deps.now ?? Date.now;

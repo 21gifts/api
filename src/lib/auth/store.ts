@@ -78,6 +78,12 @@ export interface Account {
    * stored account may be true. Default false. Omitted on member `GET /me`.
    */
   isPlatform?: boolean;
+  /**
+   * True when passkey finish and debug session mint must refuse a bearer
+   * (duplicate of another member). Default false. Omitted on member `GET /me`.
+   * Operators set this with `PATCH /debug/accounts/:id`.
+   */
+  sessionRefused?: boolean;
   /** Epoch ms when the owner skipped the name wizard step, or null/omitted. */
   nameSkippedAt?: number | null;
   /** Epoch ms when the owner skipped the Lightning Address wizard step, or null/omitted. */

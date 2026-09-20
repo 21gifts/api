@@ -128,6 +128,7 @@ describe('debugRoutes', () => {
     expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
     expect(body.accounts[0]).not.toHaveProperty('viewKey');
     expect(body.accounts[0]).toHaveProperty('isPlatform');
+    expect(body.accounts[0]).toHaveProperty('sessionRefused');
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
@@ -183,7 +184,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -204,7 +205,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -278,6 +279,44 @@ describe('debugRoutes', () => {
       ),
     ).toBe(true);
     expect(body).toHaveProperty('isPlatform');
+    expect(body).toHaveProperty('sessionRefused');
+  });
+
+  it('PATCH sets sessionRefused', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionRefused: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; sessionRefused: boolean };
+    expect(body.sessionRefused).toBe(true);
+    expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
+    const off = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionRefused: false }),
+    });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { sessionRefused: boolean }).sessionRefused).toBe(false);
   });
 
   it('PATCH sets the platform flag and clears any other platform account', async () => {
@@ -438,6 +477,7 @@ describe('debugRoutes', () => {
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
+      sessionRefused: true,
     });
     const createSession = vi.spyOn(store, 'createSession');
     const app = new Hono().route(
@@ -584,7 +624,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, and/or platform boolean',
+        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
     });
   });
 

@@ -216,7 +216,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/notification_level/);
     expect(sql.executes[0]?.params[15]).toBe('all');
     expect(sql.executes[0]?.params[16]).toBeNull();
+    expect(sql.executes[0]?.params[17]).toBe(false);
     expect(sql.executes[0]?.text).toMatch(/username/);
+    expect(sql.executes[0]?.text).toMatch(/session_refused/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
@@ -227,6 +229,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -246,6 +249,7 @@ describe('PostgresAuthStore', () => {
       null,
       'all',
       null,
+      false,
     ]);
   });
 
@@ -272,8 +276,10 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.params[15]).toBe('active');
     expect(sql.executes[1]?.params[16]).toBeNull();
+    expect(sql.executes[1]?.params[17]).toBe(false);
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {

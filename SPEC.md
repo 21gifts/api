@@ -1348,13 +1348,14 @@ stored username is kept. `created` is `false`. New address: sets
 ### `PATCH /debug/accounts/:id`
 
 Operator assignment of the account's forum display role, unlinking the
-Lightning Address, and/or the official platform flag (`isPlatform`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (same
-gate as `GET /debug/accounts`). Body is one or more of `role`,
-`lightningAddress: null`, and `platform`:
+Lightning Address, the official platform flag (`isPlatform`), and/or
+session refusal (`sessionRefused`). Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
+`GET /debug/accounts`). Body is one or more of `role`,
+`lightningAddress: null`, `platform`, and `sessionRefused`:
 
 ```json
-{ "role": "basis", "lightningAddress": null, "platform": true }
+{ "role": "basis", "lightningAddress": null, "platform": true, "sessionRefused": true }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, or `founder`.
@@ -1362,7 +1363,9 @@ gate as `GET /debug/accounts`). Body is one or more of `role`,
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every
 `member_platform` thread at this account except a thread whose member is
-already this account. Setting a new address is not supported here
+already this account. `sessionRefused` is a boolean; `true` makes passkey
+finish and this route's session mint return 403 with the wrong-account
+copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. It does not clear `username`. `GET /me` then returns

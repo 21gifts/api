@@ -223,7 +223,7 @@ export async function finishPasskeyRegistration(
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }
     }
-    if (isWrongAccount(existing.id)) {
+    if (isWrongAccount(existing)) {
       return { ok: false, error: WRONG_ACCOUNT_ERROR };
     }
     const issued = await issueSession(store, now, existing);
@@ -272,9 +272,6 @@ export async function finishPasskeyRegistration(
   if (!stored) {
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
-  }
-  if (isWrongAccount(account.id)) {
-    return { ok: false, error: WRONG_ACCOUNT_ERROR };
   }
   const issued = await issueSession(store, now, account);
   return { ok: true, value: issued };
@@ -358,7 +355,7 @@ export async function finishPasskeyAuthentication(
   if (account === undefined) {
     return { ok: false, error: 'Unknown or expired challenge' };
   }
-  if (isWrongAccount(account.id)) {
+  if (isWrongAccount(account)) {
     return { ok: false, error: WRONG_ACCOUNT_ERROR };
   }
   const verified = await ceremony.verifyAuthentication({

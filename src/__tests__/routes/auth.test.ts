@@ -303,6 +303,7 @@ describe('auth routes', () => {
         viewKey,
         createdAt: 1,
         rulesAgreedAt: null,
+        sessionRefused: true,
       });
       const app = mount(store);
       const begin = await app.request('/auth/passkey/register/begin', {
@@ -420,6 +421,7 @@ describe('auth routes', () => {
         viewKey: 'a'.repeat(64),
         createdAt: 1,
         rulesAgreedAt: null,
+        sessionRefused: true,
       });
       await store.createPasskeyCredential({
         credentialId: 'cred-1',

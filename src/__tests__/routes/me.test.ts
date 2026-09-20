@@ -176,6 +176,7 @@ describe('GET /me', () => {
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
+      sessionRefused: true,
     });
     await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
     const res = await mount(store).request('/me', { headers: AUTH });
@@ -198,6 +199,7 @@ describe('GET /me', () => {
       viewKey: VIEW_KEY,
       createdAt: 1_000_000,
       rulesAgreedAt: null,
+      sessionRefused: true,
     });
     await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
     const res = await mount(store).request('/me/name', {

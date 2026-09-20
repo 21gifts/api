@@ -5,9 +5,12 @@ import { issueSession, resolveSession } from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 
 const T0 = 1_000_000;
-const LISTED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
 
-async function seedAccount(store: InMemoryAuthStore, id = 'acc'): Promise<void> {
+async function seedAccount(
+  store: InMemoryAuthStore,
+  id = 'acc',
+  sessionRefused = false,
+): Promise<void> {
   await store.createAccount({
     id,
     linkingKey: null,
@@ -20,6 +23,7 @@ async function seedAccount(store: InMemoryAuthStore, id = 'acc'): Promise<void> 
     viewKey: 'a'.repeat(64),
     createdAt: T0,
     rulesAgreedAt: null,
+    sessionRefused,
   });
 }
 
@@ -37,10 +41,10 @@ describe('issueSession', () => {
     expect((await store.getSession(issued.token))?.accountId).toBe('acc');
   });
 
-  it('throws and does not persist a session for a listed account', async () => {
+  it('throws and does not persist a session for a refused account', async () => {
     const store = new InMemoryAuthStore();
-    await seedAccount(store, LISTED_ID);
-    const account = await store.getAccount(LISTED_ID);
+    await seedAccount(store, 'acc', true);
+    const account = await store.getAccount('acc');
     if (account === undefined) {
       throw new Error('expected account');
     }
@@ -69,10 +73,10 @@ describe('resolveSession', () => {
     expect((await resolveSession(store, T0, 'tok'))?.id).toBe('acc');
   });
 
-  it('returns null for a listed account', async () => {
+  it('returns null for a refused account', async () => {
     const store = new InMemoryAuthStore();
-    await seedAccount(store, LISTED_ID);
-    await store.createSession({ token: 'tok', accountId: LISTED_ID, createdAt: T0 });
+    await seedAccount(store, 'acc', true);
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
     expect(await resolveSession(store, T0, 'tok')).toBeNull();
   });
 });

@@ -145,6 +145,8 @@ export function serializeAccount(account: Account): AccountResponse {
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
+  /** True when passkey finish and debug mint must refuse a bearer. */
+  sessionRefused: boolean;
 }
 
 /**
@@ -159,6 +161,7 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
   return {
     ...serializeAccount(account),
     isPlatform: account.isPlatform === true,
+    sessionRefused: account.sessionRefused === true,
   };
 }
 

@@ -194,7 +194,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (isWrongAccount(account.id)) {
+      if (isWrongAccount(account)) {
         return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
       return c.json(await serializeOwnerAccountWithPosts(account, deps.messages), 200);

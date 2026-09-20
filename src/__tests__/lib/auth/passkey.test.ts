@@ -178,25 +178,6 @@ describe('passkey registration', () => {
     expect(pending?.accountId).toEqual(expect.any(String));
     expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
   });
-
-  it('refuses a listed new account before issuing a session', async () => {
-    const store = new InMemoryAuthStore();
-    const ceremony = new FakePasskeyCeremony();
-    await store.createPasskeyChallenge({
-      id: 'ch',
-      type: 'register',
-      challenge: 'test-challenge',
-      accountId: LISTED_ID,
-      consumed: false,
-      createdAt: T0,
-    });
-    const createSession = vi.spyOn(store, 'createSession');
-    const finish = await finishPasskeyRegistration(store, ceremony, CONFIG, T0, ORIGIN, 'ch', {
-      test: 'ok',
-    });
-    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
-    expect(createSession).not.toHaveBeenCalled();
-  });
 });
 
 describe('passkey claim', () => {
@@ -458,6 +439,7 @@ describe('passkey claim', () => {
       viewKey: VIEW_KEY,
       createdAt: T0,
       rulesAgreedAt: null,
+      sessionRefused: true,
     });
     await store.createPasskeyChallenge({
       id: 'ch',
@@ -692,6 +674,7 @@ describe('passkey authentication', () => {
       viewKey: 'a'.repeat(64),
       createdAt: T0,
       rulesAgreedAt: null,
+      sessionRefused: true,
     });
     await store.createPasskeyCredential({
       credentialId: 'cred-1',

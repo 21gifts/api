@@ -1279,9 +1279,9 @@
 
 ## Function: resolveSession
 
-- **Purpose:** Looks up a bearer session; rejects expired and listed duplicate ids (`isWrongAccount`).
+- **Purpose:** Looks up a bearer session; rejects expired tokens and accounts with `sessionRefused` (`isWrongAccount`).
 - **Inputs:** `store`, `now`, `token`.
-- **Returns / side effects:** `Account` or `null` when unknown, expired, or listed.
+- **Returns / side effects:** `Account` or `null` when unknown, expired, or refused.
 - **Used by:** `meRoutes`.
 
 ## Function: startVerification
@@ -1321,16 +1321,16 @@
 
 ## Function: isWrongAccount
 
-- **Purpose:** Whether an account id is listed as a duplicate that must not receive a session.
-- **Inputs:** `accountId` string.
-- **Returns / side effects:** `true` when the id is in `WRONG_ACCOUNT_IDS`. No I/O.
+- **Purpose:** Whether a stored account must not receive a session (`account.sessionRefused`).
+- **Inputs:** Account (or `{ sessionRefused }`).
+- **Returns / side effects:** `true` when `sessionRefused` is true. No I/O. No hardcoded ids.
 - **Used by:** `issueSession`, `resolveSession`, `finishPasskeyAuthentication`, `finishPasskeyRegistration`, `GET /me`, `POST /debug/accounts/:id/session`.
 
 ## Function: issueSession
 
-- **Purpose:** Mints a bearer session token for an already-authenticated account. Listed duplicate ids (`isWrongAccount`) throw `Error` whose message is the wrong-account copy and do not write a session row.
+- **Purpose:** Mints a bearer session token for an already-authenticated account. Accounts with `sessionRefused` (`isWrongAccount`) throw `Error` whose message is the wrong-account copy and do not write a session row.
 - **Inputs:** `store`, `now`, `account`.
-- **Returns / side effects:** `{ token, account }`; writes the session row. Throws `Error` with message `You signed in with the wrong account. Please try again with the correct account.` when listed.
+- **Returns / side effects:** `{ token, account }`; writes the session row. Throws `Error` with message `You signed in with the wrong account. Please try again with the correct account.` when `sessionRefused` is true.
 - **Used by:** passkey finish paths and `POST /debug/accounts/:id/session`.
 
 ## Function: normalizeWebAuthnRpId
@@ -1419,9 +1419,9 @@
 
 ## Function: serializeDebugAccount
 
-- **Purpose:** Operator account JSON: the eleven public fields plus `isPlatform`. Never used by member `GET /me`.
+- **Purpose:** Operator account JSON: the eleven public fields plus `isPlatform` and `sessionRefused`. Never used by member `GET /me`.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `DebugAccountResponse`. `isPlatform` is true only when the stored flag is true. No `viewKey`. No I/O.
+- **Returns / side effects:** `DebugAccountResponse`. `isPlatform` and `sessionRefused` are true only when the stored flags are true. No `viewKey`. No I/O.
 - **Used by:** `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
 
 ## Function: aboutMeFromNote

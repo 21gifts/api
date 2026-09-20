@@ -43,8 +43,9 @@ clears the token; a transient failure does not.
    `options` (no WebAuthn library in the app).
 3. App posts the credential to the matching `…/finish` with the page
    `Origin`. The api verifies and returns `{ token, account }` immediately.
-   A listed duplicate passkey account is refused at finish and on `GET /me`
-   with 403 and no new bearer, so the client can sign the visitor out.
+   An account with `sessionRefused` (operator flag on the row) is refused at
+   finish and on `GET /me` with 403 and no new bearer, so the client can sign
+   the visitor out.
 
 Login is passkey-only. LNURL-auth has been removed.
 
