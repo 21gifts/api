@@ -171,7 +171,7 @@ pair above (`SPEC.md`).
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name + Lightning Address — missing requirements are
+(requires rules + name + username + Lightning Address — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }` and Bearer `SPEND_API_TOKEN`); replies and media replay do

@@ -108,8 +108,7 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)      | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)         | Founder: appoint a moderator directly                                                                     |
 | GET    | `/messages`                                  | Bearer                   | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
-| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/Lightning Address missing                                              |
-| GET    | `/messages/hidden`                           | Bearer (moderator+)      | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
+| POST   | `/messages`                                  | Bearer                   | Post text/photo; 409 if rules/name/username/Lightning Address missing                                              || GET    | `/messages/hidden`                           | Bearer (moderator+)      | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                              | none                     | Public single-note JSON (visible external replies included)                                               |
 | GET    | `/messages/:id/replies`                      | none                     | Oldest-first member and entitled external replies (optional Bearer for member `accountId`)                |
 | GET    | `/messages/:id/photo`                        | none                     | Fetch forum message photo bytes                                                                           |
@@ -2468,8 +2467,8 @@ caller is neither the parent author nor `verified` → **403**
 accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
-a non-blank display name, and a non-blank Lightning Address (skip timestamps
-do not satisfy). The api stores a **name snapshot** (trimmed account name at
+a non-blank display name, a non-blank username, and a non-blank Lightning
+Address (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
 post time), normalised text (possibly `""` for photo-only), optional
 JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **500** after trim, or
@@ -3060,7 +3059,7 @@ Body is not JSON with a `text` string → **Response** `400`:
 Missing required fields (`requireAction` `contact.post`) → **Response** `409`:
 
 ```json
-{ "error": "missing_requirements", "missing": ["rules", "name"] }
+{ "error": "missing_requirements", "missing": ["rules", "name", "username"] }
 ```
 
 Text empty, longer than 500 after trim, or contains a disallowed control →
