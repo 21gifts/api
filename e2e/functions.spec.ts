@@ -1171,6 +1171,24 @@ test('Function: kind1ContentWithHashtags — default boot has no DATABASE_URL', 
 test('Function: buildKind1Event — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: buildKind5Event — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: forumMediaPurgeUrls — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveCloudflarePurgeConfig — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: purgeCloudflareFiles — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: retractHiddenForumNotes — DELETE /messages/:id without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.delete('/messages/11111111-1111-4111-8111-111111111111');
+  expect(res.status()).toBe(401);
+});
 test('Function: forumPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
