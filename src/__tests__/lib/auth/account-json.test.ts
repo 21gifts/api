@@ -71,6 +71,8 @@ describe('serializeDebugAccount', () => {
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
+    expect(serializeDebugAccount(account).sessionRefused).toBe(false);
+    expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
   });
 });
 
@@ -105,6 +107,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
@@ -124,6 +127,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
@@ -156,6 +160,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('isPlatform');
+    expect(json).not.toHaveProperty('sessionRefused');
   });
 
   it('sets hasPosted true when the store reports a live post', async () => {

@@ -2,6 +2,7 @@ import { randomHex } from '@/lib/auth/hex';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore, PasskeyChallenge } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
+import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
@@ -159,7 +160,9 @@ export async function startPasskeyClaim(
  *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
- * @returns Session + account, or a 400 error string.
+ * @returns Session + account, or `{ ok: false, error }`. An existing account
+ *   with {@link isWrongAccount} is refused before session mint with
+ *   {@link WRONG_ACCOUNT_ERROR}.
  */
 export async function finishPasskeyRegistration(
   store: AuthStore,
@@ -201,6 +204,9 @@ export async function finishPasskeyRegistration(
   }
   const existing = await store.getAccount(accountId);
   if (existing !== undefined) {
+    if (isWrongAccount(existing)) {
+      return { ok: false, error: WRONG_ACCOUNT_ERROR };
+    }
     if (await store.accountHasPasskey(accountId)) {
       return { ok: false, error: 'Invalid passkey' };
     }
@@ -212,6 +218,10 @@ export async function finishPasskeyRegistration(
       createdAt: now,
     });
     if (!stored) {
+      const current = await store.getAccount(accountId);
+      if (current !== undefined && isWrongAccount(current)) {
+        return { ok: false, error: WRONG_ACCOUNT_ERROR };
+      }
       return { ok: false, error: 'Invalid passkey' };
     }
     if (nostr !== undefined) {
@@ -221,8 +231,7 @@ export async function finishPasskeyRegistration(
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }
     }
-    const issued = await issueSession(store, now, existing);
-    return { ok: true, value: issued };
+    return mintSession(store, now, existing);
   }
   const account: Account = {
     id: accountId,
@@ -268,8 +277,7 @@ export async function finishPasskeyRegistration(
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
   }
-  const issued = await issueSession(store, now, account);
-  return { ok: true, value: issued };
+  return mintSession(store, now, account);
 }
 
 /**
@@ -312,7 +320,9 @@ export async function startPasskeyAuthentication(
  * @param challengeId - Id returned by {@link startPasskeyAuthentication}.
  * @param credential - Browser assertion JSON.
  * @param nostr - Optional KEK (and test-only keygen) to backfill a missing nsec.
- * @returns Session + account, or a 400 error string.
+ * @returns Session + account, or `{ ok: false, error }`. After the account is
+ *   loaded, {@link isWrongAccount} is {@link WRONG_ACCOUNT_ERROR} and never
+ *   issues a token.
  */
 export async function finishPasskeyAuthentication(
   store: AuthStore,
@@ -348,6 +358,9 @@ export async function finishPasskeyAuthentication(
   if (account === undefined) {
     return { ok: false, error: 'Unknown or expired challenge' };
   }
+  if (isWrongAccount(account)) {
+    return { ok: false, error: WRONG_ACCOUNT_ERROR };
+  }
   const verified = await ceremony.verifyAuthentication({
     response: credential,
     expectedChallenge: challenge.challenge,
@@ -380,8 +393,25 @@ export async function finishPasskeyAuthentication(
       logEvent('nostr.keygen.backfill.failed', { accountId: account.id });
     }
   }
-  const issued = await issueSession(store, now, account);
-  return { ok: true, value: issued };
+  return mintSession(store, now, account);
+}
+
+async function mintSession(
+  store: AuthStore,
+  now: number,
+  account: Account,
+): Promise<
+  | { ok: true; value: { token: string; account: Account } }
+  | { ok: false; error: typeof WRONG_ACCOUNT_ERROR }
+> {
+  try {
+    return { ok: true, value: await issueSession(store, now, account) };
+  } catch (error) {
+    if (error instanceof Error && error.message === WRONG_ACCOUNT_ERROR) {
+      return { ok: false, error: WRONG_ACCOUNT_ERROR };
+    }
+    throw error;
+  }
 }
 
 /**

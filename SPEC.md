@@ -131,7 +131,7 @@ Public base URLs used in examples:
 | GET    | `/lightning-address`                         | none                       | Resolve LUD-16 metadata (cached)                                                                          |
 | GET    | `/debug/accounts`                            | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                  |
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
-| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                                |
+| PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
 | GET    | `/debug/api-log`                             | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
@@ -310,16 +310,17 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                  | When                                                                |
-| ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                                     |
-| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId`                                               |
-| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                                  |
-| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted; challenge is consumed before verification |
-| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `register`                                         |
-| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                                      |
-| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed or duplicate credential                   |
+| Status | Body                                                                                              | When                                                                |
+| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Body parse fail                                                     |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                         |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                      |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                   |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted               |
 
 **Response** `200`:
 
@@ -366,8 +367,10 @@ issues a session. A non-increasing `signCount` is refused as
 `{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
 Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
-not stored. Success body matches register finish (`linkingKey` is whatever
-the account currently has).
+not stored. An account with `sessionRefused` is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+and does not persist a bearer. Success body matches register finish
+(`linkingKey` is whatever the account currently has).
 
 ### `GET /me`
 
@@ -377,6 +380,12 @@ Missing or invalid bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+An account with `sessionRefused` and a still-valid minted token → **Response** `403`:
+
+```json
+{ "error": "You signed in with the wrong account. Please try again with the correct account." }
 ```
 
 **Response** `200`:
@@ -1267,15 +1276,16 @@ Success → **Response** `200`:
       "forumLawsDismissed": false,
       "createdAt": 0,
       "rulesAgreedAt": null,
-      "isPlatform": false
+      "isPlatform": false,
+      "sessionRefused": false
     }
   ]
 }
 ```
 
 The listing uses `serializeDebugAccount` (the eleven public fields plus
-`isPlatform`) and never includes `viewKey`. Member `GET /me` does not
-include `isPlatform`.
+`isPlatform` and `sessionRefused`) and never includes `viewKey`. Member `GET /me` does not
+include `isPlatform` or `sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1339,13 +1349,14 @@ stored username is kept. `created` is `false`. New address: sets
 ### `PATCH /debug/accounts/:id`
 
 Operator assignment of the account's forum display role, unlinking the
-Lightning Address, and/or the official platform flag (`isPlatform`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (same
-gate as `GET /debug/accounts`). Body is one or more of `role`,
-`lightningAddress: null`, and `platform`:
+Lightning Address, the official platform flag (`isPlatform`), and/or
+session refusal (`sessionRefused`). Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
+`GET /debug/accounts`). Body is one or more of `role`,
+`lightningAddress: null`, `platform`, and `sessionRefused`:
 
 ```json
-{ "role": "basis", "lightningAddress": null, "platform": true }
+{ "role": "basis", "lightningAddress": null, "platform": true, "sessionRefused": true }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, or `founder`.
@@ -1353,7 +1364,9 @@ gate as `GET /debug/accounts`). Body is one or more of `role`,
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every
 `member_platform` thread at this account except a thread whose member is
-already this account. Setting a new address is not supported here
+already this account. `sessionRefused` is a boolean; `true` makes passkey
+finish and this route's session mint return 403 with the wrong-account
+copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. It does not clear `username`. `GET /me` then returns
@@ -1380,12 +1393,12 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role`, `lightningAddress: null`, and/or
-`platform` boolean → **Response** `400`:
+Body is not JSON with a known `role`, `lightningAddress: null`,
+`platform` boolean, and/or `sessionRefused` boolean → **Response** `400`:
 
 ```json
 {
-  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, and/or platform boolean"
+  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, platform boolean, and/or sessionRefused boolean"
 }
 ```
 
@@ -1397,19 +1410,24 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`; no `viewKey`). Role changes log `debug.accounts.role_set`
+`isPlatform` and `sessionRefused`; no `viewKey`). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
+Session-refusal changes log `debug.accounts.session_refused_set` with the
+account id and the new flag.
 
 ### `POST /debug/accounts/:id/session`
 
 Operator mint of a member bearer for the given account id. Authenticated
 with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
-Unknown account id → **404** `{ "error": "Not found" }`. Same 503/401 gate as
-the other debug account routes. Not a member login path; for e2e and
-operator debugging.
+Unknown account id → **404** `{ "error": "Not found" }`. An account with
+`sessionRefused` is **403**
+`{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
+with no minted bearer and no `debug.accounts.session_minted` log. Same
+503/401 gate as the other debug account routes. Not a member login path;
+for e2e and operator debugging.
 
 ### `POST /debug/trust-edges`
 

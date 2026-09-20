@@ -78,6 +78,12 @@ export interface Account {
    * stored account may be true. Default false. Omitted on member `GET /me`.
    */
   isPlatform?: boolean;
+  /**
+   * True when passkey finish and debug session mint must refuse a bearer
+   * (duplicate of another member). Default false. Omitted on member `GET /me`.
+   * Operators set this with `PATCH /debug/accounts/:id`.
+   */
+  sessionRefused?: boolean;
   /** Epoch ms when the owner skipped the name wizard step, or null/omitted. */
   nameSkippedAt?: number | null;
   /** Epoch ms when the owner skipped the Lightning Address wizard step, or null/omitted. */
@@ -234,8 +240,22 @@ export interface AuthStore {
    * Used by the operator debug listing; never includes session tokens.
    */
   listAccounts(): Promise<Account[]>;
-  /** Persist a new session. */
+  /** Persist a new session. Does not consult `sessionRefused`. */
   createSession(session: Session): Promise<void>;
+  /**
+   * Insert a session only when the account exists and `sessionRefused` is
+   * not true. Used by {@link issueSession} so a concurrent flag flip cannot
+   * mint a bearer.
+   *
+   * @returns `false` when no session row was written.
+   */
+  tryCreateSession(session: Session): Promise<boolean>;
+  /**
+   * Set only `sessionRefused`. Other columns stay unchanged.
+   *
+   * @returns The updated account, or `undefined` when the id is unknown.
+   */
+  setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined>;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Promise<Session | undefined>;
   /** Upsert a pending address verification for the account. */
@@ -332,7 +352,10 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.isPlatform === true) {
       this.#clearPlatformExcept(account.id);
     }
-    this.#accounts.set(account.id, account);
+    this.#accounts.set(account.id, {
+      ...account,
+      sessionRefused: account.sessionRefused === true,
+    });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
@@ -370,7 +393,10 @@ export class InMemoryAuthStore implements AuthStore {
     if (previous !== undefined && previous.viewKey !== account.viewKey) {
       this.#accountsByViewKey.delete(previous.viewKey);
     }
-    this.#accounts.set(account.id, account);
+    this.#accounts.set(account.id, {
+      ...account,
+      sessionRefused: previous?.sessionRefused === true,
+    });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
@@ -531,6 +557,25 @@ export class InMemoryAuthStore implements AuthStore {
     this.#sessions.set(session.token, session);
   }
 
+  async tryCreateSession(session: Session): Promise<boolean> {
+    const account = this.#accounts.get(session.accountId);
+    if (account === undefined || account.sessionRefused === true) {
+      return false;
+    }
+    await this.createSession(session);
+    return true;
+  }
+
+  async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {
+    const existing = this.#accounts.get(accountId);
+    if (existing === undefined) {
+      return undefined;
+    }
+    const updated = { ...existing, sessionRefused: refused };
+    this.#accounts.set(accountId, updated);
+    return updated;
+  }
+
   async getSession(token: string): Promise<Session | undefined> {
     return this.#sessions.get(token);
   }
@@ -579,6 +624,10 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const account = this.#accounts.get(credential.accountId);
+    if (account !== undefined && account.sessionRefused === true) {
+      return false;
+    }
     for (const stored of this.#passkeyCredentials.values()) {
       if (stored.accountId === credential.accountId) {
         return false;

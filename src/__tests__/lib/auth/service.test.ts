@@ -1,13 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { SESSION_TTL_MS } from '@/lib/config';
 import { issueSession, resolveSession } from '@/lib/auth/service';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 
 const T0 = 1_000_000;
 
-async function seedAccount(store: InMemoryAuthStore): Promise<void> {
+async function seedAccount(
+  store: InMemoryAuthStore,
+  id = 'acc',
+  sessionRefused = false,
+): Promise<void> {
   await store.createAccount({
-    id: 'acc',
+    id,
     linkingKey: null,
     role: 'basis',
     name: null,
@@ -18,6 +23,7 @@ async function seedAccount(store: InMemoryAuthStore): Promise<void> {
     viewKey: 'a'.repeat(64),
     createdAt: T0,
     rulesAgreedAt: null,
+    sessionRefused,
   });
 }
 
@@ -33,6 +39,45 @@ describe('issueSession', () => {
     expect(issued.token).toMatch(/^[0-9a-f]{64}$/);
     expect(issued.account.id).toBe('acc');
     expect((await store.getSession(issued.token))?.accountId).toBe('acc');
+  });
+
+  it('throws and does not persist a session for a refused account', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store, 'acc', true);
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    const createSession = vi.spyOn(store, 'createSession');
+    await expect(issueSession(store, T0, account)).rejects.toThrow(WRONG_ACCOUNT_ERROR);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('does not mint when tryCreateSession fails after a concurrent refuse', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store);
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    const createSession = vi.spyOn(store, 'createSession');
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+    await expect(issueSession(store, T0, account)).rejects.toThrow(WRONG_ACCOUNT_ERROR);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('returns the issued account when reload finds no row', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store);
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    vi.spyOn(store, 'tryCreateSession').mockResolvedValue(true);
+    vi.spyOn(store, 'getAccount').mockResolvedValue(undefined);
+    const issued = await issueSession(store, T0, account);
+    expect(issued.account).toBe(account);
+    expect(issued.token).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -53,5 +98,12 @@ describe('resolveSession', () => {
     await seedAccount(store);
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
     expect((await resolveSession(store, T0, 'tok'))?.id).toBe('acc');
+  });
+
+  it('returns null for a refused account', async () => {
+    const store = new InMemoryAuthStore();
+    await seedAccount(store, 'acc', true);
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: T0 });
+    expect(await resolveSession(store, T0, 'tok')).toBeNull();
   });
 });

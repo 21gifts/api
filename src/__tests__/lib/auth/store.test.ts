@@ -245,6 +245,66 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getSession('tok'))?.accountId).toBe('acc');
   });
 
+  it('tryCreateSession writes only when the account is not refused', async () => {
+    const store = new InMemoryAuthStore();
+    const account = {
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis' as const,
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    };
+    expect(await store.tryCreateSession({ token: 'missing', accountId: 'acc', createdAt: 1 })).toBe(
+      false,
+    );
+    expect(await store.getSession('missing')).toBeUndefined();
+    await store.createAccount(account);
+    expect(await store.tryCreateSession({ token: 'ok', accountId: 'acc', createdAt: 1 })).toBe(
+      true,
+    );
+    expect((await store.getSession('ok'))?.accountId).toBe('acc');
+    await store.setSessionRefused('acc', true);
+    expect(await store.tryCreateSession({ token: 'refused', accountId: 'acc', createdAt: 1 })).toBe(
+      false,
+    );
+    expect(await store.getSession('refused')).toBeUndefined();
+  });
+
+  it('setSessionRefused writes only that flag', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.setSessionRefused('missing', true)).toBeUndefined();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const updated = await store.setSessionRefused('acc', true);
+    expect(updated?.sessionRefused).toBe(true);
+    expect(updated?.name).toBe('Ada');
+    const nameOnly = { ...(await store.getAccount('acc'))!, name: 'Bob' };
+    delete (nameOnly as { sessionRefused?: boolean }).sessionRefused;
+    await store.updateAccount(nameOnly);
+    expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
+    expect((await store.getAccount('acc'))?.name).toBe('Bob');
+    await store.updateAccount({ ...(await store.getAccount('acc'))!, sessionRefused: false });
+    expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
+    expect((await store.setSessionRefused('acc', false))?.sessionRefused).toBe(false);
+  });
+
   it('returns undefined for an unknown session token', async () => {
     expect(await new InMemoryAuthStore().getSession('missing')).toBeUndefined();
   });
@@ -957,6 +1017,33 @@ describe('InMemoryAuthStore', () => {
         ...first,
         credentialId: 'cred-b',
         publicKey: new Uint8Array([2]),
+      }),
+    ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential returns false when the account is refused', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
       }),
     ).toBe(false);
   });

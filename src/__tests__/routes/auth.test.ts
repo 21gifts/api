@@ -3,12 +3,14 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { authRoutes } from '@/routes/auth';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 import { meRoutes } from '@/routes/me';
 
 const now = (): number => 1_000_000;
 const ORIGIN = 'http://localhost:3000';
+const REFUSED_ID = '00000000-0000-4000-8000-0000000000ff';
 
 function mount(store: InMemoryAuthStore, webAuthnRpId: string | undefined = 'localhost'): Hono {
   return new Hono().route(
@@ -286,6 +288,41 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({ error: 'Invalid passkey' });
     });
 
+    it('returns 403 when finishing registration for a sessionRefused account', async () => {
+      const store = new InMemoryAuthStore();
+      const viewKey = 'a'.repeat(64);
+      await store.createAccount({
+        id: REFUSED_ID,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey,
+        createdAt: 1,
+        rulesAgreedAt: null,
+        sessionRefused: true,
+      });
+      const app = mount(store);
+      const begin = await app.request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey }),
+      });
+      expect(begin.status).toBe(200);
+      const { challengeId } = (await begin.json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ challengeId, credential: { test: 'ok' } }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.register.ok')).toBe(false);
+    });
+
     it('rejects finishing an authenticate challenge as register', async () => {
       const app = mount(new InMemoryAuthStore());
       const begin = (await (
@@ -368,6 +405,67 @@ describe('auth routes', () => {
           (e) => e['event'] === 'auth.passkey.login.ok' && e['accountId'] === accountId,
         ),
       ).toBe(true);
+    });
+
+    it('returns 403 when finishing authentication for a sessionRefused account', async () => {
+      const store = new InMemoryAuthStore();
+      await store.createAccount({
+        id: REFUSED_ID,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'a'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        sessionRefused: true,
+      });
+      await store.createPasskeyCredential({
+        credentialId: 'cred-1',
+        publicKey: new Uint8Array([1, 2, 3]),
+        signCount: 0,
+        accountId: REFUSED_ID,
+        createdAt: 1,
+      });
+      const app = mount(store);
+      const begin = (await (
+        await app.request('/auth/passkey/authenticate/begin', { method: 'POST' })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/authenticate/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'ok', id: 'cred-1' },
+        }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.login.ok')).toBe(false);
+    });
+
+    it('returns 403 when tryCreateSession fails concurrently', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store);
+      await register(app);
+      vi.spyOn(store, 'tryCreateSession').mockResolvedValue(false);
+      const begin = (await (
+        await app.request('/auth/passkey/authenticate/begin', { method: 'POST' })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/authenticate/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'ok', id: 'cred-1' },
+        }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.login.ok')).toBe(false);
     });
 
     it('rejects an unknown credential', async () => {

@@ -33,9 +33,10 @@ interface AccountRow {
   profile_message_id?: string | null;
   notification_level?: string | null;
   username?: string | null;
+  session_refused?: boolean | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -105,8 +106,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -126,6 +127,7 @@ export class PostgresAuthStore implements AuthStore {
           account.location,
           account.notificationLevel ?? 'all',
           account.username ?? null,
+          account.sessionRefused === true,
         ],
       );
     } catch (error: unknown) {
@@ -310,6 +312,29 @@ export class PostgresAuthStore implements AuthStore {
     );
   }
 
+  async tryCreateSession(session: Session): Promise<boolean> {
+    await this.#evictExpiredSessions(session.createdAt);
+    const rows = await this.#sql.query<{ token: string }>(
+      `INSERT INTO auth_session (token, account_id, created_at)
+       SELECT $1, id, to_timestamp($3::double precision / 1000.0)
+       FROM account
+       WHERE id = $2 AND session_refused IS NOT TRUE
+       RETURNING token`,
+      [session.token, session.accountId, session.createdAt],
+    );
+    return rows.length > 0;
+  }
+
+  async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `UPDATE account SET session_refused = $2 WHERE id = $1
+       RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, refused],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
   async getSession(token: string): Promise<Session | undefined> {
     const rows = await this.#sql.query<SessionRow>(
       'SELECT token, account_id, created_at FROM auth_session WHERE token = $1',
@@ -421,6 +446,9 @@ export class PostgresAuthStore implements AuthStore {
          WHERE NOT EXISTS (
            SELECT 1 FROM passkey_credential WHERE account_id = $4
          )
+           AND EXISTS (
+             SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+           )
          ON CONFLICT (credential_id) DO NOTHING
          RETURNING credential_id`,
         [
@@ -570,6 +598,7 @@ function mapAccount(row: AccountRow): Account | undefined {
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
     username: row.username ?? null,
+    sessionRefused: row.session_refused === true,
   };
 }
 

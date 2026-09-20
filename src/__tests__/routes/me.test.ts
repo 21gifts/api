@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
-import { VERIFICATION_TTL_MS } from '@/lib/config';
+import { SESSION_TTL_MS, VERIFICATION_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
@@ -11,6 +11,7 @@ import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerToken, meRoutes } from '@/routes/me';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -148,6 +149,63 @@ describe('GET /me', () => {
   it('returns 401 for an unknown token', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/me', {
       headers: { authorization: 'Bearer nope' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for an expired session', async () => {
+    const store = await seededStore();
+    const res = await mount(store, { clock: () => 1_000_000 + SESSION_TTL_MS + 1 }).request('/me', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 403 for a sessionRefused account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '00000000-0000-4000-8000-0000000000ff';
+    await store.createAccount({
+      id,
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+  });
+
+  it('returns 401 on other /me routes for a sessionRefused account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '00000000-0000-4000-8000-0000000000ff';
+    await store.createAccount({
+      id,
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
     });
     expect(res.status).toBe(401);
   });
