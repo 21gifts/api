@@ -2271,7 +2271,9 @@ plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for external authors), and
 `replyCount` of live attributed children (`parent_id` match, `deleted_at`
-null, and either `account_id` or `author_pubkey` set). Visible external rows
+null, and `account_id` set, or `author_pubkey` set and that pubkey is a
+recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
+an `EXISTS` subquery)). Visible external rows
 include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
 and `payable` is false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
@@ -2325,7 +2327,8 @@ unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`. List queries select top-level rows only
 (`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
 `replyCount` of live attributed children
-(`account_id IS NOT NULL OR author_pubkey IS NOT NULL`),
+(`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
+(SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`),
 and must not select the `photo` bytea
 column.
 
@@ -2377,9 +2380,13 @@ sats from the zap, receipt time clamped to now, Nostr publish skipped). Profile
 lookup failure falls back to a non-impersonating truncated-pubkey display name.
 Resolved profile names use the same fallback when any of these holds: they contain a
 C0 or DEL control character, an explicit bidirectional control character (U+061C,
-U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), or no letter or digit at all; they mix
-more than one of the Latin, Cyrillic and Greek scripts; they equal a member name in a
-plain comparison (NFKC, trimmed, case-insensitive); a reserved project/staff word
+U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), or no letter or digit at all; they
+contain a default-ignorable Unicode code point (checked on the name and on its NFKD
+form too, so a compatibility character that decomposes to one is also caught), except
+the ZWNJ/ZWJ joiners U+200C/U+200D and the emoji variation selectors U+FE00–U+FE0F
+which stay allowed; they mix more than one of the Latin, Cyrillic and Greek
+scripts; they equal a member name in a plain comparison (NFKC, trimmed,
+case-insensitive); a reserved project/staff word
 appears in their look-alike fold or in their by-sound transliteration of Cyrillic
 letters (both folds are lossy here: unmapped letters are dropped, so a false positive
 only yields the fallback); or their look-alike fold or their transliteration equals
@@ -2717,9 +2724,11 @@ Success → **Response** `200` or `206`: raw video body,
 ### `GET /messages/:id/replies`
 
 Public (Bearer optional). Lists **direct live attributed replies**
-(`account_id IS NOT NULL OR author_pubkey IS NOT NULL`) for parent `:id`
-oldest-first (`createdAt` then `id` ascending), capped at **200**. Rows with
-neither identity are omitted. Each item is the public message JSON (`photoCount` 0–10 always present;
+(`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
+(SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`) for parent
+`:id` oldest-first (`createdAt` then `id` ascending), capped at **200**. Rows
+with no account and no recorded-zapper pubkey are omitted. Each item is the
+public message JSON (`photoCount` 0–10 always present;
 `hasPhoto` still means photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and a non-blank
 Lightning Address, and no `replyCount`. Unauthenticated items omit
@@ -2766,7 +2775,8 @@ Success → **Response** `200`:
 
 An empty reply thread is **200** with `"messages": []`. Soft-hidden and
 unattributed null-account children (`accountId` and `authorPubkey` both null)
-are omitted from the list.
+are omitted from the list, as is a null-account child whose `authorPubkey` is
+set but is not a recorded zapper (retroactively included once that pubkey zaps).
 
 ### `GET /messages/:id`
 
@@ -2777,12 +2787,14 @@ captured as `:id`. Returns
 the public message JSON (`sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Never includes
-`accountId`, `deletedAt`, or `deletedBy`. A live external Nostr row
-(`accountId` null, `authorPubkey` set) returns **200**, includes
-`via: "nostr"`, omits `role`, and sets `payable` false. A null-account reply
-without an author pubkey remains **404** `{ "error": "Not found" }` (same body
-as missing/hidden). `replyCount` is
-omitted. Photo and video bytes are never included. Soft-hidden rows
+`accountId`, `deletedAt`, or `deletedBy`. A live reply with `accountId` null
+returns **200** only when `authorPubkey` is set and that pubkey is a recorded
+zapper (checked via `isZapperPubkey` on every read, including during a
+`sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
+and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
+that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
+(same body as missing/hidden). `replyCount` is omitted. Photo and video bytes
+are never included. Soft-hidden rows
 (`deletedAt` set) are treated as missing (404) before any missing-video
 hard-delete cleanup.
 
@@ -2797,8 +2809,8 @@ whitespace) → **400** after the UUID check (non-UUID `:id` stays **404**
 even when `sinceSats` is present). Soft-hidden / missing during the wait
 (including the first read) → **404**. Store throw on any read → **503**.
 
-Non-UUID `:id`, missing row, soft-hidden row, or live null-account reply
-without an author pubkey →
+Non-UUID `:id`, missing row, soft-hidden row, or a live null-account reply
+whose pubkey is missing or not a recorded zapper →
 **Response** `404`:
 
 ```json
@@ -2896,7 +2908,10 @@ Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
 **session** required (moderator). This is **not** a
 `DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
 `"hidden"` is not captured as `:id`. No `forum.read` gate — a
-moderator without rules agreement is still **200**.
+founder/moderator without rules agreement is still **200**. Listed rows
+include every hidden row regardless of external-zapper entitlement — the
+moderation view is intentionally unaffected by the public read-visibility
+rule.
 
 Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
 desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`

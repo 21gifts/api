@@ -937,7 +937,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (
             row === undefined ||
             row.deletedAt !== null ||
-            (row.parentId !== null && row.accountId === null && row.authorPubkey === null)
+            (row.parentId !== null &&
+              row.accountId === null &&
+              (row.authorPubkey === null || !(await deps.store.isZapperPubkey(row.authorPubkey))))
           ) {
             return c.json({ error: 'Not found' }, 404);
           }

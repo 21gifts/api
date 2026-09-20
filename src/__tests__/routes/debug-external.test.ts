@@ -50,13 +50,13 @@ describe('debugExternalRoutes', () => {
     const newPubkey = 'bb'.repeat(32);
     await store.recordZapper(oldPubkey, 'receipt-old', new Date('2026-09-18T09:00:00Z'));
     await store.recordZapper(newPubkey, 'receipt-new', new Date('2026-09-18T10:00:00Z'));
-    await store.blockPubkey(
+    await store.blockPubkeyAndHideRows(
       oldPubkey,
       new Date('2026-09-18T11:00:00Z'),
       'staff-old',
       'message-old',
     );
-    await store.blockPubkey(
+    await store.blockPubkeyAndHideRows(
       newPubkey,
       new Date('2026-09-18T12:00:00Z'),
       'staff-new',

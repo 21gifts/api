@@ -197,13 +197,12 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     recordZapper: boom,
     listZapperPubkeys: boom,
     listZappers: boom,
-    blockPubkey: boom,
     blockPubkeyAndHideRows: boom,
     unblockPubkeyByMessage: boom,
     isPubkeyBlocked: boom,
+    isZapperPubkey: boom,
     listBlockedPubkeys: boom,
     listBlockedPubkeyRows: boom,
-    markDeletedByExternalPubkey: boom,
     listUnattributedIndexedReceipts: (_limit, _before) => boom(),
     ...overrides,
   };
@@ -1922,16 +1921,13 @@ describe('POST /messages', () => {
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
       listZapperPubkeys: () => base.listZapperPubkeys(),
       listZappers: (limit) => base.listZappers(limit),
-      blockPubkey: (pubkey, at, byAccountId, messageId) =>
-        base.blockPubkey(pubkey, at, byAccountId, messageId),
       blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      isZapperPubkey: (pubkey) => base.isZapperPubkey(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
-      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
-        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
       listUnattributedIndexedReceipts: (limit, before) =>
         base.listUnattributedIndexedReceipts(limit, before),
     };
@@ -2027,16 +2023,13 @@ describe('POST /messages', () => {
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
       listZapperPubkeys: () => base.listZapperPubkeys(),
       listZappers: (limit) => base.listZappers(limit),
-      blockPubkey: (pubkey, at, byAccountId, messageId) =>
-        base.blockPubkey(pubkey, at, byAccountId, messageId),
       blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      isZapperPubkey: (pubkey) => base.isZapperPubkey(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
-      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
-        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
       listUnattributedIndexedReceipts: (limit, before) =>
         base.listUnattributedIndexedReceipts(limit, before),
     };
@@ -3582,16 +3575,13 @@ describe('POST /messages/:id/invoice', () => {
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
       listZapperPubkeys: () => base.listZapperPubkeys(),
       listZappers: (limit) => base.listZappers(limit),
-      blockPubkey: (pubkey, at, byAccountId, messageId) =>
-        base.blockPubkey(pubkey, at, byAccountId, messageId),
       blockPubkeyAndHideRows: (pubkey, at, byAccountId, messageId) =>
         base.blockPubkeyAndHideRows(pubkey, at, byAccountId, messageId),
       unblockPubkeyByMessage: (messageId) => base.unblockPubkeyByMessage(messageId),
       isPubkeyBlocked: (pubkey) => base.isPubkeyBlocked(pubkey),
+      isZapperPubkey: (pubkey) => base.isZapperPubkey(pubkey),
       listBlockedPubkeys: () => base.listBlockedPubkeys(),
       listBlockedPubkeyRows: (limit) => base.listBlockedPubkeyRows(limit),
-      markDeletedByExternalPubkey: (pubkey, at, byAccountId) =>
-        base.markDeletedByExternalPubkey(pubkey, at, byAccountId),
       listUnattributedIndexedReceipts: (limit, before) =>
         base.listUnattributedIndexedReceipts(limit, before),
     };
@@ -3822,6 +3812,7 @@ describe('GET /messages/:id', () => {
       authorPubkey: 'ab'.repeat(32),
       eventId: 'ee'.repeat(32),
     });
+    await messageStore.recordZapper('ab'.repeat(32), 'receipt-legacy', new Date(now()));
     const res = await mount(new InMemoryAuthStore(), messageStore).request(
       '/messages/14141414-1414-4141-8141-141414141414',
     );
@@ -4439,6 +4430,7 @@ describe('GET /messages/:id/replies', () => {
       parentId: '15151515-1515-4151-8151-151515151515',
       authorPubkey: 'ab'.repeat(32),
     });
+    await messageStore.recordZapper('ab'.repeat(32), 'receipt-legacy', new Date(now()));
     await messageStore.create({
       id: '18181818-1818-4181-8181-181818181818',
       accountId: 'acc',

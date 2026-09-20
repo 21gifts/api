@@ -2361,7 +2361,7 @@ describe('indexOpenZapReceipts', () => {
       receiptId: 'blocked-external-receipt',
       bolt11: 'lnbc-blocked-external',
     });
-    await store.blockPubkey(fixture.pubkey, new Date(1), 'staff', 'blocked-message');
+    await store.blockPubkeyAndHideRows(fixture.pubkey, new Date(1), 'staff', 'blocked-message');
     mockedDecode.mockReturnValue({ paymentHash: '51'.repeat(32), amountMsat: 21_000 });
     mockedInspect.mockReturnValue({
       paymentHash: '51'.repeat(32),
@@ -2476,7 +2476,7 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
     await profileEntered;
-    await store.blockPubkey(
+    await store.blockPubkeyAndHideRows(
       fixture.pubkey,
       new Date(1_700_000_200_000),
       'live-block-race-staff',
@@ -3808,8 +3808,6 @@ describe('indexOpenZapReceipts', () => {
         base.listZapperPubkeys(...args),
       listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
         base.listZappers(...args),
-      blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
-        base.blockPubkey(...args),
       blockPubkeyAndHideRows: (
         ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
       ) => base.blockPubkeyAndHideRows(...args),
@@ -3818,13 +3816,12 @@ describe('indexOpenZapReceipts', () => {
       ) => base.unblockPubkeyByMessage(...args),
       isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
         base.isPubkeyBlocked(...args),
+      isZapperPubkey: (...args: Parameters<InMemoryMessageStore['isZapperPubkey']>) =>
+        base.isZapperPubkey(...args),
       listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
         base.listBlockedPubkeys(...args),
       listBlockedPubkeyRows: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>) =>
         base.listBlockedPubkeyRows(...args),
-      markDeletedByExternalPubkey: (
-        ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
-      ) => base.markDeletedByExternalPubkey(...args),
       listUnattributedIndexedReceipts: (
         ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
       ) => base.listUnattributedIndexedReceipts(...args),
@@ -4030,8 +4027,6 @@ describe('indexOpenZapReceipts', () => {
           base.listZapperPubkeys(...args),
         listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
           base.listZappers(...args),
-        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
-          base.blockPubkey(...args),
         blockPubkeyAndHideRows: (
           ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
         ) => base.blockPubkeyAndHideRows(...args),
@@ -4040,14 +4035,13 @@ describe('indexOpenZapReceipts', () => {
         ) => base.unblockPubkeyByMessage(...args),
         isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
           base.isPubkeyBlocked(...args),
+        isZapperPubkey: (...args: Parameters<InMemoryMessageStore['isZapperPubkey']>) =>
+          base.isZapperPubkey(...args),
         listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
           base.listBlockedPubkeys(...args),
         listBlockedPubkeyRows: (
           ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
         ) => base.listBlockedPubkeyRows(...args),
-        markDeletedByExternalPubkey: (
-          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
-        ) => base.markDeletedByExternalPubkey(...args),
         listUnattributedIndexedReceipts: (
           ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
         ) => base.listUnattributedIndexedReceipts(...args),
@@ -4384,8 +4378,6 @@ describe('indexOpenZapReceipts', () => {
           base.listZapperPubkeys(...args),
         listZappers: (...args: Parameters<InMemoryMessageStore['listZappers']>) =>
           base.listZappers(...args),
-        blockPubkey: (...args: Parameters<InMemoryMessageStore['blockPubkey']>) =>
-          base.blockPubkey(...args),
         blockPubkeyAndHideRows: (
           ...args: Parameters<InMemoryMessageStore['blockPubkeyAndHideRows']>
         ) => base.blockPubkeyAndHideRows(...args),
@@ -4394,14 +4386,13 @@ describe('indexOpenZapReceipts', () => {
         ) => base.unblockPubkeyByMessage(...args),
         isPubkeyBlocked: (...args: Parameters<InMemoryMessageStore['isPubkeyBlocked']>) =>
           base.isPubkeyBlocked(...args),
+        isZapperPubkey: (...args: Parameters<InMemoryMessageStore['isZapperPubkey']>) =>
+          base.isZapperPubkey(...args),
         listBlockedPubkeys: (...args: Parameters<InMemoryMessageStore['listBlockedPubkeys']>) =>
           base.listBlockedPubkeys(...args),
         listBlockedPubkeyRows: (
           ...args: Parameters<InMemoryMessageStore['listBlockedPubkeyRows']>
         ) => base.listBlockedPubkeyRows(...args),
-        markDeletedByExternalPubkey: (
-          ...args: Parameters<InMemoryMessageStore['markDeletedByExternalPubkey']>
-        ) => base.markDeletedByExternalPubkey(...args),
         listUnattributedIndexedReceipts: (
           ...args: Parameters<InMemoryMessageStore['listUnattributedIndexedReceipts']>
         ) => base.listUnattributedIndexedReceipts(...args),
@@ -5757,7 +5748,7 @@ describe('indexOpenZapReceipts', () => {
       zapRequestId: '2a8d5e71c4930fb6e17c4a925bd8603f74e1a9c50d6b328fac9574e163b20df8',
       comment: 'blocked retry',
     });
-    await store.blockPubkey(
+    await store.blockPubkeyAndHideRows(
       payerPubkey,
       new Date(1),
       'retry-blocked-staff',
@@ -5837,7 +5828,7 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: failFetch(),
     });
     await profileEntered;
-    await store.blockPubkey(
+    await store.blockPubkeyAndHideRows(
       payerPubkey,
       new Date(1_700_000_200_000),
       'retry-block-race-staff',
@@ -7182,7 +7173,12 @@ describe('indexOpenZapReceipts', () => {
       giftReplyId: null,
     });
     expect(await store.listReplies(scenario.parentId)).toEqual([]);
-    await store.blockPubkey(scenario.fixture.pubkey, new Date(2), 'retry-staff', 'blocked-reply');
+    await store.blockPubkeyAndHideRows(
+      scenario.fixture.pubkey,
+      new Date(2),
+      'retry-staff',
+      'blocked-reply',
+    );
     store.failExternalCreates = false;
 
     await ingest({

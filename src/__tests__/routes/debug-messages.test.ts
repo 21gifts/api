@@ -693,7 +693,7 @@ describe('debugMessagesRoutes', () => {
     await store.markDeleted(independentId, later, 'other-staff');
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
     await store.markDeleted(REPLY_ID, HIDDEN_AT, 'staff');
-    await store.blockPubkey('ab'.repeat(32), HIDDEN_AT, 'staff', HIDDEN_ID);
+    await store.blockPubkeyAndHideRows('ab'.repeat(32), HIDDEN_AT, 'staff', HIDDEN_ID);
     expect(await store.listBlockedPubkeys()).toEqual(['ab'.repeat(32)]);
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {

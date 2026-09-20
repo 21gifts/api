@@ -232,8 +232,11 @@ event is queried again. A per-store in-flight event-id guard prevents overlappin
 ticks from storing it concurrently. Only signed kind:0 profiles up to 64 KiB
 can supply its name. Control characters, explicit bidirectional controls, names
 without a letter or digit, names mixing more than one of the Latin, Cyrillic
-and Greek scripts, and member or reserved-identity confusables (by glyph, or by
-sound for Cyrillic) fall back to the truncated pubkey. Member-name fold
+and Greek scripts, names containing a default-ignorable code point (checked on
+both the name and its NFKD form), except the ZWNJ/ZWJ joiners and the emoji
+variation selectors, which stay allowed, and member or reserved-identity
+confusables (by glyph, or by sound for Cyrillic) fall back to the truncated
+pubkey. Member-name fold
 comparisons require every candidate letter to be ASCII or mapped by the
 respective table, so unmapped non-Latin letters do not spuriously collide;
 eligible pure non-Latin names remain visible. Name resolution precedes a fresh
@@ -242,9 +245,14 @@ during profile lookup wins before limiter acquisition, consumes no budget, and
 the event id is still released.
 Per-pubkey and global budget is consumed immediately before the row write and
 released if that write fails. It is listed and counted like a member reply, but
-public JSON exposes only `via: "nostr"`, never the pubkey. Only the parent's
-member author is notified, and only for a numeric event time no more than one
-hour old and no more than ten minutes in the future. Missing/non-numeric and
+public JSON exposes only `via: "nostr"`, never the pubkey. This same
+recorded-zapper check also gates every read of an existing row (list, count,
+and single-fetch), not just the ingest-time decision to persist a new one —
+so a reply row that predates this pubkey's zapper entitlement, or a row from a
+pubkey that has never zapped, stays invisible until that check passes, and
+`GET /messages/hidden` (staff moderation) is exempt from this read gate. Only
+the parent's member author is notified, and only for a numeric event time no
+more than one hour old and no more than ten minutes in the future. Missing/non-numeric and
 farther-future event times still persist with the existing ingest-time storage
 fallback/clamp but do not notify.
 

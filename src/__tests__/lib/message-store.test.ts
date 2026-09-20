@@ -400,6 +400,7 @@ describe('InMemoryMessageStore', () => {
       deletedAt: new Date('2026-09-01T00:00:00.000Z'),
       deletedBy: 'staff',
     });
+    await store.recordZapper('aa'.repeat(32), 'receipt-aa', new Date('2026-09-18T10:00:00Z'));
     const listed = await store.listPostsByAccount('acc', 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.replyCount).toBe(2);
@@ -644,6 +645,7 @@ describe('InMemoryMessageStore', () => {
       authorPubkey: null,
       text: 'unattributed child',
     });
+    await store.recordZapper('bb'.repeat(32), 'receipt-bb', new Date('2026-09-18T10:00:00Z'));
     const listed = await store.listLatest(10);
     expect(listed.find((row) => row.id === 'p-scan')?.replyCount).toBe(2);
     expect((await store.listReplies('p-scan')).map((row) => row.id)).toEqual([
@@ -910,6 +912,7 @@ describe('InMemoryMessageStore', () => {
       text: 'unattributed reply',
       createdAt: new Date('2026-08-01T12:45:00.000Z'),
     });
+    await store.recordZapper('cc'.repeat(32), 'receipt-cc', new Date('2026-09-18T10:00:00Z'));
     const listed = await store.listLatest(10);
     expect(listed.map((r) => r.id)).toEqual(['a']);
     expect(listed[0]?.replyCount).toBe(3);
@@ -950,9 +953,50 @@ describe('InMemoryMessageStore', () => {
       deletedAt: new Date('2026-09-01T00:00:00.000Z'),
       deletedBy: 'staff',
     });
+    await store.recordZapper('aa'.repeat(32), 'receipt-aa', new Date('2026-09-18T10:00:00Z'));
     const listed = await store.listLatest(10);
     expect(listed.find((row) => row.id === 'a')?.replyCount).toBe(2);
     expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-external', 'r-member']);
+  });
+
+  it('omits legacy external replies until their pubkey is recorded as a zapper', async () => {
+    const pubkey = 'ee'.repeat(32);
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-legacy',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'legacy external',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-member',
+      parentId: 'a',
+      text: 'member child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-orphan',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: null,
+      text: 'orphan',
+    });
+    expect((await store.listLatest(10))[0]?.replyCount).toBe(1);
+    expect((await store.listPostsByAccount('acc', 10))[0]?.replyCount).toBe(1);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-member']);
+    expect(await store.isZapperPubkey(pubkey)).toBe(false);
+    await store.recordZapper(
+      pubkey.toUpperCase(),
+      'receipt-legacy',
+      new Date('2026-09-18T10:00:00Z'),
+    );
+    expect(await store.isZapperPubkey(pubkey)).toBe(true);
+    expect((await store.listLatest(10))[0]?.replyCount).toBe(2);
+    expect((await store.listPostsByAccount('acc', 10))[0]?.replyCount).toBe(2);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual(['r-legacy', 'r-member']);
   });
 
   it('listDebug includes hidden rows and replies newest-first', async () => {
@@ -1095,6 +1139,7 @@ describe('InMemoryMessageStore', () => {
       text: 'unattributed',
       createdAt: same,
     });
+    await store.recordZapper('dd'.repeat(32), 'receipt-dd', new Date('2026-09-18T10:00:00Z'));
     expect((await store.listReplies('a')).map((r) => r.id)).toEqual(['ra', 'rb', 'rc']);
   });
 
@@ -1420,6 +1465,64 @@ describe('InMemoryMessageStore', () => {
     ]);
   });
 
+  it('derives awaiting gift-reply receiptCreatedAt from the newest indexed ingest', async () => {
+    const store = new InMemoryMessageStore();
+    const oldestSeconds = 1_758_193_200;
+    const olderSeconds = 1_758_196_800;
+    const newerSeconds = 1_758_200_400;
+    await store.create(EARLY);
+    await store.recordZapReceipt('r-gift-newest', 'a', 21);
+    await store.updateZapReceiptGift('r-gift-newest', { payerAccountId: 'payer' });
+    await store.recordZapIngest({
+      id: 'ingest-gift-older',
+      createdAt: new Date('2026-09-18T10:00:00Z'),
+      receiptId: 'r-gift-newest',
+      noteEventId: '82'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: '83'.repeat(32),
+      receipt: { id: 'older', created_at: olderSeconds },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-gift-newer',
+      createdAt: new Date('2026-09-18T11:00:00Z'),
+      receiptId: 'r-gift-newest',
+      noteEventId: '82'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: '83'.repeat(32),
+      receipt: { id: 'newer', created_at: newerSeconds },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-gift-oldest',
+      createdAt: new Date('2026-09-18T09:00:00Z'),
+      receiptId: 'r-gift-newest',
+      noteEventId: '82'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: '83'.repeat(32),
+      receipt: { id: 'oldest', created_at: oldestSeconds },
+    });
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([
+      {
+        receiptEventId: 'r-gift-newest',
+        messageId: 'a',
+        sats: 21,
+        payerAccountId: 'payer',
+        payerPubkey: null,
+        zapRequestId: null,
+        receiptCreatedAt: new Date(newerSeconds * 1000),
+        comment: '',
+      },
+    ]);
+  });
+
   it('attributes external receipts once and keeps entitlement through dequeue', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -1458,6 +1561,15 @@ describe('InMemoryMessageStore', () => {
       },
     ]);
     expect((await store.getZapReceiptGift('receipt-a'))?.zapRequestId).toBe('request-1');
+  });
+
+  it('isZapperPubkey is true after recordZapper and compares pubkeys case-insensitively', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.isZapperPubkey('AA')).toBe(false);
+    await store.recordZapper('AA', 'receipt-a', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.isZapperPubkey('AA')).toBe(true);
+    expect(await store.isZapperPubkey('aa')).toBe(true);
+    expect(await store.isZapperPubkey('bb')).toBe(false);
   });
 
   it('allows idempotent re-attribution of an in-memory receipt and refreshes payer details', async () => {
@@ -1567,8 +1679,18 @@ describe('InMemoryMessageStore', () => {
         receipt: { id: 'receipt-a' },
       },
     ]);
-    await store.blockPubkey('AA', new Date('2026-09-18T11:00:00Z'), 'staff', 'external-1');
-    await store.blockPubkey('aa', new Date('2026-09-18T12:00:00Z'), 'other', 'external-2');
+    await store.blockPubkeyAndHideRows(
+      'AA',
+      new Date('2026-09-18T11:00:00Z'),
+      'staff',
+      'external-1',
+    );
+    await store.blockPubkeyAndHideRows(
+      'aa',
+      new Date('2026-09-18T12:00:00Z'),
+      'other',
+      'external-2',
+    );
     expect(await store.isPubkeyBlocked('AA')).toBe(true);
     expect(await store.isPubkeyBlocked('bb')).toBe(false);
     expect(await store.listBlockedPubkeys()).toEqual(['aa']);
@@ -1584,6 +1706,102 @@ describe('InMemoryMessageStore', () => {
     expect(await store.unblockPubkeyByMessage('external-1')).toBe(true);
     expect(await store.isPubkeyBlocked('aa')).toBe(false);
     expect(await store.listBlockedPubkeys()).toEqual([]);
+  });
+
+  it('lists one unattributed indexed receipt from the newest ingest', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('receipt-dup', 'a', 21);
+    await store.recordZapIngest({
+      id: 'ingest-older',
+      createdAt: new Date('2026-09-18T10:00:00Z'),
+      receiptId: 'receipt-dup',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'older' },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-newer',
+      createdAt: new Date('2026-09-18T11:00:00Z'),
+      receiptId: 'receipt-dup',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'newer' },
+    });
+    await store.recordZapReceipt('receipt-tie', 'a', 7);
+    const tiedAt = new Date('2026-09-18T10:00:00Z');
+    await store.recordZapIngest({
+      id: 'ingest-tie-a',
+      createdAt: tiedAt,
+      receiptId: 'receipt-tie',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 7,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'lower-id' },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-tie-z',
+      createdAt: tiedAt,
+      receiptId: 'receipt-tie',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 7,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'higher-id' },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-oldest',
+      createdAt: new Date('2026-09-18T09:00:00Z'),
+      receiptId: 'receipt-dup',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'oldest' },
+    });
+    await store.recordZapIngest({
+      id: 'ingest-tie-0',
+      createdAt: tiedAt,
+      receiptId: 'receipt-tie',
+      noteEventId: 'ee'.repeat(32),
+      messageId: 'a',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 7,
+      receiptPubkey: 'ff'.repeat(32),
+      receipt: { id: 'lowest-id' },
+    });
+    expect(await store.listUnattributedIndexedReceipts(10)).toEqual([
+      {
+        receiptEventId: 'receipt-dup',
+        messageId: 'a',
+        sats: 21,
+        createdAt: new Date('2026-09-18T11:00:00Z'),
+        receipt: { id: 'newer' },
+      },
+      {
+        receiptEventId: 'receipt-tie',
+        messageId: 'a',
+        sats: 7,
+        createdAt: tiedAt,
+        receipt: { id: 'higher-id' },
+      },
+    ]);
   });
 
   it('uses secondary keys for strict receipt cursors on timestamp ties', async () => {
@@ -1607,8 +1825,8 @@ describe('InMemoryMessageStore', () => {
     }
     await store.recordZapper('aa', 'receipt-a', tiedAt);
     await store.recordZapper('bb', 'receipt-z', tiedAt);
-    await store.blockPubkey('cc', tiedAt, 'staff', 'external-c');
-    await store.blockPubkey('dd', tiedAt, 'staff', 'external-d');
+    await store.blockPubkeyAndHideRows('cc', tiedAt, 'staff', 'external-c');
+    await store.blockPubkeyAndHideRows('dd', tiedAt, 'staff', 'external-d');
 
     const firstPage = await store.listUnattributedIndexedReceipts(1);
     expect(firstPage[0]?.receiptEventId).toBe('receipt-z');
@@ -1627,31 +1845,6 @@ describe('InMemoryMessageStore', () => {
     ).toBe('receipt-a');
     expect((await store.listZappers(1))[0]?.pubkey).toBe('bb');
     expect((await store.listBlockedPubkeyRows(1))[0]?.pubkey).toBe('dd');
-  });
-
-  it('soft-hides every live row by an external pubkey only', async () => {
-    const pubkey = 'aa'.repeat(32);
-    const store = new InMemoryMessageStore([EARLY]);
-    await store.create({ ...LATE, id: 'external-1', accountId: null, authorPubkey: pubkey });
-    await store.create({
-      ...LATE,
-      id: 'external-hidden',
-      accountId: null,
-      authorPubkey: pubkey,
-      deletedAt: new Date('2026-09-17T00:00:00Z'),
-      deletedBy: 'older',
-    });
-    await store.create({ ...LATE, id: 'member-signed', authorPubkey: pubkey });
-    expect(
-      await store.markDeletedByExternalPubkey(
-        pubkey.toUpperCase(),
-        new Date('2026-09-18T00:00:00Z'),
-        'staff',
-      ),
-    ).toBe(1);
-    expect((await store.getById('external-1'))?.deletedBy).toBe('staff');
-    expect((await store.getById('external-hidden'))?.deletedBy).toBe('older');
-    expect((await store.getById('member-signed'))?.deletedAt).toBeNull();
   });
 
   it('atomically blocks an external pubkey and hides only its live external rows', async () => {
@@ -2823,7 +3016,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(
-      /child\.account_id IS NOT NULL OR child\.author_pubkey IS NOT NULL/,
+      /child\.account_id IS NOT NULL OR \(child\.author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(sql.queries[0]?.params).toEqual(['acc', 50]);
@@ -2898,7 +3091,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(/child\.deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(
-      /child\.account_id IS NOT NULL OR child\.author_pubkey IS NOT NULL/,
+      /child\.account_id IS NOT NULL OR \(child\.author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
@@ -4273,7 +4466,9 @@ describe('PostgresMessageStore', () => {
     expect(replies[0]?.accountId).toBe('acc');
     expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1/);
     expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
-    expect(sql.queries[0]?.text).toMatch(/account_id IS NOT NULL OR author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(
+      /account_id IS NOT NULL OR \(author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
+    );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.params).toEqual(['m1', 50]);
     sql.nextRows = [{ event_id: 'ee'.repeat(32) }];
@@ -4829,6 +5024,7 @@ describe('PostgresMessageStore', () => {
           created_at: '2026-09-18T10:00:00Z',
         },
       ],
+      [],
       [{ pubkey: 'aa' }],
       [{ blocked: 1 }],
       [],
@@ -4841,7 +5037,6 @@ describe('PostgresMessageStore', () => {
           message_id: 'm-external',
         },
       ],
-      [{ id: 'm-external' }, { id: 'm-external-2' }],
     ];
     expect(
       await store.attributeZapReceipt('receipt-a', {
@@ -4870,32 +5065,45 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.text).toContain('ON CONFLICT (pubkey) DO NOTHING');
     expect(await store.listZapperPubkeys()).toEqual(['aa']);
     expect((await store.listZappers(1))[0]?.receiptEventId).toBe('receipt-a');
-    await store.blockPubkey('AA', new Date('2026-09-18T11:00:00Z'), 'staff', 'm-external');
-    expect(sql.executes[1]?.text).toContain('ON CONFLICT (pubkey) DO NOTHING');
+    expect(
+      await store.blockPubkeyAndHideRows(
+        'AA',
+        new Date('2026-09-18T11:00:00Z'),
+        'staff',
+        'm-external',
+      ),
+    ).toBe(0);
+    expect(sql.queries[4]?.text).toContain('ON CONFLICT (pubkey) DO NOTHING');
+    expect(sql.queries[4]?.text).toContain('INSERT INTO nostr_blocked_pubkey');
     expect(await store.listBlockedPubkeys()).toEqual(['aa']);
     expect(await store.isPubkeyBlocked('AA')).toBe(true);
-    expect(sql.queries[5]?.text).toContain(
+    expect(sql.queries[6]?.text).toContain(
       'SELECT 1 FROM nostr_blocked_pubkey WHERE pubkey = $1 LIMIT 1',
     );
-    expect(sql.queries[5]?.params).toEqual(['aa']);
+    expect(sql.queries[6]?.params).toEqual(['aa']);
     expect(await store.isPubkeyBlocked('BB')).toBe(false);
     expect(await store.unblockPubkeyByMessage('m-external')).toBe(true);
-    expect(sql.queries[7]?.text).toContain(
+    expect(sql.queries[8]?.text).toContain(
       'DELETE FROM nostr_blocked_pubkey WHERE message_id = $1 RETURNING pubkey',
     );
     expect((await store.listBlockedPubkeyRows(1))[0]?.blockedBy).toBe('staff');
-    expect(
-      await store.markDeletedByExternalPubkey('aa', new Date('2026-09-18T12:00:00Z'), 'staff'),
-    ).toBe(2);
-    expect(sql.queries[9]?.text).toContain(
-      'WHERE deleted_at IS NULL AND account_id IS NULL AND lower(author_pubkey) = lower($1)',
-    );
     expect(sql.executes.some((entry) => entry.text.includes('INSERT INTO nostr_zapper'))).toBe(
       true,
     );
     expect(
-      sql.executes.some((entry) => entry.text.includes('INSERT INTO nostr_blocked_pubkey')),
+      sql.queries.some((entry) => entry.text.includes('INSERT INTO nostr_blocked_pubkey')),
     ).toBe(true);
+  });
+
+  it('isZapperPubkey queries nostr_zapper by lower-cased pubkey', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.isZapperPubkey('AA')).toBe(true);
+    expect(sql.queries[0]?.text).toContain('SELECT 1 FROM nostr_zapper WHERE pubkey = $1 LIMIT 1');
+    expect(sql.queries[0]?.params).toEqual(['aa']);
+    sql.nextRows = [];
+    expect(await store.isZapperPubkey('bb')).toBe(false);
   });
 
   it('blocks and hides external rows in one Postgres statement', async () => {

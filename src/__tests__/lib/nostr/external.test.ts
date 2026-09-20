@@ -318,6 +318,56 @@ describe('externalDisplayName', () => {
     ).toBe('Family 👩‍👩‍👧‍👦');
   });
 
+  const namesWithDefaultIgnorable = [
+    ['HANGUL FILLER', 'Alice' + '\u3164'],
+    ['HANGUL CHOSEONG FILLER', 'Alice' + '\u115f'],
+    ['HANGUL JUNGSEONG FILLER', 'Alice' + '\u1160'],
+    ['HALFWIDTH HANGUL FILLER', 'Alice' + '\uffa0'],
+    ['SOFT HYPHEN', 'Alice' + '\u00ad'],
+    ['ZERO WIDTH SPACE', 'Alice' + '\u200b'],
+    ['WORD JOINER', 'Alice' + '\u2060'],
+    ['ZERO WIDTH NO-BREAK SPACE / BOM', 'Alice' + '\ufeff'],
+    ['a tag character', 'Alice\u{e0041}'],
+  ];
+
+  it.each(namesWithDefaultIgnorable)(
+    'falls back for a name containing %s when a member is named Alice',
+    (_label, profileName) => {
+      const pubkey = 'ABCDEF0123456789';
+      expect(externalDisplayName({ profileName, pubkey, accountNames: ['Alice'] })).toBe(
+        'abcdef01…6789',
+      );
+    },
+  );
+
+  it.each(namesWithDefaultIgnorable)(
+    'falls back for a name containing %s with an empty member list',
+    (_label, profileName) => {
+      const pubkey = 'ABCDEF0123456789';
+      expect(externalDisplayName({ profileName, pubkey, accountNames: [] })).toBe('abcdef01…6789');
+    },
+  );
+
+  it('keeps a name containing an emoji variation selector', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'Love ❤\uFE0F',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('Love ❤\uFE0F');
+  });
+
+  it('keeps a Persian name containing a zero-width non-joiner', () => {
+    expect(
+      externalDisplayName({
+        profileName: 'کتاب\u200cها',
+        pubkey: 'ABCDEF0123456789',
+        accountNames: [],
+      }),
+    ).toBe('کتاب\u200cها');
+  });
+
   it('falls back for Support with Cyrillic o U+043E', () => {
     const pubkey = 'ABCDEF0123456789';
     expect(externalDisplayName({ profileName: 'Supp\u043ert', pubkey, accountNames: [] })).toBe(

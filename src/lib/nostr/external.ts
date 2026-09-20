@@ -144,6 +144,17 @@ const RESERVED_NAME_PARTS = [
  */
 const BIDI_CONTROL_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
+/**
+ * Default-ignorable "format" code points (invisible fillers such as the Hangul jamo fillers, soft
+ * hyphen, zero-width space, word joiner, BOM, and tag characters) make the completeness checks
+ * below treat a name as "not fully comparable" without changing how it visually renders, letting a
+ * name collide with an existing member name or a reserved word while looking distinct. Excluded:
+ * U+200C/U+200D (the ZWNJ/ZWJ joiners used by Persian text and emoji sequences) and the emoji
+ * variation selectors U+FE00-U+FE0F, which are legitimate and stay allowed.
+ */
+const DEFAULT_IGNORABLE_RE =
+  /(?:(?!\u200c)(?!\u200d)(?![\uFE00-\uFE0F]))[\p{Default_Ignorable_Code_Point}]/u;
+
 /** Common single-codepoint Cyrillic and Greek look-alikes used in Latin names. */
 const CONFUSABLE_TO_LATIN: Readonly<Record<string, string>> = {
   '\u0410': 'A',
@@ -351,6 +362,9 @@ export function externalDisplayName(args: {
     }
   }
   if (BIDI_CONTROL_RE.test(trimmed)) {
+    return fallback;
+  }
+  if (DEFAULT_IGNORABLE_RE.test(trimmed) || DEFAULT_IGNORABLE_RE.test(trimmed.normalize('NFKD'))) {
     return fallback;
   }
   const capped = trimmed.slice(0, NAME_MAX_LENGTH);

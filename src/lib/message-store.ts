@@ -102,8 +102,8 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 /** Top-level list row with computed reply count. */
 export interface MessageListRow extends MessageRow {
   /**
-   * Live attributed children (`parentId` match, `deletedAt` null, and an
-   * account or author pubkey).
+   * Live attributed children (`parentId` match, `deletedAt` null, and either
+   * an account or a recorded zapper pubkey).
    */
   replyCount: number;
 }
@@ -123,8 +123,8 @@ export interface MessageStore {
   /**
    * Newest **top-level** notes first (`parent_id IS NULL`, `createdAt` desc,
    * then `id` desc), capped at `limit`. Each row includes `replyCount` of
-   * live attributed children (`deletedAt` null and an account or author
-   * pubkey).
+   * live attributed children (`deletedAt` null and either an account or a
+   * recorded zapper pubkey).
    * Rows include `hasPhoto`, `hasVideo`, and `videoContentType` but never
    * photo or video bytes. Replies are never listed.
    *
@@ -135,7 +135,8 @@ export interface MessageStore {
 
   /**
    * Oldest live attributed replies first for a parent note id (`deletedAt`
-   * null and an account or author pubkey). Rows with neither identity are
+   * null and either an account or a recorded zapper pubkey). Null-account
+   * rows whose pubkey is not a zapper, and rows with neither identity, are
    * omitted; `getById` still returns them.
    *
    * @param parentId - Parent message id.
@@ -258,7 +259,8 @@ export interface MessageStore {
   /**
    * Newest live top-level notes for `accountId` (`parentId` null,
    * `deletedAt` null), capped at `limit`, with `replyCount` of live
-   * attributed children (`deletedAt` null and an account or author pubkey).
+   * attributed children (`deletedAt` null and either an account or a
+   * recorded zapper pubkey).
    *
    * @param accountId - Author account id.
    * @param limit - Maximum rows to return.
@@ -323,16 +325,6 @@ export interface MessageStore {
    *   original stamps; untagged direct replies get this call's `at`/`by`.
    */
   markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean>;
-
-  /**
-   * Soft-hide every live null-account row authored by one pubkey.
-   *
-   * @param pubkey - External author pubkey; comparison is case-insensitive.
-   * @param at - Hide timestamp.
-   * @param byAccountId - Staff account recorded as `deletedBy`.
-   * @returns Number of rows newly hidden.
-   */
-  markDeletedByExternalPubkey(pubkey: string, at: Date, byAccountId: string): Promise<number>;
 
   /**
    * Unhide a note by clearing `deletedAt` / `deletedBy`. Inverse of
@@ -648,23 +640,20 @@ export interface MessageStore {
   listZapperPubkeys(): Promise<string[]>;
 
   /**
+   * Whether one external pubkey is a recorded zapper (has the read-visibility entitlement).
+   *
+   * @param pubkey - External author pubkey, compared case-insensitively.
+   * @returns `true` when a zapper entitlement row exists for that pubkey.
+   */
+  isZapperPubkey(pubkey: string): Promise<boolean>;
+
+  /**
    * List newest external-zapper entitlement rows for operator debug.
    *
    * @param limit - Maximum number of rows.
    * @returns Rows newest first, ties broken by pubkey descending.
    */
   listZappers(limit: number): Promise<NostrZapperRow[]>;
-
-  /**
-   * Record a staff block for an external pubkey, first write wins.
-   *
-   * @param pubkey - External author pubkey (stored lower-case).
-   * @param at - Time of the block.
-   * @param byAccountId - Staff account that hid the row.
-   * @param messageId - Hidden message that caused the block.
-   * @returns Resolves once the block exists; an existing block is left unchanged.
-   */
-  blockPubkey(pubkey: string, at: Date, byAccountId: string, messageId: string): Promise<void>;
 
   /**
    * Atomically record a staff block for an external pubkey and soft-hide every
@@ -747,9 +736,13 @@ export interface MessageStore {
 
 /** Patch fields for {@link MessageStore.updateZapReceiptGift}. */
 export type ZapReceiptGiftPatch = {
+  /** 21.gifts payer account id; null dequeues it from listZapReceiptsAwaitingGiftReply. */
   payerAccountId?: string | null;
+  /** External payer pubkey; null dequeues it from listZapReceiptsAwaitingGiftReply. */
   payerPubkey?: string | null;
+  /** Gift-reply message id, or null to clear the stored link. */
   giftReplyId?: string | null;
+  /** Normalised zap comment to reuse on retry. */
   comment?: string;
 };
 
@@ -1249,7 +1242,8 @@ export class InMemoryMessageStore implements MessageStore {
           (child) =>
             child.parentId === row.id &&
             child.deletedAt === null &&
-            (child.accountId !== null || child.authorPubkey !== null),
+            (child.accountId !== null ||
+              (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
         ).length;
         return { ...copy, replyCount };
       }),
@@ -1258,7 +1252,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Oldest-first live attributed replies for `parentId` (`deletedAt` null
-   * and an account or pubkey).
+   * and either an account or a recorded zapper pubkey).
    *
    * @param parentId - Parent note id.
    * @param limit - Max rows (default 200).
@@ -1270,7 +1264,8 @@ export class InMemoryMessageStore implements MessageStore {
         (row) =>
           row.parentId === parentId &&
           row.deletedAt === null &&
-          (row.accountId !== null || row.authorPubkey !== null),
+          (row.accountId !== null ||
+            (row.authorPubkey !== null && this.#zappers.has(row.authorPubkey.toLowerCase()))),
       )
       .sort((a, b) => {
         const byTime = a.createdAt.getTime() - b.createdAt.getTime();
@@ -1526,7 +1521,8 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Newest-first live top-level notes for `accountId`, capped at `limit`,
-   * with `replyCount` of live attributed children.
+   * with `replyCount` of live attributed children (account or recorded zapper
+   * pubkey).
    *
    * @param accountId - Author account id.
    * @param limit - Maximum rows.
@@ -1550,7 +1546,8 @@ export class InMemoryMessageStore implements MessageStore {
           (child) =>
             child.parentId === row.id &&
             child.deletedAt === null &&
-            (child.accountId !== null || child.authorPubkey !== null),
+            (child.accountId !== null ||
+              (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
         ).length;
         return { ...copy, replyCount };
       }),
@@ -1961,15 +1958,45 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.map((row) => copyZapIngest(row)));
   }
 
+  /**
+   * Whether `candidate` is strictly newer than `current` (`createdAt` DESC, then
+   * `id` DESC via `localeCompare`).
+   */
+  #isNewerIndexedIngest(candidate: ZapIngestRow, current: ZapIngestRow): boolean {
+    const byTime = candidate.createdAt.getTime() - current.createdAt.getTime();
+    return byTime > 0 || (byTime === 0 && candidate.id.localeCompare(current.id) > 0);
+  }
+
+  /** Newest `indexed` ingest for `receiptId` (`createdAt` DESC, then `id` DESC). */
+  #newestIndexedIngest(receiptId: string): ZapIngestRow | undefined {
+    let newest: ZapIngestRow | undefined;
+    for (const ingest of this.#zapIngests) {
+      if (ingest.receiptId !== receiptId || ingest.outcome !== 'indexed') {
+        continue;
+      }
+      if (newest === undefined || this.#isNewerIndexedIngest(ingest, newest)) {
+        newest = ingest;
+      }
+    }
+    return newest;
+  }
+
   listUnattributedIndexedReceipts(
     limit: number,
     before?: { createdAt: Date; eventId: string },
   ): Promise<UnattributedIndexedReceipt[]> {
-    const rows: UnattributedIndexedReceipt[] = [];
+    const newestByReceiptId = new Map<string, ZapIngestRow>();
     for (const ingest of this.#zapIngests) {
       if (ingest.outcome !== 'indexed') {
         continue;
       }
+      const current = newestByReceiptId.get(ingest.receiptId);
+      if (current === undefined || this.#isNewerIndexedIngest(ingest, current)) {
+        newestByReceiptId.set(ingest.receiptId, ingest);
+      }
+    }
+    const rows: UnattributedIndexedReceipt[] = [];
+    for (const ingest of newestByReceiptId.values()) {
       const receipt = this.#receipts.get(ingest.receiptId);
       if (
         receipt === undefined ||
@@ -2087,6 +2114,16 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve([...this.#zappers.keys()]);
   }
 
+  /**
+   * Whether one external pubkey is a recorded zapper (has the read-visibility entitlement).
+   *
+   * @param pubkey - External author pubkey, compared case-insensitively.
+   * @returns `true` when a zapper entitlement row exists for that pubkey.
+   */
+  isZapperPubkey(pubkey: string): Promise<boolean> {
+    return Promise.resolve(this.#zappers.has(pubkey.toLowerCase()));
+  }
+
   listZappers(limit: number): Promise<NostrZapperRow[]> {
     return Promise.resolve(
       [...this.#zappers.values()]
@@ -2100,19 +2137,6 @@ export class InMemoryMessageStore implements MessageStore {
         .slice(0, limit)
         .map((row) => ({ ...row, createdAt: new Date(row.createdAt.getTime()) })),
     );
-  }
-
-  blockPubkey(pubkey: string, at: Date, byAccountId: string, messageId: string): Promise<void> {
-    const key = pubkey.toLowerCase();
-    if (!this.#blockedPubkeys.has(key)) {
-      this.#blockedPubkeys.set(key, {
-        pubkey: key,
-        blockedAt: new Date(at.getTime()),
-        blockedBy: byAccountId,
-        messageId,
-      });
-    }
-    return Promise.resolve();
   }
 
   blockPubkeyAndHideRows(
@@ -2232,9 +2256,7 @@ export class InMemoryMessageStore implements MessageStore {
         payerPubkey: receipt.payerPubkey,
         zapRequestId: receipt.zapRequestId,
         receiptCreatedAt: (() => {
-          const frame = this.#zapIngests.find(
-            (ingest) => ingest.receiptId === receiptEventId && ingest.outcome === 'indexed',
-          )?.receipt;
+          const frame = this.#newestIndexedIngest(receiptEventId)?.receipt;
           const seconds = frame?.['created_at'];
           return typeof seconds === 'number' ? new Date(seconds * 1000) : null;
         })(),
@@ -2292,23 +2314,6 @@ export class InMemoryMessageStore implements MessageStore {
       child.deletedBy = byAccountId;
     }
     return Promise.resolve(true);
-  }
-
-  markDeletedByExternalPubkey(pubkey: string, at: Date, byAccountId: string): Promise<number> {
-    let hidden = 0;
-    const key = pubkey.toLowerCase();
-    for (const row of this.#rows) {
-      if (
-        row.deletedAt === null &&
-        row.accountId === null &&
-        row.authorPubkey?.toLowerCase() === key
-      ) {
-        row.deletedAt = new Date(at.getTime());
-        row.deletedBy = byAccountId;
-        hidden += 1;
-      }
-    }
-    return Promise.resolve(hidden);
   }
 
   markUndeleted(id: string): Promise<boolean> {
@@ -2501,8 +2506,8 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Newest-first top-level notes from `message`, capped at `limit`, with
-   * `replyCount` of live attributed children (`deleted_at IS NULL` and an
-   * account or author pubkey). Selects `(photo IS NOT NULL) AS has_photo`
+   * `replyCount` of live attributed children (`deleted_at IS NULL` and either
+   * an account or a recorded zapper pubkey). Selects `(photo IS NOT NULL) AS has_photo`
    * and `video_content_type` (`hasVideo` / `videoContentType`) — never the
    * `photo` bytea column; video bytes live on disk under `MEDIA_DIR`, not as
    * bytea. Replies (`parent_id IS NOT NULL`) are excluded.
@@ -2515,7 +2520,11 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS},
               (SELECT COUNT(*)::int FROM message child
                WHERE child.parent_id = message.id AND child.deleted_at IS NULL
-                 AND (child.account_id IS NOT NULL OR child.author_pubkey IS NOT NULL)) AS reply_count
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
        ORDER BY created_at DESC, id DESC
@@ -2530,7 +2539,7 @@ export class PostgresMessageStore implements MessageStore {
 
   /**
    * Oldest-first live attributed replies for a parent note
-   * (`deleted_at IS NULL` and an account or author pubkey).
+   * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
    *
    * @param parentId - Parent message id (`$1`).
    * @param limit - Max rows (`$2`, default 200).
@@ -2541,7 +2550,11 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS}
        FROM message
        WHERE parent_id = $1 AND deleted_at IS NULL
-         AND (account_id IS NOT NULL OR author_pubkey IS NOT NULL)
+         AND (account_id IS NOT NULL
+           OR (author_pubkey IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM nostr_zapper z
+               WHERE z.pubkey = lower(message.author_pubkey))))
        ORDER BY created_at ASC, id ASC
        LIMIT $2`,
       [parentId, limit],
@@ -2661,7 +2674,11 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT ${MESSAGE_SELECT_COLUMNS},
               (SELECT COUNT(*)::int FROM message child
                WHERE child.parent_id = message.id AND child.deleted_at IS NULL
-                 AND (child.account_id IS NOT NULL OR child.author_pubkey IS NOT NULL)) AS reply_count
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL AND account_id = $1
        ORDER BY created_at DESC, id DESC
@@ -2934,21 +2951,6 @@ export class PostgresMessageStore implements MessageStore {
       [id, at, byAccountId],
     );
     return rows[0] !== undefined;
-  }
-
-  async markDeletedByExternalPubkey(
-    pubkey: string,
-    at: Date,
-    byAccountId: string,
-  ): Promise<number> {
-    const rows = await this.#sql.query<{ id: string }>(
-      `UPDATE message
-       SET deleted_at = $2, deleted_by = $3
-       WHERE deleted_at IS NULL AND account_id IS NULL AND lower(author_pubkey) = lower($1)
-       RETURNING id`,
-      [pubkey, at, byAccountId],
-    );
-    return rows.length;
   }
 
   async markUndeleted(id: string): Promise<boolean> {
@@ -3563,6 +3565,20 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => row.pubkey);
   }
 
+  /**
+   * Whether one external pubkey is a recorded zapper (has the read-visibility entitlement).
+   *
+   * @param pubkey - External author pubkey, compared case-insensitively.
+   * @returns `true` when a zapper entitlement row exists for that pubkey.
+   */
+  async isZapperPubkey(pubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM nostr_zapper WHERE pubkey = $1 LIMIT 1`,
+      [pubkey.toLowerCase()],
+    );
+    return rows[0] !== undefined;
+  }
+
   async listZappers(limit: number): Promise<NostrZapperRow[]> {
     const rows = await this.#sql.query<{
       pubkey: string;
@@ -3580,20 +3596,6 @@ export class PostgresMessageStore implements MessageStore {
       receiptEventId: row.receipt_event_id,
       createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     }));
-  }
-
-  async blockPubkey(
-    pubkey: string,
-    at: Date,
-    byAccountId: string,
-    messageId: string,
-  ): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO nostr_blocked_pubkey (pubkey, blocked_at, blocked_by, message_id)
-       VALUES (lower($1), $2, $3, $4)
-       ON CONFLICT (pubkey) DO NOTHING`,
-      [pubkey, at, byAccountId, messageId],
-    );
   }
 
   async blockPubkeyAndHideRows(
@@ -3699,7 +3701,6 @@ export class PostgresMessageStore implements MessageStore {
       payer_account_id: string | null;
       payer_pubkey: string | null;
       zap_request_id: string | null;
-      receipt_created_at: Date | string | null;
       gift_reply_id: string | null;
       comment: string | null;
     }>(

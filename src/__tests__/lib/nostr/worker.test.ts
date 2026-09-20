@@ -4996,7 +4996,12 @@ describe('runNostrWorkerTick', () => {
     await messages.updateSignedEvent('m1', noteEventId, BITCOIN_KIND1);
     const pubkey = 'b9'.repeat(32);
     await messages.recordZapper(pubkey, 'receipt-blocked-early', new Date(1_699_999_000_000));
-    await messages.blockPubkey(pubkey, new Date(1_699_999_500_000), 'acc', 'blocked-early-message');
+    await messages.blockPubkeyAndHideRows(
+      pubkey,
+      new Date(1_699_999_500_000),
+      'acc',
+      'blocked-early-message',
+    );
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -5041,7 +5046,7 @@ describe('runNostrWorkerTick', () => {
     const unknownPubkey = 'b3'.repeat(32);
     await messages.recordZapper(externalPubkey, 'receipt-external', new Date(1_699_999_000_000));
     await messages.recordZapper(blockedPubkey, 'receipt-blocked', new Date(1_699_999_000_000));
-    await messages.blockPubkey(
+    await messages.blockPubkeyAndHideRows(
       blockedPubkey,
       new Date(1_699_999_500_000),
       'acc',
@@ -5232,7 +5237,12 @@ describe('runNostrWorkerTick', () => {
 
     const blockedTick = runNostrWorkerTick(tickDeps);
     await profileEntered;
-    await messages.blockPubkey(pubkey, new Date(1_700_000_000_000), 'acc', 'blocked-race');
+    await messages.blockPubkeyAndHideRows(
+      pubkey,
+      new Date(1_700_000_000_000),
+      'acc',
+      'blocked-race',
+    );
     resolveProfile([]);
     await blockedTick;
 
