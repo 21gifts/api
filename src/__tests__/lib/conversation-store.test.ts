@@ -1819,8 +1819,10 @@ describe('PostgresConversationStore', () => {
     const store = new PostgresConversationStore(sql);
     const row = message();
     await store.appendMessage(row, JPEG, [JPEG2]);
-    expect(sql.executes[0]?.params[12]).toEqual(JPEG.bytes);
-    expect(sql.executes[0]?.params[13]).toBe(JPEG.contentType);
+    expect(sql.executes[0]?.params[12]).toBe(row.actorAccountId ?? null);
+    expect(sql.executes[0]?.params[13]).toBe(row.actorName ?? '');
+    expect(sql.executes[0]?.params[14]).toEqual(JPEG.bytes);
+    expect(sql.executes[0]?.params[15]).toBe(JPEG.contentType);
     expect(sql.executes[1]?.text).toMatch(/conversation_message_extra_photo/);
     expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType]);
   });
