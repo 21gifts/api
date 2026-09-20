@@ -624,6 +624,10 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const account = this.#accounts.get(credential.accountId);
+    if (account !== undefined && account.sessionRefused === true) {
+      return false;
+    }
     for (const stored of this.#passkeyCredentials.values()) {
       if (stored.accountId === credential.accountId) {
         return false;

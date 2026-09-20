@@ -302,12 +302,14 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
     );
+    const updateAccount = vi.spyOn(store, 'updateAccount');
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
       body: JSON.stringify({ sessionRefused: true }),
     });
     expect(res.status).toBe(200);
+    expect(updateAccount).not.toHaveBeenCalled();
     const body = (await res.json()) as { id: string; sessionRefused: boolean };
     expect(body.sessionRefused).toBe(true);
     expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
@@ -465,7 +467,7 @@ describe('debugRoutes', () => {
 
   it('POST /:id/session refuses a sessionRefused account', async () => {
     const store = new InMemoryAuthStore();
-    const id = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+    const id = '00000000-0000-4000-8000-0000000000ff';
     await store.createAccount({
       id,
       linkingKey: null,

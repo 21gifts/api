@@ -1021,6 +1021,33 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('createFirstPasskeyCredential returns false when the account is refused', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
   it('ignores a second createAccount with the same viewKey', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = 'e'.repeat(64);

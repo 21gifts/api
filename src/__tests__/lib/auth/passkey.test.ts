@@ -15,7 +15,7 @@ import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
 const T0 = 1_000_000;
-const REFUSED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+const REFUSED_ID = '00000000-0000-4000-8000-0000000000ff';
 const CONFIG: WebAuthnRuntimeConfig = {
   rpId: 'localhost',
   rpName: '21.gifts',
@@ -464,6 +464,46 @@ describe('passkey claim', () => {
     expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
     expect(createSession).not.toHaveBeenCalled();
     expect(createFirst).not.toHaveBeenCalled();
+  });
+
+  it('maps a concurrent refuse during first credential insert to the wrong-account error', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: REFUSED_ID,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'test-challenge',
+      accountId: REFUSED_ID,
+      consumed: false,
+      createdAt: T0,
+    });
+    vi.spyOn(store, 'createFirstPasskeyCredential').mockImplementation(async () => {
+      await store.setSessionRefused(REFUSED_ID, true);
+      return false;
+    });
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      'ch',
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
+    expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
   });
 });
 

@@ -380,7 +380,13 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;
       }
-      await deps.store.updateAccount(updated);
+      const shouldUpdateAccount =
+        parsed.data.role !== undefined ||
+        parsed.data.lightningAddress === null ||
+        parsed.data.platform !== undefined;
+      if (shouldUpdateAccount) {
+        await deps.store.updateAccount(updated);
+      }
       if (parsed.data.sessionRefused !== undefined) {
         const flagged = await deps.store.setSessionRefused(updated.id, parsed.data.sessionRefused);
         if (flagged !== undefined) {

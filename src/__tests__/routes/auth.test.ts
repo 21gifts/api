@@ -10,7 +10,7 @@ import { meRoutes } from '@/routes/me';
 
 const now = (): number => 1_000_000;
 const ORIGIN = 'http://localhost:3000';
-const REFUSED_ID = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+const REFUSED_ID = '00000000-0000-4000-8000-0000000000ff';
 
 function mount(store: InMemoryAuthStore, webAuthnRpId: string | undefined = 'localhost'): Hono {
   return new Hono().route(

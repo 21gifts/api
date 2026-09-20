@@ -941,6 +941,7 @@ describe('PostgresAuthStore', () => {
       }),
     ).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
+    expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
     sql.nextRows = [];
     expect(
       await store.createFirstPasskeyCredential({

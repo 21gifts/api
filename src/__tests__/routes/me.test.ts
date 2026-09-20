@@ -163,7 +163,7 @@ describe('GET /me', () => {
 
   it('returns 403 for a sessionRefused account', async () => {
     const store = new InMemoryAuthStore();
-    const id = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+    const id = '00000000-0000-4000-8000-0000000000ff';
     await store.createAccount({
       id,
       linkingKey: LINKING_KEY,
@@ -186,7 +186,7 @@ describe('GET /me', () => {
 
   it('returns 401 on other /me routes for a sessionRefused account', async () => {
     const store = new InMemoryAuthStore();
-    const id = '7191f7a8-2cf1-4d67-a46e-f33e79996c0a';
+    const id = '00000000-0000-4000-8000-0000000000ff';
     await store.createAccount({
       id,
       linkingKey: LINKING_KEY,

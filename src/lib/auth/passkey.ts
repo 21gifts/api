@@ -218,6 +218,10 @@ export async function finishPasskeyRegistration(
       createdAt: now,
     });
     if (!stored) {
+      const current = await store.getAccount(accountId);
+      if (current !== undefined && isWrongAccount(current)) {
+        return { ok: false, error: WRONG_ACCOUNT_ERROR };
+      }
       return { ok: false, error: 'Invalid passkey' };
     }
     if (nostr !== undefined) {

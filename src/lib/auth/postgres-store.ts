@@ -446,6 +446,9 @@ export class PostgresAuthStore implements AuthStore {
          WHERE NOT EXISTS (
            SELECT 1 FROM passkey_credential WHERE account_id = $4
          )
+           AND EXISTS (
+             SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+           )
          ON CONFLICT (credential_id) DO NOTHING
          RETURNING credential_id`,
         [
