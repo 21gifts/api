@@ -36,12 +36,12 @@ export async function issueSession(
 
 /**
  * Resolve a bearer session token to its account, honouring the session TTL.
- * Returns `null` when the account id is listed ({@link isWrongAccount}).
+ * Returns `null` when {@link isWrongAccount} is true.
  *
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param token - The bearer session token.
- * @returns The authenticated account, or `null` when unknown, expired, or listed.
+ * @returns The authenticated account, or `null` when unknown, expired, or refused.
  */
 export async function resolveSession(
   store: AuthStore,

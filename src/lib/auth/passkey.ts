@@ -160,8 +160,9 @@ export async function startPasskeyClaim(
  *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
- * @returns Session + account, or `{ ok: false, error }`. A listed duplicate
- *   id is refused before each session mint with {@link WRONG_ACCOUNT_ERROR}.
+ * @returns Session + account, or `{ ok: false, error }`. An existing account
+ *   with {@link isWrongAccount} is refused before session mint with
+ *   {@link WRONG_ACCOUNT_ERROR}.
  */
 export async function finishPasskeyRegistration(
   store: AuthStore,
@@ -318,7 +319,7 @@ export async function startPasskeyAuthentication(
  * @param credential - Browser assertion JSON.
  * @param nostr - Optional KEK (and test-only keygen) to backfill a missing nsec.
  * @returns Session + account, or `{ ok: false, error }`. After the account is
- *   loaded, a listed duplicate id is {@link WRONG_ACCOUNT_ERROR} and never
+ *   loaded, {@link isWrongAccount} is {@link WRONG_ACCOUNT_ERROR} and never
  *   issues a token.
  */
 export async function finishPasskeyAuthentication(

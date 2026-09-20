@@ -141,7 +141,7 @@ export function serializeAccount(account: Account): AccountResponse {
   };
 }
 
-/** Operator JSON shape: the eleven public fields plus `isPlatform`. */
+/** Operator JSON shape: the eleven public fields plus `isPlatform` and `sessionRefused`. */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
@@ -152,10 +152,10 @@ export interface DebugAccountResponse extends AccountResponse {
 /**
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
- * Includes `isPlatform`. Never used by member `GET /me`.
+ * Includes `isPlatform` and `sessionRefused`. Never used by member `GET /me`.
  *
  * @param account - Stored account.
- * @returns Debug fields including `isPlatform`.
+ * @returns Debug fields including `isPlatform` and `sessionRefused`.
  */
 export function serializeDebugAccount(account: Account): DebugAccountResponse {
   return {
