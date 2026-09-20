@@ -97,7 +97,7 @@ api/
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
-│   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator" }`)
+│   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic

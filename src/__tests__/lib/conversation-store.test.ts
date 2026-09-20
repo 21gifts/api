@@ -594,6 +594,15 @@ describe('InMemoryConversationStore', () => {
     expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(0);
   });
 
+  it('unreadCount counts a platform stipend row in moderator_group as unread for staff', async () => {
+    const store = new InMemoryConversationStore();
+    const group = await store.ensureModeratorGroup('plat', NOW);
+    await store.appendMessage(
+      message({ id: 'stipend', conversationId: group.id, senderAccountId: 'plat', sats: 1233 }),
+    );
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(1);
+  });
+
   it('unreadCount pins an existing empty moderator_group ahead of the list cap', async () => {
     const store = new InMemoryConversationStore();
     const older = new Date(NOW.getTime() - 60_000);
