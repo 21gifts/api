@@ -26,11 +26,7 @@ import { mapGiftQueryRow } from '@/lib/gift';
 import { QueryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
-import {
-  migrateApiLogSchema,
-  PostgresApiLogStore,
-  type ApiLogStore,
-} from '@/lib/api-log';
+import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
   migrateConversationSchema,

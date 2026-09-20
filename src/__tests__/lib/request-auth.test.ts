@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SESSION_TTL_MS } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { issueSession } from '@/lib/auth/service';
 import { resolveRequestAuth } from '@/lib/request-auth';
@@ -35,6 +36,59 @@ describe('resolveRequestAuth', () => {
       spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'spend' });
+  });
+
+  it('returns none for an empty Bearer token', async () => {
+    const auth = await resolveRequestAuth({
+      authorizationHeader: 'Bearer ',
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+  });
+
+  it('returns none for an unknown bearer', async () => {
+    const auth = await resolveRequestAuth({
+      authorizationHeader: 'Bearer not-a-known-token',
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+  });
+
+  it('returns none for an expired session', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'v'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      isPlatform: false,
+    });
+    const account = await store.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const minted = await issueSession(store, 1, account);
+    const auth = await resolveRequestAuth({
+      authorizationHeader: `Bearer ${minted.token}`,
+      authStore: store,
+      now: 1 + SESSION_TTL_MS + 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'none' });
   });
 
   it('classifies a live session', async () => {

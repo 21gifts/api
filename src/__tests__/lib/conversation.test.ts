@@ -237,7 +237,7 @@ describe('serializeConversationMessage', () => {
 
   it('falls back to sender fields for staff when actorAccountId is missing', () => {
     const json = serializeConversationMessage(
-      { ...ROW, name: '21.gifts', senderAccountId: 'plat' },
+      { ...ROW, name: '21.gifts', senderAccountId: 'plat', actorAccountId: null, actorName: '' },
       false,
       { staff: true },
     );
@@ -254,6 +254,8 @@ describe('unsignedConversationDefaults', () => {
       nostrPublishState: 'pending',
       nostrEvent: null,
       claimedUntil: null,
+      actorAccountId: null,
+      actorName: '',
     });
   });
 });

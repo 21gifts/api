@@ -78,4 +78,23 @@ describe('debugApiLogRoutes', () => {
     });
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.api_log.listed')).toBe(true);
   });
+
+  it('returns 503 when the store throws', async () => {
+    const store = {
+      append: async () => undefined,
+      listLatest: async () => {
+        throw new Error('disk');
+      },
+    };
+    const app = new Hono().route(
+      '/debug/api-log',
+      debugApiLogRoutes({ store, debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/api-log', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Log is unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.list.failed')).toBe(true);
+  });
 });

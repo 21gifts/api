@@ -393,10 +393,24 @@ describe('InMemoryConversationStore', () => {
     expect(await store.hasInboundMessage(opened.id, 'acc', false, null)).toBe(true);
   });
 
-  it('hasInboundMessage is false when staff sees only a platform send', async () => {
+  it('hasInboundMessage is true when staff sees only a platform send without actor', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberPlatform('mem', 'plat', NOW);
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
+    expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasInboundMessage is false when staff is the actor of a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Ada',
+      }),
+    );
     expect(await store.hasInboundMessage(opened.id, 'staff', true, 'plat')).toBe(false);
   });
 
@@ -777,11 +791,8 @@ describe('PostgresConversationStore', () => {
     expect(await store.hasInboundMessage('c1', 'acc', true, 'plat')).toBe(true);
     expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
     expect(sql.queries[0]?.text).toContain('EXISTS');
-    expect(sql.queries[0]?.text).toContain('sender_account_id IS NULL');
+    expect(sql.queries[0]?.text).toContain('COALESCE(actor_account_id, sender_account_id)');
     expect(sql.queries[0]?.text).toContain('IS DISTINCT FROM');
-    expect(sql.queries[0]?.text).toContain(
-      'NOT ($3::boolean AND $4::uuid IS NOT NULL AND sender_account_id = $4)',
-    );
   });
 
   it('hasInboundMessage is false when EXISTS is false', async () => {

@@ -393,7 +393,7 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
-  it('omits a platform thread when staff sees only a platform send', async () => {
+  it('lists a platform thread when staff sees only a platform send without actor', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     await withOther(auth, 'someone');
@@ -418,7 +418,8 @@ describe('GET /conversations', () => {
     const body = (await res.json()) as {
       conversations: Array<{ kind: string; lastFromMe: boolean }>;
     };
-    expect(body.conversations).toHaveLength(0);
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
   it('sets lastFromMe false when staff views a member-sent last message', async () => {
@@ -450,7 +451,7 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.lastFromMe).toBe(false);
   });
 
-  it('sets lastFromMe true when staff views a platform-sent last message after a member send', async () => {
+  it('sets lastFromMe false when staff views a platform-sent last message without actor', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     await withOther(auth, 'someone');
@@ -478,6 +479,51 @@ describe('GET /conversations', () => {
       senderAccountId: 'plat',
       senderPubkey: null,
       name: '21.gifts',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; lastFromMe: boolean }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.lastFromMe).toBe(false);
+  });
+
+  it('sets lastFromMe true when staff views their own actor on a platform send', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await withOther(auth, 'someone');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-mem',
+      conversationId: thread.id,
+      text: 'help',
+      createdAt: new Date(now()),
+      senderAccountId: 'someone',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await conversations.appendMessage({
+      id: 'm-plat',
+      conversationId: thread.id,
+      text: 'official',
+      createdAt: new Date(now() + 1),
+      senderAccountId: 'plat',
+      senderPubkey: null,
+      name: '21.gifts',
+      actorAccountId: 'acc',
+      actorName: 'Ada',
       sats: 0,
       eventId: null,
       nostrPublishState: 'pending',
@@ -1214,7 +1260,7 @@ describe('GET /conversations/:id', () => {
       messages: Array<{ text: string; fromMe: boolean; accountId?: string }>;
     };
     expect(body.messages.map((m) => m.text)).toEqual(['official']);
-    expect(body.messages[0]?.fromMe).toBe(true);
+    expect(body.messages[0]?.fromMe).toBe(false);
     expect(body.messages[0]?.accountId).toBe('plat');
   });
 
@@ -1646,10 +1692,15 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: 'official' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string };
-    expect(body.name).toBe('21.gifts');
+    const body = (await res.json()) as { name: string; accountId?: string; fromMe: boolean };
+    expect(body.name).toBe('Ada');
+    expect(body.accountId).toBe('acc');
+    expect(body.fromMe).toBe(true);
     const rows = await conversations.listMessages(thread.id, 10);
     expect(rows[0]?.senderAccountId).toBe('plat');
+    expect(rows[0]?.name).toBe('21.gifts');
+    expect(rows[0]?.actorAccountId).toBe('acc');
+    expect(rows[0]?.actorName).toBe('Ada');
   });
 
   it('rejects posting without a name on a member thread', async () => {

@@ -132,6 +132,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts`                            | `Authorization: Bearer`  | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
 | PATCH  | `/debug/accounts/:id`                        | `Authorization: Bearer`  | Operator set `role` / unlink Lightning Address / `platform` (`isPlatform`)                                |
 | POST   | `/debug/accounts/:id/session`                | `Authorization: Bearer`  | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
+| GET    | `/debug/api-log`                             | `Authorization: Bearer`  | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
 | GET    | `/debug/contacts`                            | `Authorization: Bearer`  | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                            | `Authorization: Bearer`  | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
 | POST   | `/debug/invoices/settle`                     | `Authorization: Bearer`  | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
@@ -1476,6 +1477,66 @@ logged as `debug.trust_edges.delete_failed`.
 Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
 
 **Response** `200` is the deleted edge, same JSON as `POST /debug/trust-edges`.
+
+### `GET /debug/api-log`
+
+Operator listing of HTTP audit rows (`api_log`). Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. Rows are newest-first (`createdAt` descending, then `id`), capped
+at **200**. The log never stores OPTIONS, `/healthz`, the query string,
+request bodies, or the Authorization header. Paths pass through
+`requestLogPath` (`/view/<segment>` → `/view/:viewKey`). Write failure on
+the request path logs `api_log.write.failed` and does not replace the
+response.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`:
+
+```json
+{ "error": "Debug is not configured" }
+```
+
+Missing or non-matching bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Store failure → **Response** `503`:
+
+```json
+{ "error": "Log is unavailable" }
+```
+
+Success → **Response** `200`:
+
+```json
+{
+  "logs": [
+    {
+      "id": "<uuid>",
+      "createdAt": "2026-09-19T15:16:52.530Z",
+      "method": "POST",
+      "path": "/conversations/<uuid>",
+      "status": 200,
+      "ms": 8,
+      "accountId": "<uuid>",
+      "authKind": "session"
+    }
+  ]
+}
+```
+
+`authKind` is `session`, `debug`, `spend`, or `none`. `accountId` is the
+session account when `authKind` is `session`; otherwise JSON `null`. An
+empty log returns `"logs": []`. When `DATABASE_URL` is unset the default
+in-memory store starts empty; when set, rows come from Postgres `api_log`.
+
+Environment:
+
+| Variable       | Meaning                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, audit rows are stored in Postgres; when unset, in-memory only. |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.      |
 
 ### `GET /debug/contacts`
 
@@ -3273,7 +3334,9 @@ thread is `unread: false`).
 
 Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
-on the thread). Each message may include optional sender `accountId`.
+on the thread). Each message may include optional `accountId`: members
+always see the stored sender; staff see the actor when `actorAccountId`
+is set, otherwise the sender.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
@@ -3304,15 +3367,20 @@ Success → **Response** `200`:
 }
 ```
 
-`accountId` is the sender 21.gifts account. It is omitted when
-`senderAccountId` is null (Damus inbound; never JSON `null`).
+`accountId` is omitted when the projected account is null (Damus inbound;
+never JSON `null`). Members always receive the stored sender (typically
+`21.gifts` on a platform send). Staff receive the actor when
+`actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor when
+set, otherwise the sender; there is no staff-as-platform shortcut.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text": "…" }` 1–500 via
 `normalizeForumText`. Moderator replies on a
-platform thread persist as the platform account; the worker signs with the
+platform thread persist as the platform account (sender + Nostr nsec) and
+record the logged-in staff as `actorAccountId` / `actorName`. Staff JSON
+uses the actor; members still see `21.gifts`. The worker signs with the
 platform nsec. Relay failure does not block local persist. Kind includes
 `moderator_group`: persist as the caller account (moderator,
 not platform) with `nostrPublishState` skipped (never Nostr). After a new
@@ -3332,7 +3400,7 @@ Same 401 / 400 text / 404 / 503 shapes as the list/get routes, plus
 has no display name.
 
 Success → **Response** `200` (one public conversation message, including
-optional sender `accountId`). After persist, the api enqueues one Web Push
+optional `accountId` — actor for staff when set, otherwise sender). After persist, the api enqueues one Web Push
 (`type: conversation`, url `/messages?c=<conversationId>`) to each
 bell-subscribed counterpart. `unreadCount` on that payload (and on forum
 and zap payloads) is in-app notification unread plus listed inbox unread.

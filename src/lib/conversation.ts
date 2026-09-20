@@ -119,7 +119,11 @@ export interface PublicConversationMessage {
   fromMe: boolean;
   /** Credited sats; `0` for unpaid text. */
   sats: number;
-  /** Sender 21.gifts account id. Omitted when senderAccountId is null (Damus inbound). */
+  /**
+   * Projected 21.gifts account id. Members always see the stored sender;
+   * staff see the actor when `actorAccountId` is set. Omitted when that
+   * account is null (Damus inbound).
+   */
   accountId?: string;
 }
 
@@ -236,7 +240,7 @@ export function serializeConversationMessage(
 /**
  * Unsigned / unpublished defaults for a locally persisted conversation message.
  *
- * @returns Pending Nostr columns (no event id).
+ * @returns Pending Nostr columns (no event id) and empty actor fields.
  */
 export function unsignedConversationDefaults(): Pick<
   ConversationMessageRow,
