@@ -2214,4 +2214,3 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Query and execute errors propagate.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
-
