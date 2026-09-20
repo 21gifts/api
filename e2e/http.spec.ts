@@ -125,6 +125,11 @@ test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet-backup-seen without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet-backup-seen');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /members/:accountId without bearer is 401', async ({ request }) => {
   const res = await request.get('/members/:accountId');
   expect(res.status()).toBe(401);

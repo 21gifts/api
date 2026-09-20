@@ -38,9 +38,11 @@ interface AccountRow {
   nostr_kek_id?: number | null;
   nostr_key_custody?: string | null;
   nostr_key_created_at?: Date | string | null;
+  wallet_required?: boolean | null;
+  wallet_backup_seen_at?: Date | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -110,8 +112,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18, $19, to_timestamp($20::double precision / 1000.0))
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -132,6 +134,8 @@ export class PostgresAuthStore implements AuthStore {
           account.notificationLevel ?? 'all',
           account.username ?? null,
           account.sessionRefused === true,
+          account.walletRequired === true,
+          account.walletBackupSeenAt ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -162,7 +166,9 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $14,
              location = $15,
              notification_level = $16,
-             username = $17
+             username = $17,
+             wallet_required = $18,
+             wallet_backup_seen_at = to_timestamp($19::double precision / 1000.0)
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -189,6 +195,8 @@ export class PostgresAuthStore implements AuthStore {
           account.location,
           account.notificationLevel ?? 'all',
           account.username ?? null,
+          account.walletRequired === true,
+          account.walletBackupSeenAt ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -719,6 +727,11 @@ function mapAccount(row: AccountRow): Account | undefined {
     notificationLevel: parseNotificationLevel(row.notification_level),
     username: row.username ?? null,
     sessionRefused: row.session_refused === true,
+    walletRequired: row.wallet_required === true,
+    walletBackupSeenAt:
+      row.wallet_backup_seen_at === null || row.wallet_backup_seen_at === undefined
+        ? null
+        : epochMs(row.wallet_backup_seen_at),
   };
 }
 

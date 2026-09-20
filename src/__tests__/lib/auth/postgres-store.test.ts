@@ -121,6 +121,8 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
     expect(mapped?.username).toBeNull();
+    expect(mapped?.walletRequired).toBe(false);
+    expect(mapped?.walletBackupSeenAt).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -131,6 +133,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/location/);
     expect(sql.queries[0]?.text).toMatch(/notification_level/);
     expect(sql.queries[0]?.text).toMatch(/username/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -157,6 +161,8 @@ describe('PostgresAuthStore', () => {
     const mapped = await new PostgresAuthStore(sql).getAccount('acc');
     expect(mapped?.nameSkippedAt).toBeNull();
     expect(mapped?.lightningAddressSkippedAt).toBeNull();
+    expect(mapped?.walletRequired).toBe(false);
+    expect(mapped?.walletBackupSeenAt).toBeNull();
   });
 
   it('maps non-null skip timestamps', async () => {
@@ -171,6 +177,20 @@ describe('PostgresAuthStore', () => {
     const mapped = await new PostgresAuthStore(sql).getAccount('acc');
     expect(mapped?.nameSkippedAt).toBe(2_000);
     expect(mapped?.lightningAddressSkippedAt).toBe(3_000);
+  });
+
+  it('maps wallet_required and wallet_backup_seen_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        wallet_required: true,
+        wallet_backup_seen_at: new Date(4_000),
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.walletRequired).toBe(true);
+    expect(mapped?.walletBackupSeenAt).toBe(4_000);
   });
 
   it('maps a non-null rules_agreed_at timestamp', async () => {
@@ -232,8 +252,12 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[15]).toBe('all');
     expect(sql.executes[0]?.params[16]).toBeNull();
     expect(sql.executes[0]?.params[17]).toBe(false);
+    expect(sql.executes[0]?.params[18]).toBe(false);
+    expect(sql.executes[0]?.params[19]).toBeNull();
     expect(sql.executes[0]?.text).toMatch(/username/);
     expect(sql.executes[0]?.text).toMatch(/session_refused/);
+    expect(sql.executes[0]?.text).toMatch(/wallet_required/);
+    expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
@@ -245,6 +269,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
     expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
+    expect(sql.executes[1]?.text).toMatch(/wallet_required = \$18/);
+    expect(sql.executes[1]?.text).toMatch(/wallet_backup_seen_at = to_timestamp\(\$19/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -263,6 +289,8 @@ describe('PostgresAuthStore', () => {
       null,
       null,
       'all',
+      null,
+      false,
       null,
     ]);
   });

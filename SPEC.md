@@ -85,7 +85,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                           |
 | POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                       |
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                          |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel` + `walletRequired` + `walletBackupSeenAt`) |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Record that the recovery phrase was shown (empty body)                                                    |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                           |
@@ -368,12 +368,16 @@ ID).
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
-    "notificationLevel": "all"
+    "notificationLevel": "all",
+    "walletRequired": false,
+    "walletBackupSeenAt": null
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, and `walletBackupSeenAt`). The example above is an existing member (`walletRequired: false`, `walletBackupSeenAt: null`). New register/claim owner JSON has `walletRequired: true` and `setup: "wallet"` with `missing` starting with `"wallet"`.
+
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row calls `updateAccount({ ...existing, walletRequired: true })` after the credential lands and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -434,6 +438,7 @@ Body matches register finish (`challengeId`, `credential`). Requires `Origin`.
 
 **Response** `200`: `{ "account": { ... } }` — owner JSON via
 `serializeOwnerAccountWithPosts`, same shape as register finish minus `token`.
+Does not change `walletRequired` or `walletBackupSeenAt`.
 
 ### `GET /me`
 
@@ -473,11 +478,18 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMe": null,
   "aboutMeHasPhoto": false,
   "notificationLevel": "all",
-  "funding": null
+  "funding": null,
+  "walletRequired": false,
+  "walletBackupSeenAt": null
 }
 ```
 
-About me is the profile-note text when it is a real bio, else null (auto
+The example above is an existing member (`walletRequired: false`,
+`walletBackupSeenAt: null`). New register/claim owner JSON has
+`walletRequired: true` and `setup: "wallet"` with `missing` starting with
+`"wallet"`.
+
+About me is the profile-note text when it is a real bio, else null (auto)
 name-copy is not a bio, including after a display-name rename when the note
 text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
 stays `null`)).
@@ -503,6 +515,8 @@ stays `null`)).
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
+| `walletRequired`           | boolean        | True when the owner must complete the wallet setup step. Default false for existing members.                                                                                                                                                                                |
+| `walletBackupSeenAt`       | number \| null | Epoch ms when the recovery phrase was shown, or `null` when unseen.                                                                                                                                                                                                         |
 
 ### `GET /me/activity`
 
@@ -539,6 +553,18 @@ Store throw or missing BTC-USD day → **Response** `503`:
 
 `donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
 
+### `POST /me/wallet-backup-seen`
+
+Bearer required. Empty body. Records that the recovery phrase was shown.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
+The first successful POST sets `walletBackupSeenAt` to the server clock
+(epoch ms). Later POSTs return the original timestamp unchanged
+(idempotent; no second write). Logs `account.wallet.backup_seen` with
+`{ accountId }` only. Never stores or logs a mnemonic or PRF output.
+
 ### `POST /me/setup/skip`
 
 Skip a skippable wizard step. Body:
@@ -547,9 +573,12 @@ Skip a skippable wizard step. Body:
 { "step": "name" }
 ```
 
-or `{ "step": "lightning-address" }`. Sets the matching skip timestamp to now;
-does not clear `name` / `lightningAddress`. `step: "rules"` and unknown steps
-are **400**. Success → **200** owner JSON.
+or `{ "step": "lightning-address" }`. Still only `name` or `lightning-address`.
+Sets the matching skip timestamp to now; does not clear `name` /
+`lightningAddress`. `step: "wallet"` is **400** with the same copy as an
+invalid step: `{ "error": "Expected a JSON body with step \"name\" or \"lightning-address\"" }`.
+`step: "rules"` and unknown steps are the same **400**. Success → **200**
+owner JSON.
 
 ### `GET /members/:accountId`
 

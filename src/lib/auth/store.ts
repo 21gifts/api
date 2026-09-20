@@ -95,6 +95,17 @@ export interface Account {
    * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
+  /**
+   * True when this account must complete the wallet (recovery phrase)
+   * setup step. Omit / false = existing member (not gated). New passkey
+   * register and first-passkey claim set true; replace does not.
+   */
+  walletRequired?: boolean;
+  /**
+   * Epoch ms when the owner posted that the recovery phrase was shown,
+   * or null/omitted when unseen.
+   */
+  walletBackupSeenAt?: number | null;
 }
 
 /**

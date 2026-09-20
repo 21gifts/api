@@ -234,7 +234,9 @@ export async function finishPasskeyRegistration(
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }
     }
-    return mintSession(store, now, existing);
+    const claimed: Account = { ...existing, walletRequired: true };
+    await store.updateAccount(claimed);
+    return mintSession(store, now, claimed);
   }
   const account: Account = {
     id: accountId,
@@ -252,6 +254,8 @@ export async function finishPasskeyRegistration(
     lightningAddressSkippedAt: null,
     profileMessageId: null,
     notificationLevel: 'all',
+    walletRequired: true,
+    walletBackupSeenAt: null,
   };
   await store.createAccount(account);
   if (nostr !== undefined) {

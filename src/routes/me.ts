@@ -41,9 +41,9 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
- * living-room rules agreement, notification level, and the receiver's
- * Lightning Address), including proof-of-control verification. Shares the
- * {@link AuthStore} instance with `/auth`.
+ * living-room rules agreement, notification level, wallet backup seen,
+ * and the receiver's Lightning Address), including proof-of-control
+ * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -184,7 +184,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -233,6 +233,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         logEvent(missingFx ? 'account.activity.fx_incomplete' : 'account.activity.failed');
         return c.json({ error: 'Gift stats are unavailable' }, 503);
       }
+    })
+    .post('/wallet-backup-seen', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.walletBackupSeenAt !== null && current.walletBackupSeenAt !== undefined) {
+        return c.json(await serializeOwnerAccountWithPosts(current, deps.messages), 200);
+      }
+      const updated: Account = { ...current, walletBackupSeenAt: deps.now() };
+      await deps.store.updateAccount(updated);
+      logEvent('account.wallet.backup_seen', { accountId: current.id });
+      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

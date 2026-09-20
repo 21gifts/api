@@ -59,7 +59,10 @@ describe('passkey registration', () => {
     }
     expect(finish.value.account.linkingKey).toBeNull();
     expect(finish.value.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(finish.value.account.walletRequired).toBe(true);
+    expect(finish.value.account.walletBackupSeenAt).toBeNull();
     expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(finish.value.account.id);
+    expect((await store.getAccount(finish.value.account.id))?.walletRequired).toBe(true);
   });
 
   it('generates a Nostr key when a KEK is provided', async () => {
@@ -306,8 +309,38 @@ describe('passkey claim', () => {
       name: 'Ada',
       lightningAddress: 'guest@walletofsatoshi.com',
       viewKey: VIEW_KEY,
+      walletRequired: true,
     });
+    expect(finish.value.account.walletBackupSeenAt).toBeUndefined();
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
+  });
+
+  it('sets walletRequired on claim without clearing a seen backup', async () => {
+    const store = await provisionedStore();
+    const existing = await store.getAccount('provisioned');
+    expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, walletBackupSeenAt: 99 });
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(finish.value.account.walletRequired).toBe(true);
+    expect(finish.value.account.walletBackupSeenAt).toBe(99);
+    expect((await store.getAccount('provisioned'))?.walletBackupSeenAt).toBe(99);
   });
 
   it('does not delete a provisioned account when credential insert races', async () => {
@@ -859,6 +892,38 @@ describe('passkey replace', () => {
     expect(finish.account.id).toBe(accountId);
     expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
     expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe(accountId);
+    expect((await store.getAccount(accountId))?.walletRequired).toBe(true);
+  });
+
+  it('does not set walletRequired on replace', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    await store.updateAccount({ ...account, walletRequired: false, walletBackupSeenAt: null });
+    const current = await store.getAccount(accountId);
+    if (current === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, current);
+    expect('challengeId' in begin).toBe(true);
+    if (!('challengeId' in begin)) {
+      return;
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      current,
+    );
+    expect(finish.ok).toBe(true);
+    expect((await store.getAccount(accountId))?.walletRequired).toBe(false);
+    expect((await store.getAccount(accountId))?.walletBackupSeenAt).toBeNull();
   });
 
   it('uses the account name as the WebAuthn display name', async () => {

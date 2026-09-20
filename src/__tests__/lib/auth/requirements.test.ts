@@ -93,4 +93,18 @@ describe('requireAction', () => {
     };
     expect(requireAction(account, 'forum.pay')).toEqual({ ok: true });
   });
+
+  it('does not include wallet in action missing', () => {
+    const account: Account = {
+      ...base,
+      walletRequired: true,
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: 'ada@walletofsatoshi.com',
+      rulesAgreedAt: 2,
+    };
+    expect(accountMissing(account)).toEqual(['wallet']);
+    expect(requireAction(account, 'forum.post')).toEqual({ ok: true });
+    expect(requireAction(account, 'forum.read')).toEqual({ ok: true });
+  });
 });

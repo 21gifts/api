@@ -62,6 +62,8 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('walletRequired');
+    expect(json).not.toHaveProperty('walletBackupSeenAt');
     expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
@@ -218,6 +220,8 @@ describe('serializeOwnerAccount', () => {
       aboutMeHasPhoto: false,
       notificationLevel: 'all',
       funding: null,
+      walletRequired: false,
+      walletBackupSeenAt: null,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -226,9 +230,30 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
+    expect(json.walletRequired).toBe(false);
+    expect(json.walletBackupSeenAt).toBeNull();
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('includes walletRequired and walletBackupSeenAt on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      { ...account, walletRequired: true, walletBackupSeenAt: 9 },
+      false,
+      null,
+      false,
+    );
+    expect(json.walletRequired).toBe(true);
+    expect(json.walletBackupSeenAt).toBe(9);
+    expect(json.setup).toBe('rules');
+    expect(json.missing).toEqual(['rules']);
+  });
+
+  it('defaults omitted wallet fields on owner JSON', () => {
+    const json = serializeOwnerAccount(account, false, null, false);
+    expect(json.walletRequired).toBe(false);
+    expect(json.walletBackupSeenAt).toBeNull();
   });
 
   it('includes a stored notificationLevel on owner JSON', () => {

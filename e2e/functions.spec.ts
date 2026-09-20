@@ -143,6 +143,13 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: meRoutes — POST /me/wallet-backup-seen without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/wallet-backup-seen');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: aboutMeFromNote — PUT /me/about without bearer is 401', async ({ request }) => {
   const res = await request.put('/me/about', { data: { text: 'Hi' } });
   expect(res.status()).toBe(401);

@@ -54,24 +54,24 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and
- * `funding`.
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
+ * `funding`, `walletRequired`, and `walletBackupSeenAt`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
-   * Next setup step the owner must complete (`name`, `username`,
+   * Next setup step the owner must complete (`wallet`, `name`, `username`,
    * `lightning-address`, `rules`), or `null` when the signed-in app is
    * allowed. Skip timestamps count as done for the wizard except
-   * username, which cannot be skipped. Computed on the api; clients must
-   * not invent a parallel sequence.
+   * username and wallet, which cannot be skipped. Computed on the api;
+   * clients must not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
-   * Factually unset fields (skip does not clear them). Order: `name`,
-   * `username`, `lightning-address`, `rules`. Used by clients alongside
-   * action gates.
+   * Factually unset fields (skip does not clear them). Order: `wallet`
+   * (when required and unseen), then `name`, `username`,
+   * `lightning-address`, `rules`. Used by clients alongside action gates.
    */
   missing: AccountMissingField[];
   /**
@@ -101,6 +101,16 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Otherwise always an object; no row is `{ status: 'none', … }`.
    */
   funding: OwnerFundingJson | null;
+  /**
+   * True when the owner must complete the wallet setup step. Default
+   * false when omitted in storage (existing members).
+   */
+  walletRequired: boolean;
+  /**
+   * Epoch ms when the owner posted that the recovery phrase was shown,
+   * or `null` when unseen.
+   */
+  walletBackupSeenAt: number | null;
 }
 
 /**
@@ -448,8 +458,9 @@ export function serializeDebugAccountDetail(
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
- * @returns Nineteen fields (eleven public + `viewKey`, `setup`, `missing`,
- * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`).
+ * @returns Owner fields including `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
+ * `notificationLevel`, `funding`, `walletRequired`, and `walletBackupSeenAt`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -468,6 +479,8 @@ export function serializeOwnerAccount(
     aboutMeHasPhoto,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     funding,
+    walletRequired: account.walletRequired === true,
+    walletBackupSeenAt: account.walletBackupSeenAt ?? null,
   };
 }
 

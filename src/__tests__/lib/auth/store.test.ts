@@ -78,6 +78,44 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
   });
 
+  it('persists walletRequired and walletBackupSeenAt on create and update', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      walletBackupSeenAt: null,
+    });
+    expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBeNull();
+    await store.updateAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      walletBackupSeenAt: 42,
+    });
+    expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(42);
+  });
+
   it('round-trips forumLawsDismissed false and true', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
