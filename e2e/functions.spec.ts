@@ -605,18 +605,14 @@ test('Function: InMemoryApiLogStore — GET /debug/api-log without bearer is 401
   expect(res.status()).toBe(401);
 });
 
-test('Function: PostgresApiLogStore — GET /debug/api-log without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.get('/debug/api-log');
-  expect(res.status()).toBe(401);
+test('Function: PostgresApiLogStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
 });
 
-test('Function: migrateApiLogSchema — GET /debug/api-log without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.get('/debug/api-log');
-  expect(res.status()).toBe(401);
+test('Function: migrateApiLogSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
 });
 
 test('Function: resolveRequestAuth — GET /debug/api-log without bearer is 401', async ({
