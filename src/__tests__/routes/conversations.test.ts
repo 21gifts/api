@@ -1680,6 +1680,32 @@ describe('POST /conversations/:id', () => {
     expect(rows[0]?.actorAccountId).toBe('acc');
   });
 
+  it('lets unnamed staff reply on a platform thread as the platform', async () => {
+    const auth = await seeded('founder');
+    const acc = await auth.getAccount('acc');
+    if (acc === undefined) {
+      throw new Error('expected staff');
+    }
+    await auth.updateAccount({ ...acc, name: null });
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'official' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; accountId?: string; fromMe: boolean };
+    expect(body.name).toBe('21.gifts');
+    expect(body.accountId).toBe('acc');
+    expect(body.fromMe).toBe(true);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows[0]?.senderAccountId).toBe('plat');
+    expect(rows[0]?.actorAccountId).toBe('acc');
+    expect(rows[0]?.actorName).toBe('');
+  });
+
   it('lets staff reply on a member_member thread where the platform is a party as the platform', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);

@@ -595,6 +595,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (!staffOnPlatform && senderName === '') {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
+        const actorName = account.name?.trim() ?? '';
         const created = await deps.store.appendMessage({
           id: crypto.randomUUID(),
           conversationId: thread.id,
@@ -611,12 +612,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 nostrEvent: null,
                 claimedUntil: null,
                 actorAccountId: account.id,
-                actorName: account.name?.trim() ?? '',
+                actorName,
               }
             : {
                 ...unsignedConversationDefaults(),
                 actorAccountId: account.id,
-                actorName: account.name?.trim() ?? '',
+                actorName,
               }),
         });
         if (thread.kind === 'moderator_group') {
@@ -663,7 +664,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             created,
             conversationFromMe({
               senderAccountId: created.senderAccountId,
-              actorAccountId: created.actorAccountId ?? null,
+              actorAccountId: account.id,
               viewerId: account.id,
             }),
             { staff: roleAtLeast(account.role, 'moderator') },

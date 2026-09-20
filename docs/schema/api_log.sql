@@ -1,5 +1,5 @@
 -- HTTP request audit log. One row per request after the handler (except
--- OPTIONS and GET /healthz). Path is redacted (`/view/:viewKey`); no query
+-- OPTIONS and `/healthz`). Path is redacted (`/view/:viewKey`); no query
 -- string, Authorization, or bodies. Covered by db_change attach-all-public-tables
 -- when migrateApiLogSchema runs before migrateDbChangeSchema.
 

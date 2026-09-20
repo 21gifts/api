@@ -93,7 +93,7 @@
 
 ## Endpoint: GET /debug/api-log
 
-- **Purpose:** Operator listing of HTTP audit rows newest-first (cap 200): method, redacted path, status, ms, optional `accountId`, and `authKind` (`session` | `debug` | `spend` | `none`). No query string, Authorization, bodies, or tokens. OPTIONS and `/healthz` are not stored.
+- **Purpose:** Operator listing of HTTP audit rows newest-first (cap 200): method, redacted path, status, ms, nullable `accountId` (always present; JSON `null` unless `authKind` is `session`), and `authKind` (`session` | `debug` | `spend` | `none`). No query string, Authorization, bodies, or tokens. OPTIONS and `/healthz` are not stored.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Log is unavailable' }` if the store throws (`api_log.list.failed`).
 - **Used by:** Operators attributing who called the API (`gifts-debug api-log`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
