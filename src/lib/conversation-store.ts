@@ -348,27 +348,31 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
    END;
    $unwrap$;`,
   `-- One-time repair for stipend rows written before gift_for_message_id existed.
+   -- Links a row only when exactly one message of someone else precedes it within
+   -- five minutes; anything ambiguous stays NULL and is not written at all.
    DO $gift_for$
    BEGIN
-     UPDATE conversation_message s
-     SET gift_for_message_id = (
-       SELECT m.id
-       FROM conversation_message m
-       WHERE m.conversation_id = s.conversation_id
-         AND m.created_at <= s.created_at
-         AND m.created_at >= s.created_at - interval '5 minutes'
-         AND m.id <> s.id
-         AND COALESCE(m.actor_account_id, m.sender_account_id) <> s.sender_account_id
-       ORDER BY m.created_at DESC, m.id DESC
-       LIMIT 1
+     WITH candidate AS (
+       SELECT s.id AS stipend_id, (array_agg(m.id))[1] AS trigger_id
+       FROM conversation_message s
+       JOIN conversation c ON c.id = s.conversation_id AND c.kind = 'moderator_group'
+       JOIN conversation_message m
+         ON m.conversation_id = s.conversation_id
+        AND m.created_at <= s.created_at
+        AND m.created_at >= s.created_at - interval '5 minutes'
+        AND m.id <> s.id
+        AND COALESCE(m.actor_account_id, m.sender_account_id) <> s.sender_account_id
+       WHERE s.gift_for_message_id IS NULL
+         AND s.sats > 0
+         AND s.actor_account_id IS NULL
+         AND s.sender_account_id = (SELECT id FROM account WHERE is_platform = true LIMIT 1)
+       GROUP BY s.id
+       HAVING COUNT(*) = 1
      )
-     FROM conversation c
-     WHERE s.conversation_id = c.id
-       AND c.kind = 'moderator_group'
-       AND s.gift_for_message_id IS NULL
-       AND s.sats > 0
-       AND s.actor_account_id IS NULL
-       AND s.sender_account_id = (SELECT id FROM account WHERE is_platform = true LIMIT 1);
+     UPDATE conversation_message s
+     SET gift_for_message_id = candidate.trigger_id
+     FROM candidate
+     WHERE s.id = candidate.stipend_id;
    END;
    $gift_for$;`,
 ];

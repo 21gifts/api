@@ -8,8 +8,10 @@
 -- trigger is attached and retried on the next boot. A value that cannot be parsed
 -- is skipped with a warning instead of failing the migration. After that unwrap,
 -- a second idempotent repair backfills gift_for_message_id on moderator_group
--- stipend rows written before that column existed; it matches no rows once
--- complete and does not overwrite a row that already has the column set. Both
+-- stipend rows written before that column existed. It links a row only when
+-- exactly one message of someone else precedes it within five minutes; an
+-- ambiguous row stays NULL and is not written, and a row that already has the
+-- column set is never touched. Both
 -- statements live in the store's CONVERSATION_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS conversation (

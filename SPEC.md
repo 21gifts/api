@@ -3442,8 +3442,17 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:00.000Z",
       "fromMe": true,
       "sats": 0,
+      "accountId": "<uuid>"
+    },
+    {
+      "id": "<uuid>",
+      "name": "21.gifts",
+      "text": "21gifts moderator · Ada",
+      "createdAt": "2026-08-29T12:00:02.000Z",
+      "fromMe": false,
+      "sats": 6158,
       "accountId": "<uuid>",
-      "giftFor": "<uuid>"
+      "giftFor": "<uuid of the message above>"
     }
   ]
 }
