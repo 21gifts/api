@@ -523,7 +523,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 row,
                 conversationFromMe({
                   senderAccountId: row.senderAccountId,
-                  actorAccountId: row.actorAccountId,
+                  actorAccountId: row.actorAccountId ?? null,
                   viewerId: account.id,
                 }),
                 { staff: roleAtLeast(account.role, 'moderator') },
@@ -663,7 +663,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             created,
             conversationFromMe({
               senderAccountId: created.senderAccountId,
-              actorAccountId: created.actorAccountId,
+              actorAccountId: created.actorAccountId ?? null,
               viewerId: account.id,
             }),
             { staff: roleAtLeast(account.role, 'moderator') },

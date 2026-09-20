@@ -455,7 +455,7 @@ export class InMemoryConversationStore implements ConversationStore {
           row.conversationId === conversationId &&
           conversationIsInbound({
             senderAccountId: row.senderAccountId,
-            actorAccountId: row.actorAccountId,
+            actorAccountId: row.actorAccountId ?? null,
             viewerId,
           }),
       ),
@@ -477,7 +477,7 @@ export class InMemoryConversationStore implements ConversationStore {
         if (
           !conversationIsInbound({
             senderAccountId: row.senderAccountId,
-            actorAccountId: row.actorAccountId,
+            actorAccountId: row.actorAccountId ?? null,
             viewerId,
           })
         ) {
