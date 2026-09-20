@@ -78,11 +78,15 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(18);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(21);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/actor_account_id/);
     expect(joined).toMatch(/actor_name/);
+    expect(joined).toMatch(
+      /ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid/,
+    );
+    expect(joined).not.toMatch(/gift_for_message_id uuid REFERENCES/);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_read/i);
     expect(joined).toMatch(/conversation_read_conversation_id_idx/);
     expect(joined).toMatch(/conversation_member_member_uidx/);
@@ -92,29 +96,45 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(joined).toMatch(/'moderator_group'/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
     expect(joined).toMatch(/conversation_message_nostr_event_unrepaired_idx/);
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain(
-      'EXCEPTION WHEN invalid_text_representation',
+    const unwrapRepair = CONVERSATION_SCHEMA_SQL.find((statement) =>
+      statement.includes('$unwrap$'),
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
-      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
+    const giftForRepair = CONVERSATION_SCHEMA_SQL.find((statement) =>
+      statement.includes('$gift_for$'),
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain(
-      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
-    );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
+    expect(unwrapRepair).toContain('FROM pg_trigger');
+    expect(unwrapRepair).toContain("tgname = 'trg_db_change'");
+    expect(unwrapRepair).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(unwrapRepair).not.toContain('EXCEPTION WHEN others');
+    expect(unwrapRepair).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(unwrapRepair).toContain('EXCEPTION WHEN data_exception OR statement_too_complex THEN');
+    expect(unwrapRepair).toContain("unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;");
+    expect(unwrapRepair).toContain('SET nostr_event = unwrapped');
+    expect(unwrapRepair).toContain('CONTINUE;');
+    expect(unwrapRepair).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(unwrapRepair).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).toMatch(
+    expect(unwrapRepair).toMatch(
       /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE conversation_message/,
     );
-    expect(CONVERSATION_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
+    expect(unwrapRepair).not.toContain('repair_row.unwrapped_event');
+    expect(giftForRepair).toContain('gift_for_message_id');
+    expect(giftForRepair).toContain("kind = 'moderator_group'");
+    expect(giftForRepair).toContain("interval '5 minutes'");
+    expect(giftForRepair).toContain('is_platform');
+    expect(giftForRepair).toContain('gift_for_message_id IS NULL');
+    expect(giftForRepair).toContain('sats > 0');
+    expect(giftForRepair).toContain('actor_account_id IS NULL');
+    expect(giftForRepair).toContain('HAVING COUNT(*) = 1');
+    expect(giftForRepair).toContain("tgname = 'trg_db_change'");
+    expect(joined).toMatch(/conversation_message_gift_unlinked_idx/);
+    expect(giftForRepair).toMatch(
+      /UPDATE conversation_message s[\s\S]*FROM candidate[\s\S]*WHERE s\.id = candidate\.stipend_id/,
+    );
+    expect(giftForRepair).toMatch(
+      /One-time repair for stipend rows written before gift_for_message_id existed/,
+    );
   });
 });
 
@@ -228,6 +248,16 @@ describe('InMemoryConversationStore', () => {
     const got = await store.getById(opened.id);
     expect(got?.lastText).toBe('hi');
     expect(got?.lastSenderAccountId).toBe('acc-a');
+  });
+
+  it('round-trips giftForMessageId on append, get, and list', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ conversationId: opened.id, giftForMessageId: 'm-trigger' }),
+    );
+    expect((await store.getMessageById('m-1'))?.giftForMessageId).toBe('m-trigger');
+    expect((await store.listMessages(opened.id, 10))[0]?.giftForMessageId).toBe('m-trigger');
   });
 
   it('returns the existing row when appending a duplicate message id', async () => {
@@ -1171,6 +1201,7 @@ describe('PostgresConversationStore', () => {
         name: 'Ada',
         actor_account_id: 'acc',
         actor_name: 'Ada',
+        gift_for_message_id: 'm-trigger',
         event_id: null,
         nostr_publish_state: 'pending',
         nostr_event: null,
@@ -1182,6 +1213,8 @@ describe('PostgresConversationStore', () => {
     expect(listed[0]?.text).toBe('hi');
     expect(listed[0]?.actorAccountId).toBe('acc');
     expect(listed[0]?.actorName).toBe('Ada');
+    expect(listed[0]?.giftForMessageId).toBe('m-trigger');
+    expect(sql.queries[0]?.text).toMatch(/gift_for_message_id/);
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
@@ -1204,6 +1237,8 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[10]).toStrictEqual(row.nostrEvent);
     expect(sql.executes[0]?.params[12]).toBe(row.actorAccountId);
     expect(sql.executes[0]?.params[13]).toBe(row.actorName);
+    expect(sql.executes[0]?.text).toMatch(/gift_for_message_id/);
+    expect(sql.executes[0]?.params[14]).toBeNull();
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
   });
@@ -1223,6 +1258,16 @@ describe('PostgresConversationStore', () => {
     await store.appendMessage(row);
     expect(sql.executes[0]?.params[12]).toBeNull();
     expect(sql.executes[0]?.params[13]).toBe('');
+    expect(sql.executes[0]?.params[14]).toBeNull();
+  });
+
+  it('appendMessage binds giftForMessageId at the gift_for_message_id placeholder', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    const row = message({ giftForMessageId: 'm-trigger' });
+    await store.appendMessage(row);
+    expect(sql.executes[0]?.text).toMatch(/gift_for_message_id/);
+    expect(sql.executes[0]?.params[14]).toBe('m-trigger');
   });
 
   it('appendMessage returns the existing row on event_id unique_violation', async () => {

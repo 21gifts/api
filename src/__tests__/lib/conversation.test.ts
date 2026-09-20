@@ -260,6 +260,21 @@ describe('serializeConversationMessage', () => {
     expect(json.name).toBe('21.gifts');
     expect(json.accountId).toBe('staff');
   });
+
+  it('emits giftFor when giftForMessageId is set', () => {
+    const json = serializeConversationMessage({ ...ROW, giftForMessageId: 'm-trigger' }, false);
+    expect(json.giftFor).toBe('m-trigger');
+  });
+
+  it('omits giftFor when giftForMessageId is unset or null', () => {
+    expect(serializeConversationMessage(ROW, false)).not.toHaveProperty('giftFor');
+    expect(
+      serializeConversationMessage({ ...ROW, giftForMessageId: null }, false),
+    ).not.toHaveProperty('giftFor');
+    expect(
+      serializeConversationMessage({ ...ROW, giftForMessageId: '' }, false),
+    ).not.toHaveProperty('giftFor');
+  });
 });
 
 describe('unsignedConversationDefaults', () => {

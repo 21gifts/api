@@ -71,6 +71,12 @@ export interface ConversationMessageRow {
   actorAccountId?: string | null;
   /** Actor display name snapshotted at send time; empty when unknown. */
   actorName?: string;
+  /**
+   * Id of the conversation message this row is a paid gift for. Set on the
+   * moderator-group stipend row created by `attachSpendGroupGift`; absent or
+   * null on every other row.
+   */
+  giftForMessageId?: string | null;
   /** Credited sats on this row; `0` for unpaid text. Gift-only rows use `text: ''` and `sats >= 1`. */
   sats: number;
   /** Signed/wrapped event id, or null until published. */
@@ -125,6 +131,11 @@ export interface PublicConversationMessage {
    * account is null (Damus inbound).
    */
   accountId?: string;
+  /**
+   * Id of the conversation message this row is a paid gift for. Omitted
+   * when `giftForMessageId` is null or empty.
+   */
+  giftFor?: string;
 }
 
 /**
@@ -208,7 +219,8 @@ export function serializeConversation(
  * @param fromMe - Whether this message was sent by the viewer.
  * @param opts - `{ staff: true }` projects actor identity when present.
  * @returns Public fields only (event id omitted; `accountId` when a
- *   21.gifts account is shown).
+ *   21.gifts account is shown; `giftFor` when this row is a paid gift
+ *   for another message).
  */
 export function serializeConversationMessage(
   row: ConversationMessageRow,
@@ -233,6 +245,9 @@ export function serializeConversationMessage(
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;
+  }
+  if (typeof row.giftForMessageId === 'string' && row.giftForMessageId !== '') {
+    json.giftFor = row.giftForMessageId;
   }
   return json;
 }

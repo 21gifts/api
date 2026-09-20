@@ -2461,10 +2461,11 @@ idempotent. Parent missing/deleted or platform missing: skip attach, log
 When the invoice has `groupMessageId`, the api then inserts one platform
 conversation message in that closed `moderator_group` thread (name trimmed
 or `21.gifts`, `sats` = `floor(msat/1000)`, text = comment · recipient
-name). Repeat proof with the same preimage is idempotent on the
-deterministic id. Triggering row missing, thread missing or not
-`moderator_group`, platform missing, or store throw: skip attach, log
-`invoice.group_gift.failed`, still **200** + gift persist.
+name, `giftForMessageId` set to the triggering message's id). Repeat proof
+with the same preimage is idempotent on the deterministic id. Triggering
+row missing, thread missing or not `moderator_group`, platform missing, or
+store throw: skip attach, log `invoice.group_gift.failed`, still **200** +
+gift persist.
 
 Success → **Response** `200`:
 
@@ -3409,7 +3410,9 @@ Bearer session required. `:id` is a UUID. Messages oldest-first (cap 200).
 The envelope is `{ "messages": [...] }` only (no counterpart `accountId`
 on the thread). Each message may include optional `accountId`: members
 always see the stored sender; staff see the actor when `actorAccountId`
-is set, otherwise the sender.
+is set, otherwise the sender. A paid moderator stipend also includes
+optional `giftFor`: the id of the group message that triggered it
+(omitted on every other row).
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
@@ -3418,7 +3421,8 @@ verified, basis and the platform account get **404**
 
 A platform stipend row in `moderator_group` (`POST /invoices/proof` with
 `groupMessageId`) has no actor and the platform account as sender, so it is
-`fromMe: false` and inbound for every member.
+`fromMe: false` and inbound for every member. That row's `giftFor` is the
+triggering message id so the app can render it attached under that message.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
@@ -3439,16 +3443,27 @@ Success → **Response** `200`:
       "fromMe": true,
       "sats": 0,
       "accountId": "<uuid>"
+    },
+    {
+      "id": "<uuid>",
+      "name": "21.gifts",
+      "text": "21gifts moderator · Ada",
+      "createdAt": "2026-08-29T12:00:02.000Z",
+      "fromMe": false,
+      "sats": 6158,
+      "accountId": "<uuid>",
+      "giftFor": "<uuid of the message above>"
     }
   ]
 }
 ```
 
 `accountId` is omitted when the projected account is null (Damus inbound;
-never JSON `null`). Members always receive the stored sender (typically
-`21.gifts` on a platform send). Staff receive the actor when
-`actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor when
-set, otherwise the sender; there is no staff-as-platform shortcut.
+never JSON `null`). `giftFor` is omitted when the row is not a paid gift
+for another message (never JSON `null`). Members always receive the stored
+sender (typically `21.gifts` on a platform send). Staff receive the actor
+when `actorAccountId` is set. `fromMe` / list `lastFromMe` use the actor
+when set, otherwise the sender; there is no staff-as-platform shortcut.
 List rows also include `lastSats` (0 when the last message is unpaid text).
 
 ### `POST /conversations/:id`
