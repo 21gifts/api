@@ -865,8 +865,8 @@
 
 ## Function: notificationRoutes
 
-- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (cap 200; `unreadCount` is total unread, not page length; each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list.
-- **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `now`.
+- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (scan newest 1000, `notificationsMatchingLevel` for the owner's `notificationLevel`, then cap 200; `unreadCount` is matching unread in that scan; each item `type` is `'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed'`; `moderator_appointed` always stays), `POST /read-all` marks all read, `POST /:id/read` marks one UUID. Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list.
+- **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `messages` (`getById`), `now`.
 - **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id`; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed`).
 - **Used by:** `createApp`.
 
@@ -1030,6 +1030,13 @@
 - **Inputs:** `{ level: NotificationLevel; actorIsStaff: boolean; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.
+
+## Function: notificationsMatchingLevel
+
+- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` always stays. `forum_post` is never personal (`mentionedAccountId` null). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Zap actor staff is the stored actor via `isStaffAccount` only when that actor is not the parent note author (missing payer is not staff).
+- **Inputs:** `{ rows, level, recipientAccountId, accounts, parentById }`.
+- **Returns / side effects:** Matching rows in the same order. No I/O.
+- **Used by:** `notificationRoutes` `GET /notifications` after scanning the newest `NOTIFICATION_FILTER_SCAN_LIMIT` rows.
 
 ## Function: conversationPushRecipientIds
 

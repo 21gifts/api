@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import type { NotificationRow } from '@/lib/notification';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { notificationRoutes } from '@/routes/notifications';
@@ -30,8 +32,15 @@ const ID_READ = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ID_OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const READ_ISO = new Date(now()).toISOString();
 
-function mount(authStore: InMemoryAuthStore, store = new InMemoryNotificationStore()): Hono {
-  return new Hono().route('/notifications', notificationRoutes({ store, authStore, now }));
+function mount(
+  authStore: InMemoryAuthStore,
+  store = new InMemoryNotificationStore(),
+  messages: InMemoryMessageStore = new InMemoryMessageStore(),
+): Hono {
+  return new Hono().route(
+    '/notifications',
+    notificationRoutes({ store, authStore, messages, now }),
+  );
 }
 
 async function seeded(): Promise<InMemoryAuthStore> {
@@ -48,9 +57,34 @@ async function seeded(): Promise<InMemoryAuthStore> {
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
+    notificationLevel: 'all',
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
   return store;
+}
+
+async function seededMentions(): Promise<InMemoryAuthStore> {
+  const store = await seeded();
+  const account = await store.getAccount('acc');
+  if (account === undefined) {
+    throw new Error('missing seed account');
+  }
+  await store.updateAccount({ ...account, notificationLevel: 'mentions' });
+  return store;
+}
+
+function forumNote(partial: Partial<MessageRow> & Pick<MessageRow, 'id'>): MessageRow {
+  return {
+    accountId: 'actor',
+    name: 'Ada',
+    text: 'hello',
+    createdAt: new Date(now()),
+    hasPhoto: false,
+    hasVideo: false,
+    videoContentType: null,
+    ...unsignedNostrDefaults(),
+    ...partial,
+  };
 }
 
 function note(partial: Partial<NotificationRow> & Pick<NotificationRow, 'id'>): NotificationRow {
@@ -113,6 +147,43 @@ describe('GET /notifications', () => {
       expect(item).not.toHaveProperty('actorAccountId');
       expect(item['type']).toBe('forum_reply');
     }
+  });
+
+  it('hides a non-staff unpaid forum_post at mentions and keeps a reply to the owner', async () => {
+    const postId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const parentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const replyNoteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01';
+    const messages = new InMemoryMessageStore([
+      forumNote({ id: postId, accountId: 'actor', sats: 0 }),
+      forumNote({ id: parentId, accountId: 'acc', sats: 0 }),
+    ]);
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'forum_post',
+        parentId: postId,
+        replyId: postId,
+        text: 'noise',
+      }),
+      note({
+        id: ID_B,
+        type: 'forum_reply',
+        parentId,
+        replyId: replyNoteId,
+        text: 'to me',
+      }),
+    ]);
+    const res = await mount(await seededMentions(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+      unreadCount: number;
+    };
+    expect(body.unreadCount).toBe(1);
+    expect(body.notifications).toHaveLength(1);
+    expect(body.notifications[0]?.['id']).toBe(ID_B);
   });
 
   it('returns 503 when listing throws', async () => {
