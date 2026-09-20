@@ -1405,7 +1405,8 @@ interface GiftReplyDeps extends BaseGiftReplyDeps {
  * remembered terminal external outcomes return before receipt lookup.
  *
  * @param event - Indexed kind:9735 frame.
- * @param args - Store, auth, clock.
+ * @param args - Store, auth, clock, and the relay querier, URLs and timeout
+ *   used to resolve an external payer's profile name.
  */
 async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): Promise<void> {
   /* v8 ignore next 3 -- ingestOneReceipt already requires a receipt id */
@@ -1501,8 +1502,12 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
  * verified 9734 pubkey. An invoice match whose account is missing does not
  * fall through to 9734.
  *
- * @param args - Store, auth, bolt11, payment hash, receipt tags.
- * @returns Payer and comment, or `undefined` when unknown.
+ * @param args - Store, auth, bolt11, payment hash, receipt tags, the
+ *   invoice description hash, the invoice amount in millisats, and the zapped
+ *   note's event id (the last three bind a 9734 request to this receipt).
+ * @returns `kind: 'account'` with the member payer and comment,
+ *   `kind: 'external'` with the verified request pubkey, request id and
+ *   comment, or `undefined` when unknown.
  */
 async function resolveZapPayer(args: {
   store: MessageStore;
@@ -1612,7 +1617,8 @@ async function ensureGiftReplyFromReceipt(
 /**
  * Retry receipts that have a payer but no gift-reply row yet.
  *
- * @param args - Store, auth, clock.
+ * @param args - Store, auth, clock, and the relay querier, URLs and timeout
+ *   used to resolve an external payer's profile name.
  */
 async function retryGiftReplies(args: GiftReplyDeps): Promise<void> {
   const pending = await args.store.listZapReceiptsAwaitingGiftReply(MESSAGE_LIST_LIMIT);

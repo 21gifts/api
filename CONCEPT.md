@@ -395,7 +395,7 @@ reputation (who follows / vouches for whom).
   1 sat on a 21.gifts forum note; the protocol stays open. This applies
   retroactively both ways — a reply stored before its author's first zap
   stays invisible until that zap is recorded, and becomes visible immediately
-  once it is
+  once it is recorded.
 - NIP-05 verification (optional, badged)
 - Profile completeness (story, photo, LN-Address resolves successfully)
 - Community vouching (other NOSTR identities sign off)

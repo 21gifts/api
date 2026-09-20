@@ -325,7 +325,7 @@
 
 ## Endpoint: GET /members/:accountId/posts
 
-- **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set). Omits `parentId`. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live direct-reply count of attributed children (a 21.gifts author, or an external zapper row with `author_pubkey`) minus those dropped.
+- **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set). Omits `parentId`. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live direct-reply count of attributed children (a 21.gifts author, or an external row whose `author_pubkey` is a recorded zapper in `nostr_zapper`) minus those dropped.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.posts.failed`).
 - **Used by:** App member profile post feed.
 - **Auth:** `Authorization: Bearer` session.
@@ -402,7 +402,7 @@
 
 ## Endpoint: GET /messages/:id/photo/:file
 
-- **Purpose:** Public extra still for indices 1–9. Param `:file` must match `^([1-9])\.(jpg|jpeg|png|webp)$` (Damus URLs look like `/messages/:id/photo/1.jpg` … `/photo/9.webp`). No `/photo/0.jpg` — photo 0 stays `GET /messages/:id/photo.jpg`. Same bytes/headers as photo 0 (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`). Soft-hidden rows 404 even when extra bytes remain (`getById` / `deletedAt` before `getExtraPhoto`).
+- **Purpose:** Public extra still for indices 1–9. Param `:file` must match `^([1-9])\.(jpg|jpeg|png|webp)$` (Damus URLs look like `/messages/:id/photo/1.jpg` … `/photo/9.webp`). No `/photo/0.jpg` — photo 0 stays `GET /messages/:id/photo.jpg`. Same bytes/headers as photo 0 (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`). Soft-hidden rows 404 even when extra bytes remain (`getById` / `deletedAt` before `getExtraPhoto`). A live reply without an account whose author pubkey is not a recorded zapper (or that has no author pubkey) is the same 404, matching `GET /messages/:id`.
 - **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, soft-hidden, has no extra at that index, or `:file` is not `{1-9}.{jpg|jpeg|png|webp}`; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
 - **Used by:** Damus/Primal via kind:1 extra still URLs; App gallery.
 - **Auth:** none.

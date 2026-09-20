@@ -2696,8 +2696,9 @@ when extra bytes remain. Same headers as photo 0 (`Content-Type`
 jpeg/png/webp, `Cache-Control: public, max-age=86400`,
 `Access-Control-Allow-Origin: *`,
 `Content-Disposition: inline; filename="photo.jpg|png|webp"`). Missing
-message, missing extra, non-UUID id, index 0, or a file that does not
-match `^([1-9])\.(jpg|jpeg|png|webp)$` → **Response** `404`:
+message, missing extra, non-UUID id, index 0, a file that does not
+match `^([1-9])\.(jpg|jpeg|png|webp)$`, or a live reply without an account
+whose author pubkey is not a recorded zapper → **Response** `404`:
 
 ```json
 { "error": "Photo not found" }
