@@ -5144,7 +5144,9 @@ describe('GET /messages/:id/replies', () => {
     const unsigned = await mount(auth, store).request(`/messages/${parentId}/replies`);
     expect(unsigned.status).toBe(200);
     expect(
-      ((await unsigned.json()) as { messages: Array<{ id: string }> }).messages.map((row) => row.id),
+      ((await unsigned.json()) as { messages: Array<{ id: string }> }).messages.map(
+        (row) => row.id,
+      ),
     ).toEqual([]);
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
       headers: AUTH,
