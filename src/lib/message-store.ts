@@ -866,7 +866,6 @@ export interface ZapReceiptGiftRow {
   comment: string;
 }
 
-/** External pubkey entitled by its first verified zap. */
 /** Operator dump of one `nostr_zap_receipt` row. */
 export interface ZapReceiptDumpRow {
   /** Kind:9735 event id. */
@@ -887,6 +886,7 @@ export interface ZapReceiptDumpRow {
   comment: string;
 }
 
+/** External pubkey entitled by its first verified zap. */
 export interface NostrZapperRow {
   /** Lowercase external pubkey. */
   pubkey: string;

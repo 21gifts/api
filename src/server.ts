@@ -220,6 +220,12 @@ export interface AppDeps {
   fundingStore?: FundingStore;
 }
 
+/** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
+function debugList(store: object, limit: number): Promise<unknown[]> {
+  const list = (store as { listDebug?: (n: number) => Promise<unknown[]> }).listDebug;
+  return list === undefined ? Promise.resolve([]) : list.call(store, limit);
+}
+
 /**
  * Build a fully wired Hono application.
  *
@@ -236,14 +242,9 @@ export interface AppDeps {
  *   conversation store, notification store, push store, trust store,
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, gift invoice store, and listDbChange.
  * @returns A Hono app with all routes and middleware attached.
  */
-function debugList(store: object, limit: number): Promise<unknown[]> {
-  const list = (store as { listDebug?: (n: number) => Promise<unknown[]> }).listDebug;
-  return list === undefined ? Promise.resolve([]) : list.call(store, limit);
-}
-
 export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;

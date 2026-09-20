@@ -1,11 +1,5 @@
 import type { GiftRow } from '@/lib/gift';
 
-/**
- * Persistence for outbound gifts used by public statistics.
- *
- * v1 default is in-memory (empty). Production boot injects a query against
- * the `gift` table when `DATABASE_URL` is set.
- */
 /** Operator dump of one `gift` row (every stored column). */
 export interface GiftDebugRow {
   /** Serial id, or `null` when the adapter does not store one. */
@@ -38,6 +32,12 @@ export interface GiftDebugRow {
   importedAt: string | null;
 }
 
+/**
+ * Persistence for outbound gifts used by public statistics.
+ *
+ * v1 default is in-memory (empty). Production boot injects a query against
+ * the `gift` table when `DATABASE_URL` is set.
+ */
 export interface GiftStore {
   /**
    * Every outbound gift, without invoice fields.
