@@ -3830,6 +3830,46 @@ describe('GET /messages/:id', () => {
     expect(body).not.toHaveProperty('authorPubkey');
   });
 
+  it('returns 404 for a live external reply until its pubkey is a recorded zapper', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create(
+      {
+        id: '14141414-1414-4141-8141-141414141414',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'from damus',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        parentId: '15151515-1515-4151-8151-151515151515',
+        authorPubkey: 'AB'.repeat(32),
+        eventId: 'ee'.repeat(32),
+      },
+      undefined,
+    );
+    const app = mount(new InMemoryAuthStore(), messageStore);
+    const before = await app.request('/messages/14141414-1414-4141-8141-141414141414');
+    expect(before.status).toBe(404);
+    expect(await before.json()).toEqual({ error: 'Not found' });
+    await messageStore.recordZapper('ab'.repeat(32), 'receipt-late', new Date(now()));
+    const after = await app.request('/messages/14141414-1414-4141-8141-141414141414');
+    expect(after.status).toBe(200);
+    expect(await after.json()).toMatchObject({ text: 'from damus', via: 'nostr' });
+  });
+
   it('returns 404 for a null-account reply without an author pubkey', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4827,6 +4867,80 @@ describe('GET /messages/:id/photo', () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 
+  it('withholds the photo of an external reply until its pubkey is a recorded zapper', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create(
+      {
+        id: '14141414-1414-4141-8141-141414141414',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'from damus',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+        parentId: '15151515-1515-4151-8151-151515151515',
+        authorPubkey: 'AB'.repeat(32),
+        eventId: 'ee'.repeat(32),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const app = mount(await seededStore(), store);
+    for (const path of ['photo', 'photo.jpg']) {
+      const before = await app.request(`/messages/14141414-1414-4141-8141-141414141414/${path}`);
+      expect(before.status).toBe(404);
+      expect(await before.json()).toEqual({ error: 'Photo not found' });
+    }
+    await store.recordZapper('ab'.repeat(32), 'receipt-late', new Date(now()));
+    const after = await app.request('/messages/14141414-1414-4141-8141-141414141414/photo');
+    expect(after.status).toBe(200);
+    expect(new Uint8Array(await after.arrayBuffer())).toEqual(JPEG_BYTES);
+  });
+
+  it('withholds the photo of a reply with neither an account nor an author pubkey', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create(
+      {
+        id: '14141414-1414-4141-8141-141414141414',
+        accountId: null,
+        name: 'ghost',
+        text: '',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+        parentId: '15151515-1515-4151-8151-151515151515',
+        authorPubkey: null,
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    const res = await mount(await seededStore(), store).request(
+      '/messages/14141414-1414-4141-8141-141414141414/photo',
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
   it('serves the same bytes at /photo.jpg so Damus treats the URL as an image', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
@@ -5096,6 +5210,51 @@ describe('forum video', () => {
     expect(new Uint8Array(await mid.arrayBuffer())).toEqual(fullBody.slice(8, 12));
     expect((await app.request(`/messages/${created.id}/video.webm`)).status).toBe(404);
     expect((await app.request('/messages/not-a-uuid/video.mp4')).status).toBe(404);
+  });
+
+  it('withholds the video of an external reply until its pubkey is a recorded zapper', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: '15151515-1515-4151-8151-151515151515',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create(
+      {
+        id: '14141414-1414-4141-8141-141414141414',
+        accountId: null,
+        name: 'aabbccdd…8899',
+        text: 'from damus',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+        parentId: '15151515-1515-4151-8151-151515151515',
+        authorPubkey: 'AB'.repeat(32),
+        eventId: 'ee'.repeat(32),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4() },
+    );
+    const app = mount(await seededStore(), store);
+    try {
+      const before = await app.request('/messages/14141414-1414-4141-8141-141414141414/video.mp4');
+      expect(before.status).toBe(404);
+      expect(await before.json()).toEqual({ error: 'Video not found' });
+      await store.recordZapper('ab'.repeat(32), 'receipt-late', new Date(now()));
+      const after = await app.request('/messages/14141414-1414-4141-8141-141414141414/video.mp4');
+      expect(after.status).toBe(200);
+      expect(after.headers.get('Content-Type')).toBe('video/mp4');
+    } finally {
+      await removeForumVideo('14141414-1414-4141-8141-141414141414', 'video/mp4');
+    }
   });
 
   it('heals mdat-first mp4 on GET and rewrites the file', async () => {

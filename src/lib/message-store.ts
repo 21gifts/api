@@ -1219,7 +1219,8 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Newest-first top-level notes only, capped at `limit`, with `replyCount`
-   * of live attributed children (`deletedAt` null and an account or pubkey).
+   * of live attributed children (`deletedAt` null and either an account or a
+   * recorded zapper pubkey).
    *
    * @param limit - Maximum rows.
    * @returns A new array of list row copies; mutating it does not change the store.

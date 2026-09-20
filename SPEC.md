@@ -2649,7 +2649,9 @@ Other LNURL/zap failure (`unreachable`) →
 Fetch the optional photo bytes for one forum message. **No bearer** — Damus
 loads this URL from kind:1 `imeta`. Missing message, message-without-photo,
 and a non-UUID `id` are the same **404** (Postgres would otherwise throw on
-`uuid` and become 503).
+`uuid` and become 503). A live reply without an account whose author pubkey
+is not a recorded zapper (or that has no author pubkey) is the same **404**
+on every photo and video route, matching `GET /messages/:id`.
 
 No photo for `id` → **Response** `404`:
 

@@ -9,7 +9,7 @@
 
 ## Endpoint: GET /messages/:id/video.mp4
 
-- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. Soft-hidden rows (`deletedAt` set) are 404 even when the on-disk file remains. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
+- **Purpose:** Public MP4 bytes as a sized body (`Content-Length` = body byte length) with `Accept-Ranges` / HTTP 206 `Content-Range` so clients can seek. Best-effort faststart (`moov` before `mdat`) on write; heal-on-read remuxes when the stored file is still mdat-first. `Access-Control-Allow-Origin: *`. Soft-hidden rows (`deletedAt` set) are 404 even when the on-disk file remains. A live reply without an account whose author pubkey is not a recorded zapper (or that has no author pubkey) is the same 404, matching `GET /messages/:id`. After deploy, purge or wait out CDN cache for URLs previously served without `Content-Length` (chunked streams that ignored `Range`).
 - **Errors:** 404 `{ error: 'Video not found' }` (missing / soft-hidden / wrong ext / empty); 416 unsatisfiable `Range` (`Content-Range: bytes */SIZE`); 503 `{ error: 'Messages are unavailable' }`.
 - **Used by:** Damus/Primal/Safari kind:1 video URLs.
 - **Auth:** none.
@@ -367,7 +367,7 @@
 
 ## Endpoint: GET /messages/:id/photo
 
-- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true. Soft-hidden rows 404 even when photo bytes remain in the store (handler checks `getById` / `deletedAt` before `getPhoto`).
+- **Purpose:** Public. Returns raw photo bytes for one message (`Content-Type` jpeg/png/webp, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, `Content-Disposition: inline; filename="photo.jpg|png|webp"`) so Nostr clients can load NIP-92 `imeta` URLs. Same bytes at `/photo.jpg`, `/photo.jpeg`, `/photo.png`, and `/photo.webp` because Damus only embeds URLs that look like image files. List JSON never embeds bytes — clients fetch here when `hasPhoto` is true. Soft-hidden rows 404 even when photo bytes remain in the store (handler checks `getById` / `deletedAt` before `getPhoto`). A live reply without an account whose author pubkey is not a recorded zapper (or that has no author pubkey) is the same 404, matching `GET /messages/:id`.
 - **Errors:** 404 `{ error: 'Photo not found' }` when the id is missing, not a UUID, soft-hidden, or has no photo; 503 `{ error: 'Messages are unavailable' }` (`messages.photo.failed`).
 - **Used by:** App forum photo display; Damus/Primal via kind:1 photo URLs.
 - **Auth:** none.
