@@ -326,9 +326,19 @@ describe('externalDisplayName', () => {
     ['SOFT HYPHEN', 'Alice' + '\u00ad'],
     ['ZERO WIDTH SPACE', 'Alice' + '\u200b'],
     ['WORD JOINER', 'Alice' + '\u2060'],
-    ['ZERO WIDTH NO-BREAK SPACE / BOM', 'Alice' + '\ufeff'],
+    ['ZERO WIDTH NO-BREAK SPACE / BOM', 'Ali' + '\ufeff' + 'ce'],
     ['a tag character', 'Alice\u{e0041}'],
   ];
+
+  it('keeps a name whose only invisible code point is a trailing BOM removed by trimming', () => {
+    const pubkey = 'ABCDEF0123456789';
+    expect(externalDisplayName({ profileName: 'Alice' + '\ufeff', pubkey, accountNames: [] })).toBe(
+      'Alice',
+    );
+    expect(
+      externalDisplayName({ profileName: 'Alice' + '\ufeff', pubkey, accountNames: ['Alice'] }),
+    ).toBe('abcdef01…6789');
+  });
 
   it.each(namesWithDefaultIgnorable)(
     'falls back for a name containing %s when a member is named Alice',

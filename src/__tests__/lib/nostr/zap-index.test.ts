@@ -5857,6 +5857,7 @@ describe('indexOpenZapReceipts', () => {
     const receiptId = 'retry-live-external-receipt';
     const payerPubkey = 'bb'.repeat(32);
     await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.recordZapper(payerPubkey, receiptId, new Date(1_700_000_100_000));
     await store.attributeZapReceipt(receiptId, {
       payerPubkey,
       zapRequestId: 'bc'.repeat(32),

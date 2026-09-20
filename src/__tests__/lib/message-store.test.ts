@@ -3016,7 +3016,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(
-      /child\.account_id IS NOT NULL OR \(child\.author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(sql.queries[0]?.params).toEqual(['acc', 50]);
@@ -3091,7 +3091,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/reply_count/);
     expect(sql.queries[0]?.text).toMatch(/child\.deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(
-      /child\.account_id IS NOT NULL OR \(child\.author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
@@ -4467,7 +4467,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/WHERE parent_id = \$1/);
     expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(
-      /account_id IS NOT NULL OR \(author_pubkey IS NOT NULL AND EXISTS \(SELECT 1 FROM nostr_zapper/,
+      /account_id IS NOT NULL\s+OR \(author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(message\.author_pubkey\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.params).toEqual(['m1', 50]);
