@@ -78,7 +78,7 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(20);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(21);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/actor_account_id/);
@@ -127,6 +127,8 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(giftForRepair).toContain('sats > 0');
     expect(giftForRepair).toContain('actor_account_id IS NULL');
     expect(giftForRepair).toContain('HAVING COUNT(*) = 1');
+    expect(giftForRepair).toContain("tgname = 'trg_db_change'");
+    expect(joined).toMatch(/conversation_message_gift_unlinked_idx/);
     expect(giftForRepair).toMatch(
       /UPDATE conversation_message s[\s\S]*FROM candidate[\s\S]*WHERE s\.id = candidate\.stipend_id/,
     );

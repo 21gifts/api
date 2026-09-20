@@ -11,7 +11,10 @@
 -- stipend rows written before that column existed. It links a row only when
 -- exactly one message of someone else precedes it within five minutes; an
 -- ambiguous row stays NULL and is not written, and a row that already has the
--- column set is never touched. Both
+-- column set is never touched. It is skipped until the db_change audit trigger
+-- is attached, like the unwrap, and the partial index
+-- conversation_message_gift_unlinked_idx keeps its per-boot check off a full
+-- scan. Both
 -- statements live in the store's CONVERSATION_SCHEMA_SQL array, not in this file.
 
 CREATE TABLE IF NOT EXISTS conversation (
@@ -66,6 +69,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
 CREATE INDEX IF NOT EXISTS conversation_message_nostr_event_unrepaired_idx
   ON conversation_message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';
+
+CREATE INDEX IF NOT EXISTS conversation_message_gift_unlinked_idx
+  ON conversation_message (conversation_id, created_at)
+  WHERE gift_for_message_id IS NULL AND sats > 0 AND actor_account_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS conversation_read (
   account_id uuid NOT NULL REFERENCES account (id),

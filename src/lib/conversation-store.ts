@@ -347,11 +347,26 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
      END LOOP;
    END;
    $unwrap$;`,
+  `CREATE INDEX IF NOT EXISTS conversation_message_gift_unlinked_idx
+   ON conversation_message (conversation_id, created_at)
+   WHERE gift_for_message_id IS NULL AND sats > 0 AND actor_account_id IS NULL`,
   `-- One-time repair for stipend rows written before gift_for_message_id existed.
    -- Links a row only when exactly one message of someone else precedes it within
    -- five minutes; anything ambiguous stays NULL and is not written at all.
+   -- A candidate needs an account sender or actor (moderator_group rows always
+   -- have one); the partial index above keeps the per-boot check off a full scan.
+   -- Skipped until the db_change audit trigger is attached, like the unwrap repair.
    DO $gift_for$
    BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+       FROM pg_trigger
+       WHERE tgrelid = 'conversation_message'::regclass
+         AND tgname = 'trg_db_change'
+         AND NOT tgisinternal
+     ) THEN
+       RETURN;
+     END IF;
      WITH candidate AS (
        SELECT s.id AS stipend_id, (array_agg(m.id))[1] AS trigger_id
        FROM conversation_message s
