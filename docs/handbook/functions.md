@@ -1008,7 +1008,7 @@
 
 ## Function: isStaffAccount
 
-- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles. `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings are not found in `ROLE_ORDER` and are therefore not staff. Does not parse display names or @mentions out of post text.
+- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles (`basis` / `verified` false). `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings are not found in `ROLE_ORDER` and are therefore not staff. Does not parse display names or @mentions out of post text.
 - **Inputs:** `{ role: string; isPlatform?: boolean }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap` via `actorIsStaffFromAuth`.
