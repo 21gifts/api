@@ -31,6 +31,8 @@ export interface GiftInvoice {
   preimage?: string;
   /** Forum post to attach a gift-reply under on proof. */
   messageId?: string;
+  /** Moderator-group conversation message to attach the stipend gift under on proof. */
+  groupMessageId?: string;
   /** LUD-12 comment / gift-reply text (may be `''`). */
   comment?: string;
 }

@@ -2073,6 +2073,51 @@ describe('moderator_group', () => {
     expect(rows[0]?.eventId).toBeNull();
   });
 
+  it('shows a platform stipend row in the group as the house, not as the viewer', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    await conversations.appendMessage({
+      id: '7f9c2b1e-4a3d-4c5b-8e6f-0a1b2c3d4e5f',
+      conversationId: thread.id,
+      text: '21gifts moderator · Ada',
+      createdAt: new Date(now()),
+      senderAccountId: 'plat',
+      senderPubkey: null,
+      name: '21.gifts',
+      sats: 1233,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(get.status).toBe(200);
+    const body = (await get.json()) as {
+      messages: Array<{ name: string; text: string; sats: number; fromMe: boolean }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]).toMatchObject({
+      name: '21.gifts',
+      text: '21gifts moderator · Ada',
+      sats: 1233,
+      fromMe: false,
+    });
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(group.status).toBe(200);
+    const groupBody = (await group.json()) as {
+      conversation: { lastFromMe: boolean; lastSats: number; unread: boolean };
+    };
+    expect(groupBody.conversation.lastFromMe).toBe(false);
+    expect(groupBody.conversation.lastSats).toBe(1233);
+    expect(groupBody.conversation.unread).toBe(true);
+  });
+
   it('keeps the platform account out of the Moderators group even with a founder role', async () => {
     const auth = await seeded('founder');
     await withPlatform(auth);
