@@ -92,6 +92,7 @@ describe('loadDebugTables', () => {
           name: 'Ada',
           lastText: 'hi',
           lastSenderAccountId: accountId,
+          lastActorAccountId: accountId,
           lastSats: 0,
         },
       ],
@@ -104,6 +105,8 @@ describe('loadDebugTables', () => {
           senderAccountId: accountId,
           senderPubkey: null,
           name: 'Ada',
+          actorAccountId: accountId,
+          actorName: 'Ada',
           sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
@@ -118,6 +121,8 @@ describe('loadDebugTables', () => {
           senderAccountId: accountId,
           senderPubkey: null,
           name: 'Ada',
+          actorAccountId: accountId,
+          actorName: 'Ada',
           sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
@@ -132,6 +137,8 @@ describe('loadDebugTables', () => {
           senderAccountId: accountId,
           senderPubkey: null,
           name: 'Ada',
+          actorAccountId: accountId,
+          actorName: 'Ada',
           sats: 0,
           eventId: null,
           nostrPublishState: 'pending',
@@ -429,7 +436,15 @@ describe('loadDebugTables', () => {
     expect(tables.auth_session[0]).toEqual(expect.objectContaining({ token: 'sess' }));
     expect(tables.contact).toHaveLength(1);
     expect(tables.conversation).toHaveLength(1);
-    expect(tables.conversation_message).toHaveLength(3);
+    expect(tables.conversation_message).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          actorAccountId: accountId,
+          actorName: 'Ada',
+        }),
+      ]),
+    );
     expect(tables.conversation_read).toHaveLength(1);
     expect(tables.message).toEqual(
       expect.arrayContaining([

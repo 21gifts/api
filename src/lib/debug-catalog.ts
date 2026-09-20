@@ -181,6 +181,8 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         senderAccountId: row.senderAccountId,
         senderPubkey: row.senderPubkey,
         name: row.name,
+        actorAccountId: row.actorAccountId ?? null,
+        actorName: row.actorName ?? '',
         eventId: row.eventId,
         nostrPublishState: row.nostrPublishState,
         nostrEvent: row.nostrEvent,
