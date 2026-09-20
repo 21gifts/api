@@ -1449,7 +1449,7 @@
 
 - **Purpose:** Operator one-account JSON with nested passkeys, sessions, address verification, and passkey challenges.
 - **Inputs:** `Account`, `DebugNostrFields`, nested credential/session/verification/challenge rows.
-- **Returns / side effects:** `DebugAccountDetailResponse`. Passkey `publicKey` is lowercase COSE hex. No I/O.
+- **Returns / side effects:** `DebugAccountDetailResponse`. Passkey `publicKey` is lowercase COSE hex. `nostrNsecCiphertext` is envelope hex, never decrypted. Nested `sessions[].token` is the stored plaintext token. No I/O.
 - **Used by:** `GET /debug/accounts/:id`.
 
 ## Function: serializeDebugPasskey

@@ -79,7 +79,7 @@
 
 ## Endpoint: GET /debug/accounts/:id
 
-- **Purpose:** Operator read of one account (`serializeDebugAccountDetail`): every account column plus nested `passkeys`, `sessions`, `addressVerification`, and matching `passkeyChallenges`.
+- **Purpose:** Operator read of one account (`serializeDebugAccountDetail`): every account column plus nested `passkeys`, `sessions`, `addressVerification`, and matching `passkeyChallenges`. `nostrNsecCiphertext` is hex of the stored AES-GCM envelope, never decrypted. Nested `sessions[].token` is the stored plaintext token.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when the id is not a UUID or the account is missing.
 - **Used by:** Operator `gifts-debug account`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
