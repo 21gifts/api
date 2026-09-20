@@ -96,7 +96,9 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(joined).toMatch(/'moderator_group'/);
     expect(joined).toMatch(/conversation_message_event_id_uidx/);
     expect(joined).toMatch(/conversation_message_nostr_event_unrepaired_idx/);
-    const unwrapRepair = CONVERSATION_SCHEMA_SQL.find((statement) => statement.includes('$unwrap$'));
+    const unwrapRepair = CONVERSATION_SCHEMA_SQL.find((statement) =>
+      statement.includes('$unwrap$'),
+    );
     const giftForRepair = CONVERSATION_SCHEMA_SQL.find((statement) =>
       statement.includes('$gift_for$'),
     );
@@ -104,15 +106,9 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(unwrapRepair).toContain("tgname = 'trg_db_change'");
     expect(unwrapRepair).toContain("jsonb_typeof(nostr_event) = 'string'");
     expect(unwrapRepair).not.toContain('EXCEPTION WHEN others');
-    expect(unwrapRepair).not.toContain(
-      'EXCEPTION WHEN invalid_text_representation',
-    );
-    expect(unwrapRepair).toContain(
-      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
-    );
-    expect(unwrapRepair).toContain(
-      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
-    );
+    expect(unwrapRepair).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(unwrapRepair).toContain('EXCEPTION WHEN data_exception OR statement_too_complex THEN');
+    expect(unwrapRepair).toContain("unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;");
     expect(unwrapRepair).toContain('SET nostr_event = unwrapped');
     expect(unwrapRepair).toContain('CONTINUE;');
     expect(unwrapRepair).toContain('AND nostr_event = repair_row.nostr_event');
@@ -131,7 +127,9 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     expect(giftForRepair).toContain('sats > 0');
     expect(giftForRepair).toContain('actor_account_id IS NULL');
     expect(giftForRepair).toContain('HAVING COUNT(*) = 1');
-    expect(giftForRepair).toMatch(/UPDATE conversation_message s[\s\S]*FROM candidate[\s\S]*WHERE s\.id = candidate\.stipend_id/);
+    expect(giftForRepair).toMatch(
+      /UPDATE conversation_message s[\s\S]*FROM candidate[\s\S]*WHERE s\.id = candidate\.stipend_id/,
+    );
     expect(giftForRepair).toMatch(
       /One-time repair for stipend rows written before gift_for_message_id existed/,
     );
