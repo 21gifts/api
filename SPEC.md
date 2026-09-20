@@ -540,9 +540,9 @@ Logged as `trust.chain.failed`.
 
 ### `GET /trust/proposals`
 
-Staff pending-moderator queue. Bearer **session** required (founder or
-moderator). This is **not** a `DEBUG_TOKEN` route. No `forum.read` /
-rules gate — a founder/moderator without rules agreement is still **200**.
+Staff pending-moderator queue. Bearer **session** required (moderator).
+This is **not** a `DEBUG_TOKEN` route. No `forum.read` /
+rules gate — a moderator without rules agreement is still **200**.
 
 Lists pending `moderator_propose` edges whose live subject is still
 `verified` and has no `moderator_confirm` or `moderator_appoint`. Missing
@@ -561,7 +561,7 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Live role is not founder and not moderator → **Response** `403`:
+Live role is not at least moderator → **Response** `403`:
 
 ```json
 { "error": "Forbidden" }
@@ -592,8 +592,8 @@ only. On throw it logs `trust.proposals.failed`.
 
 ### `POST /trust/verify`
 
-Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
-or `moderator`. Inserts a `verify` edge from the caller to the subject,
+Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be at least
+`moderator`. Inserts a `verify` edge from the caller to the subject,
 then sets `account.role` to `verified`. `verified` is a real-life
 confirmation (forum badge), not Lightning-Address proof.
 
@@ -1259,7 +1259,7 @@ resets `lightningAddressVerified` to `false` and drops any in-flight
 verification. `GET /me` then returns `setup: "lightning-address"` when a
 name is already stored, so any client that follows `setup` (or a missing
 `lightningAddress`) shows the address form. `verified` as a **role** is a
-human-identity badge (a founder or moderator physically met the person); it
+human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`
 here. This route does **not** write trust edges;
@@ -1765,7 +1765,7 @@ Environment:
 
 Operator unhide of a soft-hidden forum note. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
-session and not a founder/moderator UNHIDE. Calls `markUndeleted`: the
+session and not a moderator UNHIDE. Calls `markUndeleted`: the
 inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on
 the hidden target and stamp-matched **direct** children; already-live
 target is a no-op for children). Does not recreate the row via
@@ -2356,7 +2356,7 @@ is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. A valid parent where the
-caller is neither the parent author nor `moderator`/`founder`/`verified` → **403**
+caller is neither the parent author nor `verified` → **403**
 `{ "error": "A reply needs a Bitcoin payment" }` (pay via
 `POST /messages/:id/invoice` instead). Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -2459,7 +2459,7 @@ is itself a reply →
 ```
 
 Valid parent, but the caller is not the parent author and not
-`moderator`/`founder`/`verified` →
+`verified` →
 **Response** `403`:
 
 ```json
@@ -2743,7 +2743,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
 
 ### `DELETE /messages/:id`
 
-Staff soft-hide. Bearer session required. Live role must be `founder` or
+Staff soft-hide. Bearer session required. Live role must be at least
 `moderator` (authors with `basis` / `verified` get 403 even on their own
 post). Stamps `deleted_at` / `deleted_by` on the target row and every
 **direct** reply that is not yet tagged. Does **not** hard-delete the
@@ -2774,7 +2774,7 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Live role is not founder and not moderator → **Response** `403`:
+Live role is not at least moderator → **Response** `403`:
 
 ```json
 { "error": "Forbidden" }
@@ -2801,10 +2801,10 @@ it logs `messages.delete.failed`.
 ### `GET /messages/hidden`
 
 Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
-**session** required (founder or moderator). This is **not** a
+**session** required (moderator). This is **not** a
 `DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
 `"hidden"` is not captured as `:id`. No `forum.read` gate — a
-founder/moderator without rules agreement is still **200**.
+moderator without rules agreement is still **200**.
 
 Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
 desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
@@ -2827,7 +2827,7 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Live role is not founder and not moderator → **Response** `403`:
+Live role is not at least moderator → **Response** `403`:
 
 ```json
 { "error": "Forbidden" }
@@ -2948,13 +2948,13 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-`role` is `founder` or `moderator`) every platform thread. Empty threads
+the role is at least `moderator`) every platform thread. Empty threads
 and outbound-only member/Damus threads (every stored sender is
 `conversationFromMe` for the viewer, including staff-as-platform) are
 omitted. The member's own `member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. This list never includes `moderator_group` regardless of
-role, including founder and moderator. The closed group is `GET /conversations/moderator-group`
+role. The closed group is `GET /conversations/moderator-group`
 only. `GET /conversations/:id` and
 `POST` still return/open outbound-only and empty threads. Newest
 `lastMessageAt` first. Cap 200. List/open rows may include optional
@@ -3003,7 +3003,7 @@ for Damus-only counterparts (never JSON `null`).
 
 ### `GET /conversations/moderator-group`
 
-Bearer session required. Moderator or founder (`roleAtLeast` `moderator`;
+Bearer session required. At least moderator (`roleAtLeast` `moderator`;
 the platform account is never a member of the group, whatever role it
 carries) open or insert the closed singleton and receive it as
 `{ "conversation": { ... } }` (same public row as a list item, `kind`
@@ -3037,8 +3037,8 @@ on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
-`{ "error": "Not found" }` on that id (no existence leak). Moderator or
-founder (`isModeratorGroupMember`) get **200**.
+`{ "error": "Not found" }` on that id (no existence leak). Moderator
+(`isModeratorGroupMember`) get **200**.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
@@ -3071,17 +3071,16 @@ List rows also include `lastSats` (0 when the last message is unpaid text).
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text": "…" }` 1–500 via
-`normalizeForumText`. Staff (`founder` \| `moderator`) replies on a
+`normalizeForumText`. Moderator replies on a
 platform thread persist as the platform account; the worker signs with the
 platform nsec. Relay failure does not block local persist. Kind includes
-`moderator_group`: persist as the caller account (moderator or founder,
+`moderator_group`: persist as the caller account (moderator,
 not platform) with `nostrPublishState` skipped (never Nostr). After a new
 persist on `moderator_group`, ping `{ address, kind: "moderator" }` (no
 `messageId` in the HTTP body) only when Lightning Address is a non-empty
 trimmed string, `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
-the same UTC day. That ping condition is unchanged and also applies when
-a founder posts on the moderator group. No such post → **200**, no ping,
+the same UTC day. No such post → **200**, no ping,
 log `spend.ping.skipped` / `no_public_post`. Ping throw still **200**.
 Living-room lookup failure after persist is still **200**, no ping, log
 `spend.ping.skipped` / `posted_unreachable`. Empty or invalid text is
@@ -3241,8 +3240,8 @@ downstream dependencies is still planned. The LUD-16 metadata cache on
 when `DATABASE_URL` is set.
 
 **Staff endpoints (moderator+).** Soft-hide is implemented as
-`DELETE /messages/:id` (founder/moderator session). The staff hidden log
-is implemented as `GET /messages/hidden` (founder/moderator **session**,
+`DELETE /messages/:id` (moderator session). The staff hidden log
+is implemented as `GET /messages/hidden` (moderator **session**,
 not `DEBUG_TOKEN`; registered before `GET /messages/:id`). Operator debug
 restore exists as `POST /debug/messages/:id/restore` (`DEBUG_TOKEN`).
 Staff / moderator session unhide is still not a route. Other Moderator

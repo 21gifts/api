@@ -32,7 +32,7 @@ export function roleAtLeast(role: AccountRole, min: AccountRole): boolean {
 /**
  * Whether an account belongs to the closed Moderators group.
  *
- * Every moderator and founder does. The platform account is a house identity,
+ * Every account that is at least a moderator does. The platform account is a house identity,
  * not a person in the staff room, whatever role it carries.
  *
  * @param account - Role plus optional platform flag.
