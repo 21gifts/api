@@ -337,7 +337,8 @@ worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. The list omits rows whose parent or
-reply forum message is missing or hidden. Post, reply, and zap pushes open
+reply forum message is missing or hidden (`forum_reply` also checks the
+child note; `zap` only the parent note). `moderator_appointed` stays. Post, reply, and zap pushes open
 `/notifications`. A new inbound private message enqueues Web Push
 `/messages?c=` (bell subscribers only); badge `unreadCount` is
 notification unread plus listed inbox unread.
