@@ -1206,6 +1206,16 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[10]).toBeNull();
   });
 
+  it('appendMessage binds empty actorName when the field is omitted', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    const row = message();
+    delete (row as { actorName?: string }).actorName;
+    await store.appendMessage(row);
+    expect(sql.executes[0]?.params[12]).toBeNull();
+    expect(sql.executes[0]?.params[13]).toBe('');
+  });
+
   it('appendMessage returns the existing row on event_id unique_violation', async () => {
     const sql = new MockSql();
     sql.executeError = { code: '23505' };
