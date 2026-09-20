@@ -344,6 +344,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         nostrPublishState: 'skipped',
         nostrEvent: null,
         claimedUntil: null,
+        giftForMessageId: invoice.groupMessageId,
       });
       logEvent('invoice.group_gift.attached', { id: invoice.id });
     } catch {

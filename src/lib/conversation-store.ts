@@ -249,7 +249,7 @@ async function listedUnreadCount(
   return count;
 }
 
-/** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message`; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statement by comment, the `DO $unwrap$` block lives only in this array). */
+/** Idempotent SQL for conversation tables (DDL plus boot-time unwrap of `nostr_event` values stored as jsonb string scalars in `conversation_message` and a one-time stipend `gift_for_message_id` backfill; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statements by comment, the `DO $unwrap$` and stipend-repair `DO` blocks live only in this array). */
 export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS conversation (
   id uuid PRIMARY KEY,
@@ -292,6 +292,7 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id)`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT ''`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid`,
   `CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
@@ -346,6 +347,30 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
      END LOOP;
    END;
    $unwrap$;`,
+  `-- One-time repair for stipend rows written before gift_for_message_id existed.
+   DO $gift_for$
+   BEGIN
+     UPDATE conversation_message s
+     SET gift_for_message_id = (
+       SELECT m.id
+       FROM conversation_message m
+       WHERE m.conversation_id = s.conversation_id
+         AND m.created_at <= s.created_at
+         AND m.created_at >= s.created_at - interval '5 minutes'
+         AND m.id <> s.id
+         AND COALESCE(m.actor_account_id, m.sender_account_id) <> s.sender_account_id
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT 1
+     )
+     FROM conversation c
+     WHERE s.conversation_id = c.id
+       AND c.kind = 'moderator_group'
+       AND s.gift_for_message_id IS NULL
+       AND s.sats > 0
+       AND s.actor_account_id IS NULL
+       AND s.sender_account_id = (SELECT id FROM account WHERE is_platform = true LIMIT 1);
+   END;
+   $gift_for$;`,
 ];
 
 const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pubkey, c.created_at, c.last_message_at,
@@ -371,7 +396,7 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
   ), 0) AS last_sats`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
-  event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name`;
+  event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name, gift_for_message_id`;
 
 /**
  * Apply {@link CONVERSATION_SCHEMA_SQL} in order. Idempotent.
@@ -806,6 +831,7 @@ interface ConversationMessageSqlRow {
   claimed_until: Date | string | null;
   actor_account_id: string | null;
   actor_name: string | null;
+  gift_for_message_id: string | null;
 }
 
 /**
@@ -1129,8 +1155,9 @@ export class PostgresConversationStore implements ConversationStore {
       await this.#sql.execute(
         `INSERT INTO conversation_message (
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
-           event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)`,
+           event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name,
+           gift_for_message_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15)`,
         [
           row.id,
           row.conversationId,
@@ -1146,6 +1173,7 @@ export class PostgresConversationStore implements ConversationStore {
           row.claimedUntil === null ? null : new Date(row.claimedUntil),
           row.actorAccountId ?? null,
           row.actorName ?? '',
+          row.giftForMessageId ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -1390,6 +1418,7 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     name: row.name,
     actorAccountId: row.actor_account_id,
     actorName: row.actor_name ?? '',
+    giftForMessageId: row.gift_for_message_id,
     sats: Number(row.sats ?? 0),
     eventId: row.event_id,
     nostrPublishState:
