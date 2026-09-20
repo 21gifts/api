@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
-import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import {
@@ -155,10 +156,6 @@ async function authedAccount(
   return resolveSession(deps.authStore, deps.now(), token);
 }
 
-function isStaffRole(role: AccountRole): boolean {
-  return role === 'founder' || role === 'moderator';
-}
-
 function utcDayFromMs(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -197,12 +194,12 @@ function canAccess(
   platformId: string | null,
 ): boolean {
   if (thread.kind === 'moderator_group') {
-    return account.role === 'moderator';
+    return isModeratorGroupMember(account);
   }
   if (thread.accountA === account.id || thread.accountB === account.id) {
     return true;
   }
-  if (!isStaffRole(account.role)) {
+  if (!roleAtLeast(account.role, 'moderator')) {
     return false;
   }
   if (thread.kind === 'member_platform') {
@@ -224,12 +221,12 @@ async function giftCounterpart(
   } else if (thread.accountB === viewer.id) {
     counterpartId = thread.accountA;
   } else if (
-    isStaffRole(viewer.role) &&
+    roleAtLeast(viewer.role, 'moderator') &&
     platform !== undefined &&
     (thread.accountA === platform.id || thread.accountB === platform.id)
   ) {
     counterpartId = thread.accountA === platform.id ? thread.accountB : thread.accountA;
-  } else if (thread.kind === 'member_platform' && isStaffRole(viewer.role)) {
+  } else if (thread.kind === 'member_platform' && roleAtLeast(viewer.role, 'moderator')) {
     counterpartId = thread.accountA;
     /* v8 ignore start -- canAccess already rejected non-parties */
   } else {
@@ -331,7 +328,7 @@ async function publicThread(
     conversationFromMe({
       senderAccountId: thread.lastSenderAccountId,
       viewerId: account.id,
-      staff: isStaffRole(account.role),
+      staff: roleAtLeast(account.role, 'moderator'),
       platformId,
     }),
     unread,
@@ -341,7 +338,8 @@ async function publicThread(
 
 /**
  * Build the `/conversations` route group. `GET /` lists the inbox and never
- * pins `moderator_group`; `GET /moderator-group` is the moderator-only tool.
+ * pins `moderator_group`; `GET /moderator-group` is the closed-group tool
+ * for anyone at least moderator.
  *
  * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
  * @returns A Hono app with list/open/read/reply/invoice routes and GET `/moderator-group`.
@@ -360,13 +358,13 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const platform = await platformAccount(deps.authStore);
         const threads = await deps.store.listVisible(
           account.id,
-          isStaffRole(account.role),
+          roleAtLeast(account.role, 'moderator'),
           platform?.id ?? null,
           CONVERSATION_LIST_LIMIT,
           false,
         );
         const conversations: PublicConversation[] = [];
-        const staff = isStaffRole(account.role);
+        const staff = roleAtLeast(account.role, 'moderator');
         const platformId = platform?.id ?? null;
         for (const thread of threads) {
           if (thread.kind === 'moderator_group') {
@@ -447,7 +445,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const unread = await deps.store.hasUnread(
           thread.id,
           account.id,
-          isStaffRole(account.role),
+          roleAtLeast(account.role, 'moderator'),
           platformId,
         );
         return c.json(await publicThread(thread, account, deps.authStore, platformId, unread), 200);
@@ -461,7 +459,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (account.role !== 'moderator') {
+      if (!isModeratorGroupMember(account)) {
         return c.json({ error: 'Not found' }, 404);
       }
       try {
@@ -474,7 +472,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const unread = await deps.store.hasUnread(
           thread.id,
           account.id,
-          isStaffRole(account.role),
+          roleAtLeast(account.role, 'moderator'),
           platform.id,
         );
         return c.json(
@@ -528,7 +526,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 conversationFromMe({
                   senderAccountId: row.senderAccountId,
                   viewerId: account.id,
-                  staff: isStaffRole(account.role),
+                  staff: roleAtLeast(account.role, 'moderator'),
                   platformId,
                 }),
               ),
@@ -588,7 +586,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         }
         const staffOnPlatform =
           thread.kind !== 'moderator_group' &&
-          isStaffRole(account.role) &&
+          roleAtLeast(account.role, 'moderator') &&
           platform !== undefined &&
           account.id !== platform.id &&
           (thread.kind === 'member_platform' ||
@@ -662,7 +660,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationFromMe({
               senderAccountId: created.senderAccountId,
               viewerId: account.id,
-              staff: isStaffRole(account.role),
+              staff: roleAtLeast(account.role, 'moderator'),
               platformId: platform?.id ?? null,
             }),
           ),

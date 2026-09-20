@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
@@ -233,11 +234,6 @@ async function authedAccount(
     return null;
   }
   return resolveSession(deps.authStore, deps.now(), token);
-}
-
-/** True when the live role may soft-hide forum notes. */
-function isStaffRole(role: AccountRole): boolean {
-  return role === 'founder' || role === 'moderator';
 }
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
@@ -754,10 +750,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (parent === undefined || parent.parentId !== null || parent.deletedAt !== null) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const exempt =
-          account.id === parent.accountId ||
-          isStaffRole(account.role) ||
-          account.role === 'verified';
+        const exempt = account.id === parent.accountId || roleAtLeast(account.role, 'verified');
         if (!exempt) {
           return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
         }
@@ -836,7 +829,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (!isStaffRole(account.role)) {
+      if (!roleAtLeast(account.role, 'moderator')) {
         return c.json({ error: 'Forbidden' }, 403);
       }
       const id = c.req.param('id');
@@ -864,7 +857,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (!isStaffRole(account.role)) {
+      if (!roleAtLeast(account.role, 'moderator')) {
         return c.json({ error: 'Forbidden' }, 403);
       }
       try {

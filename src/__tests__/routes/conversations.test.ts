@@ -1853,20 +1853,57 @@ describe('moderator_group', () => {
     expect(groupBody.conversation.kind).toBe('moderator_group');
   });
 
-  it('does not list the group for a founder and GET /:id is 404', async () => {
+  it('does not list the group for a founder and GET /:id is 200', async () => {
     const auth = await seeded('founder');
     await withPlatform(auth);
+    await auth.createAccount({
+      id: 'mod',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mod',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'm'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    await auth.createSession({ token: 'modtok', accountId: 'mod', createdAt: now() });
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-inbound',
+      conversationId: thread.id,
+      text: 'hello mods',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
     const list = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(list.status).toBe(200);
     const listed = (await list.json()) as { conversations: Array<{ kind: string }> };
     expect(listed.conversations.some((c) => c.kind === 'moderator_group')).toBe(false);
-    const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+    const getFounder = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       headers: AUTH,
     });
-    expect(get.status).toBe(404);
-    expect(await get.json()).toEqual({ error: 'Not found' });
+    expect(getFounder.status).toBe(200);
+    const founderBody = (await getFounder.json()) as {
+      messages: Array<{ text: string; fromMe: boolean }>;
+    };
+    expect(founderBody.messages.map((row) => row.text)).toEqual(['hello mods']);
+    expect(founderBody.messages[0]?.fromMe).toBe(false);
+    const getMod = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: { authorization: 'Bearer modtok' },
+    });
+    expect(getMod.status).toBe(200);
+    expect(await getMod.json()).toEqual(founderBody);
   });
 
   it('returns 404 for verified and basis GET /:id', async () => {
@@ -1907,12 +1944,66 @@ describe('moderator_group', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 404 for a founder GET /moderator-group', async () => {
+  it('returns 200 for a founder GET /moderator-group and lets the founder read and post', async () => {
     const auth = await seeded('founder');
     await withPlatform(auth);
-    const res = await mount(auth).request('/conversations/moderator-group', { headers: AUTH });
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
+    const conversations = new InMemoryConversationStore();
+    const res = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversation: {
+        kind: string;
+        name: string;
+        lastText: string;
+        lastFromMe: boolean;
+        unread: boolean;
+      };
+    };
+    expect(body.conversation.kind).toBe('moderator_group');
+    expect(body.conversation.name).toBe('Moderators');
+    expect(body.conversation.lastText).toBe('');
+    expect(body.conversation.lastFromMe).toBe(false);
+    expect(body.conversation.unread).toBe(false);
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(get.status).toBe(200);
+    expect(await get.json()).toEqual({ messages: [] });
+    const post = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(post.status).toBe(200);
+    const posted = (await post.json()) as { text: string; name: string; fromMe: boolean };
+    expect(posted.text).toBe('hello mods');
+    expect(posted.name).toBe('Ada');
+    expect(posted.fromMe).toBe(true);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.senderAccountId).toBe('acc');
+    expect(rows[0]?.nostrPublishState).toBe('skipped');
+    expect(rows[0]?.eventId).toBeNull();
+  });
+
+  it('keeps the platform account out of the Moderators group even with a founder role', async () => {
+    const auth = await seeded('founder');
+    await withPlatform(auth);
+    await auth.createSession({ token: 'plat-tok', accountId: 'plat', createdAt: now() });
+    const platformAuth = { authorization: 'Bearer plat-tok' };
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const group = await mount(auth, conversations).request('/conversations/moderator-group', {
+      headers: platformAuth,
+    });
+    expect(group.status).toBe(404);
+    const read = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: platformAuth,
+    });
+    expect(read.status).toBe(404);
   });
 
   it('returns 404 for verified and basis GET /moderator-group', async () => {

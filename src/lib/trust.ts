@@ -11,6 +11,7 @@
  * or propose do not replace an earlier eligible contact.
  */
 
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole } from '@/lib/auth/store';
 
 /** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is a moderator. */
@@ -117,13 +118,13 @@ const ROLE_RANK: Record<TrustChainNode['role'], number> = {
 };
 
 /**
- * Whether `role` may run staff trust routes (founder or moderator).
+ * Whether `role` may run staff trust routes (minimum `moderator`).
  *
  * @param role - Exclusive account role.
- * @returns `true` for `founder` and `moderator`.
+ * @returns `true` when `roleAtLeast(role, 'moderator')`.
  */
 export function isStaffRole(role: AccountRole): boolean {
-  return role === 'founder' || role === 'moderator';
+  return roleAtLeast(role, 'moderator');
 }
 
 /**
@@ -291,12 +292,12 @@ export function serializeTrustEdge(edge: TrustEdge): TrustEdgeJson {
  * True when `account.role` appears on the public chain.
  *
  * @param account - Live account (any role).
- * @returns `true` for `founder`, `moderator`, and `verified`.
+ * @returns `true` when `roleAtLeast(account.role, 'verified')`.
  */
 export function isChainAccount(
   account: Account,
 ): account is Account & { role: TrustChainNode['role'] } {
-  return account.role === 'founder' || account.role === 'moderator' || account.role === 'verified';
+  return roleAtLeast(account.role, 'verified');
 }
 
 /**

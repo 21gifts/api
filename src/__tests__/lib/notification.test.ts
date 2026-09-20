@@ -1221,6 +1221,11 @@ describe('isStaffAccount', () => {
     expect(isStaffAccount({ role: 'verified' })).toBe(false);
     expect(isStaffAccount({ role: 'basis' })).toBe(false);
   });
+
+  it('treats an unknown role string as not staff', () => {
+    expect(isStaffAccount({ role: 'admin' })).toBe(false);
+    expect(isStaffAccount({ role: 'unknown', isPlatform: false })).toBe(false);
+  });
 });
 
 describe('wantsNotification', () => {
