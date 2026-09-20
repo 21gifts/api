@@ -3003,9 +3003,9 @@ for Damus-only counterparts (never JSON `null`).
 
 ### `GET /conversations/moderator-group`
 
-Bearer session required. At least moderator (`roleAtLeast` `moderator`;
-the platform account is never a member of the group, whatever role it
-carries) open or insert the closed singleton and receive it as
+Bearer session required. A session that is at least moderator (`roleAtLeast`
+`moderator`; the platform account is never a member of the group, whatever
+role it carries) opens or inserts the closed singleton and receives it as
 `{ "conversation": { ... } }` (same public row as a list item, `kind`
 `moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Verified, basis
 and the platform account get
@@ -3037,8 +3037,8 @@ on the thread). Each message may include optional sender `accountId`.
 **404** `{ "error": "Not found" }` when the id is not a UUID, the thread is
 missing, or the session may not see it. Kind includes `moderator_group`;
 verified, basis and the platform account get **404**
-`{ "error": "Not found" }` on that id (no existence leak). Moderator
-(`isModeratorGroupMember`) get **200**.
+`{ "error": "Not found" }` on that id (no existence leak). A moderator
+(`isModeratorGroupMember`) gets **200**.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current
