@@ -10,10 +10,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import type { ConversationStore } from '@/lib/conversation-store';
-import type { NotificationStore } from '@/lib/notification-store';
 import { preimageMatchesHash } from '@/lib/proof';
-import type { PushStore } from '@/lib/push-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   NoopGiftRecorder,
@@ -74,17 +71,6 @@ export interface InvoiceRouteDeps {
    * Insert failures are logged; proof still returns 200.
    */
   giftRecorder?: GiftRecorder;
-  /**
-   * Optional in-app notification store. Spend gift-replies are always the
-   * platform actor and do not notify (no in-app rows, no Web Push).
-   */
-  notificationStore?: NotificationStore;
-  /**
-   * Optional push outbox; also the bell-subscriber list.
-   */
-  pushStore?: PushStore;
-  /** Optional inbox store; gift-reply push payloads include listed unread when set. */
-  conversationStore?: ConversationStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -176,7 +162,7 @@ async function addressHasPosted(
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder, optional notification, push, and conversation stores.
+ *   optional gift recorder.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
