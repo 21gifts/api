@@ -505,15 +505,29 @@ describe('InMemoryConversationStore', () => {
     expect(await store.hasUnread(opened.id, 'b', false, null)).toBe(true);
   });
 
-  it('hasUnread treats staff platform send as not inbound and member send as inbound', async () => {
+  it('hasUnread treats a platform send without actor as inbound for staff', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberPlatform('mem', 'plat', NOW);
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'plat' }));
-    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(false);
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(true);
     await store.appendMessage(
       message({ id: 'from-mem', conversationId: opened.id, senderAccountId: 'mem' }),
     );
     expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(true);
+  });
+
+  it('hasUnread is false when staff is the actor of a platform send', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberPlatform('mem', 'plat', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: 'Ada',
+      }),
+    );
+    expect(await store.hasUnread(opened.id, 'staff', true, 'plat')).toBe(false);
   });
 
   it('copies last-read seed Dates so callers cannot mutate the stamp', async () => {
@@ -1146,6 +1160,8 @@ describe('PostgresConversationStore', () => {
         sender_account_id: 'acc',
         sender_pubkey: null,
         name: 'Ada',
+        actor_account_id: 'acc',
+        actor_name: 'Ada',
         event_id: null,
         nostr_publish_state: 'pending',
         nostr_event: null,
@@ -1155,6 +1171,8 @@ describe('PostgresConversationStore', () => {
     const store = new PostgresConversationStore(sql);
     const listed = await store.listMessages('c1', 20);
     expect(listed[0]?.text).toBe('hi');
+    expect(listed[0]?.actorAccountId).toBe('acc');
+    expect(listed[0]?.actorName).toBe('Ada');
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
@@ -1175,6 +1193,8 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[9]).toBe(row.nostrPublishState);
     expect(typeof sql.executes[0]?.params[10]).not.toBe('string');
     expect(sql.executes[0]?.params[10]).toStrictEqual(row.nostrEvent);
+    expect(sql.executes[0]?.params[12]).toBe(row.actorAccountId);
+    expect(sql.executes[0]?.params[13]).toBe(row.actorName);
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
   });

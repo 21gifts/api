@@ -244,6 +244,22 @@ describe('serializeConversationMessage', () => {
     expect(json.name).toBe('21.gifts');
     expect(json.accountId).toBe('plat');
   });
+
+  it('falls back to sender name for staff when actorName is empty', () => {
+    const json = serializeConversationMessage(
+      {
+        ...ROW,
+        name: '21.gifts',
+        senderAccountId: 'plat',
+        actorAccountId: 'staff',
+        actorName: '',
+      },
+      true,
+      { staff: true },
+    );
+    expect(json.name).toBe('21.gifts');
+    expect(json.accountId).toBe('staff');
+  });
 });
 
 describe('unsignedConversationDefaults', () => {
