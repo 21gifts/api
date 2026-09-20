@@ -424,8 +424,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         const minted = await issueSession(deps.store, now(), existing);
         logEvent('debug.accounts.session_minted', { accountId: existing.id });
         return c.json({ token: minted.token }, 200);
-      } catch {
-        return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
+      } catch (error) {
+        if (error instanceof Error && error.message === WRONG_ACCOUNT_ERROR) {
+          return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
+        }
+        throw error;
       }
     });
 }

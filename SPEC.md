@@ -367,7 +367,7 @@ issues a session. A non-increasing `signCount` is refused as
 `{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
 Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
-not stored. A listed duplicate account is **403**
+not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Success body matches register finish
 (`linkingKey` is whatever the account currently has).
@@ -382,7 +382,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-A listed duplicate account with a still-valid minted token → **Response** `403`:
+An account with `sessionRefused` and a still-valid minted token → **Response** `403`:
 
 ```json
 { "error": "You signed in with the wrong account. Please try again with the correct account." }
@@ -1276,15 +1276,16 @@ Success → **Response** `200`:
       "forumLawsDismissed": false,
       "createdAt": 0,
       "rulesAgreedAt": null,
-      "isPlatform": false
+      "isPlatform": false,
+      "sessionRefused": false
     }
   ]
 }
 ```
 
 The listing uses `serializeDebugAccount` (the eleven public fields plus
-`isPlatform`) and never includes `viewKey`. Member `GET /me` does not
-include `isPlatform`.
+`isPlatform` and `sessionRefused`) and never includes `viewKey`. Member `GET /me` does not
+include `isPlatform` or `sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1392,12 +1393,12 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role`, `lightningAddress: null`, and/or
-`platform` boolean → **Response** `400`:
+Body is not JSON with a known `role`, `lightningAddress: null`,
+`platform` boolean, and/or `sessionRefused` boolean → **Response** `400`:
 
 ```json
 {
-  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, and/or platform boolean"
+  "error": "Expected a JSON body with a \"role\" string, lightningAddress null, platform boolean, and/or sessionRefused boolean"
 }
 ```
 
@@ -1409,18 +1410,20 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`; no `viewKey`). Role changes log `debug.accounts.role_set`
+`isPlatform` and `sessionRefused`; no `viewKey`). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
+Session-refusal changes log `debug.accounts.session_refused_set` with the
+account id and the new flag.
 
 ### `POST /debug/accounts/:id/session`
 
 Operator mint of a member bearer for the given account id. Authenticated
 with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
-Unknown account id → **404** `{ "error": "Not found" }`. A listed duplicate
-account is **403**
+Unknown account id → **404** `{ "error": "Not found" }`. An account with
+`sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 with no minted bearer and no `debug.accounts.session_minted` log. Same
 503/401 gate as the other debug account routes. Not a member login path;

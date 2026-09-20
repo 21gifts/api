@@ -402,8 +402,11 @@ async function mintSession(
 > {
   try {
     return { ok: true, value: await issueSession(store, now, account) };
-  } catch {
-    return { ok: false, error: WRONG_ACCOUNT_ERROR };
+  } catch (error) {
+    if (error instanceof Error && error.message === WRONG_ACCOUNT_ERROR) {
+      return { ok: false, error: WRONG_ACCOUNT_ERROR };
+    }
+    throw error;
   }
 }
 

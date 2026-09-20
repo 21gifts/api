@@ -10,6 +10,7 @@ import {
   startPasskeyClaim,
   startPasskeyRegistration,
 } from '@/lib/auth/passkey';
+import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
@@ -714,5 +715,17 @@ describe('passkey authentication', () => {
       { test: 'ok', id: 'cred-1' },
     );
     expect(finish).toEqual({ ok: false, error: WRONG_ACCOUNT_ERROR });
+  });
+
+  it('rethrows a non-wrong-account issueSession failure', async () => {
+    const { store, ceremony } = await seed();
+    vi.spyOn(authService, 'issueSession').mockRejectedValue(new Error('disk'));
+    const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    await expect(
+      finishPasskeyAuthentication(store, ceremony, CONFIG, T0, ORIGIN, begin.challengeId, {
+        test: 'ok',
+        id: 'cred-1',
+      }),
+    ).rejects.toThrow('disk');
   });
 });
