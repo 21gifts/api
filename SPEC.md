@@ -1791,7 +1791,9 @@ Environment:
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
-JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Never includes
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Optional `goalSats`
+is a positive integer on a top-level note and is omitted on replies and when
+the stored value is unset, null, or 0. Never includes
 `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -1822,8 +1824,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 ```
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
-(not wrapped). Never includes `nostrEvent`, `contentFp`, nsec, or photo/video
-bytes.
+(not wrapped). Optional `goalSats` is a positive integer on a top-level note
+and is omitted on replies and when the stored value is unset, null, or 0.
+Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
 
 Store throw → **Response** `503`:
 
