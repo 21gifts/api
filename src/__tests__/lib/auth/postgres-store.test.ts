@@ -1095,12 +1095,33 @@ describe('PostgresAuthStore', () => {
         nostr_key_custody: 'custodial',
         nostr_key_created_at: null,
       },
+      {
+        id: 'undef',
+        nostr_pubkey: 'cc'.repeat(32),
+        nostr_key_custody: 'other',
+      },
     ];
     const keys = await store.listNostrKeys();
-    expect(keys).toHaveLength(2);
+    expect(sql.queries[sql.queries.length - 1]?.text).not.toContain(
+      'WHERE nostr_pubkey IS NOT NULL',
+    );
+    expect(keys).toHaveLength(4);
+    const skip = keys.find((row) => row.accountId === 'skip');
+    expect(skip?.record.pubkey).toBeNull();
+    expect(skip?.record.kekId).toBe(1);
+    expect(skip?.record.custody).toBe('custodial');
+    expect(skip?.record.ciphertext).toEqual(new Uint8Array());
+    expect(skip?.createdAt).toBeNull();
     expect(keys[0]?.record.custody).toBe('user');
     expect(keys[0]?.createdAt).toBe(5_000);
-    expect(keys[1]?.record.ciphertext).toEqual(new Uint8Array());
-    expect(keys[1]?.createdAt).toBeNull();
+    const acc2 = keys.find((row) => row.accountId === 'acc2');
+    expect(acc2?.record.ciphertext).toEqual(new Uint8Array());
+    expect(acc2?.createdAt).toBeNull();
+    const undef = keys.find((row) => row.accountId === 'undef');
+    expect(undef?.record.pubkey).toBe('cc'.repeat(32));
+    expect(undef?.record.kekId).toBe(1);
+    expect(undef?.record.custody).toBe('custodial');
+    expect(undef?.record.ciphertext).toEqual(new Uint8Array());
+    expect(undef?.createdAt).toBeNull();
   });
 });

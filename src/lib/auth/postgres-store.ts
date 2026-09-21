@@ -351,14 +351,10 @@ export class PostgresAuthStore implements AuthStore {
       nostr_key_created_at: Date | string | null;
     }>(
       `SELECT id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id, nostr_key_custody, nostr_key_created_at
-       FROM account
-       WHERE nostr_pubkey IS NOT NULL`,
+       FROM account`,
     );
     const listed: NostrKeyListRow[] = [];
     for (const row of rows) {
-      if (row.nostr_pubkey === null) {
-        continue;
-      }
       const blob = row.nostr_nsec_ciphertext;
       const custody = row.nostr_key_custody === 'user' ? 'user' : 'custodial';
       listed.push({

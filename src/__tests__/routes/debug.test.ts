@@ -147,6 +147,90 @@ describe('debugRoutes', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.listed')).toBe(true);
   });
 
+  it('lists stored kek and custody when the account has no Nostr key', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{
+        id: string;
+        nostrPubkey: string | null;
+        nostrKekId: number | null;
+        nostrKeyCustody: string | null;
+      }>;
+    };
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0]).toEqual(
+      expect.objectContaining({
+        id: 'acc',
+        nostrPubkey: null,
+        nostrKekId: 1,
+        nostrKeyCustody: 'custodial',
+      }),
+    );
+  });
+
+  it('lists all-null nostr fields when listNostrKeys returns no row', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    Object.assign(store, { listNostrKeys: async () => [] });
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+    );
+    const res = await app.request('/debug/accounts', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      accounts: Array<{
+        id: string;
+        nostrPubkey: string | null;
+        nostrKekId: number | null;
+        nostrKeyCustody: string | null;
+      }>;
+    };
+    expect(body.accounts).toHaveLength(1);
+    expect(body.accounts[0]).toEqual(
+      expect.objectContaining({
+        nostrPubkey: null,
+        nostrKekId: null,
+        nostrKeyCustody: null,
+      }),
+    );
+  });
+
   it('GET /:id returns nested passkeys and 404 for a non-uuid', async () => {
     const store = new InMemoryAuthStore();
     const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -373,6 +457,8 @@ describe('debugRoutes', () => {
       expect.objectContaining({
         nostrPubkey: null,
         nostrNsecCiphertext: null,
+        nostrKekId: 1,
+        nostrKeyCustody: 'custodial',
       }),
     );
   });

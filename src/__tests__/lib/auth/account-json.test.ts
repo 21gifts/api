@@ -111,6 +111,46 @@ describe('debugNostrFieldsFromListRow', () => {
     });
     expect(debugNostrFieldsFromListRow(undefined)).toEqual(EMPTY_DEBUG_NOSTR);
   });
+
+  it('emits stored kek and custody when pubkey is null', () => {
+    expect(
+      debugNostrFieldsFromListRow({
+        accountId: 'acc',
+        record: {
+          pubkey: null,
+          ciphertext: new Uint8Array(),
+          kekId: 1,
+          custody: 'custodial',
+        },
+        createdAt: null,
+      }),
+    ).toEqual({
+      nostrPubkey: null,
+      nostrNsecCiphertext: null,
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: null,
+    });
+    expect(
+      debugNostrFieldsFromListRow({
+        accountId: 'acc',
+        record: {
+          pubkey: null,
+          ciphertext: new Uint8Array([1, 2]),
+          kekId: 1,
+          custody: 'custodial',
+        },
+        createdAt: 7,
+      }),
+    ).toEqual({
+      nostrPubkey: null,
+      nostrNsecCiphertext: '0102',
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: 7,
+    });
+    expect(debugNostrFieldsFromListRow(undefined)).toEqual(EMPTY_DEBUG_NOSTR);
+  });
 });
 
 describe('serializeDebugAccount', () => {

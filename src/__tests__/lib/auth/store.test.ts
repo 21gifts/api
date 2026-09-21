@@ -1369,6 +1369,89 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getNostrPublicKey('acc')).toBeUndefined();
   });
 
+  it('listNostrKeys returns defaults when createAccount did not store a key', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const rows = await store.listNostrKeys();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.accountId).toBe('acc');
+    expect(rows[0]?.record.pubkey).toBeNull();
+    expect(rows[0]?.record.ciphertext).toEqual(new Uint8Array());
+    expect(rows[0]?.record.kekId).toBe(1);
+    expect(rows[0]?.record.custody).toBe('custodial');
+    expect(rows[0]?.createdAt).toBeNull();
+  });
+
+  it('listNostrKeys copies a stored key and defaults an account without one', async () => {
+    const store = new InMemoryAuthStore();
+    const record = {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array([1, 2, 3]),
+      kekId: 1,
+      custody: 'custodial' as const,
+    };
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.setNostrKeyIfAbsent('acc', record)).toBe('inserted');
+    const withKey = await store.listNostrKeys();
+    expect(withKey).toHaveLength(1);
+    expect(withKey[0]?.accountId).toBe('acc');
+    expect(withKey[0]?.record.pubkey).toBe(record.pubkey);
+    expect(withKey[0]?.record.ciphertext).toEqual(record.ciphertext);
+    expect(withKey[0]?.record.kekId).toBe(1);
+    expect(withKey[0]?.record.custody).toBe('custodial');
+    expect(withKey[0]?.createdAt).toBeNull();
+    await store.createAccount({
+      id: 'acc2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const mixed = await store.listNostrKeys();
+    expect(mixed).toHaveLength(2);
+    const stored = mixed.find((row) => row.accountId === 'acc');
+    const missing = mixed.find((row) => row.accountId === 'acc2');
+    expect(stored?.record.pubkey).toBe(record.pubkey);
+    expect(stored?.record.ciphertext).toEqual(record.ciphertext);
+    expect(stored?.record.kekId).toBe(1);
+    expect(stored?.record.custody).toBe('custodial');
+    expect(missing?.record.pubkey).toBeNull();
+    expect(missing?.record.ciphertext).toEqual(new Uint8Array());
+    expect(missing?.record.kekId).toBe(1);
+    expect(missing?.record.custody).toBe('custodial');
+    expect(missing?.createdAt).toBeNull();
+  });
+
   it('listStaffAccountIds returns founder and moderator ids', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

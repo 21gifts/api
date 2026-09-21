@@ -250,8 +250,8 @@ export interface AuthStore {
   /** Every pending address verification (operator dump / account detail). */
   listAddressVerifications(): Promise<AddressVerification[]>;
   /**
-   * Custodial Nostr key rows (pubkey, envelope, kek, custody, createdAt).
-   * In-memory `createdAt` is `null` when the map does not store it.
+   * Every account row's Nostr columns (pubkey may be null; kek/custody are the stored defaults).
+   * In-memory `createdAt` is `null` when the adapter does not store it.
    */
   listNostrKeys(): Promise<NostrKeyListRow[]>;
   /** Persist a new session. Does not consult `sessionRefused`. */
@@ -344,12 +344,21 @@ export interface NostrKeyRecord {
   custody: 'custodial' | 'user';
 }
 
-/** One listed Nostr key row for operator debug. */
+/** One listed Nostr column set for operator debug (every account row). */
 export interface NostrKeyListRow {
   /** Owning account id. */
   accountId: string;
-  /** Stored key material (ciphertext is a copy). */
-  record: NostrKeyRecord;
+  /** Stored Nostr columns (ciphertext is a copy; pubkey may be null). */
+  record: {
+    /** NIP-01 pubkey, or `null` when `nostr_pubkey` is SQL null. */
+    pubkey: string | null;
+    /** AES-GCM envelope bytes (empty when the blob is missing). */
+    ciphertext: Uint8Array;
+    /** Envelope kek id (Postgres default 1). */
+    kekId: number;
+    /** Custody mode (Postgres default `custodial`). */
+    custody: 'custodial' | 'user';
+  };
   /** Key creation time (epoch ms), or `null` when the adapter does not store it. */
   createdAt: number | null;
 }
@@ -606,12 +615,26 @@ export class InMemoryAuthStore implements AuthStore {
 
   async listNostrKeys(): Promise<NostrKeyListRow[]> {
     const rows: NostrKeyListRow[] = [];
-    for (const [accountId, record] of this.#nostrKeys) {
+    for (const account of this.#accounts.values()) {
+      const stored = this.#nostrKeys.get(account.id);
+      if (stored !== undefined) {
+        rows.push({
+          accountId: account.id,
+          record: {
+            ...stored,
+            ciphertext: new Uint8Array(stored.ciphertext),
+          },
+          createdAt: null,
+        });
+        continue;
+      }
       rows.push({
-        accountId,
+        accountId: account.id,
         record: {
-          ...record,
-          ciphertext: new Uint8Array(record.ciphertext),
+          pubkey: null,
+          ciphertext: new Uint8Array(),
+          kekId: 1,
+          custody: 'custodial',
         },
         createdAt: null,
       });

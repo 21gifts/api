@@ -168,9 +168,9 @@ export interface DebugNostrFields {
   nostrPubkey: string | null;
   /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
   nostrNsecCiphertext: string | null;
-  /** Envelope kek id, or `null` when no key is stored. */
+  /** Envelope kek id. JSON `null` only when the list row is missing. */
   nostrKekId: number | null;
-  /** Custody mode, or `null` when no key is stored. */
+  /** Custody mode. JSON `null` only when the list row is missing. */
   nostrKeyCustody: 'custodial' | 'user' | null;
   /** Key creation time (epoch ms), or `null`. */
   nostrKeyCreatedAt: number | null;
@@ -280,9 +280,10 @@ export interface DebugAccountDetailResponse extends DebugAccountResponse {
 /**
  * Map a {@link NostrKeyListRow} onto debug Nostr JSON fields.
  *
- * Does not decrypt the envelope. Missing rows become JSON `null`s.
+ * A missing row becomes all-null {@link EMPTY_DEBUG_NOSTR}. A listed row with
+ * `pubkey === null` still emits the stored kek id and custody. Never decrypts.
  *
- * @param row - Listed key row, or `undefined` when the account has none.
+ * @param row - Listed Nostr columns, or `undefined` when the account is absent from the list.
  * @returns Debug Nostr fields.
  */
 export function debugNostrFieldsFromListRow(row: NostrKeyListRow | undefined): DebugNostrFields {

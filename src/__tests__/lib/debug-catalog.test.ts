@@ -429,6 +429,8 @@ describe('loadDebugTables', () => {
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           nostrPubkey: null,
           nostrNsecCiphertext: null,
+          nostrKekId: 1,
+          nostrKeyCustody: 'custodial',
         }),
       ]),
     );
@@ -784,5 +786,34 @@ describe('loadDebugTables', () => {
         )
       ).db_change,
     ).toEqual([{ id: 1, op: 'INSERT' }]);
+  });
+
+  it('dumps all-null nostr fields when listNostrKeys returns no row', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    Object.assign(auth, { listNostrKeys: async () => [] });
+    const tables = await loadDebugTables(
+      { auth, messages: new InMemoryMessageStore(), contacts: new InMemoryContactStore() },
+      'account',
+    );
+    expect(tables.account).toEqual([
+      expect.objectContaining({
+        nostrPubkey: null,
+        nostrKekId: null,
+        nostrKeyCustody: null,
+      }),
+    ]);
   });
 });
