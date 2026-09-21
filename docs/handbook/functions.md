@@ -2164,7 +2164,7 @@
 
 - **Purpose:** Operator list `GET /debug/trust-edges`, backfill `POST /debug/trust-edges`, and undo `DELETE /debug/trust-edges`. Same 503/401 `DEBUG_TOKEN` gate as other debug routes. GET returns `{ edges }` newest-first. POST body `{ subjectId, actorId, kind }` inserts; DELETE body `{ subjectId, kind }` removes the unique `(subjectId, kind)` row. POST/DELETE return `serializeTrustEdge` (ISO `createdAt`) and do **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
 - **Inputs:** `DebugTrustRouteDeps`: auth `store`, `trustStore`, optional `debugToken`, optional `now` (default `Date.now`; unused by DELETE).
-- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`).
+- **Returns / side effects:** Hono app mounted at `/debug/trust-edges`. POST success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`. DELETE success logs `debug.trust_edges.deleted` `{ subjectId, kind }`. POST 400/404/409/503 as before. DELETE 400 bad body; 404 missing UUID or missing row; 503 on unexpected store throw (`debug.trust_edges.delete_failed`). GET 503 `{ error: 'Trust chain is unavailable' }` on unexpected `listEdges` throw (`debug.trust_edges.failed`).
 - **Used by:** `createApp`; operator `gifts-debug trust-edges` / `gifts-debug trust-edge` / `gifts-debug trust-edge-delete`.
 
 ## Function: verifiedExternalZapRequest

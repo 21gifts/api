@@ -81,6 +81,16 @@ function del(app: Hono, token: string | undefined, body: unknown): Promise<Respo
 }
 
 describe('GET /debug/trust-edges', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('returns 401 without a matching bearer', async () => {
     const app = mount(new InMemoryAuthStore(), new InMemoryTrustStore());
     const res = await app.request('/debug/trust-edges');
@@ -106,6 +116,26 @@ describe('GET /debug/trust-edges', () => {
     expect(body.edges).toHaveLength(1);
     expect(body.edges[0]?.id).toBe('edge-old');
     expect(body.edges[0]?.kind).toBe('verify');
+  });
+
+  it('returns 503 when listEdges throws', async () => {
+    const throwing: TrustStore = {
+      listEdges: async () => {
+        throw new Error('boom');
+      },
+      listEdgesForSubject: async () => [],
+      listEdgesTouching: async () => [],
+      insertEdge: async (row) => row,
+      deleteEdge: async () => undefined,
+    };
+    const res = await mount(new InMemoryAuthStore(), throwing).request('/debug/trust-edges', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.failed')).toBe(
+      true,
+    );
   });
 });
 

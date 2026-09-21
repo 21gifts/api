@@ -710,7 +710,7 @@
 ## Endpoint: GET /debug/trust-edges
 
 - **Purpose:** Operator listing of every stored trust edge (`serializeTrustEdge`), newest `createdAt` then `id` descending. Success JSON is `{ edges }` (`serializeTrustEdge` rows).
-- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
 - **Used by:** Operator `gifts-debug trust-edges`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 

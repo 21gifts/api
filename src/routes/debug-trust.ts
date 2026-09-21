@@ -64,10 +64,15 @@ export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
   return new Hono()
     .use('*', requireDebugToken(deps))
     .get('/', async (c) => {
-      const edges = [...(await deps.trustStore.listEdges())].sort(
-        (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
-      );
-      return c.json({ edges: edges.map(serializeTrustEdge) }, 200);
+      try {
+        const edges = [...(await deps.trustStore.listEdges())].sort(
+          (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        );
+        return c.json({ edges: edges.map(serializeTrustEdge) }, 200);
+      } catch {
+        logEvent('debug.trust_edges.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
     })
     .post('/', async (c) => {
       const parsed = insertBody.safeParse(await c.req.json().catch(() => null));
