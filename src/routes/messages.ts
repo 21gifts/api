@@ -488,7 +488,7 @@ async function serveForumVideo(
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
  *   (no goal). Stored as `null` when `parentId` is set.
- * @returns 200 / 429 / 503.
+ * @returns 200 / 403 / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,

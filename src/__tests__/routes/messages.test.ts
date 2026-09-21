@@ -1165,6 +1165,7 @@ describe('GET /messages/compose-target', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
   });
 });
 
