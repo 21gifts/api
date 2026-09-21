@@ -300,9 +300,8 @@ via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs. `moderator_group` POST may include `{ photo }` / `{ photos }`
-(JPEG/PNG/WebP, ≤10; empty text is allowed only when at least one photo is present); Direct/Contact/Damus remain
-text-only; bytes via authenticated GET
+with PNs. Conversation POST may include `{ photo }` / `{ photos }`
+(JPEG/PNG/WebP, ≤10, every kind; empty text is allowed only when at least one photo is present). Photo-bearing rows skip Nostr; text-only Direct/Contact/Damus stay pending. Bytes via authenticated GET
 `/conversations/:id/messages/:messageId/photo` (photo 0) and
 `/conversations/:id/messages/:messageId/photo/:file` (extras 1–9). Lightning gifts in a Direct/Contact thread use
 `POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed
