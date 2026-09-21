@@ -165,7 +165,8 @@ export interface BootFxOptions {
  * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
- * {@link PostgresFundingStore}, and {@link PostgresApiLogStore}.
+ * {@link PostgresFundingStore}, {@link PostgresApiLogStore}, and
+ * {@link PostgresDebugDbStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
  * `trg_db_change` attaches to `trust_edge` and `funding_grant`.

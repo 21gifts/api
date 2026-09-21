@@ -371,6 +371,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,
+`PostgresDebugDbStore`, `DebugDbCursorError`,
 `migrateApiLogSchema`, `migrateDbChangeSchema`,
 `listDbChanges`, `DB_CHANGE_SCHEMA_SQL`,
 `fillRatesForGiftRange`, `fillFiatRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,

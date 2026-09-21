@@ -641,16 +641,14 @@ test('Function: debugDbRoutes — GET /debug/db without bearer is 401', async ({
   expect(res.status()).toBe(401);
 });
 
-test('Function: PostgresDebugDbStore — GET /debug/db without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.get('/debug/db');
-  expect(res.status()).toBe(401);
+test('Function: PostgresDebugDbStore — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
 });
 
-test('Function: DebugDbCursorError — GET /debug/db without bearer is 401', async ({ request }) => {
-  const res = await request.get('/debug/db');
-  expect(res.status()).toBe(401);
+test('Function: DebugDbCursorError — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
 });
 
 test('Function: debugMessagesRoutes — PUT /debug/messages/:id/video without bearer is 401', async ({
