@@ -82,6 +82,7 @@ api/
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
+│   │   ├── debug-db.ts       # Operator read of every public table (`GET /debug/db`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
@@ -186,6 +187,7 @@ api/
 │       │   ├── trust.test.ts
 │       │   ├── trust-store.test.ts
 │       │   ├── api-log.test.ts
+│       │   ├── debug-db.test.ts
 │       │   ├── request-auth.test.ts
 │       │   ├── funding.test.ts
 │       │   ├── funding-store.test.ts
@@ -236,6 +238,7 @@ api/
 │           ├── notifications.test.ts
 │           ├── debug-contacts.test.ts
 │           ├── debug-api-log.test.ts
+│           ├── debug-db.test.ts
 │           ├── debug-external.test.ts
 │           ├── debug-messages.test.ts
 │           ├── debug-payments.test.ts
