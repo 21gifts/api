@@ -777,6 +777,13 @@
 - **Used by:** Operator `gifts-debug dump <table>`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /me/wallet-backup-seen
+
+- **Purpose:** Bearer required. Empty body. Sets `walletBackupSeenAt` via `markWalletBackupSeen` (`COALESCE` so a later `/me` write cannot clear a first-seen timestamp). Does not change `walletRequired`. Owner JSON including `setup` / `missing` / `funding`.
+- **Errors:** 401 without session.
+- **Used by:** App `POST /me/wallet-backup-seen` after the owner confirms the recovery phrase.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /me/setup/skip
 
 - **Purpose:** Bearer required. Body `{ step: "name" | "lightning-address" }`. Sets `nameSkippedAt` or `lightningAddressSkippedAt` to now so owner `setup` advances; does not clear or change `name` / `lightningAddress`. Skipping an already-set field is allowed (writes the skip timestamp). Rules cannot be skipped. `step: "wallet"` is 400 like an unknown step.
