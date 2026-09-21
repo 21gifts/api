@@ -42,6 +42,7 @@ api/
 │   │   ├── debug.ts          # GET/POST /debug/accounts; GET/PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
 │   │   ├── debug-contacts.ts # GET /debug/contacts (operator DEBUG_TOKEN)
 │   │   ├── debug-api-log.ts  # GET /debug/api-log (operator DEBUG_TOKEN)
+│   │   ├── debug-db.ts       # GET /debug/db (operator DEBUG_TOKEN; every public table)
 │   │   ├── debug-external.ts # GET /debug/external-pubkeys (operator DEBUG_TOKEN)
 │   │   ├── debug-messages.ts # GET /debug/messages, GET /:id, GET /:id/photo; PUT /:id/video; POST /:id/restore (operator DEBUG_TOKEN)
 │   │   ├── debug-payments.ts # GET /debug/invoices; POST /debug/invoices/settle; GET /debug/zap-ingests (DEBUG_TOKEN)

@@ -464,6 +464,11 @@ test('GET /debug/api-log without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /debug/db without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/db');
+  expect(res.status()).toBe(401);
+});
+
 test('PUT /debug/messages/:id/video without bearer is 401', async ({ request }) => {
   const res = await request.put('/debug/messages/:id/video');
   expect(res.status()).toBe(401);

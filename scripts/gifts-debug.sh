@@ -8,7 +8,7 @@
 #               (GET /debug/accounts, GET /debug/accounts/:id,
 #               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
-#               GET /debug/api-log, GET /debug/external-pubkeys,
+#               GET /debug/api-log, GET /debug/db, GET /debug/external-pubkeys,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
@@ -34,6 +34,8 @@
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
 #   gifts-debug api-log [--raw]      # HTTP audit log table (default) or JSON
+#   gifts-debug db [--raw]           # every public table: name and row count
+#   gifts-debug db <table>           # every row of one table (follows nextCursor)
 #   gifts-debug external-pubkeys [--raw]  # entitled/blocked pubkeys table or JSON
 #   gifts-debug message <id>         # one forum note JSON (includes hidden)
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
@@ -61,6 +63,8 @@
 #   gifts-debug unlink <account-id>
 #   gifts-debug messages
 #   gifts-debug api-log
+#   gifts-debug db
+#   gifts-debug db message
 #   gifts-debug external-pubkeys
 #   gifts-debug external-pubkeys --raw
 #   gifts-debug message <message-id>
@@ -551,6 +555,75 @@ print("%s rows" % len(rows), file=sys.stderr)
 '
 }
 
+fetch_debug_db() {
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "$@" \
+    "${DEBUG_API_URL}/debug/db") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_db() {
+  local table="${1:-}" body cursor dir page
+  if [ -n "${2:-}" ]; then
+    die "usage: gifts-debug db [table]"
+  fi
+  if [ -z "$table" ]; then
+    body=$(fetch_debug_db)
+    if [ "$RAW" -eq 1 ]; then
+      printf '%s\n' "$body"
+      return
+    fi
+    printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+print("name\trowCount")
+for row in data.get("tables") or []:
+    print("%s\t%s" % (row.get("name", ""), row.get("rowCount", "")))
+'
+    return
+  fi
+  dir=$(mktemp -d)
+  cursor=""
+  page=0
+  while true; do
+    if [ -z "$cursor" ]; then
+      body=$(fetch_debug_db --data-urlencode "table=${table}")
+    else
+      body=$(fetch_debug_db --data-urlencode "table=${table}" --data-urlencode "cursor=${cursor}")
+    fi
+    printf '%s' "$body" > "${dir}/${page}.json"
+    cursor=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("nextCursor") or "")')
+    page=$((page + 1))
+    [ -n "$cursor" ] || break
+  done
+  python3 -c '
+import json, pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), key=lambda item: int(item.stem))]
+rows = []
+columns = []
+table_name = ""
+for item in pages:
+    table_name = item.get("table") or table_name
+    columns = item.get("columns") or columns
+    rows.extend(item.get("rows") or [])
+json.dump({"table": table_name, "columns": columns, "rows": rows}, sys.stdout)
+sys.stdout.write("\n")
+' "$dir"
+  rm -rf "$dir"
+}
+
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -574,6 +647,7 @@ case "${1:-}" in
   unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
   api-log) cmd_api_log ;;
+  db) shift; cmd_db "$@" ;;
   external-pubkeys) cmd_external_pubkeys ;;
   message) shift; cmd_message "$@" ;;
   video-put) shift; cmd_video_put "$@" ;;

@@ -42,6 +42,7 @@ import {
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
+import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -104,6 +105,11 @@ export interface BootStores {
   fundingStore: FundingStore | undefined;
   /** Operator dump of `db_change`, or `undefined` on memory boots. */
   listDbChange: ((limit: number) => Promise<unknown[]>) | undefined;
+  /**
+   * Postgres reader for `GET /debug/db`, or `undefined` when no SQL client
+   * was opened so the route answers 503.
+   */
+  debugDbStore: DebugDbStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -207,6 +213,7 @@ export async function openBootStores(
       trustStore: undefined,
       fundingStore: undefined,
       listDbChange: undefined,
+      debugDbStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -339,5 +346,6 @@ export async function openBootStores(
     trustStore,
     fundingStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
+    debugDbStore: new PostgresDebugDbStore(sqlClient),
   };
 }

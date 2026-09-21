@@ -1249,6 +1249,27 @@
 - **Returns / side effects:** `{ accountId, authKind }`.
 - **Used by:** `requestLog`.
 
+## Function: debugDbRoutes
+
+- **Purpose:** Hono app for `GET /debug/db`.
+- **Inputs:** Optional `DebugDbStore` and optional `debugToken`.
+- **Returns / side effects:** 503 if the token is blank; 401 if the bearer mismatches; 400 if `cursor` has no `table`; 503 if the store is omitted; 200 `{ tables }` or one page; 404 for an unknown table; 400 on `DebugDbCursorError`; 503 `Database is unavailable` on any other throw. Omits `nextCursor` when it is null.
+- **Used by:** `createApp` at `/debug/db`.
+
+## Function: PostgresDebugDbStore
+
+- **Purpose:** Read every ordinary `public` table through a `SqlClient`, one keyset page at a time. No primary key uses `ctid`.
+- **Inputs:** `SqlClient`. `listTables()` takes none. `readPage(table, cursor)` takes a catalog name and a cursor or null.
+- **Returns / side effects:** Table counts, or a page whose `bytea` cells are lengths and whose secret text cells are `"redacted"`. `undefined` for an unknown table. Throws `DebugDbCursorError` for a bad cursor. Does not cache the catalog.
+- **Used by:** `debugDbRoutes` via `openBootStores` when `DATABASE_URL` is set.
+
+## Function: DebugDbCursorError
+
+- **Purpose:** Signal that a `GET /debug/db` cursor does not decode or does not match the table key.
+- **Inputs:** Optional message. The HTTP body stays `Invalid cursor`.
+- **Returns / side effects:** An `Error` subclass. No I/O.
+- **Used by:** `PostgresDebugDbStore.readPage` and `debugDbRoutes`.
+
 ## Function: debugApiLogRoutes
 
 - **Purpose:** Hono app for `GET /debug/api-log`.

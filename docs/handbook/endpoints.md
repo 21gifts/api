@@ -98,6 +98,13 @@
 - **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` / `gifts-debug refuse-session` CLI and platform-account setup. Does not write trust edges (`POST /debug/trust-edges` is the backfill path).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: GET /debug/db
+
+- **Purpose:** Operator read of every ordinary table in schema `public`. With no `table`, returns `{ tables: [{ name, rowCount }] }` sorted by name. With `table`, returns one page of 200 rows (`columns`, `rows`) and `nextCursor` when another page exists. Follow `nextCursor` until it is absent to read the whole table. `bytea` values are octet lengths (or null), never the bytes. Text columns named `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, or `delivered_endpoints` are the string `"redacted"` when not null. There is no `limit` that stops early.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Database is not configured' }` when this process has no SQL client; 404 `{ error: 'Not found' }` when `table` is not an ordinary public table; 400 `{ error: 'Invalid cursor' }` when `cursor` is present without `table` or does not match the table key; 503 `{ error: 'Database is unavailable' }` if the store throws (`debug.db.failed`).
+- **Used by:** Operators reading the whole database (`gifts-debug db`).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /debug/api-log
 
 - **Purpose:** Operator listing of HTTP audit rows newest-first (cap 200): method, redacted path, status, ms, nullable `accountId` (always present; JSON `null` unless `authKind` is `session`), and `authKind` (`session` | `debug` | `spend` | `none`). No query string, Authorization, bodies, or tokens. OPTIONS and `/healthz` are not stored.

@@ -21,6 +21,8 @@ import { contactRoutes } from '@/routes/contact';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
+import { debugDbRoutes } from '@/routes/debug-db';
+import type { DebugDbStore } from '@/lib/debug-db';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
@@ -104,10 +106,15 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * and `POST /debug/trust-edges`
+   * `POST /debug/trust-edges`, and `GET /debug/db`
    * return 503.
    */
   debugToken?: string;
+  /**
+   * Whole-database reader for `GET /debug/db`. Omitted on a memory boot;
+   * the route then returns 503 after the debug token matches.
+   */
+  debugDbStore?: DebugDbStore;
   /**
    * HTTP audit log (default: empty {@link InMemoryApiLogStore}). Boot
    * injects {@link PostgresApiLogStore} when `DATABASE_URL` is set.
@@ -388,6 +395,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
+  app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
   app.route(

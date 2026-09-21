@@ -636,6 +636,23 @@ test('Function: resolveRequestAuth — GET /debug/api-log without bearer is 401'
   expect(res.status()).toBe(401);
 });
 
+test('Function: debugDbRoutes — GET /debug/db without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/db');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresDebugDbStore — GET /debug/db without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/db');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: DebugDbCursorError — GET /debug/db without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/db');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: debugMessagesRoutes — PUT /debug/messages/:id/video without bearer is 401', async ({
   request,
 }) => {

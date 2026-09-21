@@ -147,6 +147,7 @@ Public base URLs used in examples:
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
+| GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                             |
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
@@ -1305,6 +1306,18 @@ Success → **Response** `200`:
 restart clears the cache. There is no durable (Postgres) cache yet. No auth.
 No new environment variables for this route; the process still boots with
 zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
+
+### `GET /debug/db`
+
+Operator read of every ordinary table in schema `public`. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. No `table` returns `{ tables: [{ name, rowCount }] }`. `table`
+returns 200 rows and `nextCursor` when another page exists. Follow
+`nextCursor` until it is absent. `bytea` cells are octet lengths. Text in
+`token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`,
+`endpoint`, `p256dh`, `auth`, and `delivered_endpoints` is the string
+`"redacted"`. A cursor that does not match the key is 400. An unknown table
+is 404.
 
 ### `GET /debug/accounts`
 
