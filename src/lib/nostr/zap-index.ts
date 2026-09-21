@@ -529,6 +529,11 @@ export async function settleInvoiceManually(args: {
     return { ok: false, reason: 'message' };
   }
   const hidden = message.deletedAt !== null;
+  let parentAuthor: Account | undefined;
+  if (message.accountId !== null) {
+    parentAuthor = await args.auth.getAccount(message.accountId);
+  }
+  const feeNote = isPlatformFeeNote(parentAuthor, message);
   const indexed = await args.store.listIndexedZapIngests();
   if (resumed && indexed.some((row) => row.receiptId === receiptId)) {
     return { ok: false, reason: 'duplicate' };
@@ -585,18 +590,7 @@ export async function settleInvoiceManually(args: {
     payer = undefined;
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-  let parentAuthor: Account | undefined;
-  let authorLookupFailed = false;
-  if (message.accountId !== null) {
-    try {
-      parentAuthor = await args.auth.getAccount(message.accountId);
-    } catch {
-      parentAuthor = undefined;
-      authorLookupFailed = true;
-    }
-  }
-  const feeNote = isPlatformFeeNote(parentAuthor, message);
-  if (!hidden && message.accountId !== null && !feeNote && !authorLookupFailed) {
+  if (!hidden && message.accountId !== null && !feeNote) {
     try {
       await notifyZap({
         note: message,

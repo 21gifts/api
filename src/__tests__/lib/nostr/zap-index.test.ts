@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -1392,18 +1392,23 @@ describe('manual invoice settlement', () => {
     await seedManualInvoice(store, paymentHash, { conversationId: null });
     const notifications = new InMemoryNotificationStore();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const result = await settleInvoiceManually({
-      store,
-      auth,
-      now: () => 1_800,
-      paymentHash,
-      note: 'author lookup failed',
-      preimage,
-      notificationStore: notifications,
-    });
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_800,
+        paymentHash,
+        note: 'author lookup failed',
+        preimage,
+        notificationStore: notifications,
+      }),
+    ).rejects.toThrow('author boom');
     warn.mockRestore();
-    expect(result.ok).toBe(true);
-    expect(result).toMatchObject({ messageId, amountSats: 210_000 });
+    expect(
+      await store.getZapReceiptGift(manualReceiptIdForPaymentHash(paymentHash)),
+    ).toBeUndefined();
+    expect(await store.listIndexedZapIngests()).toEqual([]);
+    expect((await store.getById(messageId))?.sats).toBe(0);
     expect(await notifications.listByRecipient('manual-author', 10)).toHaveLength(0);
   });
 
@@ -2360,15 +2365,18 @@ describe('manual invoice settlement', () => {
 
   it('keeps settlement successful when payer lookup throws after crediting', async () => {
     class ThrowingPayerAuthStore extends InMemoryAuthStore {
-      override getAccount(): Promise<never> {
-        return Promise.reject(new Error('payer lookup boom'));
+      override getAccount(id: string): Promise<Account | undefined> {
+        if (id === 'manual-payer') {
+          return Promise.reject(new Error('payer lookup boom'));
+        }
+        return super.getAccount(id);
       }
     }
     const store = new InMemoryMessageStore();
-    const seedAuth = new InMemoryAuthStore();
+    const auth = new ThrowingPayerAuthStore();
     await seedStore({
       store,
-      auth: seedAuth,
+      auth,
       accountId: 'manual-author',
       messageId: 'manual-message',
     });
@@ -2379,7 +2387,7 @@ describe('manual invoice settlement', () => {
 
     const result = await settleInvoiceManually({
       store,
-      auth: new ThrowingPayerAuthStore(),
+      auth,
       now: () => 2_000,
       paymentHash,
       note: 'wallet evidence',
