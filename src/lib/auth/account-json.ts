@@ -456,7 +456,8 @@ export function serializeDebugAccountDetail(
  * Includes `viewKey` so the owner can copy the capability URL. The second
  * argument is `hasPosted`; the third is About me;
  * the fourth is whether the live profile note has a photo; the fifth is
- * `funding` (`null` for `basis`, default `null`).
+ * `funding` (`null` for `basis`, default `null`); the sixth is
+ * `passkeyCredentialId` (base64url or `null`, default `null`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -469,6 +470,7 @@ export function serializeDebugAccountDetail(
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
+ * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
@@ -504,7 +506,7 @@ export interface OwnerFundingLookup {
   store: FundingStore;
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
-  /** Account lookup for admitted `reviewedByName`. */
+  /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
   authStore: Pick<AuthStore, 'getAccount' | 'getPasskeyCredentialForAccount'>;
 }
 
@@ -528,7 +530,8 @@ export interface OwnerFundingLookup {
  * @param funding - Optional grant lookup; omitted → `basis` `null`, else
  *   `{ status: 'none', … }` without I/O.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, and `funding`, `walletRequired`, and `walletBackupSeenAt` (via {@link serializeOwnerAccount}).
+ *   `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
+ *   and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.

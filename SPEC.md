@@ -370,12 +370,13 @@ ID).
     "aboutMeHasPhoto": false,
     "notificationLevel": "all",
     "walletRequired": true,
-    "walletBackupSeenAt": null
+    "walletBackupSeenAt": null,
+    "passkeyCredentialId": "<base64url>"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, and `walletBackupSeenAt`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -480,7 +481,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "notificationLevel": "all",
   "funding": null,
   "walletRequired": false,
-  "walletBackupSeenAt": null
+  "walletBackupSeenAt": null,
+  "passkeyCredentialId": null
 }
 ```
 
