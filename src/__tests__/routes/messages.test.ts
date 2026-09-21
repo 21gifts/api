@@ -1179,8 +1179,16 @@ describe('POST /messages', () => {
         now,
       }),
     );
-    const res = await app.request('/messages', { headers: AUTH });
-    expect(res.status).toBe(200);
+    const hit = async (): Promise<number> =>
+      (
+        await app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ text: 'hi' }),
+        })
+      ).status;
+    expect(await hit()).toBe(200);
+    expect(await hit()).toBe(429);
   });
 
   it('returns 403 when a basis account posts without paying', async () => {

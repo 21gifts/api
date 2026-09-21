@@ -169,7 +169,7 @@ describe('runNostrWorkerTick', () => {
     ]);
   });
 
-  it('forwards spendPing and postLimiter into zap ingest', async () => {
+  it('accepts spendPing and postLimiter when zap ingest has no receipts', async () => {
     const { auth, messages } = await seed();
     const spendPing = { ping: vi.fn(async () => undefined) };
     await runNostrWorkerTick(

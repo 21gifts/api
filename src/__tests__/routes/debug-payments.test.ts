@@ -337,7 +337,7 @@ describe('debugPaymentsRoutes', () => {
     expect(await duplicate.json()).toEqual({ error: 'Already settled' });
   });
 
-  it('forwards spendPing on settle', async () => {
+  it('does not spendPing on an ineligible debug settle', async () => {
     const store = new InMemoryMessageStore();
     const paymentHash = 'ab'.repeat(32);
     await seedSettleInvoice(store, paymentHash);
