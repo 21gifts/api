@@ -161,8 +161,8 @@ Public base URLs used in examples:
 | POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                         |
 | DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                         |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                       |
-| GET    | `/debug/dump`                                | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                    |
-| GET    | `/debug/dump/:table`                         | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
+| GET    | `/debug/dump`                                        | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                    |
+| GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                       |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
