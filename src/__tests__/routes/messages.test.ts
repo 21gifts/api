@@ -2371,6 +2371,7 @@ describe('POST /messages', () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      now: () => Date.parse('2026-09-25T12:00:00.000Z'),
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },

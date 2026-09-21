@@ -1719,6 +1719,9 @@ test('Function: fundingRoutes — POST /funding/apply without bearer is 401', as
 test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: fundingGrantRequired — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

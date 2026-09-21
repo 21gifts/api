@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-21 (funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
+**Status**: living document. Last revised 2026-09-21 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -37,8 +37,8 @@ verification payment requires an injected invoice payer; the default
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `eligibleToday`;
-`POST /invoices` requires passkey, a funding-program grant (`eligibleToday`), and a live
+report those gates; `GET /invoices/eligible` reports `eligibleToday` (grant required from UTC 2026-09-25);
+`POST /invoices` requires passkey, `eligibleToday` (grant required from UTC 2026-09-25), and a live
 **top-level** forum post, then fetches a BOLT11 via LNURL-pay;
 `POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
 requires a passkey-backed account for the address that is funding-eligible today
