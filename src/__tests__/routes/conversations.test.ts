@@ -3304,16 +3304,16 @@ describe('moderator-group photos', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
-      `/conversations/${thread.id}`,
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          photo: { contentType: 'image/jpeg', data: JPEG_B64 },
-        }),
-      },
-    );
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
