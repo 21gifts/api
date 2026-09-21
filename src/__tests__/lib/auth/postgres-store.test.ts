@@ -995,7 +995,7 @@ describe('PostgresAuthStore', () => {
   it('inserts a first passkey only when the account has none', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
-    sql.nextRows = [{ credential_id: 'cred' }];
+    sql.nextRows = [{ id: 'acc' }];
     expect(
       await store.createFirstPasskeyCredential({
         credentialId: 'cred',
@@ -1005,6 +1005,9 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/WITH inserted/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required = TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/SELECT id FROM flagged/);
     expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
     expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
     sql.nextRows = [];

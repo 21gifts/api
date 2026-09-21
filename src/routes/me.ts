@@ -245,12 +245,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (current.walletBackupSeenAt !== null && current.walletBackupSeenAt !== undefined) {
-        return c.json(await serializeOwnerAccountWithPosts(current, deps.messages), 200);
+        return c.json(await ownerJson(deps, current), 200);
       }
       const updated: Account = { ...current, walletBackupSeenAt: deps.now() };
       await deps.store.updateAccount(updated);
       logEvent('account.wallet.backup_seen', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

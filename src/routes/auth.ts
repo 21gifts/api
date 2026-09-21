@@ -240,7 +240,11 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       logEvent('auth.passkey.replace.ok', { accountId: result.account.id });
       return c.json(
         {
-          account: await serializeOwnerAccountWithPosts(result.account, deps.messages),
+          account: await serializeOwnerAccountWithPosts(result.account, deps.messages, {
+            store: deps.fundingStore ?? new InMemoryFundingStore(),
+            nowMs: deps.now(),
+            authStore: deps.store,
+          }),
         },
         200,
       );
