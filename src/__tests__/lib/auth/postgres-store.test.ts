@@ -1307,4 +1307,29 @@ describe('PostgresAuthStore', () => {
     sql.nextRows = [];
     expect(await new PostgresAuthStore(sql).markWalletBackupSeen('missing', 10)).toBeUndefined();
   });
+
+  it('markWalletBackupSeen returns the existing row when the timestamp is already set', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(9) }]];
+    const stored = await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(stored?.wrote).toBe(false);
+    expect(stored?.account.walletBackupSeenAt).toBe(9);
+  });
+
+  it('markWalletBackupSeen returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, wallet_backup_seen_at: new Date(10) }];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
+  });
+
+  it('markWalletBackupSeen returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [
+      [],
+      [{ ...ACCOUNT_ROW, view_key: null, wallet_backup_seen_at: new Date(9) }],
+    ];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
+  });
 });

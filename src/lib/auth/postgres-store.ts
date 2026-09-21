@@ -159,14 +159,19 @@ export class PostgresAuthStore implements AuthStore {
     );
     const wroteRow = written[0];
     if (wroteRow !== undefined) {
-      return { account: mapAccount(wroteRow), wrote: true };
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
     }
     const existing = await this.#sql.query<AccountRow>(
       `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
       [accountId],
     );
     const row = existing[0];
-    return row === undefined ? undefined : { account: mapAccount(row), wrote: false };
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
   }
 
   async updateAccount(account: Account): Promise<void> {
