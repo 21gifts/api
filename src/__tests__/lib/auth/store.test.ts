@@ -97,6 +97,7 @@ describe('InMemoryAuthStore', () => {
     });
     expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBeNull();
+    expect((await store.markWalletBackupSeen('acc', 42))?.walletBackupSeenAt).toBe(42);
     await store.updateAccount({
       id: 'acc',
       linkingKey: KEY,
@@ -109,8 +110,8 @@ describe('InMemoryAuthStore', () => {
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
-      walletRequired: true,
-      walletBackupSeenAt: 42,
+      walletRequired: false,
+      walletBackupSeenAt: null,
     });
     expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(42);

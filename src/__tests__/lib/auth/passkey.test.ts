@@ -323,7 +323,9 @@ describe('passkey claim', () => {
     const store = await provisionedStore();
     const existing = await store.getAccount('provisioned');
     expect(existing).toBeDefined();
-    await store.updateAccount({ ...existing!, walletBackupSeenAt: 99 });
+    expect(await store.markWalletBackupSeen('provisioned', 99)).toMatchObject({
+      walletBackupSeenAt: 99,
+    });
     const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(begin.ok).toBe(true);
     if (!begin.ok) {
@@ -900,13 +902,32 @@ describe('passkey replace', () => {
   });
 
   it('does not set walletRequired on replace', async () => {
-    const { store, ceremony, accountId } = await seed();
-    const account = await store.getAccount(accountId);
-    if (account === undefined) {
-      throw new Error('missing account');
-    }
-    await store.updateAccount({ ...account, walletRequired: false, walletBackupSeenAt: null });
-    const current = await store.getAccount(accountId);
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+      walletRequired: false,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-1',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'existing',
+        createdAt: T0,
+      }),
+    ).toBe(true);
+    const current = await store.getAccount('existing');
     if (current === undefined) {
       throw new Error('missing account');
     }
@@ -926,7 +947,7 @@ describe('passkey replace', () => {
       current,
     );
     expect(finish.ok).toBe(true);
-    expect((await store.getAccount(accountId))?.walletRequired).toBe(false);
+    expect((await store.getAccount('existing'))?.walletRequired).toBe(false);
     expect((await store.getAccount(accountId))?.walletBackupSeenAt).toBeNull();
   });
 

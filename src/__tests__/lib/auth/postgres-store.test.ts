@@ -259,6 +259,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.text).toMatch(/wallet_required/);
     expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).not.toMatch(/wallet_required/);
+    expect(sql.executes[1]?.text).not.toMatch(/wallet_backup_seen_at/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);

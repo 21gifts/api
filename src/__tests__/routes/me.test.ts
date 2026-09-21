@@ -448,7 +448,15 @@ describe('POST /me/wallet-backup-seen', () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
-    await store.updateAccount({ ...existing!, walletRequired: true });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-wallet',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
     const res = await mount(store).request('/me/wallet-backup-seen', {
       method: 'POST',
       headers: AUTH,
@@ -474,9 +482,7 @@ describe('POST /me/wallet-backup-seen', () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
-    await store.updateAccount({
-      ...existing!,
-      walletRequired: true,
+    expect(await store.markWalletBackupSeen('acc', 1_000_000)).toMatchObject({
       walletBackupSeenAt: 1_000_000,
     });
     const res = await mount(store, { clock: () => 2_000_000 }).request('/me/wallet-backup-seen', {
