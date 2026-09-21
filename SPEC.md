@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-21 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 only while currently pending or any confirm/appoint); pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm/reject; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
+**Status**: living document. Last revised 2026-09-21 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm/reject; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -569,7 +569,7 @@ Missing or invalid Bearer → **Response** `401`:
 Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
-one hop of **stored** public edges with at most one incoming kind per
+one hop of **stored** public edges with at most one incoming edge per
 subject: the oldest eligible sibling (`createdAt` then `id`). Eligible:
 `verify`, `moderator_appoint`, and `moderator_propose` only when the live
 subject is a `moderator`; `moderator_confirm` and `moderator_reject`
@@ -705,7 +705,10 @@ Otherwise insert the edge then update role, log `trust.verified`
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. Subject role
 must be `verified`, not self. **409** when currently pending (latest
 propose/reject is propose) or any `moderator_confirm` / `moderator_appoint`
-exists, or when the subject is not `verified`. **200** inserts a **new**
+exists, when the subject is not `verified`, or when a concurrent older
+open propose wins after insert (that extra row is deleted). When this
+insert is the oldest open propose and extras exist, delete the latest extra
+propose and still **200**. **200** inserts a **new**
 `moderator_propose` after a reject (history kept; old propose/reject rows
 are not deleted). Role is unchanged. Logs `trust.moderator_proposed`.
 After **200**, wrap `notifyModeratorProposed` (in-app `moderator_proposal`
@@ -718,7 +721,9 @@ Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
 proposal must exist (latest propose/reject is propose); the caller id must
 not equal that latest proposer's actor id (independent second staff member).
-Subject must still be `verified`. Inserts `moderator_confirm` then sets
+Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
+if a concurrent reject already closed the proposal, delete that confirm and
+**409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
 completes the role write and returns **200**; already-moderator with that
@@ -737,7 +742,9 @@ Bearer session. Same auth as `POST /trust/propose-moderator` (staff,
 moderator+). Body `{ "accountId": "<uuid>" }`. **409** self / not pending
 (latest propose/reject is not propose, or any confirm/appoint) /
 `role !== verified`. The original proposer **may** reject. Inserts
-append-only `moderator_reject`; role stays `verified`. Logs
+append-only `moderator_reject` then re-lists: if a concurrent confirm or
+appoint already closed the grant, delete that reject and **409**. Role stays
+`verified`. Logs
 `trust.moderator_rejected` `{ subjectId, actorId }`. Then deletes
 `moderator_proposal` rows with `replyId === subject.id`. No notify for the
 reject itself. Same 401/403/400/404/409/503 JSON shapes as

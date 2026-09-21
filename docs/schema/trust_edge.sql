@@ -1,5 +1,5 @@
 -- Trust edges: who granted which staff status to whom.
--- Session GET /trust-chain projects at most one incoming kind per subject:
+-- Session GET /trust-chain projects at most one incoming edge per subject:
 -- verify, moderator_appoint, and moderator_propose only when the live
 -- subject is a moderator. moderator_confirm and moderator_reject never.
 -- Propose and reject may repeat (append-only history). Live unique kinds

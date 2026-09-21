@@ -136,7 +136,7 @@ export function isStaffRole(role: AccountRole): boolean {
  * Nodes are accounts whose role is `founder`, `moderator`, or `verified`
  * (never `basis`), sorted founder → moderator → verified, then oldest
  * `createdAt`, then `id`. Groups stored edges by `subjectId` and projects
- * at most one incoming kind per subject: the oldest eligible sibling
+ * at most one incoming edge per subject: the oldest eligible sibling
  * (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and
  * `moderator_propose` only when the live subject is a `moderator`.
  * `moderator_confirm` and `moderator_reject` never. A pending propose
@@ -177,7 +177,7 @@ export function buildTrustChain(
     if (siblings === undefined) {
       continue;
     }
-    if (!isProjectedTrustEdge(edge, byId.get(edge.subjectId), siblings)) {
+    if (!isProjectedTrustEdge(edge, byId.get(edge.subjectId), siblings, nodeIds)) {
       continue;
     }
     if (!nodeIds.has(edge.actorId) || !nodeIds.has(edge.subjectId)) {
@@ -307,31 +307,38 @@ export function isChainAccount(
 /**
  * Whether a stored edge appears on the public trust chain.
  *
- * True iff `edge.kind` is the oldest eligible kind among `subjectEdges`
+ * True iff `edge` is the oldest eligible sibling among `subjectEdges`
  * (default `[edge]`), by `createdAt` then `id`. Eligible: `verify`,
  * `moderator_appoint`, and `moderator_propose` only when the live subject
  * is a `moderator`. `moderator_confirm` and `moderator_reject` never.
- * Later siblings do not replace an earlier eligible contact.
+ * Later siblings do not replace an earlier eligible contact. At most one
+ * public incoming edge per subject, even when several rows share the
+ * winning kind.
  *
  * @param edge - Stored grant.
  * @param subject - Live subject account, if loaded.
  * @param subjectEdges - Stored edges for this subject (default `[edge]`).
- * @returns `true` when the edge is the public incoming kind.
+ * @param chainActorIds - When set, skip siblings whose actor is not a
+ *   public-chain node so a non-chain oldest sibling does not hide a later
+ *   displayable contact.
+ * @returns `true` when the edge is the public incoming edge.
  */
 export function isProjectedTrustEdge(
   edge: TrustEdge,
   subject: Account | undefined,
   subjectEdges: readonly TrustEdge[] = [edge],
+  chainActorIds?: ReadonlySet<string>,
 ): edge is TrustEdge & { kind: TrustChainKind } {
-  const winning = winningPublicKind(subject, subjectEdges);
-  return winning !== undefined && edge.kind === winning;
+  const winning = winningPublicEdge(subject, subjectEdges, chainActorIds);
+  return winning !== undefined && edge.id === winning.id;
 }
 
-/** Oldest eligible public incoming kind among `subjectEdges`, or none. */
-function winningPublicKind(
+/** Oldest eligible public incoming edge among `subjectEdges`, or none. */
+function winningPublicEdge(
   subject: Account | undefined,
   subjectEdges: readonly TrustEdge[],
-): TrustChainKind | undefined {
+  chainActorIds?: ReadonlySet<string>,
+): (TrustEdge & { kind: TrustChainKind }) | undefined {
   const eligible: TrustEdge[] = [];
   for (const sibling of subjectEdges) {
     if (sibling.kind === 'moderator_confirm' || sibling.kind === 'moderator_reject') {
@@ -351,14 +358,18 @@ function winningPublicKind(
   if (eligible.length === 0) {
     return undefined;
   }
-  const oldest = eligible.slice().sort(compareTrustEdgesOldestFirst)[0];
-  /* v8 ignore next 6 -- eligible.length === 0 already returned; confirm/reject filtered */
-  if (oldest === undefined) {
-    return undefined;
+  const sorted = eligible.slice().sort(compareTrustEdgesOldestFirst);
+  for (const oldest of sorted) {
+    /* v8 ignore next 3 -- confirm/reject never enter eligible */
+    if (oldest.kind === 'moderator_confirm' || oldest.kind === 'moderator_reject') {
+      continue;
+    }
+    if (chainActorIds !== undefined && !chainActorIds.has(oldest.actorId)) {
+      continue;
+    }
+    return oldest as TrustEdge & { kind: TrustChainKind };
   }
-  return oldest.kind === 'moderator_confirm' || oldest.kind === 'moderator_reject'
-    ? undefined
-    : oldest.kind;
+  return undefined;
 }
 
 /** Oldest `createdAt` first, then `id`. */

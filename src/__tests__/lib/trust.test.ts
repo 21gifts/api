@@ -219,6 +219,32 @@ describe('isProjectedTrustEdge', () => {
     const appoint = edge({ id: 'e-a', subjectId: 'm', actorId: 'f', kind: 'moderator_appoint' });
     expect(isProjectedTrustEdge(appoint, subject, [appoint])).toBe(true);
   });
+
+  it('projects only the oldest propose when several propose rows exist', () => {
+    const subject = account({ id: 'm', role: 'moderator' });
+    const first = edge({
+      id: 'e-p1',
+      subjectId: 'm',
+      actorId: 'a',
+      kind: 'moderator_propose',
+      createdAt: 1,
+    });
+    const second = edge({
+      id: 'e-p2',
+      subjectId: 'm',
+      actorId: 'b',
+      kind: 'moderator_propose',
+      createdAt: 2,
+    });
+    const siblings = [first, second];
+    expect(isProjectedTrustEdge(first, subject, siblings)).toBe(true);
+    expect(isProjectedTrustEdge(second, subject, siblings)).toBe(false);
+    const chainActors = new Set(['b']);
+    expect(isProjectedTrustEdge(first, subject, siblings, chainActors)).toBe(false);
+    expect(isProjectedTrustEdge(second, subject, siblings, chainActors)).toBe(true);
+    expect(isProjectedTrustEdge(first, subject, siblings, new Set())).toBe(false);
+    expect(isProjectedTrustEdge(second, subject, siblings, new Set())).toBe(false);
+  });
 });
 
 describe('buildTrustChain', () => {

@@ -150,10 +150,11 @@ A **moderator** is proposed by
 an existing moderator and confirmed by a **different** staff
 member, or appointed directly by a founder. Those grants persist as trust
 edges (`POST /trust/verify`, `POST /trust/propose-moderator`,
-`POST /trust/confirm-moderator`, `POST /trust/appoint-moderator`).
+`POST /trust/confirm-moderator`, `POST /trust/reject-moderator`,
+`POST /trust/appoint-moderator`).
 `GET /trust-chain` requires a member Bearer session (any role) and returns
 founder seeds; `?around=<id>` returns one hop of stored public edges with
-one incoming kind per subject (no inferred links).
+at most one incoming edge per subject (no inferred links).
 Operator `PATCH /debug/accounts/:id` can still set `role` and does not
 write trust edges; `POST /debug/trust-edges` backfills stored edges and
 `DELETE /debug/trust-edges` removes one `(subjectId, kind)` row, both
@@ -864,6 +865,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-21 | Optional `GET /messages?hashtag=` token filter on live top-level `text` (name without `#`; token match; combines with `mode`/`limit`/`cursor`). No new entity, table, or index. A shops page of 20 is 20 matching notes, not 20 mixed notes filtered later.                                                                                                                                                                                                                                                                                        |
 | 2026-09-21 | Basis accounts pay 1 sat to 21.gifts before they can post or reply (`GET /messages/compose-target` then invoice the platform profile note). Unpaid `POST /messages` is 403 for anyone below verified, including the parent author. Verified, moderator, and founder stay unpaid-write exempt. Extra gifts on someone else’s note still pay that author. The worker always queries that profile note’s event id even after it ages out of `listLatest`. **Supersedes** the Roles table line that only mentioned unpaid replies for Verified.        |
 | 2026-09-21 | JPEG/PNG/WebP stills (max 10, photo-only send) on every private conversation kind (Direct, Contact, Damus, Moderators group). Bytes stay on authenticated GET photo routes (`Cache-Control: private, no-store`). Photo-bearing rows skip Nostr (`nostrPublishState: skipped`); text-only Direct/Contact/Damus stay `pending`. Spend ping stays `moderator_group` only.                                                                                                                                                                             |
+| 2026-09-21 | Propose/confirm/reject re-list after insert so a concurrent older propose, a concurrent reject, or a concurrent confirm/appoint cannot leave two live outcomes. The public graph projects at most one incoming edge per subject (winning id), skipping non-chain oldest siblings.                                                                                                                                                                                                                                                                  |
 
 ## Next Steps
 

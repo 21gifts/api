@@ -235,12 +235,28 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (hasClosedGrant || pendingModeratorProposals([subject], existing).length > 0) {
         return c.json({ error: 'Conflict' }, 409);
       }
+      const created = newEdge(deps, subject.id, caller.id, 'moderator_propose');
       try {
-        await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_propose'));
+        await deps.trustStore.insertEdge(created);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
         }
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      try {
+        const after = await deps.trustStore.listEdgesForSubject(subject.id);
+        const open = openProposesForSubject(after, subject.id);
+        const oldest = oldestOpenPropose(open);
+        if (open.length > 1 && oldest !== undefined && oldest.id !== created.id) {
+          await deps.trustStore.deleteEdge(subject.id, 'moderator_propose');
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        if (open.length > 1 && oldest !== undefined && oldest.id === created.id) {
+          await deps.trustStore.deleteEdge(subject.id, 'moderator_propose');
+        }
+      } catch {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
@@ -310,14 +326,30 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (pending === undefined || pending.proposedBy.id === caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
-      const updated = { ...subject, role: 'moderator' as const };
+      const created = newEdge(deps, subject.id, caller.id, 'moderator_confirm');
       try {
-        await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_confirm'));
-        await deps.authStore.updateAccount(updated);
+        await deps.trustStore.insertEdge(created);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
         }
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      try {
+        const after = await deps.trustStore.listEdgesForSubject(subject.id);
+        if (openProposesForSubject(after, subject.id).length === 0) {
+          await deps.trustStore.deleteEdge(subject.id, 'moderator_confirm');
+          return c.json({ error: 'Conflict' }, 409);
+        }
+      } catch {
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      const updated = { ...subject, role: 'moderator' as const };
+      try {
+        await deps.authStore.updateAccount(updated);
+      } catch {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
@@ -368,6 +400,20 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
         }
+        logEvent('trust.write.failed');
+        return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      try {
+        const after = await deps.trustStore.listEdgesForSubject(subject.id);
+        if (
+          after.some(
+            (edge) => edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint',
+          )
+        ) {
+          await deps.trustStore.deleteEdge(subject.id, 'moderator_reject');
+          return c.json({ error: 'Conflict' }, 409);
+        }
+      } catch {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
@@ -509,6 +555,54 @@ async function notifySubjectAppointed(
   } catch {
     logEvent('push.enqueue.failed');
   }
+}
+
+/** Oldest open propose by `createdAt` then `id`, or none. */
+function oldestOpenPropose(open: readonly TrustEdge[]): TrustEdge | undefined {
+  let oldest: TrustEdge | undefined;
+  for (const edge of open) {
+    if (
+      oldest === undefined ||
+      edge.createdAt < oldest.createdAt ||
+      (edge.createdAt === oldest.createdAt && edge.id < oldest.id)
+    ) {
+      oldest = edge;
+    }
+  }
+  return oldest;
+}
+
+/** Propose rows after the latest reject for `subjectId`, or all proposes. */
+function openProposesForSubject(edges: readonly TrustEdge[], subjectId: string): TrustEdge[] {
+  let latestReject: TrustEdge | undefined;
+  const proposes: TrustEdge[] = [];
+  for (const edge of edges) {
+    if (edge.subjectId !== subjectId) {
+      continue;
+    }
+    if (edge.kind === 'moderator_reject') {
+      if (
+        latestReject === undefined ||
+        edge.createdAt > latestReject.createdAt ||
+        (edge.createdAt === latestReject.createdAt && edge.id > latestReject.id)
+      ) {
+        latestReject = edge;
+      }
+    }
+    if (edge.kind === 'moderator_propose') {
+      proposes.push(edge);
+    }
+  }
+  if (latestReject === undefined) {
+    return proposes;
+  }
+  const reject = latestReject;
+  return proposes.filter((edge) => {
+    if (edge.createdAt !== reject.createdAt) {
+      return edge.createdAt > reject.createdAt;
+    }
+    return edge.id > reject.id;
+  });
 }
 
 /** Fully formed edge using the injected clock and a fresh uuid. */
