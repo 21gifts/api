@@ -253,9 +253,11 @@ Open Question #9.
 
 ### Identity & Keys
 
-> **Post-v1 target architecture.** v1 login is passkey without PRF, so there is
-> no client-side key material — see "v1 Transitional Model" above. Everything in
-> this section describes the non-custodial phase that replaces it.
+> **Post-v1 target architecture.** v1 login is still a server-issued session
+> after passkey. Begin options request WebAuthn PRF so the client can derive a
+> recovery phrase in tab memory; PRF is not used for API authentication or
+> server-side Nostr custody — see "v1 Transitional Model" above. Everything in
+> this section describes the non-custodial phase that replaces that custody.
 
 The full key flow, end-to-end:
 
@@ -471,9 +473,10 @@ other columns including `name` stay plaintext.
 
 ### Storage (client-side)
 
-> **Post-v1 target architecture** (like "Identity & Keys" above). v1 stores
-> no client-side key material; the v1 session is a server-issued token bound
-> to `account.id` after passkey authentication.
+> **Post-v1 target architecture** (like "Identity & Keys" above). The api
+> never stores a mnemonic or PRF output. The v1 session is a server-issued
+> token bound to `account.id` after passkey authentication. The client may
+> hold a PRF-derived 12-word phrase in tab memory only.
 
 IndexedDB, two object stores:
 
@@ -509,7 +512,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — api:
 
-- Passkey endpoints: register/authenticate begin and finish, session issuance
+- Passkey endpoints: register/authenticate/replace begin and finish, session issuance; `POST /me/wallet-backup-seen`
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
 - Receiver address verification: micro-payment with one-time nonce in the
@@ -564,8 +567,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 ## Open Questions
 
 1. ~~PRF fallback — what happens if the user's browser doesn't support PRF?~~
-   **Deferred 2026-07-05, restated 2026-08-24**: v1 login is passkey without
-   PRF; this question returns with the non-custodial phase.
+   **Restated 2026-09-21**: v1 begin options request PRF so the client can
+   derive a recovery phrase. Missing PRF aborts register before finish. API
+   authentication still does not consume PRF; server-side Nostr keys stay
+   custodial until the non-custodial phase.
 2. **Verification rigor beyond the external-identity floor** — the website now
    shows an external NOSTR identity only after a verified zap of at least 1 sat,
    while the protocol remains open. Which additional reputation or
@@ -621,9 +626,10 @@ Goal: smallest viable browser bundle. Only what _must_ run client-side.
 | Lint                | `next lint` + Prettier                                      | Standard                                                                |
 
 > The WebAuthn/PRF, BIP-32/39, and client-side signing rows describe the
-> non-custodial phase. v1 ships without client-side key material; the app's
-> v1 crypto surface is limited to what passkey login and LNURL-pay
-> require.
+> non-custodial phase. v1 already requests PRF so the app can show a
+> recovery phrase in tab memory; API auth and server-side Nostr keys do
+> not use it. The rest of the app crypto surface is passkey login and
+> LNURL-pay.
 
 **Dependency philosophy**: stay minimal. Target ~12 runtime dependencies. The
 app does UI plus — in the non-custodial phase — crypto + signing; everything

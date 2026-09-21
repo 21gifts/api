@@ -111,8 +111,6 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
               id: credential.id,
             })),
           }),
-      // PRF is not on AuthenticationExtensionsClientInputs in this SimpleWebAuthn release.
-      extensions: { prf: {} } as never,
     });
     return {
       challenge: options.challenge,
@@ -176,8 +174,6 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
       rpID: input.rpID,
       userVerification: 'required',
       allowCredentials: [],
-      // PRF is not on AuthenticationExtensionsClientInputs in this SimpleWebAuthn release.
-      extensions: { prf: prfEval } as never,
     });
     return {
       challenge: options.challenge,

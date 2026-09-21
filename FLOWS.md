@@ -98,9 +98,11 @@ or unlink a LUD-16 Lightning Address:
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
 - `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` is `username` if the handle
-  is blank; `setup` is `lightning-address` only when name is done or skipped
-  **and** username is set
+  does not clear `username`). After unlink, `setup` stays `wallet` when
+  `walletRequired` is true and backup is unseen; otherwise `setup` is
+  `username` if the handle is blank; `setup` is `lightning-address` only when
+  wallet is done or not required, name is done or skipped, **and** username is
+  set
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):

@@ -363,19 +363,19 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "name",
-    "missing": ["name", "username", "lightning-address", "rules"],
+    "setup": "wallet",
+    "missing": ["wallet", "name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
     "notificationLevel": "all",
-    "walletRequired": false,
+    "walletRequired": true,
     "walletBackupSeenAt": null
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, and `walletBackupSeenAt`). The example above is an existing member (`walletRequired: false`, `walletBackupSeenAt: null`). New register/claim owner JSON has `walletRequired: true` and `setup: "wallet"` with `missing` starting with `"wallet"`.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, and `walletBackupSeenAt`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false` until they activate a recovery phrase.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row calls `updateAccount({ ...existing, walletRequired: true })` after the credential lands and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -1273,9 +1273,11 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
-Does not clear `username`. After unlink, `setup` is `username` if the
-handle is blank; `setup` is `lightning-address` only when name is done or
-skipped **and** username is set (and LN is blank / skip cleared).
+Does not clear `username`. After unlink, `setup` stays `wallet` when
+`walletRequired` is true and backup is unseen; otherwise `setup` is
+`username` if the handle is blank; `setup` is `lightning-address` only
+when wallet is done or not required, name is done or skipped, **and**
+username is set (and LN is blank / skip cleared).
 
 ### `POST /me/lightning-address/verification`
 
@@ -1595,11 +1597,12 @@ finish and this route's session mint return 403 with the wrong-account
 copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. It does not clear `username`. `GET /me` then returns
-`setup: "username"` if the handle is blank, or `setup: "lightning-address"`
-only when name is done or skipped **and** username is set (and LN is blank
-/ skip cleared), so any client that follows `setup` shows the username or
-address form as appropriate. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns `setup: "wallet"` when
+`walletRequired` is true and backup is unseen, else `setup: "username"` if
+the handle is blank, or `setup: "lightning-address"` only when wallet is
+done or not required, name is done or skipped, **and** username is set
+(and LN is blank / skip cleared), so any client that follows `setup` shows
+the wallet, username, or address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`
