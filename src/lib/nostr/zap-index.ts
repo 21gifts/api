@@ -771,7 +771,9 @@ export async function indexZapReceipt(args: {
  * gift-reply does not call `notifyForumReply`. A member/invoice zap
  * (`payerAccountId`) on that platform note is a compose fee (payer
  * post/reply, `sats` 0) that skips `notifyZap` and fans out
- * `notifyForumPost` / `notifyForumReply` plus a top-level `spendPing`.
+ * `notifyForumPost` / `notifyForumReply` plus a top-level `spendPing`
+ * only when `eligibleToday` (same gate as `POST /messages`; otherwise
+ * `spend.ping.skipped` / `not_eligible`).
  * An external zap (`payerPubkey`) on that same note still inserts
  * `insertExternalGiftReply`. A reply zap is `addSats` only (no nested gift-reply) and
  * clears `payerAccountId` so the receipt never occupies the
