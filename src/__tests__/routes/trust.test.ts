@@ -863,6 +863,52 @@ describe('POST /trust/*', () => {
       expect(res.status).toBe(409);
     });
 
+    it('still 200 when deleting a concurrent extra propose throws', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'newer-extra',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: async (id) => {
+          if (id === 'newer-extra') {
+            throw new Error('delete boom');
+          }
+          return trustStore.deleteEdgeById(id);
+        },
+      };
+      const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_propose')).toBe(
+        true,
+      );
+      expect(parsedEvents(warn).some((event) => event['event'] === 'trust.write.failed')).toBe(
+        true,
+      );
+    });
+
     it('fans out moderator_proposal to other staff on propose 200', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
@@ -2471,6 +2517,35 @@ describe('POST /trust/*', () => {
       expect(res.status).toBe(503);
       expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
         false,
+      );
+    });
+
+    it('still 200 when listing after a won reject throws', async () => {
+      const { authStore, trustStore } = await pending();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          if (lists >= 3) {
+            throw new Error('list boom');
+          }
+          return trustStore.listEdgesForSubject(id);
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
+        true,
+      );
+      expect(parsedEvents(warn).some((event) => event['event'] === 'push.enqueue.failed')).toBe(
+        true,
       );
     });
 

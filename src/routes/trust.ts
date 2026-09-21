@@ -246,6 +246,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
+      let extras: Array<{ id: string }> = [];
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
         if (
@@ -262,11 +263,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
-        for (const extra of open) {
-          if (extra.id !== created.id) {
-            await deps.trustStore.deleteEdgeById(extra.id);
-          }
-        }
+        extras = open.filter((row) => row.id !== created.id);
       } catch {
         /* v8 ignore next 5 -- rollback throw still 503 */
         try {
@@ -276,6 +273,13 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         }
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      for (const extra of extras) {
+        try {
+          await deps.trustStore.deleteEdgeById(extra.id);
+        } catch {
+          logEvent('trust.write.failed');
+        }
       }
       logEvent('trust.moderator_proposed', { subjectId: subject.id, actorId: caller.id });
       await clearModeratorProposalNotifications(deps, subject.id);
@@ -433,6 +437,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       let dropNotifications = false;
+      let wonEmpty = false;
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
         if (
@@ -446,8 +451,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         const still = pendingModeratorProposals([subject], after);
         if (still.length === 0) {
           logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
-          const latest = await deps.trustStore.listEdgesForSubject(subject.id);
-          dropNotifications = pendingModeratorProposals([subject], latest).length === 0;
+          wonEmpty = true;
         } else {
           const beforePending = pendingModeratorProposals([subject], existing)[0];
           const open = still[0];
@@ -466,6 +470,14 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         }
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
+      }
+      if (wonEmpty) {
+        try {
+          const latest = await deps.trustStore.listEdgesForSubject(subject.id);
+          dropNotifications = pendingModeratorProposals([subject], latest).length === 0;
+        } catch {
+          logEvent('push.enqueue.failed');
+        }
       }
       if (dropNotifications) {
         await clearModeratorProposalNotifications(deps, subject.id);
