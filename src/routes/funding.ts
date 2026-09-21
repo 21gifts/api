@@ -175,16 +175,22 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         if (status === 'pending' || status === 'trial' || status === 'admitted') {
           return c.json({ error: 'Conflict' }, 409);
         }
-        const grant = await deps.fundingStore.upsert({
-          accountId: caller.id,
-          status: 'pending',
-          appliedAt: nowMs,
-          decidedAt: null,
-          decidedBy: null,
-          trialUtcDate: null,
-          admittedAt: null,
-          note: null,
-        });
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: caller.id,
+            status: 'pending',
+            appliedAt: nowMs,
+            decidedAt: null,
+            decidedBy: null,
+            trialUtcDate: null,
+            admittedAt: null,
+            note: null,
+          },
+          ['none', 'rejected'],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
         logEvent('funding.applied', { accountId: caller.id });
         return c.json({ funding: serializeOwnerFunding(caller.role, grant, nowMs, null) }, 200);
       } catch {
@@ -326,16 +332,22 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         const appliedAt = observed.appliedAt;
-        const grant = await deps.fundingStore.upsert({
-          accountId: subject.id,
-          status: 'trial',
-          appliedAt,
-          decidedAt: nowMs,
-          decidedBy: staff.caller.id,
-          trialUtcDate: utcDayKey(nowMs),
-          admittedAt: null,
-          note: observed.note,
-        });
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: subject.id,
+            status: 'trial',
+            appliedAt,
+            decidedAt: nowMs,
+            decidedBy: staff.caller.id,
+            trialUtcDate: utcDayKey(nowMs),
+            admittedAt: null,
+            note: observed.note,
+          },
+          ['pending'],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
         logEvent('funding.trial', { accountId: subject.id, actorId: staff.caller.id });
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
@@ -371,16 +383,22 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         const appliedAt = observed.appliedAt;
-        const grant = await deps.fundingStore.upsert({
-          accountId: subject.id,
-          status: 'admitted',
-          appliedAt,
-          decidedAt: nowMs,
-          decidedBy: staff.caller.id,
-          trialUtcDate: null,
-          admittedAt: nowMs,
-          note: observed.note,
-        });
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: subject.id,
+            status: 'admitted',
+            appliedAt,
+            decidedAt: nowMs,
+            decidedBy: staff.caller.id,
+            trialUtcDate: null,
+            admittedAt: nowMs,
+            note: observed.note,
+          },
+          ['pending', 'trial'],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
         logEvent('funding.admitted', { accountId: subject.id, actorId: staff.caller.id });
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
@@ -413,16 +431,22 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         const appliedAt = observed.appliedAt;
-        const grant = await deps.fundingStore.upsert({
-          accountId: subject.id,
-          status: 'rejected',
-          appliedAt,
-          decidedAt: nowMs,
-          decidedBy: staff.caller.id,
-          trialUtcDate: null,
-          admittedAt: null,
-          note: observed.note,
-        });
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: subject.id,
+            status: 'rejected',
+            appliedAt,
+            decidedAt: nowMs,
+            decidedBy: staff.caller.id,
+            trialUtcDate: null,
+            admittedAt: null,
+            note: observed.note,
+          },
+          ['pending', 'trial'],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
         logEvent('funding.rejected', { accountId: subject.id, actorId: staff.caller.id });
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {

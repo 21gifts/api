@@ -157,6 +157,23 @@ describe('InMemoryFundingStore', () => {
     expect(listed[0]?.trialUtcDate).toBe(TODAY);
   });
 
+  it('transition writes only when the stored status is in from', async () => {
+    const store = new InMemoryFundingStore();
+    const pending = grant({ status: 'pending' });
+    expect(await store.transition(pending, ['none', 'rejected'])).toEqual(pending);
+    const admitted = grant({
+      status: 'admitted',
+      decidedAt: DECIDED,
+      decidedBy: 'staff',
+      admittedAt: ADMITTED,
+    });
+    expect(await store.transition(admitted, ['pending', 'trial'])).toEqual(admitted);
+    expect(
+      await store.transition(grant({ status: 'rejected' }), ['pending', 'trial']),
+    ).toBeUndefined();
+    expect((await store.getByAccountId('acc-a'))?.status).toBe('admitted');
+  });
+
   it('copies seed, listed, got, and upserted objects so callers cannot mutate store state', async () => {
     const seed: FundingGrant[] = [grant({ note: 'seed' }), LATE];
     const store = new InMemoryFundingStore(seed);
@@ -215,6 +232,13 @@ class RaceStore implements FundingStore {
 
   upsert(grant: FundingGrant): Promise<FundingGrant> {
     return this.#inner.upsert(grant);
+  }
+
+  transition(
+    grant: FundingGrant,
+    from: readonly (FundingGrant['status'] | 'none')[],
+  ): Promise<FundingGrant | undefined> {
+    return this.#inner.transition(grant, from);
   }
 }
 
@@ -515,5 +539,40 @@ describe('PostgresFundingStore', () => {
     const sql = new MockSql();
     sql.executeError = new Error('write boom');
     await expect(new PostgresFundingStore(sql).upsert(grant())).rejects.toThrow('write boom');
+  });
+
+  it('transition INSERT ON CONFLICT WHERE status = ANY when from includes none', async () => {
+    const sql = new MockSql();
+    const input = grant({ status: 'pending' });
+    sql.nextRows = [
+      {
+        account_id: input.accountId,
+        status: 'pending',
+        applied_at: new Date(input.appliedAt),
+        decided_at: null,
+        decided_by: null,
+        trial_utc_date: null,
+        admitted_at: null,
+        note: null,
+      },
+    ];
+    const created = await new PostgresFundingStore(sql).transition(input, ['none', 'rejected']);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO funding_grant/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE funding_grant.status = ANY\(\$9::text\[\]\)/);
+    expect(sql.queries[0]?.params[8]).toEqual(['rejected']);
+    expect(created?.status).toBe('pending');
+  });
+
+  it('transition UPDATE WHERE status = ANY when from has no none', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const missed = await new PostgresFundingStore(sql).transition(
+      grant({ status: 'admitted', admittedAt: ADMITTED, decidedAt: DECIDED, decidedBy: 'staff' }),
+      ['pending', 'trial'],
+    );
+    expect(sql.queries[0]?.text).toMatch(/UPDATE funding_grant SET/);
+    expect(sql.queries[0]?.text).toMatch(/status = ANY\(\$9::text\[\]\)/);
+    expect(sql.queries[0]?.params[8]).toEqual(['pending', 'trial']);
+    expect(missed).toBeUndefined();
   });
 });

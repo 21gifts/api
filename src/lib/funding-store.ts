@@ -39,6 +39,19 @@ export interface FundingStore {
    * @returns The stored grant (a copy).
    */
   upsert(grant: FundingGrant): Promise<FundingGrant>;
+
+  /**
+   * Write `grant` only when the stored status is in `from` (`'none'` = no
+   * row). Zero matching rows → `undefined` (caller maps to HTTP 409).
+   *
+   * @param grant - Fully formed next grant.
+   * @param from - Allowed current statuses, including `'none'` for insert.
+   * @returns The stored grant, or `undefined` when the CAS missed.
+   */
+  transition(
+    grant: FundingGrant,
+    from: readonly (FundingStatus | 'none')[],
+  ): Promise<FundingGrant | undefined>;
 }
 
 /** Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`). */
@@ -174,6 +187,27 @@ export class InMemoryFundingStore implements FundingStore {
     this.#grants.set(stored.accountId, stored);
     return Promise.resolve(copyGrant(stored));
   }
+
+  /**
+   * Write `grant` only when the in-memory status is in `from`.
+   *
+   * @param grant - Fully formed next grant.
+   * @param from - Allowed current statuses, including `'none'` for insert.
+   * @returns The stored grant, or `undefined` when the CAS missed.
+   */
+  transition(
+    grant: FundingGrant,
+    from: readonly (FundingStatus | 'none')[],
+  ): Promise<FundingGrant | undefined> {
+    const current = this.#grants.get(grant.accountId);
+    const observed: FundingStatus | 'none' = current === undefined ? 'none' : current.status;
+    if (!from.includes(observed)) {
+      return Promise.resolve(undefined);
+    }
+    const stored = copyGrant(grant);
+    this.#grants.set(stored.accountId, stored);
+    return Promise.resolve(copyGrant(stored));
+  }
 }
 
 /** Row shape selected from `funding_grant`. */
@@ -272,6 +306,63 @@ export class PostgresFundingStore implements FundingStore {
       ],
     );
     return copyGrant(grant);
+  }
+
+  /**
+   * Write `grant` only when the stored status is in `from`. `'none'` uses
+   * `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY(from without none)`.
+   *
+   * @param grant - Fully formed next grant.
+   * @param from - Allowed current statuses, including `'none'` for insert.
+   * @returns The stored grant, or `undefined` when the CAS missed.
+   */
+  async transition(
+    grant: FundingGrant,
+    from: readonly (FundingStatus | 'none')[],
+  ): Promise<FundingGrant | undefined> {
+    const fromStatus = from.filter((status): status is FundingStatus => status !== 'none');
+    const params = [
+      grant.accountId,
+      grant.status,
+      new Date(grant.appliedAt),
+      grant.decidedAt === null ? null : new Date(grant.decidedAt),
+      grant.decidedBy,
+      grant.trialUtcDate,
+      grant.admittedAt === null ? null : new Date(grant.admittedAt),
+      grant.note,
+      fromStatus,
+    ];
+    const rows = from.includes('none')
+      ? await this.#sql.query<FundingSqlRow>(
+          `INSERT INTO funding_grant (account_id, status, applied_at, decided_at, decided_by, trial_utc_date, admitted_at, note)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (account_id) DO UPDATE SET
+             status = EXCLUDED.status,
+             applied_at = EXCLUDED.applied_at,
+             decided_at = EXCLUDED.decided_at,
+             decided_by = EXCLUDED.decided_by,
+             trial_utc_date = EXCLUDED.trial_utc_date,
+             admitted_at = EXCLUDED.admitted_at,
+             note = EXCLUDED.note
+           WHERE funding_grant.status = ANY($9::text[])
+           RETURNING ${FUNDING_SELECT}`,
+          params,
+        )
+      : await this.#sql.query<FundingSqlRow>(
+          `UPDATE funding_grant SET
+             status = $2,
+             applied_at = $3,
+             decided_at = $4,
+             decided_by = $5,
+             trial_utc_date = $6,
+             admitted_at = $7,
+             note = $8
+           WHERE account_id = $1 AND status = ANY($9::text[])
+           RETURNING ${FUNDING_SELECT}`,
+          params,
+        );
+    const row = rows[0];
+    return row === undefined ? undefined : mapFundingRow(row);
   }
 
   /**

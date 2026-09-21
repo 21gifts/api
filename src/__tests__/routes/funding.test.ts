@@ -712,6 +712,21 @@ describe('POST /funding/admit', () => {
     );
   });
 
+  it('returns 409 when the CAS transition misses after the status check', async () => {
+    const { authStore } = await staffed();
+    const pending = grant({ accountId: VERIFIED, status: 'pending' });
+    const store: FundingStore = {
+      getByAccountId: () => Promise.resolve(pending),
+      listGrants: () => Promise.resolve([pending]),
+      upsert: () => Promise.resolve(pending),
+      transition: () => Promise.resolve(undefined),
+    };
+    const app = mount(authStore, store);
+    expect((await post(app, '/funding/admit', 'founder', { accountId: VERIFIED })).status).toBe(
+      409,
+    );
+  });
+
   it('admits from pending and from trial the same day', async () => {
     const { authStore, fundingStore } = await staffed();
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending', appliedAt: 4 }));

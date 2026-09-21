@@ -2085,7 +2085,7 @@
 
 ## Function: fundingRoutes
 
-- **Purpose:** Hono sub-app for member `POST /apply` and staff `GET /applications`, `GET /applications/:accountId`, `POST /trial`, `POST /admit`, and `POST /reject`. `basis` cannot apply (403). Apply from effective none/rejected only. Staff list is effective pending (expired trials after `loadGrantEffective`). Trial from pending; admit from pending or trial; reject from pending or trial. Staff cannot target themselves (409). UUID check reuses `MESSAGE_ID_RE`. Logs `funding.applied` / `funding.trial` / `funding.admitted` / `funding.rejected` / `funding.applications.listed`. Store throw → 503 `{ error: 'Funding is unavailable' }`.
+- **Purpose:** Hono sub-app for member `POST /apply` and staff `GET /applications`, `GET /applications/:accountId`, `POST /trial`, `POST /admit`, and `POST /reject`. `basis` cannot apply (403). Apply from effective none/rejected only. Staff list is effective pending (expired trials after `loadGrantEffective`). Trial from pending; admit from pending or trial; reject from pending or trial. Writes go through `FundingStore.transition` (apply `from` none/rejected; trial pending; admit/reject pending or trial); 0 matching rows is 409 so a concurrent decision cannot overwrite. Staff cannot target themselves (409). UUID check reuses `MESSAGE_ID_RE`. Logs `funding.applied` / `funding.trial` / `funding.admitted` / `funding.rejected` / `funding.applications.listed`. Store throw → 503 `{ error: 'Funding is unavailable' }`.
 - **Inputs:** `FundingRouteDeps`: `authStore`, `fundingStore`, `messageStore`, `now`.
 - **Returns / side effects:** Hono app mounted at `/funding`. 401/403/400/404/409/503 with the documented `{ error }` strings; apply 200 `{ funding }`; list 200 `{ applications }`; detail 200 `{ account, grant, messages }`; staff POSTs 200 `{ id, name, role, funding }`.
 - **Used by:** `createApp`.
@@ -2205,14 +2205,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: InMemoryFundingStore
 
-- **Purpose:** Process-local `FundingStore` for funding-program grants. Default empty so the process boots without a database. `createApp` uses this when boot leaves `fundingStore` undefined (memory `DATABASE_URL`). `getByAccountId` / `listGrants` / `upsert` copy on read and write. `listGrants` sorts oldest `appliedAt` then `accountId` ASC. Second `upsert` for the same account replaces the row.
+- **Purpose:** Process-local `FundingStore` for funding-program grants. Default empty so the process boots without a database. `createApp` uses this when boot leaves `fundingStore` undefined (memory `DATABASE_URL`). `getByAccountId` / `listGrants` / `upsert` / `transition` copy on read and write. `listGrants` sorts oldest `appliedAt` then `accountId` ASC. Second `upsert` for the same account replaces the row. `transition` writes only when the in-memory status is in `from` (`'none'` = no row); otherwise `undefined`.
 - **Inputs:** Optional seed `FundingGrant[]` (copied into a private `Map` keyed by `accountId`).
 - **Returns / side effects:** Promise of grant copies; mutating results or the seed does not change the store. No I/O.
 - **Used by:** `createApp` default `fundingStore`.
 
 ## Function: PostgresFundingStore
 
-- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. `expireTrialIfUnchanged` is `UPDATE … WHERE account_id=$1 AND status='trial' AND trial_utc_date=$2 RETURNING *` (0 rows → `getByAccountId`). Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`.
+- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. `transition` is `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY($9::text[])` when `from` includes `'none'`, else `UPDATE … WHERE account_id=$1 AND status = ANY($9::text[]) RETURNING *` (0 rows → `undefined`). `expireTrialIfUnchanged` is `UPDATE … WHERE account_id=$1 AND status='trial' AND trial_utc_date=$2 RETURNING *` (0 rows → `getByAccountId`). Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Query and execute errors propagate.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
