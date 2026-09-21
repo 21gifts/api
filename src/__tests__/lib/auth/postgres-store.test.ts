@@ -1293,13 +1293,13 @@ describe('PostgresAuthStore', () => {
     expect(undef?.createdAt).toBeNull();
   });
 
-  it('markWalletBackupSeen uses COALESCE so a later write cannot clear the timestamp', async () => {
+  it('markWalletBackupSeen writes only when the timestamp is still null', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(9) }];
+    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(10) }];
     const stored = await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10);
-    expect(sql.queries[0]?.text).toMatch(/COALESCE/);
-    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
-    expect(stored?.walletBackupSeenAt).toBe(9);
+    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at IS NULL/);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.walletBackupSeenAt).toBe(10);
   });
 
   it('markWalletBackupSeen returns undefined when no row is updated', async () => {

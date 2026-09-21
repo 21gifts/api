@@ -10,6 +10,22 @@ import {
 } from '@simplewebauthn/server';
 import { prfEvalFirstSalt } from '@/lib/auth/prf';
 
+/** True when the browser payload includes PRF output. The api must not see it. */
+function credentialHasPrfResults(response: unknown): boolean {
+  if (typeof response !== 'object' || response === null) {
+    return false;
+  }
+  const extensions = (response as { clientExtensionResults?: unknown }).clientExtensionResults;
+  if (typeof extensions !== 'object' || extensions === null) {
+    return false;
+  }
+  const prf = (extensions as { prf?: unknown }).prf;
+  if (typeof prf !== 'object' || prf === null) {
+    return false;
+  }
+  return Object.prototype.hasOwnProperty.call(prf, 'results');
+}
+
 /**
  * Collaborator that talks to the WebAuthn library. Tests inject a fake so HTTP
  * and domain logic do not need a live authenticator.
@@ -133,6 +149,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     | { ok: true; credentialId: string; publicKey: Uint8Array; signCount: number }
     | { ok: false; reason: string }
   > {
+    if (credentialHasPrfResults(input.response)) {
+      return { ok: false, reason: 'Invalid passkey' };
+    }
     if (!isRegistrationResponse(input.response)) {
       return { ok: false, reason: 'Invalid passkey' };
     }
@@ -196,6 +215,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     publicKey: Uint8Array;
     signCount: number;
   }): Promise<{ ok: true; newSignCount: number } | { ok: false; reason: string }> {
+    if (credentialHasPrfResults(input.response)) {
+      return { ok: false, reason: 'Invalid passkey' };
+    }
     if (!isAuthenticationResponse(input.response)) {
       return { ok: false, reason: 'Invalid passkey' };
     }

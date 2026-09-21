@@ -483,7 +483,8 @@ describe('POST /me/wallet-backup-seen', () => {
     const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
     expect(await store.markWalletBackupSeen('acc', 1_000_000)).toMatchObject({
-      walletBackupSeenAt: 1_000_000,
+      wrote: true,
+      account: { walletBackupSeenAt: 1_000_000 },
     });
     const res = await mount(store, { clock: () => 2_000_000 }).request('/me/wallet-backup-seen', {
       method: 'POST',

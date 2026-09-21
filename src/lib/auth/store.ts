@@ -189,7 +189,10 @@ export interface AuthStore {
    * stay unchanged. Returns the stored row, or `undefined` when the id is
    * unknown.
    */
-  markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined>;
+  markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
   /**
    * Set only `name` on the account that owns this Lightning Address
    * (`lower(trim)` match). Other columns stay unchanged.
@@ -435,17 +438,20 @@ export class InMemoryAuthStore implements AuthStore {
     }
   }
 
-  async markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined> {
+  async markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
     const current = this.#accounts.get(accountId);
     if (current === undefined) {
       return undefined;
     }
     if (current.walletBackupSeenAt !== null && current.walletBackupSeenAt !== undefined) {
-      return current;
+      return { account: current, wrote: false };
     }
     const updated: Account = { ...current, walletBackupSeenAt: now };
     this.#accounts.set(accountId, updated);
-    return updated;
+    return { account: updated, wrote: true };
   }
 
   async updateAccount(account: Account): Promise<void> {

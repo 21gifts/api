@@ -97,7 +97,7 @@ describe('InMemoryAuthStore', () => {
     });
     expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBeNull();
-    expect((await store.markWalletBackupSeen('acc', 42))?.walletBackupSeenAt).toBe(42);
+    expect((await store.markWalletBackupSeen('acc', 42))?.account.walletBackupSeenAt).toBe(42);
     await store.updateAccount({
       id: 'acc',
       linkingKey: KEY,
@@ -1275,12 +1275,14 @@ describe('InMemoryAuthStore', () => {
       rulesAgreedAt: null,
     });
     const first = await store.markWalletBackupSeen('acc', 9);
-    expect(first?.walletBackupSeenAt).toBe(9);
-    expect(first?.name).toBe('Ada');
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.walletBackupSeenAt).toBe(9);
+    expect(first?.account.name).toBe('Ada');
     const second = await store.markWalletBackupSeen('acc', 10);
-    expect(second?.walletBackupSeenAt).toBe(9);
+    expect(second?.wrote).toBe(false);
+    expect(second?.account.walletBackupSeenAt).toBe(9);
     expect(await store.markWalletBackupSeen('missing', 1)).toBeUndefined();
-    await store.updateAccount({ ...first!, name: 'Grace', walletBackupSeenAt: null });
+    await store.updateAccount({ ...first!.account, name: 'Grace', walletBackupSeenAt: null });
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(9);
     expect((await store.getAccount('acc'))?.name).toBe('Grace');
   });

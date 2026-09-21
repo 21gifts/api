@@ -244,15 +244,15 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const updated = await deps.store.markWalletBackupSeen(current.id, deps.now());
+      const marked = await deps.store.markWalletBackupSeen(current.id, deps.now());
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (updated === undefined) {
+      if (marked === undefined) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if (current.walletBackupSeenAt === null || current.walletBackupSeenAt === undefined) {
+      if (marked.wrote) {
         logEvent('account.wallet.backup_seen', { accountId: current.id });
       }
-      return c.json(await ownerJson(deps, updated), 200);
+      return c.json(await ownerJson(deps, marked.account), 200);
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

@@ -146,19 +146,27 @@ export class PostgresAuthStore implements AuthStore {
     }
   }
 
-  async markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined> {
-    const rows = await this.#sql.query<AccountRow>(
+  async markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
       `UPDATE account
-       SET wallet_backup_seen_at = COALESCE(
-         wallet_backup_seen_at,
-         to_timestamp($2::double precision / 1000.0)
-       )
-       WHERE id = $1
+       SET wallet_backup_seen_at = to_timestamp($2::double precision / 1000.0)
+       WHERE id = $1 AND wallet_backup_seen_at IS NULL
        RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
       [accountId, now],
     );
-    const row = rows[0];
-    return row === undefined ? undefined : mapAccount(row);
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      return { account: mapAccount(wroteRow), wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    return row === undefined ? undefined : { account: mapAccount(row), wrote: false };
   }
 
   async updateAccount(account: Account): Promise<void> {

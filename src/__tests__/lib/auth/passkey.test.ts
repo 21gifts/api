@@ -324,7 +324,8 @@ describe('passkey claim', () => {
     const existing = await store.getAccount('provisioned');
     expect(existing).toBeDefined();
     expect(await store.markWalletBackupSeen('provisioned', 99)).toMatchObject({
-      walletBackupSeenAt: 99,
+      wrote: true,
+      account: { walletBackupSeenAt: 99 },
     });
     const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(begin.ok).toBe(true);
