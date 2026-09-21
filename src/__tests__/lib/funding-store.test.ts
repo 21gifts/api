@@ -240,6 +240,10 @@ class RaceStore implements FundingStore {
   ): Promise<FundingGrant | undefined> {
     return this.#inner.transition(grant, from);
   }
+
+  expireTrialIfUnchanged(grant: FundingGrant): Promise<FundingGrant | undefined> {
+    return this.#inner.expireTrialIfUnchanged(grant);
+  }
 }
 
 describe('loadGrantEffective', () => {

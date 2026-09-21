@@ -52,6 +52,16 @@ export interface FundingStore {
     grant: FundingGrant,
     from: readonly (FundingStatus | 'none')[],
   ): Promise<FundingGrant | undefined>;
+
+  /**
+   * Persist pending only when the row is still `status='trial'` with
+   * `grant.trialUtcDate`. Zero matching rows → current row via
+   * {@link getByAccountId}.
+   *
+   * @param grant - Expired trial from the first read.
+   * @returns The pending row when the CAS matched, else the current grant.
+   */
+  expireTrialIfUnchanged(grant: FundingGrant): Promise<FundingGrant | undefined>;
 }
 
 /** Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`). */
@@ -115,8 +125,9 @@ export async function loadGrantEffective(
 
 /**
  * Rewrite expired trial → pending only while the row is still that trial.
- * Postgres uses `UPDATE … WHERE status='trial' AND trial_utc_date`; InMemory
- * re-reads, then upserts pending or returns the current row.
+ * Both stores use {@link FundingStore.expireTrialIfUnchanged} (InMemory
+ * compares the map without yielding; Postgres `UPDATE … WHERE status='trial'
+ * AND trial_utc_date`).
  *
  * @param store - Funding persistence.
  * @param grant - Expired trial from the first read.
@@ -126,18 +137,7 @@ async function persistExpiredTrial(
   store: FundingStore,
   grant: FundingGrant,
 ): Promise<FundingGrant | undefined> {
-  if (store instanceof PostgresFundingStore) {
-    return store.expireTrialIfUnchanged(grant);
-  }
-  const current = await store.getByAccountId(grant.accountId);
-  if (
-    current !== undefined &&
-    current.status === 'trial' &&
-    current.trialUtcDate === grant.trialUtcDate
-  ) {
-    return store.upsert(expiredTrialAsPending(grant));
-  }
-  return current;
+  return store.expireTrialIfUnchanged(grant);
 }
 
 /**
@@ -207,6 +207,27 @@ export class InMemoryFundingStore implements FundingStore {
     const stored = copyGrant(grant);
     this.#grants.set(stored.accountId, stored);
     return Promise.resolve(copyGrant(stored));
+  }
+
+  /**
+   * Write pending only when the in-memory row is still that expired trial.
+   *
+   * @param grant - Expired trial from the first read.
+   * @returns The pending row when the CAS matched, else the current grant.
+   */
+  expireTrialIfUnchanged(grant: FundingGrant): Promise<FundingGrant | undefined> {
+    const current = this.#grants.get(grant.accountId);
+    if (
+      current !== undefined &&
+      current.status === 'trial' &&
+      current.trialUtcDate === grant.trialUtcDate
+    ) {
+      const pending = expiredTrialAsPending(grant);
+      const stored = copyGrant(pending);
+      this.#grants.set(stored.accountId, stored);
+      return Promise.resolve(copyGrant(stored));
+    }
+    return Promise.resolve(current === undefined ? undefined : copyGrant(current));
   }
 }
 

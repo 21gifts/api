@@ -127,6 +127,9 @@ const boomStore: FundingStore = {
   transition: async () => {
     throw new Error('boom');
   },
+  expireTrialIfUnchanged: async () => {
+    throw new Error('boom');
+  },
 };
 
 describe('POST /funding/apply', () => {
@@ -176,6 +179,7 @@ describe('POST /funding/apply', () => {
       listGrants: () => Promise.resolve([]),
       upsert: () => Promise.resolve(grant({ accountId: VERIFIED, status: 'pending' })),
       transition: () => Promise.resolve(undefined),
+      expireTrialIfUnchanged: () => Promise.resolve(undefined),
     };
     expect((await post(mount(authStore, store), '/funding/apply', 'verified')).status).toBe(409);
   });
@@ -658,6 +662,9 @@ describe('POST /funding/trial', () => {
       transition: async () => {
         throw new Error('boom');
       },
+      expireTrialIfUnchanged: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/trial', 'founder', {
       accountId: VERIFIED,
@@ -673,6 +680,7 @@ describe('POST /funding/trial', () => {
       listGrants: () => Promise.resolve([pending]),
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
+      expireTrialIfUnchanged: () => Promise.resolve(undefined),
     };
     expect(
       (await post(mount(authStore, store), '/funding/trial', 'founder', { accountId: VERIFIED }))
@@ -751,6 +759,7 @@ describe('POST /funding/admit', () => {
       listGrants: () => Promise.resolve([pending]),
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
+      expireTrialIfUnchanged: () => Promise.resolve(undefined),
     };
     const app = mount(authStore, store);
     expect((await post(app, '/funding/admit', 'founder', { accountId: VERIFIED })).status).toBe(
@@ -816,6 +825,9 @@ describe('POST /funding/admit', () => {
         throw new Error('boom');
       },
       transition: async () => {
+        throw new Error('boom');
+      },
+      expireTrialIfUnchanged: async () => {
         throw new Error('boom');
       },
     };
@@ -913,6 +925,9 @@ describe('POST /funding/reject', () => {
       transition: async () => {
         throw new Error('boom');
       },
+      expireTrialIfUnchanged: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/reject', 'founder', {
       accountId: VERIFIED,
@@ -928,6 +943,7 @@ describe('POST /funding/reject', () => {
       listGrants: () => Promise.resolve([pending]),
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
+      expireTrialIfUnchanged: () => Promise.resolve(undefined),
     };
     expect(
       (await post(mount(authStore, store), '/funding/reject', 'founder', { accountId: VERIFIED }))

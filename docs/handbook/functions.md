@@ -2205,7 +2205,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: InMemoryFundingStore
 
-- **Purpose:** Process-local `FundingStore` for funding-program grants. Default empty so the process boots without a database. `createApp` uses this when boot leaves `fundingStore` undefined (memory `DATABASE_URL`). `getByAccountId` / `listGrants` / `upsert` / `transition` copy on read and write. `listGrants` sorts oldest `appliedAt` then `accountId` ASC. Second `upsert` for the same account replaces the row. `transition` writes only when the in-memory status is in `from` (`'none'` = no row); otherwise `undefined`.
+- **Purpose:** Process-local `FundingStore` for funding-program grants. Default empty so the process boots without a database. `createApp` uses this when boot leaves `fundingStore` undefined (memory `DATABASE_URL`). `getByAccountId` / `listGrants` / `upsert` / `transition` / `expireTrialIfUnchanged` copy on read and write. `listGrants` sorts oldest `appliedAt` then `accountId` ASC. Second `upsert` for the same account replaces the row. `transition` writes only when the in-memory status is in `from` (`'none'` = no row); otherwise `undefined`. `expireTrialIfUnchanged` writes pending only when the map row is still `status='trial'` with the same `trialUtcDate` (no await between check and set).
 - **Inputs:** Optional seed `FundingGrant[]` (copied into a private `Map` keyed by `accountId`).
 - **Returns / side effects:** Promise of grant copies; mutating results or the seed does not change the store. No I/O.
 - **Used by:** `createApp` default `fundingStore`.
