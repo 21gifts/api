@@ -186,7 +186,8 @@ export class PostgresDebugDbStore implements DebugDbStore {
   }
 
   /**
-   * One keyset page. No primary key uses `ctid`.
+   * One keyset page. No primary key, or a primary key that is a secret
+   * column, uses `ctid` so the cursor never carries the secret.
    *
    * @param table - Catalog name.
    * @param cursor - Previous page cursor, or null.
@@ -213,7 +214,8 @@ export class PostgresDebugDbStore implements DebugDbStore {
     const primaryKey = keyRows
       .map((row) => row.name)
       .filter((name): name is string => typeof name === 'string' && IDENT.test(name));
-    const useCtid = primaryKey.length === 0;
+    const secretKey = primaryKey.some((name) => SECRET.has(name));
+    const useCtid = primaryKey.length === 0 || secretKey;
     if (!useCtid && columns.length === 0) {
       return { table, columns: [], rows: [], nextCursor: null };
     }

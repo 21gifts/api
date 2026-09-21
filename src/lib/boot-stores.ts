@@ -141,9 +141,9 @@ export interface BootFxOptions {
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, `listDbChange: undefined`,
- * `nostrKek: undefined`, an empty {@link InMemoryBtcUsdStore}, and an empty
- * {@link InMemoryFiatStore}. A set URL asks `createClient` for one `SqlClient`,
- * migrates auth (via
+ * `debugDbStore: undefined`, `nostrKek: undefined`,
+ * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
+ * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust

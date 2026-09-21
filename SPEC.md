@@ -1311,13 +1311,21 @@ zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
 
 Operator read of every ordinary table in schema `public`. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
-session. No `table` returns `{ tables: [{ name, rowCount }] }`. `table`
-returns 200 rows and `nextCursor` when another page exists. Follow
-`nextCursor` until it is absent. `bytea` cells are octet lengths. Text in
-`token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`,
-`endpoint`, `p256dh`, `auth`, and `delivered_endpoints` is the string
-`"redacted"`. A cursor that does not match the key is 400. An unknown table
-is 404.
+session. `DEBUG_TOKEN` unset or blank → **Response** `503`
+`{ "error": "Debug is not configured" }`. Missing or non-matching bearer →
+**Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
+process has no SQL client → **Response** `503`
+`{ "error": "Database is not configured" }`. No `table` returns
+`{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
+`nextCursor` when another page exists. Follow `nextCursor` until it is
+absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
+Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
+`auth`, and `delivered_endpoints` is the string `"redacted"`. A primary key
+that is one of those columns is paged by `ctid`, so the cursor is not the
+secret. A cursor that does not match the key is **Response** `400`
+`{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
+`{ "error": "Not found" }`. A store failure is **Response** `503`
+`{ "error": "Database is unavailable" }`.
 
 ### `GET /debug/accounts`
 

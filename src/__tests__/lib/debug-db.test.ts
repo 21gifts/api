@@ -30,6 +30,8 @@ function scripted(
           { name: 'bad name' },
           { name: 'loose' },
           { name: 'bare' },
+          { name: 'sessions' },
+          { name: 'pushes' },
           { name: 4 },
         ] as T[]);
       }
@@ -47,6 +49,12 @@ function scripted(
         if (regclass.endsWith('loose')) {
           return Promise.resolve([{ name: null }, { name: 'bad-key' }] as T[]);
         }
+        if (regclass.endsWith('sessions')) {
+          return Promise.resolve([{ name: 'token' }] as T[]);
+        }
+        if (regclass.endsWith('pushes')) {
+          return Promise.resolve([{ name: 'endpoint' }] as T[]);
+        }
         if (regclass.endsWith('bare')) {
           return Promise.resolve([{ name: 'id' }] as T[]);
         }
@@ -63,6 +71,12 @@ function scripted(
             { name: null, type: 'text' },
           ] as T[]);
         }
+        if (regclass.endsWith('sessions')) {
+          return Promise.resolve([{ name: 'token', type: 'text' }] as T[]);
+        }
+        if (regclass.endsWith('pushes')) {
+          return Promise.resolve([{ name: 'endpoint', type: 'text' }] as T[]);
+        }
         return Promise.resolve([
           { name: 'id', type: 'uuid' },
           { name: 'photo', type: 'bytea' },
@@ -76,6 +90,8 @@ function scripted(
         return Promise.resolve(
           Array.from({ length: loosePages }, (_, index) => ({
             id: `loose-${index}`,
+            token: `sekret-${index}`,
+            endpoint: `https://push.example/${index}`,
             debug_db_ctid: `(0,${index})`,
           })) as T[],
         );
@@ -116,6 +132,8 @@ describe('PostgresDebugDbStore', () => {
       { name: 'message', rowCount: 2 },
       { name: 'loose', rowCount: 0 },
       { name: 'bare', rowCount: 0 },
+      { name: 'sessions', rowCount: 0 },
+      { name: 'pushes', rowCount: 0 },
     ]);
     expect(calls.some((call) => call.text.includes('bad name'))).toBe(false);
     expect(calls.some((call) => call.text.includes('FROM "message"'))).toBe(true);
@@ -201,6 +219,23 @@ describe('PostgresDebugDbStore', () => {
     expect(paged?.text).toContain('WHERE ctid > $1::tid');
     expect(paged?.params).toEqual([`(0,${DEBUG_DB_PAGE_SIZE - 1})`]);
     expect(rest?.nextCursor).toBeNull();
+  });
+
+  it('pages a secret primary key by ctid so the cursor is not the secret', async () => {
+    const full = scripted(1, DEBUG_DB_PAGE_SIZE + 1);
+    const store = new PostgresDebugDbStore(full.sql);
+    const sessions = await store.readPage('sessions', null);
+    const pushes = await store.readPage('pushes', null);
+    expect(sessions?.rows[0]).toEqual({ token: 'redacted' });
+    expect(pushes?.rows[0]).toEqual({ endpoint: 'redacted' });
+    const ctid = `(0,${DEBUG_DB_PAGE_SIZE - 1})`;
+    expect(sessions?.nextCursor).toBe(cursorOf([ctid]));
+    expect(pushes?.nextCursor).toBe(cursorOf([ctid]));
+    const decoded = JSON.parse(
+      Buffer.from(sessions?.nextCursor ?? '', 'base64url').toString('utf8'),
+    ) as unknown[];
+    expect(JSON.stringify(decoded)).not.toContain('sekret');
+    expect(JSON.stringify(decoded)).not.toContain('push.example');
   });
 
   it('rejects a cursor that is not a JSON array or has the wrong arity', async () => {
