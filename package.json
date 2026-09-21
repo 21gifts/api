@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:postgres": "bun test integration/sql-driver.test.ts",
     "handbook:check": "node scripts/check-handbook.mjs",
     "e2e:check": "node scripts/check-e2e.mjs",
     "e2e": "playwright test"

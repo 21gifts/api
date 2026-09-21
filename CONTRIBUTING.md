@@ -79,6 +79,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
+│   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
@@ -188,6 +189,7 @@ api/
 │       │   ├── request-auth.test.ts
 │       │   ├── funding.test.ts
 │       │   ├── funding-store.test.ts
+│       │   ├── postgres-text-array.test.ts
 │       │   ├── conversation.test.ts
 │       │   ├── conversation-store.test.ts
 │       │   ├── conversation-push.test.ts
@@ -446,6 +448,10 @@ undeclared deviation and is rejected.
 - Coverage gate: 100% lines, branches, functions, statements on the activated surface
   (see `vitest.config.ts`). Unreachable defensive code can be exempted with a
   `v8 ignore` annotation that names a concrete reason — never to silence the gate.
+- Vitest stays free of `DATABASE_URL`. `bun run test:postgres` is a separate Bun test against
+  Postgres. `$n::text[]` and `$n::uuid[]` parameters must be one array-literal string
+  (`postgresTextArrayLiteral` for text). A JavaScript array is `malformed array literal` under
+  Bun `SQL.unsafe`. CI runs this script and fails if `DATABASE_URL` is missing.
 
 ### Before every push (the same checks CI runs)
 
@@ -455,6 +461,8 @@ bun run lint
 bun run handbook:check
 bun run e2e:check
 bun run test:coverage
+# Postgres driver (Bun test, not Vitest); fails if DATABASE_URL is missing
+DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run test:postgres
 bun run build
 bun run e2e
 ```

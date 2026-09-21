@@ -572,7 +572,7 @@ describe('PostgresFundingStore', () => {
     const created = await new PostgresFundingStore(sql).transition(input, ['none', 'rejected']);
     expect(sql.queries[0]?.text).toMatch(/INSERT INTO funding_grant/);
     expect(sql.queries[0]?.text).toMatch(/WHERE funding_grant.status = ANY\(\$9::text\[\]\)/);
-    expect(sql.queries[0]?.params[8]).toEqual(['rejected']);
+    expect(sql.queries[0]?.params[8]).toBe('{"rejected"}');
     expect(created?.status).toBe('pending');
   });
 
@@ -585,7 +585,7 @@ describe('PostgresFundingStore', () => {
     );
     expect(sql.queries[0]?.text).toMatch(/UPDATE funding_grant SET/);
     expect(sql.queries[0]?.text).toMatch(/status = ANY\(\$9::text\[\]\)/);
-    expect(sql.queries[0]?.params[8]).toEqual(['pending', 'trial']);
+    expect(sql.queries[0]?.params[8]).toBe('{"pending","trial"}');
     expect(missed).toBeUndefined();
   });
 });
