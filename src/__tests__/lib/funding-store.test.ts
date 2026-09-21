@@ -271,6 +271,15 @@ describe('loadGrantEffective', () => {
     expect(await store.getByAccountId('acc-a')).toEqual(loaded);
   });
 
+  it('expireTrialIfUnchanged returns undefined when no row exists', async () => {
+    const store = new InMemoryFundingStore();
+    expect(
+      await store.expireTrialIfUnchanged(
+        grant({ status: 'trial', trialUtcDate: YESTERDAY, decidedAt: DECIDED, decidedBy: 'staff' }),
+      ),
+    ).toBeUndefined();
+  });
+
   it('does not overwrite an admitted row that replaced the expired trial', async () => {
     const expired = grant({
       status: 'trial',
