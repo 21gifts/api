@@ -93,6 +93,7 @@ function mount(
     spendPing?: SpendPing;
     pushStore?: InMemoryPushStore;
     fundingStore?: InMemoryFundingStore;
+    now?: () => number;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -101,7 +102,7 @@ function mount(
       store: conversations,
       authStore,
       messageStore: messages,
-      now,
+      now: extra.now ?? now,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
@@ -2600,14 +2601,16 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
-      `/conversations/${thread.id}`,
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hello mods' }),
-      },
-    );
+    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
+      spendPing,
+      now: () => gateNow,
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(
