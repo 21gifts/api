@@ -673,6 +673,9 @@ describe('loadDebugTables', () => {
       contacts: new InMemoryContactStore(),
     });
     expect(capped.auth_session).toHaveLength(MESSAGE_LIST_LIMIT);
+    expect(capped.auth_session[0]).toEqual(
+      expect.objectContaining({ createdAt: MESSAGE_LIST_LIMIT }),
+    );
     const newestAuth = new InMemoryAuthStore();
     for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
       await newestAuth.createAccount({

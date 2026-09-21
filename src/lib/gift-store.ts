@@ -74,6 +74,12 @@ export class InMemoryGiftStore implements GiftStore {
     return Promise.resolve([...this.rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime()));
   }
 
+  /**
+   * Operator dump of stored gift columns, newest `paidAt` first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Debug rows.
+   */
   listDebug(limit: number): Promise<GiftDebugRow[]> {
     return this.listOutbound().then((rows) =>
       [...rows]
@@ -123,6 +129,12 @@ export class QueryGiftStore implements GiftStore {
     return this.query();
   }
 
+  /**
+   * Operator dump of stored gift columns, newest `paidAt` first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Debug rows from `debugQuery` when set, otherwise mapped outbound gifts.
+   */
   listDebug(limit: number): Promise<GiftDebugRow[]> {
     if (this.debugQuery !== undefined) {
       return this.debugQuery().then((rows) => rows.slice(0, limit));

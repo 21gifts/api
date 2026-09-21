@@ -97,6 +97,13 @@ function cap<T>(rows: T[]): T[] {
   return rows.length > MESSAGE_LIST_LIMIT ? rows.slice(0, MESSAGE_LIST_LIMIT) : rows;
 }
 
+function newestByCreatedAt<T extends { createdAt: number }>(
+  rows: readonly T[],
+  key: (row: T) => string,
+): T[] {
+  return [...rows].sort((a, b) => b.createdAt - a.createdAt || key(b).localeCompare(key(a)));
+}
+
 function iso(value: Date | null): string | null {
   return value === null ? null : value.toISOString();
 }
@@ -149,20 +156,28 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
           debugNostrFieldsFromListRow(row),
         ]),
       );
-      return [...accounts]
-        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-        .map((account) =>
-          serializeDebugAccount(account, nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR),
-        );
+      return newestByCreatedAt(accounts, (row) => row.id).map((account) =>
+        serializeDebugAccount(account, nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR),
+      );
     }
     case 'passkey_credential':
-      return (await deps.auth.listPasskeyCredentials()).map(serializeDebugPasskey);
+      return newestByCreatedAt(
+        await deps.auth.listPasskeyCredentials(),
+        (row) => row.credentialId,
+      ).map(serializeDebugPasskey);
     case 'passkey_challenge':
-      return (await deps.auth.listPasskeyChallenges()).map(serializeDebugPasskeyChallenge);
+      return newestByCreatedAt(await deps.auth.listPasskeyChallenges(), (row) => row.id).map(
+        serializeDebugPasskeyChallenge,
+      );
     case 'auth_session':
-      return (await deps.auth.listSessions()).map(serializeDebugSession);
+      return newestByCreatedAt(await deps.auth.listSessions(), (row) => row.token).map(
+        serializeDebugSession,
+      );
     case 'address_verification':
-      return (await deps.auth.listAddressVerifications()).map(serializeDebugAddressVerification);
+      return newestByCreatedAt(
+        await deps.auth.listAddressVerifications(),
+        (row) => `${row.accountId}\0${row.address}`,
+      ).map(serializeDebugAddressVerification);
     case 'api_log':
       return ((await deps.apiLog?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugApiLog);
     case 'contact':
