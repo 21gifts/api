@@ -43,6 +43,23 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect((generated.options.extensions as { prf?: unknown } | undefined)?.prf).toEqual({});
   });
 
+  it('rejects a registration response that includes PRF results', async () => {
+    const result = await ceremony.verifyRegistration({
+      response: {
+        id: 'x',
+        rawId: 'x',
+        type: 'public-key',
+        response: { clientDataJSON: 'e30' },
+        clientExtensionResults: { prf: { results: { first: 'secret' } } },
+      },
+      expectedChallenge: 'abc',
+      expectedOrigin: 'http://localhost:3000',
+      expectedRPID: 'localhost',
+    });
+    expect(result).toEqual({ ok: false, reason: 'Invalid passkey' });
+    expect(vi.mocked(verifyRegistrationResponse)).not.toHaveBeenCalled();
+  });
+
   it('rejects a string registration response', async () => {
     const result = await ceremony.verifyRegistration({
       response: 'nope',
@@ -145,6 +162,26 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect(prf?.eval?.first).toEqual(expect.any(String));
     expect(typeof prf?.eval?.first).toBe('string');
     expect((prf?.eval?.first ?? '').length).toBeGreaterThan(8);
+  });
+
+  it('rejects an authentication response that includes PRF results', async () => {
+    const result = await ceremony.verifyAuthentication({
+      response: {
+        id: 'x',
+        rawId: 'x',
+        type: 'public-key',
+        response: { clientDataJSON: 'e30' },
+        clientExtensionResults: { prf: { results: { first: 'secret' } } },
+      },
+      expectedChallenge: 'abc',
+      expectedOrigin: 'http://localhost:3000',
+      expectedRPID: 'localhost',
+      credentialId: 'cred',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+    });
+    expect(result).toEqual({ ok: false, reason: 'Invalid passkey' });
+    expect(vi.mocked(verifyAuthenticationResponse)).not.toHaveBeenCalled();
   });
 
   it('rejects a string authentication response', async () => {
