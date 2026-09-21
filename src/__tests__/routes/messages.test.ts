@@ -2369,9 +2369,12 @@ describe('POST /messages', () => {
 
   it('skips spend ping when the poster is not funding-eligible', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
-    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    const auth = await namedStore('Ada');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, new InMemoryMessageStore(), {
       spendPing,
-      now: () => Date.parse('2026-09-25T12:00:00.000Z'),
+      now: () => gateNow,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },

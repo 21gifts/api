@@ -2601,9 +2601,11 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
+    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, conversations, livingRoomStore(), {
       spendPing,
-      now: () => Date.parse('2026-09-25T12:00:00.000Z'),
+      now: () => gateNow,
     }).request(`/conversations/${thread.id}`, {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
