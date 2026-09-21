@@ -519,17 +519,27 @@ export class PostgresAuthStore implements AuthStore {
 
   async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
     try {
-      const rows = await this.#sql.query<{ credential_id: string }>(
-        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
-         WHERE NOT EXISTS (
-           SELECT 1 FROM passkey_credential WHERE account_id = $4
-         )
-           AND EXISTS (
-             SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+      const rows = await this.#sql.query<{ id: string }>(
+        `WITH inserted AS (
+           INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+           SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+           WHERE NOT EXISTS (
+             SELECT 1 FROM passkey_credential WHERE account_id = $4
            )
-         ON CONFLICT (credential_id) DO NOTHING
-         RETURNING credential_id`,
+             AND EXISTS (
+               SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+             )
+           ON CONFLICT (credential_id) DO NOTHING
+           RETURNING credential_id, account_id
+         ),
+         flagged AS (
+           UPDATE account
+           SET wallet_required = TRUE
+           FROM inserted
+           WHERE account.id = inserted.account_id
+           RETURNING account.id
+         )
+         SELECT id FROM flagged`,
         [
           credential.credentialId,
           credential.publicKey,

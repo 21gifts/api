@@ -1182,6 +1182,55 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('createFirstPasskeyCredential sets walletRequired and refuses a taken credential id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-a',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'acc-b',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc-a',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getAccount('acc-a'))?.walletRequired).toBe(true);
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc-b',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+  });
+
   it('ignores a second createAccount with the same viewKey', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = 'e'.repeat(64);
