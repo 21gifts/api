@@ -1226,6 +1226,9 @@ describe('POST /trust/*', () => {
       });
       expect(res.status).toBe(503);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_confirm')).toBe(
+        false,
+      );
     });
 
     it('completes the role write when the caller already stored a confirm edge', async () => {
@@ -1855,6 +1858,42 @@ describe('POST /trust/*', () => {
       );
       expect(res.status).toBe(200);
       expect(await notifications.listByRecipient(MOD, 10)).toHaveLength(1);
+    });
+
+    it('returns 200 when a same-timestamp newer propose reopened after reject', async () => {
+      const { authStore, trustStore } = await pending();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: now(),
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
+        true,
+      );
     });
 
     it('returns 409 when a same-timestamp propose stays latest after reject', async () => {

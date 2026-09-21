@@ -365,6 +365,12 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
       } catch {
+        /* v8 ignore next 5 -- rollback throw still 503 */
+        try {
+          await deps.trustStore.deleteEdgeById(created.id);
+        } catch {
+          /* still 503 */
+        }
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
@@ -442,13 +448,19 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           await clearModeratorProposalNotifications(deps, subject.id);
           return c.json(accountSummary(subject), 200);
         }
+        const beforePending = pendingModeratorProposals([subject], existing)[0];
         const open = still[0];
-        if (open !== undefined && open.createdAt > created.createdAt) {
-          logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
-          return c.json(accountSummary(subject), 200);
+        if (
+          beforePending !== undefined &&
+          open !== undefined &&
+          open.createdAt === beforePending.createdAt &&
+          open.proposedBy.id === beforePending.proposedBy.id
+        ) {
+          await deps.trustStore.deleteEdgeById(created.id);
+          return c.json({ error: 'Conflict' }, 409);
         }
-        await deps.trustStore.deleteEdgeById(created.id);
-        return c.json({ error: 'Conflict' }, 409);
+        logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
+        return c.json(accountSummary(subject), 200);
       } catch {
         /* v8 ignore next 5 -- rollback throw still 503 */
         try {
