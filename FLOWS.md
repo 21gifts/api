@@ -280,7 +280,8 @@ descending, then pubkey descending, in both memory and Postgres.
 
 Private messaging ships as one PN channel: `GET/POST /conversations` plus
 member→platform via `POST /contact`. Inbox threads have per-viewer unread
-via `GET /conversations` (`unread` / `unreadCount`) and
+via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
+`unreadCount` is the number of unread threads) and
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
