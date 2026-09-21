@@ -1358,6 +1358,55 @@ describe('manual invoice settlement', () => {
     expect(warn.mock.calls.flat().join(' ')).not.toContain(preimage);
   });
 
+  it('skips notifyZap when the note author lookup throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: 'payer@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const realGet = auth.getAccount.bind(auth);
+    vi.spyOn(auth, 'getAccount').mockImplementation(async (id: string) => {
+      if (id === 'manual-author') {
+        throw new Error('author boom');
+      }
+      return realGet(id);
+    });
+    const preimage = '0e'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, { conversationId: null });
+    const notifications = new InMemoryNotificationStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'author lookup failed',
+      preimage,
+      notificationStore: notifications,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ messageId, amountSats: 210_000 });
+    expect(await notifications.listByRecipient('manual-author', 10)).toHaveLength(0);
+  });
+
   it('turns a platform-note zap comment into a top-level post', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

@@ -581,15 +581,17 @@ export async function settleInvoiceManually(args: {
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
   let parentAuthor: Account | undefined;
+  let authorLookupFailed = false;
   if (message.accountId !== null) {
     try {
       parentAuthor = await args.auth.getAccount(message.accountId);
     } catch {
       parentAuthor = undefined;
+      authorLookupFailed = true;
     }
   }
   const feeNote = isPlatformFeeNote(parentAuthor, message);
-  if (!hidden && message.accountId !== null && !feeNote) {
+  if (!hidden && message.accountId !== null && !feeNote && !authorLookupFailed) {
     try {
       await notifyZap({
         note: message,
