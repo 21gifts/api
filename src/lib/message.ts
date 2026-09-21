@@ -390,8 +390,7 @@ export interface DebugMessagePhotoMeta {
  * @param row - Persisted message (including hidden rows and replies).
  * @param photo - Optional photo 0 / extra-still lengths (defaults: `null` / `0` / `[]`).
  * @returns Debug fields; `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null
- *   when live). Optional `goalSats` when the stored value is a positive
- *   integer on a top-level note (omitted otherwise).
+ *   when live). `goalSats` is the stored column (JSON `null` when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -399,7 +398,6 @@ export function serializeDebugMessage(
   photo?: DebugMessagePhotoMeta,
 ): Record<string, unknown> {
   const deletedAt = row.deletedAt ?? null;
-  const goalSats = publicGoalSats(row);
   return {
     id: row.id,
     name: row.name,
@@ -423,7 +421,7 @@ export function serializeDebugMessage(
     authorPubkey: row.authorPubkey ?? null,
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
-    ...(goalSats === undefined ? {} : { goalSats }),
+    goalSats: row.goalSats ?? null,
     photoContentType: photo?.photoContentType ?? null,
     photoBytes: photo?.photoBytes ?? 0,
     extraPhotos: photo?.extraPhotos ?? [],

@@ -97,14 +97,18 @@ export class InMemoryBtcUsdStore implements BtcUsdRateBook {
    * Operator dump of seeded daily closes, newest day first.
    *
    * @param limit - Maximum rows.
-   * @returns `{ day, usdPerBtc }` for stored seed days.
+   * @returns `{ day, usdPerBtc, source, fetchedAt }` for stored seed days (`source`/`fetchedAt` null in memory).
    */
-  listDebug(limit: number): Promise<Array<{ day: string; usdPerBtc: string }>> {
+  listDebug(
+    limit: number,
+  ): Promise<
+    Array<{ day: string; usdPerBtc: string; source: string | null; fetchedAt: string | null }>
+  > {
     return Promise.resolve(
       [...this.#rates.entries()]
         .sort((a, b) => b[0].localeCompare(a[0]))
         .slice(0, limit)
-        .map(([day, usdPerBtc]) => ({ day, usdPerBtc })),
+        .map(([day, usdPerBtc]) => ({ day, usdPerBtc, source: null, fetchedAt: null })),
     );
   }
 }

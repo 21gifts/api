@@ -96,8 +96,22 @@ describe('InMemoryFiatStore', () => {
     );
     expect(await store.listDebug(10)).toEqual(
       expect.arrayContaining([
-        { day: '2026-06-01', quote: 'CHF', rate: '0.80' },
-        { day: '2026-06-03', quote: 'CHF', rate: '0.81' },
+        {
+          day: '2026-06-01',
+          quote: 'CHF',
+          rate: '0.80',
+          asOfDay: null,
+          source: null,
+          fetchedAt: null,
+        },
+        {
+          day: '2026-06-03',
+          quote: 'CHF',
+          rate: '0.81',
+          asOfDay: null,
+          source: null,
+          fetchedAt: null,
+        },
       ]),
     );
     expect([...rates.entries()]).toEqual([

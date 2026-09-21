@@ -75,8 +75,8 @@ describe('InMemoryBtcUsdStore', () => {
   it('dumps seeded days newest-first', async () => {
     const store = new InMemoryBtcUsdStore({ '2026-06-01': '100000', '2026-06-02': '101000' });
     expect(await store.listDebug(10)).toEqual([
-      { day: '2026-06-02', usdPerBtc: '101000' },
-      { day: '2026-06-01', usdPerBtc: '100000' },
+      { day: '2026-06-02', usdPerBtc: '101000', source: null, fetchedAt: null },
+      { day: '2026-06-01', usdPerBtc: '100000', source: null, fetchedAt: null },
     ]);
   });
 });

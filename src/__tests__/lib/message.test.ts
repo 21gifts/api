@@ -472,6 +472,7 @@ describe('serializeDebugMessage', () => {
       authorPubkey: 'aa'.repeat(32),
       nostrAttempts: 2,
       accountId: null,
+      goalSats: null,
       photoContentType: null,
       photoBytes: 0,
       extraPhotos: [],
@@ -550,7 +551,7 @@ describe('serializeDebugMessage', () => {
     expect(serializeDebugMessage(row)['goalSats']).toBe(21000);
   });
 
-  it('omits goalSats when unset, null, zero, or on a reply', () => {
+  it('always includes stored goalSats, JSON null when unset', () => {
     const row: MessageRow = {
       id: 'msg-debug-nogoal',
       accountId: 'acc-1',
@@ -560,12 +561,12 @@ describe('serializeDebugMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeDebugMessage(row)).not.toHaveProperty('goalSats');
-    expect(serializeDebugMessage({ ...row, goalSats: null })).not.toHaveProperty('goalSats');
-    expect(serializeDebugMessage({ ...row, goalSats: 0 })).not.toHaveProperty('goalSats');
+    expect(serializeDebugMessage(row)['goalSats']).toBeNull();
+    expect(serializeDebugMessage({ ...row, goalSats: null })['goalSats']).toBeNull();
+    expect(serializeDebugMessage({ ...row, goalSats: 0 })['goalSats']).toBe(0);
     expect(
-      serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 }),
-    ).not.toHaveProperty('goalSats');
+      serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 })['goalSats'],
+    ).toBe(21000);
   });
 });
 

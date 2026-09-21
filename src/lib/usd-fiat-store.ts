@@ -135,15 +135,31 @@ export class InMemoryFiatStore implements FiatRateBook {
    * @param limit - Maximum rows.
    * @returns One row per stored quote.
    */
-  listDebug(limit: number): Promise<Array<{ day: string; quote: string; rate: string }>> {
-    const rows: Array<{ day: string; quote: string; rate: string }> = [];
+  listDebug(limit: number): Promise<
+    Array<{
+      day: string;
+      quote: string;
+      rate: string;
+      asOfDay: string | null;
+      source: string | null;
+      fetchedAt: string | null;
+    }>
+  > {
+    const rows: Array<{
+      day: string;
+      quote: string;
+      rate: string;
+      asOfDay: string | null;
+      source: string | null;
+      fetchedAt: string | null;
+    }> = [];
     for (const [day, cross] of [...this.#rates.entries()].sort((a, b) =>
       b[0].localeCompare(a[0]),
     )) {
       for (const quote of QUOTES) {
         const rate = cross[quote];
         if (rate !== undefined) {
-          rows.push({ day, quote, rate });
+          rows.push({ day, quote, rate, asOfDay: null, source: null, fetchedAt: null });
         }
       }
     }
