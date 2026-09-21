@@ -2685,7 +2685,7 @@ Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, or an invali
 { "error": "Invalid hashtag" }
 ```
 
-`mode=active` is paid notes plus unpaid founder/moderator notes; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
+`mode=active` is paid notes plus unpaid founder/moderator notes plus top-level notes with `goalSats` > 0; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
 
 Missing rules → **Response** `409`:
 
