@@ -1138,6 +1138,19 @@ describe('InMemoryAuthStore', () => {
 
   it('refuses a second first-passkey for the same account', async () => {
     const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
     const first = {
       credentialId: 'cred-a',
       publicKey: new Uint8Array([1]),
@@ -1153,6 +1166,20 @@ describe('InMemoryAuthStore', () => {
         publicKey: new Uint8Array([2]),
       }),
     ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential returns false when the account is missing', async () => {
+    const store = new InMemoryAuthStore();
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(await store.getPasskeyCredential('cred-a')).toBeUndefined();
   });
 
   it('createFirstPasskeyCredential returns false when the account is refused', async () => {
