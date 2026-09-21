@@ -122,7 +122,7 @@ describe('conversationIsInbound', () => {
 
 describe('serializeConversation', () => {
   it('emits public list fields without account or event ids', () => {
-    const json = serializeConversation(THREAD, false, false);
+    const json = serializeConversation(THREAD, false, false, 0);
     expect(json).toEqual({
       id: 'c-1',
       kind: 'member_member',
@@ -132,6 +132,7 @@ describe('serializeConversation', () => {
       lastFromMe: false,
       lastSats: 0,
       unread: false,
+      unreadMessageCount: 0,
     });
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('accountId');
@@ -140,8 +141,21 @@ describe('serializeConversation', () => {
     expect(json).not.toHaveProperty('lastSenderAccountId');
   });
 
+  it('includes unreadMessageCount 3 when passed 3', () => {
+    const json = serializeConversation(THREAD, false, true, 3);
+    expect(json.unread).toBe(true);
+    expect(json.unreadMessageCount).toBe(3);
+  });
+
+  it('keeps unread as the boolean argument even when the count is 0', () => {
+    expect(serializeConversation(THREAD, false, true, 0).unread).toBe(true);
+    expect(serializeConversation(THREAD, false, true, 0).unreadMessageCount).toBe(0);
+    expect(serializeConversation(THREAD, false, false, 3).unread).toBe(false);
+    expect(serializeConversation(THREAD, false, false, 3).unreadMessageCount).toBe(3);
+  });
+
   it('includes accountId when given a non-empty counterpart id', () => {
-    const json = serializeConversation(THREAD, false, false, 'acc-b');
+    const json = serializeConversation(THREAD, false, false, 0, 'acc-b');
     expect(json.accountId).toBe('acc-b');
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('eventId');
@@ -149,15 +163,15 @@ describe('serializeConversation', () => {
   });
 
   it('omits accountId when the counterpart id is null', () => {
-    expect(serializeConversation(THREAD, false, false, null)).not.toHaveProperty('accountId');
+    expect(serializeConversation(THREAD, false, false, 0, null)).not.toHaveProperty('accountId');
   });
 
   it('omits accountId when the counterpart id is empty', () => {
-    expect(serializeConversation(THREAD, false, false, '')).not.toHaveProperty('accountId');
+    expect(serializeConversation(THREAD, false, false, 0, '')).not.toHaveProperty('accountId');
   });
 
   it('copies counterpart kind for a platform thread', () => {
-    const json = serializeConversation({ ...THREAD, kind: 'member_platform' }, true, false);
+    const json = serializeConversation({ ...THREAD, kind: 'member_platform' }, true, false, 0);
     expect(json).toEqual({
       id: 'c-1',
       kind: 'member_platform',
@@ -167,6 +181,7 @@ describe('serializeConversation', () => {
       lastFromMe: true,
       lastSats: 0,
       unread: false,
+      unreadMessageCount: 0,
     });
   });
 });
