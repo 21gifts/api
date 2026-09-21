@@ -276,7 +276,7 @@ export interface PasskeyChallengeDebug {
   type: string;
   /** WebAuthn challenge (base64url). */
   challenge: string;
-  /** Pending account id, or `null` for authenticate. */
+  /** Register pending id, replace signed-in id, or `null` for authenticate. */
   accountId: string | null;
   /** Whether finish has consumed this challenge. */
   consumed: boolean;
@@ -527,8 +527,9 @@ export interface OwnerFundingLookup {
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @param funding - Optional grant lookup; omitted → `basis` `null`, else
- *   `{ status: 'none', … }` without I/O.
+ * @param funding - Optional grant lookup; omitted → `basis` `null` and
+ *   `passkeyCredentialId` null. When present, loads the grant and
+ *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
  *   and `passkeyCredentialId` (via {@link serializeOwnerAccount}).

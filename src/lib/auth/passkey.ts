@@ -431,7 +431,7 @@ async function mintSession(
  * @param config - RP ID, name, and allowed origins.
  * @param now - Current time in epoch milliseconds.
  * @param account - Signed-in account that owns the credential to replace.
- * @returns Creation options, or `{ ok: false }` when the account has no passkey.
+ * @returns Creation options, or `{ ok: false, error: string }` when the account has no passkey.
  */
 export async function startPasskeyReplace(
   store: AuthStore,

@@ -12,7 +12,8 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   /**
    * Return a fixed creation challenge for tests.
    *
-   * @param input - RP and user entity (user fields unused by the fake).
+   * @param input - RP and user entity (user fields unused by the fake);
+   *   optional `excludeCredentials` is copied onto the stub options.
    * @returns A fixed challenge and a stub creation-options object.
    */
   async generateRegistrationOptions(input: {
