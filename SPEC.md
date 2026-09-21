@@ -713,8 +713,10 @@ insert is the oldest open propose and extras exist, delete newer extra
 proposes and still **200**. **200** inserts a **new**
 `moderator_propose` after a reject (history kept; old propose/reject rows
 are not deleted). Role is unchanged. Logs `trust.moderator_proposed`.
-After **200**, wrap `notifyModeratorProposed` (in-app `moderator_proposal`
-plus Web Push to other staff). HTTP still **200** if notify fails.
+After **200**, delete `moderator_proposal` rows with
+`replyId === subject.id`, then wrap `notifyModeratorProposed` (in-app
+`moderator_proposal` plus Web Push to other staff). HTTP still **200** if
+notify (or the purge) fails.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
 **200** `{ id, name, role }` (role unchanged).
 
