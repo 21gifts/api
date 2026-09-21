@@ -2167,6 +2167,89 @@ describe('POST /trust/*', () => {
       );
     });
 
+    it('fans out again when a re-propose lands after reject clear', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 4) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'p-after-clear',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(
+        mount(authStore, store, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      const listed = await notifications.listByRecipient(FOUNDER, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.actorAccountId).toBe(MOD);
+      expect(listed[0]?.name).toBe('Mod');
+    });
+
+    it('fans out after reject clear when the newer proposer account is missing', async () => {
+      const missing = '99999999-9999-4999-8999-999999999999';
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 4) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'p-after-clear-missing',
+              subjectId: SUBJECT,
+              actorId: missing,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(
+        mount(authStore, store, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      const listed = await notifications.listByRecipient(FOUNDER, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.actorAccountId).toBe(missing);
+      expect(listed[0]?.name).toBe('Someone');
+    });
+
     it('does not drop proposal rows when a re-propose lands before reject clear', async () => {
       const { authStore, trustStore } = await pending();
       const notifications = new InMemoryNotificationStore([

@@ -357,11 +357,10 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       }
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
-        const still = pendingModeratorProposals(
-          [subject],
-          after.filter((edge) => edge.id !== created.id),
-        )[0];
-        if (still === undefined || still.id !== pending.id) {
+        const withoutConfirm = after.filter((edge) => edge.id !== created.id);
+        const still = pendingModeratorProposals([subject], withoutConfirm)[0];
+        const oldest = oldestOpenPropose(openProposesForSubject(withoutConfirm, subject.id));
+        if (still === undefined || still.id !== pending.id || oldest?.id !== still.id) {
           await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
@@ -449,6 +448,15 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           const latest = await deps.trustStore.listEdgesForSubject(subject.id);
           if (pendingModeratorProposals([subject], latest).length === 0) {
             await clearModeratorProposalNotifications(deps, subject.id);
+            const afterClear = await deps.trustStore.listEdgesForSubject(subject.id);
+            const reopened = pendingModeratorProposals([subject], afterClear)[0];
+            if (reopened !== undefined) {
+              const actor = await deps.authStore.getAccount(reopened.proposedBy.id);
+              await notifyStaffProposed(deps, subject, {
+                id: reopened.proposedBy.id,
+                name: actor === undefined ? null : actor.name,
+              });
+            }
           }
           return c.json(accountSummary(subject), 200);
         }
@@ -612,7 +620,7 @@ async function reconcileOpenProposalNotifications(
     const actor = await deps.authStore.getAccount(still.proposedBy.id);
     await notifyStaffProposed(deps, subject, {
       id: still.proposedBy.id,
-      name: actor?.name ?? null,
+      name: actor === undefined ? null : actor.name,
     });
     const afterNotify = await deps.trustStore.listEdgesForSubject(subject.id);
     const now = pendingModeratorProposals([subject], afterNotify)[0];

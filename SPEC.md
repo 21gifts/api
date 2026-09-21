@@ -732,9 +732,9 @@ proposal must exist (latest propose/reject is propose); the caller id must
 not equal that latest proposer's actor id (independent second staff member).
 Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
 if the pending propose-edge `id` from `pendingModeratorProposals`
-(ignoring this confirm insert) is no longer the same (concurrent reject,
-a newer extra propose, or a same-actor same-ms re-propose), delete that
-confirm and **409** without promoting. Otherwise sets
+(ignoring this confirm insert) is no longer the same, or that id is not
+also the oldest open propose (a newer extra propose still exists), delete
+that confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
 completes the role write and returns **200**; already-moderator with that
@@ -762,8 +762,9 @@ the reject in history and does not drop `moderator_proposal` rows. Role stays
 `verified`. Logs
 `trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
 after insert, re-lists once more and deletes `moderator_proposal` rows with
-`replyId === subject.id` only if pending is still empty. No notify for the
-reject itself. Same 401/403/400/404/409/503 JSON shapes as
+`replyId === subject.id` only if pending is still empty; if a re-list after
+that delete shows a new pending propose, fan out for that actor. No notify
+for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
 `POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
 
 ### `POST /trust/appoint-moderator`
