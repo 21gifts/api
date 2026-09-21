@@ -1772,7 +1772,9 @@ Success → **Response** `200`:
       "description": null,
       "descriptionHash": "<64-hex>",
       "isNip57Invoice": true,
-      "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" }
+      "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" },
+      "conversationId": null,
+      "conversationMessageId": null
     }
   ]
 }
