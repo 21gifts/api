@@ -747,7 +747,10 @@ moderator+). Body `{ "accountId": "<uuid>" }`. **409** self / not pending
 (latest propose/reject is not propose, or any confirm/appoint) /
 `role !== verified`. The original proposer **may** reject. Inserts
 append-only `moderator_reject` then re-lists: if a concurrent confirm or
-appoint already closed the grant, delete that reject and **409**. Role stays
+appoint already closed the grant, or this reject is not the latest
+propose/reject, delete that reject and **409**. If a newer propose already
+reopened the queue, **200** keeps the reject in history and does not drop
+`moderator_proposal` rows. Role stays
 `verified`. Logs
 `trust.moderator_rejected` `{ subjectId, actorId }`. Then deletes
 `moderator_proposal` rows with `replyId === subject.id`. No notify for the

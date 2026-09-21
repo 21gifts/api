@@ -2113,7 +2113,7 @@
 
 ## Function: isProjectedTrustEdge
 
-- **Purpose:** Whether a stored edge appears on the public Trust Chain. True iff `edge` is the oldest eligible sibling among `subjectEdges` (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is a `moderator`. `moderator_confirm` and `moderator_reject` never. Later appoint, confirm, or propose do not replace an earlier eligible contact. At most one public incoming edge per subject, even when several rows share the winning kind.
+- **Purpose:** Whether a stored edge appears on the public Trust Chain. True iff `edge` is the oldest eligible sibling among `subjectEdges` (`createdAt` then `id`). When `chainActorIds` is set, skip siblings whose actor is not in that set and take the oldest remaining eligible edge. Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is a `moderator`. `moderator_confirm` and `moderator_reject` never. Later appoint, confirm, or propose do not replace an earlier eligible contact. At most one public incoming edge per subject, even when several rows share the winning kind.
 - **Inputs:** `edge` (`TrustEdge`), `subject` (`Account | undefined`), `subjectEdges` (`readonly TrustEdge[]`, default `[edge]`), optional `chainActorIds` (`ReadonlySet<string>`) so a non-chain oldest sibling does not hide a later displayable contact.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `buildTrustChain`, `trustChainRoutes` (`GET /trust-chain?around=`).

@@ -706,6 +706,9 @@ describe('POST /trust/*', () => {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(503);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_propose')).toBe(
+        false,
+      );
     });
 
     it('keeps the oldest concurrent propose and drops a newer extra', async () => {
@@ -1798,6 +1801,80 @@ describe('POST /trust/*', () => {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(503);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
+        false,
+      );
+    });
+
+    it('returns 200 without dropping proposal rows when a newer propose reopened', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore([
+        {
+          id: '55555555-5555-4555-8555-555555555555',
+          recipientAccountId: MOD,
+          actorAccountId: FOUNDER,
+          type: 'moderator_proposal',
+          parentId: SUBJECT,
+          replyId: SUBJECT,
+          name: 'Founder',
+          text: 'Sub',
+          createdAt: new Date(now()),
+          readAt: null,
+        },
+      ]);
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'p2',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(
+        mount(authStore, store, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await notifications.listByRecipient(MOD, 10)).toHaveLength(1);
+    });
+
+    it('returns 409 when a same-timestamp propose stays latest after reject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_propose',
+        createdAt: now(),
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
+        false,
+      );
     });
 
     it('still 200 when dropping proposal notifications throws', async () => {

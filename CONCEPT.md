@@ -157,8 +157,8 @@ founder seeds; `?around=<id>` returns one hop of stored public edges with
 at most one incoming edge per subject (no inferred links).
 Operator `PATCH /debug/accounts/:id` can still set `role` and does not
 write trust edges; `POST /debug/trust-edges` backfills stored edges and
-`DELETE /debug/trust-edges` removes one `(subjectId, kind)` row, both
-without changing `role`.
+`DELETE /debug/trust-edges` removes the latest stored `(subjectId, kind)`
+row (`createdAt` desc, then `id` desc), both without changing `role`.
 
 | Role      | Capabilities                                                                                                                                                                            |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -166,6 +166,12 @@ without changing `role`.
 | Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. May post and reply without a Bitcoin payment.                   |
 | Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose or confirm a moderator). Forum tag. |
 | Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                               |
+| Role      | Capabilities                                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                                               |
+| Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not Lightning-Address proof-of-control. May reply without a Bitcoin payment.                                     |
+| Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. |
+| Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                                        |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator, and
@@ -517,8 +523,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Basic anti-abuse: rate-limit per account, malformed-input rejection
 - Moderation: hide/unhide content endpoints (Moderator role); staff POST
   /trust/verify, confirm-moderator, appoint-moderator write role + edge;
-  POST /trust/propose-moderator writes the propose edge only; PATCH
-  /debug/accounts/:id may still set role and does not write edges
+  POST /trust/propose-moderator writes the propose edge only; POST
+  /trust/reject-moderator writes append-only `moderator_reject` (role
+  unchanged); PATCH /debug/accounts/:id may still set role and does not
+  write edges
 - USD → sats conversion for recurring-gift amounts via an exchange-rate
   source (fail-closed on a missing or implausible rate; paying stays in
   the spend worker)
