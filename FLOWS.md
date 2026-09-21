@@ -211,7 +211,8 @@ posts and replies from `basis` (including the parent author) are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
 unpaid-write exempt. A zap on that platform note with a comment becomes the
-payer’s top-level post (`sats` 0). A comment `inReplyTo:<uuid>\n<body>` becomes
+payer’s top-level post (`sats` 0). The worker always queries that profile
+note’s event id, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes
 a reply on that live top-level parent; a missing, hidden, or nested parent
 falls back to a top-level post with the remaining body. An empty comment does
 not create a blank living-room post. Extra gifts on someone else’s note still

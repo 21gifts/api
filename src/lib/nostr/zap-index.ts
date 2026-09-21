@@ -755,7 +755,8 @@ export async function indexZapReceipt(args: {
 
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, their
- * nested replies, and open conversation-invoice e-tags, index validated
+ * nested replies, the official platform profile note (even after it ages
+ * out of `listLatest`), and open conversation-invoice e-tags, index validated
  * ones, then insert a payer gift-reply (forum) or append the paid PN row
  * (conversation invoice) and fan out zap in-app notifications to every
  * account except skip (no-op when the payer is the official platform
@@ -829,6 +830,19 @@ export async function indexOpenZapReceipts(args: {
     }
     seen.add(row.eventId);
     eventIds.push(row.eventId);
+  }
+  const accounts = await args.auth.listAccounts();
+  const platform = accounts.find((account) => account.isPlatform === true);
+  const profileId = platform?.profileMessageId;
+  if (typeof profileId === 'string' && profileId !== '') {
+    const profile = await args.store.getById(profileId);
+    if (profile !== undefined && profile.deletedAt === null) {
+      const profileEventId = profile.eventId;
+      if (profileEventId !== null && profileEventId !== '' && !seen.has(profileEventId)) {
+        seen.add(profileEventId);
+        eventIds.push(profileEventId);
+      }
+    }
   }
   for (const row of await args.store.listOpenConversationZapEventIds()) {
     if (row.eventId === '' || seen.has(row.eventId)) {

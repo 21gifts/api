@@ -5,7 +5,7 @@ import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
-import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import {
   InMemoryMessageStore,
@@ -5655,6 +5655,122 @@ describe('indexOpenZapReceipts', () => {
     const forPlatform = await notifications.listByRecipient('acc-ingest-platform', 10);
     expect(forPlatform.filter((row) => row.type === 'zap')).toEqual([]);
     expect(forPlatform.filter((row) => row.type === 'forum_post')).toHaveLength(1);
+  });
+
+  it('still queries the platform profile event after it ages out of listLatest', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileEventId = 'ab'.repeat(32);
+    const feeId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-aged-platform',
+      eventId: profileEventId,
+      lightningAddress: 'platform-aged@example.com',
+      messageId: 'm-aged-platform',
+    });
+    const platform = await auth.getAccount('acc-aged-platform');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: feeId,
+    });
+    await auth.createAccount({
+      id: 'payer-aged-platform',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada-aged-platform',
+      lightningAddress: 'ada-aged-platform@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-aged-platform'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const newer = new Date('2026-09-21T00:00:00.000Z');
+    for (let i = 0; i < MESSAGE_LIST_LIMIT; i += 1) {
+      const n = i.toString(16).padStart(2, '0');
+      await store.create({
+        id: `m-aged-newer-${n}`,
+        accountId: 'acc-aged-platform',
+        name: 'Ada',
+        text: `newer ${n}`,
+        createdAt: newer,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: `${n}${'c'.repeat(62)}`,
+      });
+    }
+    expect((await store.listLatest(MESSAGE_LIST_LIMIT)).some((row) => row.id === feeId)).toBe(
+      false,
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-aged-platform',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: feeId,
+      payerAccountId: 'payer-aged-platform',
+      authorAccountId: 'acc-aged-platform',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'Aged compose' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-aged-platform',
+      paymentHash: 'c2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const queried: string[][] = [];
+    const querier = {
+      query: async (
+        filter: Record<string, unknown>,
+        _urls: readonly string[],
+        _timeoutMs: number,
+      ) => {
+        const chunk = Array.isArray(filter['#e'])
+          ? filter['#e'].filter((id): id is string => typeof id === 'string')
+          : [];
+        queried.push(chunk);
+        if (!chunk.includes(profileEventId)) {
+          return [];
+        }
+        return [
+          {
+            id: 'r-aged-platform',
+            pubkey: PROVIDER_PUBKEY,
+            kind: 9735,
+            tags: [
+              ['e', profileEventId],
+              ['bolt11', 'lnbc-aged-platform'],
+            ],
+          },
+        ];
+      },
+    };
+    mockedDecode.mockReturnValue({ paymentHash: 'c2'.repeat(32), amountMsat: 1000 });
+    const composeAt = newer.getTime() + 1_000;
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => composeAt,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      postLimiter: new PostRateLimiter(),
+    });
+    expect(queried.some((chunk) => chunk.includes(profileEventId))).toBe(true);
+    const created = (await store.listLatest(MESSAGE_LIST_LIMIT)).find(
+      (row) => row.text === 'Aged compose',
+    );
+    expect(created?.parentId).toBeNull();
+    expect(created?.accountId).toBe('payer-aged-platform');
+    expect(created?.sats).toBe(0);
   });
 
   it('creates one zap notification and no forum_reply for a zap with a NIP-57 comment', async () => {

@@ -2740,8 +2740,10 @@ column.
 The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
 receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
-or a non-null `listReplies` child of those rows (unioned with open
-conversation zap event ids). Empty `event_id` rows are skipped. A receipt is
+or a non-null `listReplies` child of those rows (unioned with the official
+platform profile note's `event_id` even after that note ages out of
+`listLatest`, and with open conversation zap event ids). Empty `event_id`
+rows are skipped. A receipt is
 indexed when the signer pubkey matches the author's LNURL-pay
 `nostrPubkey`, the bolt11 amount is at least 1 sat, the receipt id is
 new, and the bolt11 payment hash is not already claimed by another
@@ -2843,7 +2845,8 @@ or replying:
 Ensures that profile note exists. The client then calls
 `POST /messages/:id/invoice` on `messageId`. A later indexed zap on that note
 turns the zap comment into the payer’s top-level post (`sats` 0 on the new
-row). A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
+row). The worker always includes that profile note’s `event_id` in the relay
+query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
 top-level parent; a missing, hidden, or nested parent falls back to a
 top-level post with the remaining body. An empty comment does not create a
 blank living-room post.
