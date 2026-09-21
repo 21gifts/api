@@ -572,7 +572,8 @@ first paint. `GET /trust-chain?around=<id>` returns that chain member plus
 one hop of **stored** public edges with at most one incoming kind per
 subject: the oldest eligible sibling (`createdAt` then `id`). Eligible:
 `verify`, `moderator_appoint`, and `moderator_propose` only when the live
-subject is a `moderator`; `moderator_confirm` never. Later appoint,
+subject is a `moderator`; `moderator_confirm` and `moderator_reject`
+never. Later appoint,
 confirm, or propose do not replace an earlier eligible contact. A pending
 propose (subject still `verified`) stays private and is not a hop neighbor.
 Neighborhood must consider all stored edges for each subject, not only
@@ -755,8 +756,10 @@ Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
 when the caller is not a founder). **200** `{ id, name, role }` with
 `role: "moderator"`. After a 200 that leaves the subject as
 `moderator` (new grant and idempotent already-moderator same-actor
-200), the api notifies the subject only (`moderator_appointed`, Web
-Push url `/welcome`). Notify failure does not fail the POST.
+200), the api deletes `moderator_proposal` rows for the subject
+(`deleteByTypeAndReplyId`) then notifies the subject only
+(`moderator_appointed`, Web Push url `/welcome`). Notify failure does
+not fail the POST.
 
 ### `POST /funding/apply`
 
