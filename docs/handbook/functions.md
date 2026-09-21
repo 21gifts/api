@@ -932,7 +932,7 @@
 - **Purpose:** Decode a base64 forum photo, enforce the 1 MiB cap, and set MIME from magic bytes (declared `contentType` is ignored).
 - **Inputs:** Declared `contentType` string (non-authoritative) and standard base64 `data`.
 - **Returns / side effects:** `{ contentType, bytes }` with a copied `Uint8Array`, or `null` on invalid base64, empty, oversize, or unrecognized magic. No I/O.
-- **Used by:** `POST /messages`, `PUT /me/about`.
+- **Used by:** `POST /messages`, `PUT /me/about`, `POST /conversations/:id`.
 
 ## Function: encodeMessageFeedCursor
 
@@ -950,10 +950,10 @@
 
 ## Function: forumPhotoResponse
 
-- **Purpose:** Build the public photo HTTP response used by `GET /messages/:id/photo`, `GET /me/about/photo`, and `GET /view/:viewKey/about/photo`. Sets jpeg/png/webp `Content-Type`, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, and inline `Content-Disposition` `photo.jpg|png|webp`.
+- **Purpose:** Build the public photo HTTP response used by `GET /messages/:id/photo`, `GET /me/about/photo`, and `GET /view/:viewKey/about/photo`. Sets jpeg/png/webp `Content-Type`, `Cache-Control: public, max-age=86400`, `Access-Control-Allow-Origin: *`, and inline `Content-Disposition` `photo.jpg|png|webp`. Conversation photo GETs reuse this helper then override to `Cache-Control: private, no-store` and drop `Access-Control-Allow-Origin`.
 - **Inputs:** `ForumPhoto` (`contentType` plus `bytes`).
 - **Returns / side effects:** `200` `Response` whose body is `photo.bytes`. No I/O.
-- **Used by:** `serveForumPhoto`, `meRoutes` GET `/about/photo`, `viewRoutes` GET `/:viewKey/about/photo`.
+- **Used by:** `serveForumPhoto`, `meRoutes` GET `/about/photo`, `viewRoutes` GET `/:viewKey/about/photo`, `conversationRoutes` GET `/:id/messages/:messageId/photo` and `/:id/messages/:messageId/photo/:file`.
 
 ## Function: updatePhoto
 

@@ -1722,7 +1722,6 @@ function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
     actorAccountId: row.actorAccountId ?? null,
     actorName: row.actorName ?? '',
     hasPhoto: row.hasPhoto === true,
-    /* v8 ignore next -- older in-memory rows omit photoCount */
     photoCount: typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto === true ? 1 : 0,
   };
 }
