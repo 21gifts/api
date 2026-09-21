@@ -451,11 +451,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
             const afterClear = await deps.trustStore.listEdgesForSubject(subject.id);
             const reopened = pendingModeratorProposals([subject], afterClear)[0];
             if (reopened !== undefined) {
-              const actor = await deps.authStore.getAccount(reopened.proposedBy.id);
-              await notifyStaffProposed(deps, subject, {
-                id: reopened.proposedBy.id,
-                name: actor === undefined ? null : actor.name,
-              });
+              await fanOutPendingProposal(deps, subject, reopened.id);
             }
           }
           return c.json(accountSummary(subject), 200);
@@ -593,6 +589,37 @@ async function notifyStaffProposed(
 }
 
 /**
+ * Best-effort fan-out for one pending propose-edge id. Re-lists before
+ * and after notify so a concurrent reject/confirm cannot leave stale
+ * `moderator_proposal` rows. Throws stay 200 for the caller.
+ */
+async function fanOutPendingProposal(
+  deps: TrustRouteDeps,
+  subject: Account,
+  proposeId: string,
+): Promise<void> {
+  try {
+    const edges = await deps.trustStore.listEdgesForSubject(subject.id);
+    const pending = pendingModeratorProposals([subject], edges)[0];
+    if (pending === undefined || pending.id !== proposeId) {
+      return;
+    }
+    const actor = await deps.authStore.getAccount(pending.proposedBy.id);
+    await notifyStaffProposed(deps, subject, {
+      id: pending.proposedBy.id,
+      name: actor === undefined ? null : actor.name,
+    });
+    const after = await deps.trustStore.listEdgesForSubject(subject.id);
+    const now = pendingModeratorProposals([subject], after)[0];
+    if (now === undefined || now.id !== proposeId) {
+      await clearModeratorProposalNotifications(deps, subject.id);
+    }
+  } catch {
+    logEvent('push.enqueue.failed');
+  }
+}
+
+/**
  * After propose notify, drop stale rows when this insert is no longer
  * pending. If a newer propose already reopened, fan out for that actor.
  * Persist is already 200; list/notify throw stays 200.
@@ -612,21 +639,7 @@ async function reconcileOpenProposalNotifications(
     if (pending === undefined) {
       return;
     }
-    const beforeNotify = await deps.trustStore.listEdgesForSubject(subject.id);
-    const still = pendingModeratorProposals([subject], beforeNotify)[0];
-    if (still === undefined || still.id !== pending.id) {
-      return;
-    }
-    const actor = await deps.authStore.getAccount(still.proposedBy.id);
-    await notifyStaffProposed(deps, subject, {
-      id: still.proposedBy.id,
-      name: actor === undefined ? null : actor.name,
-    });
-    const afterNotify = await deps.trustStore.listEdgesForSubject(subject.id);
-    const now = pendingModeratorProposals([subject], afterNotify)[0];
-    if (now === undefined || now.id !== still.id) {
-      await clearModeratorProposalNotifications(deps, subject.id);
-    }
+    await fanOutPendingProposal(deps, subject, pending.id);
   } catch {
     logEvent('push.enqueue.failed');
   }

@@ -1058,7 +1058,7 @@
 - **Purpose:** Notify other staff of an open moderator proposal (not a living-room fan-out). Recipients are staff from the live account list except the proposing actor and anyone with `isPlatform === true`; founder is included; basis and verified are skipped. Persist a `moderator_proposal` row when `notifications` is set (`parentId` and `replyId` = `subject.id`, `name` is `actor.name ?? 'Someone'`, `text` is `subject.name ?? ''`, `readAt` null) and enqueue a Web Push (`type: 'forum'`, url `/moderate/proposals`, tag `moderator_proposal:<subjectId>`) when `pushStore` is set. Missing both stores is a no-op. Unique duplicate create is fine. Mark-read does not dismiss these rows. May throw (`push.fanout.failed`); callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, inboxUnreadCount?, recipients, subject, actor, nowMs }`. Recipients are filtered here to other staff.
 - **Returns / side effects:** Void. Writes one in-app row per other staff member when `notifications` is set. When `pushStore` is set, enqueues one outbox row per recipient (`type: 'forum'`, `messageId: subject.id`). Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
-- **Used by:** `trustRoutes` `POST /trust/propose-moderator` after every 200. Failure logs `push.enqueue.failed`; HTTP still 200.
+- **Used by:** `trustRoutes` `POST /trust/propose-moderator` after every 200, and `POST /trust/reject-moderator` when a re-list after dropping `moderator_proposal` rows shows a new pending propose (not for the reject itself). Failure logs `push.enqueue.failed`; HTTP still 200.
 
 ## Function: parseNotificationLevel
 

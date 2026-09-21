@@ -763,7 +763,8 @@ the reject in history and does not drop `moderator_proposal` rows. Role stays
 `trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
 after insert, re-lists once more and deletes `moderator_proposal` rows with
 `replyId === subject.id` only if pending is still empty; if a re-list after
-that delete shows a new pending propose, fan out for that actor. No notify
+that delete shows a new pending propose, fan out for that actor and
+re-list again so a concurrent close drops those rows. No notify
 for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
 `POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
 
