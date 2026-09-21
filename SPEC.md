@@ -733,7 +733,7 @@ not equal that latest proposer's actor id (independent second staff member).
 Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
 if the pending propose-edge `id` from `pendingModeratorProposals`
 (ignoring this confirm insert) is no longer the same, or that id is not
-also the oldest open propose (a newer extra propose still exists), delete
+also the oldest open propose (an older open propose is still present), delete
 that confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
