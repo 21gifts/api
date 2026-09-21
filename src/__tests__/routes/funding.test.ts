@@ -124,6 +124,9 @@ const boomStore: FundingStore = {
   upsert: async () => {
     throw new Error('boom');
   },
+  transition: async () => {
+    throw new Error('boom');
+  },
 };
 
 describe('POST /funding/apply', () => {
@@ -641,6 +644,9 @@ describe('POST /funding/trial', () => {
       upsert: async () => {
         throw new Error('boom');
       },
+      transition: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/trial', 'founder', {
       accountId: VERIFIED,
@@ -784,6 +790,9 @@ describe('POST /funding/admit', () => {
       upsert: async () => {
         throw new Error('boom');
       },
+      transition: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/admit', 'mod', {
       accountId: VERIFIED,
@@ -874,6 +883,9 @@ describe('POST /funding/reject', () => {
       getByAccountId: async () => grant({ accountId: VERIFIED, status: 'pending' }),
       listGrants: async () => [],
       upsert: async () => {
+        throw new Error('boom');
+      },
+      transition: async () => {
         throw new Error('boom');
       },
     };
