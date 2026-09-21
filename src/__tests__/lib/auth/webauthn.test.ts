@@ -44,6 +44,7 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
   });
 
   it('rejects a registration response that includes PRF results', async () => {
+    vi.mocked(verifyRegistrationResponse).mockClear();
     const result = await ceremony.verifyRegistration({
       response: {
         id: 'x',
@@ -165,6 +166,7 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
   });
 
   it('rejects an authentication response that includes PRF results', async () => {
+    vi.mocked(verifyAuthenticationResponse).mockClear();
     const result = await ceremony.verifyAuthentication({
       response: {
         id: 'x',
