@@ -315,6 +315,15 @@ describe('InMemoryConversationStore', () => {
     expect(await store.listMessages(opened.id, 10)).toHaveLength(1);
   });
 
+  it('seeded rows without photoCount keep hasPhoto as a still count of 1', async () => {
+    const legacy = message({ id: 'legacy-photo', conversationId: 'c-1', hasPhoto: true });
+    delete (legacy as { photoCount?: number }).photoCount;
+    const store = new InMemoryConversationStore([thread()], [legacy]);
+    const rows = await store.listMessages('c-1', 10);
+    expect(rows[0]?.hasPhoto).toBe(true);
+    expect(rows[0]?.photoCount).toBe(1);
+  });
+
   it('append without photos is hasPhoto false and getPhoto null', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
