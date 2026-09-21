@@ -1496,7 +1496,7 @@
 
 ## Function: loadDebugTables
 
-- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200).
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The `conversation_message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes }]`), matching forum `message`; no payloads; missing photo is `null` / `0` / `[]`.
 - **Inputs:** `DebugCatalogDeps` and optional table name.
 - **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
 - **Used by:** `debugCatalogRoutes`.

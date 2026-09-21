@@ -196,23 +196,51 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
     }
     case 'conversation_message': {
       const rows = (await deps.conversations?.listAllMessages(MESSAGE_LIST_LIMIT)) ?? [];
-      return rows.map((row) => ({
-        id: row.id,
-        conversationId: row.conversationId,
-        text: row.text,
-        createdAt: row.createdAt.toISOString(),
-        senderAccountId: row.senderAccountId,
-        senderPubkey: row.senderPubkey,
-        name: row.name,
-        actorAccountId: row.actorAccountId ?? null,
-        actorName: row.actorName ?? '',
-        giftForMessageId: row.giftForMessageId ?? null,
-        eventId: row.eventId,
-        nostrPublishState: row.nostrPublishState,
-        nostrEvent: row.nostrEvent,
-        claimedUntil: row.claimedUntil,
-        sats: row.sats,
-      }));
+      const store = deps.conversations;
+      if (store === undefined) {
+        return [];
+      }
+      const out: unknown[] = [];
+      for (const row of rows) {
+        const photo0 = await store.getPhoto(row.id);
+        const extraPhotos: Array<{
+          idx: number;
+          photoContentType: string;
+          bytes: number;
+        }> = [];
+        for (let index = 1; index <= 9; index += 1) {
+          const photo = await store.getExtraPhoto(row.id, index);
+          if (photo === null) {
+            continue;
+          }
+          extraPhotos.push({
+            idx: index,
+            photoContentType: photo.contentType,
+            bytes: photo.bytes.byteLength,
+          });
+        }
+        out.push({
+          id: row.id,
+          conversationId: row.conversationId,
+          text: row.text,
+          createdAt: row.createdAt.toISOString(),
+          senderAccountId: row.senderAccountId,
+          senderPubkey: row.senderPubkey,
+          name: row.name,
+          actorAccountId: row.actorAccountId ?? null,
+          actorName: row.actorName ?? '',
+          giftForMessageId: row.giftForMessageId ?? null,
+          eventId: row.eventId,
+          nostrPublishState: row.nostrPublishState,
+          nostrEvent: row.nostrEvent,
+          claimedUntil: row.claimedUntil,
+          sats: row.sats,
+          photoContentType: photo0?.contentType ?? null,
+          photoBytes: photo0?.bytes.byteLength ?? 0,
+          extraPhotos,
+        });
+      }
+      return out;
     }
     case 'conversation_read': {
       const rows = (await deps.conversations?.listAllReads(MESSAGE_LIST_LIMIT)) ?? [];

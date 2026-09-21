@@ -148,6 +148,26 @@ describe('loadDebugTables', () => {
       ],
       [{ accountId, conversationId: threadId, lastReadAt: new Date('2026-09-01T02:00:00.000Z') }],
     );
+    await conversations.appendMessage(
+      {
+        id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeec',
+        conversationId: threadId,
+        text: 'still',
+        createdAt: new Date('2026-09-01T01:30:00.000Z'),
+        senderAccountId: accountId,
+        senderPubkey: null,
+        name: 'Ada',
+        actorAccountId: accountId,
+        actorName: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([1, 2, 3]) },
+      [{ contentType: 'image/png', bytes: new Uint8Array([4, 5]) }],
+    );
     const messages = new InMemoryMessageStore();
     await messages.create(
       {
@@ -445,12 +465,30 @@ describe('loadDebugTables', () => {
           actorAccountId: accountId,
           actorName: 'Ada',
           giftForMessageId: null,
+          photoContentType: null,
+          photoBytes: 0,
+          extraPhotos: [],
+        }),
+        expect.objectContaining({
+          id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef',
+          photoContentType: null,
+          photoBytes: 0,
+          extraPhotos: [],
         }),
         expect.objectContaining({
           id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeed',
           actorAccountId: null,
           actorName: '',
           giftForMessageId: null,
+          photoContentType: null,
+          photoBytes: 0,
+          extraPhotos: [],
+        }),
+        expect.objectContaining({
+          id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeec',
+          photoBytes: 3,
+          photoContentType: 'image/jpeg',
+          extraPhotos: [{ idx: 1, photoContentType: 'image/png', bytes: 2 }],
         }),
       ]),
     );
@@ -615,6 +653,8 @@ describe('loadDebugTables', () => {
             },
           ],
           listAllReads: async () => [],
+          getPhoto: async () => null,
+          getExtraPhoto: async () => null,
         } as unknown as ConversationStore,
       },
       'conversation_message',
@@ -624,6 +664,9 @@ describe('loadDebugTables', () => {
         actorAccountId: null,
         actorName: '',
         giftForMessageId: null,
+        photoContentType: null,
+        photoBytes: 0,
+        extraPhotos: [],
       }),
     ]);
     const giftFor = await loadDebugTables(
@@ -651,6 +694,8 @@ describe('loadDebugTables', () => {
             },
           ],
           listAllReads: async () => [],
+          getPhoto: async () => null,
+          getExtraPhoto: async () => null,
         } as unknown as ConversationStore,
       },
       'conversation_message',
@@ -659,6 +704,9 @@ describe('loadDebugTables', () => {
       expect.objectContaining({
         giftForMessageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
         sats: 21,
+        photoContentType: null,
+        photoBytes: 0,
+        extraPhotos: [],
       }),
     ]);
     const cappedAuth = new InMemoryAuthStore();
