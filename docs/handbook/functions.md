@@ -221,14 +221,14 @@
 ## Function: InMemoryBtcUsdStore
 
 - **Purpose:** In-memory `BtcUsdRateBook` seeded at construction; never HTTP.
-- **Inputs:** Optional `ReadonlyMap` or `Record` of day → rate. `ensureDays(days, nowMs)` returns the seed subset for valid requested days. `listDebug(limit)` dumps seeded `{ day, usdPerBtc }` newest day first.
+- **Inputs:** Optional `ReadonlyMap` or `Record` of day → rate. `ensureDays(days, nowMs)` returns the seed subset for valid requested days. `listDebug(limit)` dumps seeded `{ day, usdPerBtc, source: null, fetchedAt: null }` newest day first.
 - **Returns / side effects:** Map of available rates; missing days omitted. No network.
 - **Used by:** `createApp` / `giftsStatsRoutes` defaults; memory `openBootStores`.
 
 ## Function: InMemoryFiatStore
 
 - **Purpose:** In-memory `FiatRateBook` seeded at construction; never HTTP.
-- **Inputs:** Optional `ReadonlyMap` or `Record` of UTC day → `{ CHF?, EUR?, PHP? }`. `ensureDays(days, nowMs)` returns the seed subset for valid requested days. `listDebug(limit)` dumps one `{ day, quote, rate }` per seeded quote, newest day first.
+- **Inputs:** Optional `ReadonlyMap` or `Record` of UTC day → `{ CHF?, EUR?, PHP? }`. `ensureDays(days, nowMs)` returns the seed subset for valid requested days. `listDebug(limit)` dumps one `{ day, quote, rate, asOfDay: null, source: null, fetchedAt: null }` per seeded quote, newest day first.
 - **Returns / side effects:** Map of available crosses; missing days and empty crosses omitted. No network.
 - **Used by:** `createApp` / `giftsRoutes` / `giftsStatsRoutes` defaults; memory `openBootStores`.
 
