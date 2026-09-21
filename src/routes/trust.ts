@@ -597,7 +597,9 @@ async function notifyStaffProposed(
 /**
  * Best-effort fan-out for one pending propose-edge id. Re-lists before
  * and after notify so a concurrent reject/confirm cannot leave stale
- * `moderator_proposal` rows. Throws stay 200 for the caller.
+ * `moderator_proposal` rows. A pending-id change at depth 0 clears first
+ * then fans out once more; a mismatch at depth 1 drops the rows. Throws
+ * stay 200 for the caller.
  */
 async function fanOutPendingProposal(
   deps: TrustRouteDeps,
@@ -609,6 +611,9 @@ async function fanOutPendingProposal(
     const edges = await deps.trustStore.listEdgesForSubject(subject.id);
     const pending = pendingModeratorProposals([subject], edges)[0];
     if (pending === undefined || pending.id !== proposeId) {
+      if (depth !== 0) {
+        await clearModeratorProposalNotifications(deps, subject.id);
+      }
       return;
     }
     const actor = await deps.authStore.getAccount(pending.proposedBy.id);
@@ -621,10 +626,9 @@ async function fanOutPendingProposal(
     if (now === undefined) {
       await clearModeratorProposalNotifications(deps, subject.id);
     } else if (now.id !== proposeId) {
+      await clearModeratorProposalNotifications(deps, subject.id);
       if (depth === 0) {
         await fanOutPendingProposal(deps, subject, now.id, 1);
-      } else {
-        await clearModeratorProposalNotifications(deps, subject.id);
       }
     }
   } catch {
