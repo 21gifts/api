@@ -141,6 +141,7 @@ Public base URLs used in examples:
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                          |
 | GET    | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                  |
+| GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator one-account detail (`DEBUG_TOKEN`)                                                               |
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
@@ -155,6 +156,7 @@ Public base URLs used in examples:
 | PUT    | `/debug/messages/:id/video`                          | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                             |
 | POST   | `/debug/messages/:id/restore`                        | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                               |
 | GET    | `/debug/external-pubkeys`                            | `Authorization: Bearer`    | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                      |
+| GET    | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge listing (`DEBUG_TOKEN`)                                                               |
 | POST   | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                      |
 | DELETE | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                        |
 | GET    | `/push/vapid-public`                                 | Bearer                     | VAPID public key for Web Push subscribe                                                                   |
@@ -1532,7 +1534,8 @@ bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
 `usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
 wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
 audit store is wired (same rows as `GET /debug/api-log`). Same `DEBUG_TOKEN`
-gate as the other debug routes.
+gate as the other debug routes. Unexpected store throw → **503**
+`{ "error": "Dump is unavailable" }`.
 
 ### `GET /debug/dump/:table`
 
@@ -1544,7 +1547,8 @@ Unknown table → **Response** `404` unless the path segment is one of
 `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
 `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
-`db_change`. Same `DEBUG_TOKEN` gate.
+`db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
+`{ "error": "Dump is unavailable" }`.
 
 ### `POST /debug/trust-edges`
 

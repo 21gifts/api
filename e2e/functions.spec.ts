@@ -1190,7 +1190,7 @@ test('Function: serializeAccount — GET /debug/accounts listing is 200', async 
   const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
   expect(Array.isArray(body.accounts)).toBe(true);
   for (const account of body.accounts) {
-    expect(account).toHaveProperty('viewKey');
+    expect(account).toHaveProperty('id');
   }
 });
 
@@ -1616,6 +1616,19 @@ test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 
   request,
 }) => {
   expect((await request.get('/debug/accounts')).status()).toBe(401);
+});
+test('Function: serializeDebugAccount — GET /debug/accounts listing is 200', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
+  expect(Array.isArray(body.accounts)).toBe(true);
+  for (const account of body.accounts) {
+    expect(account).toHaveProperty('viewKey');
+  }
 });
 test('Function: serializeDebugAccountDetail — GET /debug/accounts/:id without bearer is 401', async ({
   request,
