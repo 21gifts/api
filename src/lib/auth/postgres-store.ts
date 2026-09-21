@@ -146,6 +146,21 @@ export class PostgresAuthStore implements AuthStore {
     }
   }
 
+  async markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `UPDATE account
+       SET wallet_backup_seen_at = COALESCE(
+         wallet_backup_seen_at,
+         to_timestamp($2::double precision / 1000.0)
+       )
+       WHERE id = $1
+       RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, now],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
   async updateAccount(account: Account): Promise<void> {
     try {
       if (account.isPlatform === true) {

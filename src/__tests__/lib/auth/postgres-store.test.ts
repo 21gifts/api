@@ -1294,4 +1294,19 @@ describe('PostgresAuthStore', () => {
     expect(undef?.record.ciphertext).toEqual(new Uint8Array());
     expect(undef?.createdAt).toBeNull();
   });
+
+  it('markWalletBackupSeen uses COALESCE so a later write cannot clear the timestamp', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(9) }];
+    const stored = await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10);
+    expect(sql.queries[0]?.text).toMatch(/COALESCE/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
+    expect(stored?.walletBackupSeenAt).toBe(9);
+  });
+
+  it('markWalletBackupSeen returns undefined when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('missing', 10)).toBeUndefined();
+  });
 });

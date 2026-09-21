@@ -185,6 +185,12 @@ export interface AuthStore {
    */
   updateAccount(account: Account): Promise<void>;
   /**
+   * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
+   * stay unchanged. Returns the stored row, or `undefined` when the id is
+   * unknown.
+   */
+  markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined>;
+  /**
    * Set only `name` on the account that owns this Lightning Address
    * (`lower(trim)` match). Other columns stay unchanged.
    *
@@ -427,6 +433,19 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
+  }
+
+  async markWalletBackupSeen(accountId: string, now: number): Promise<Account | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    if (current.walletBackupSeenAt !== null && current.walletBackupSeenAt !== undefined) {
+      return current;
+    }
+    const updated: Account = { ...current, walletBackupSeenAt: now };
+    this.#accounts.set(accountId, updated);
+    return updated;
   }
 
   async updateAccount(account: Account): Promise<void> {

@@ -1258,6 +1258,29 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('markWalletBackupSeen sets only the timestamp', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const first = await store.markWalletBackupSeen('acc', 9);
+    expect(first?.walletBackupSeenAt).toBe(9);
+    expect(first?.name).toBe('Ada');
+    const second = await store.markWalletBackupSeen('acc', 10);
+    expect(second?.walletBackupSeenAt).toBe(9);
+    expect(await store.markWalletBackupSeen('missing', 1)).toBeUndefined();
+  });
+
   it('ignores a second createAccount with the same viewKey', async () => {
     const store = new InMemoryAuthStore();
     const viewKey = 'e'.repeat(64);
