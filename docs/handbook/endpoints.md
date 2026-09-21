@@ -213,28 +213,28 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
-- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
+- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options (`extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
 - **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`, `walletRequired`, and `walletBackupSeenAt`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
 
 ## Endpoint: POST /auth/passkey/register/begin
 
-- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options (`extensions.prf: {}`). Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
 - **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`, `walletRequired`, and `walletBackupSeenAt`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).

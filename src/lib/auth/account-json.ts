@@ -514,7 +514,7 @@ export interface OwnerFundingLookup {
  * @param funding - Optional grant lookup; omitted → `basis` `null`, else
  *   `{ status: 'none', … }` without I/O.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, and `funding` (via {@link serializeOwnerAccount}).
+ *   `notificationLevel`, and `funding`, `walletRequired`, and `walletBackupSeenAt` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
