@@ -214,7 +214,9 @@ function reservedContent(
  * still calls `notifyZap` after a newly indexed **member-note** forum receipt.
  * A member/invoice zap on the official platform profile note is a compose
  * fee: skip `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply`
- * plus a top-level `spendPing`. An external zap on that same note still
+ * plus a top-level `spendPing` only when `eligibleToday` (same gate as
+ * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). An
+ * external zap on that same note still
  * inserts `insertExternalGiftReply`. PN ingest appends a conversation gift
  * (`appendConversationGift`) and does not call `notifyZap`. A member-note
  * gift-reply does not call `notifyForumReply`. When a conversation store is

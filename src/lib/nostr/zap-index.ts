@@ -1864,7 +1864,9 @@ async function insertExternalGiftReply(
  * already called `notifyZap` after indexing. A member/invoice zap on the
  * platform profile note is a compose fee: `forum.post` + `postLimiter` gate
  * the create, then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
- * and a top-level `spendPing`. When the parent is itself a reply, sets `payerAccountId`
+ * and a top-level `spendPing` only when `eligibleToday` (same gate as
+ * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). When
+ * the parent is itself a reply, sets `payerAccountId`
  * to null and returns without `store.create` so the receipt never occupies
  * the awaiting-gift-reply queue.
  *
