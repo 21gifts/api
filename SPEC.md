@@ -752,8 +752,9 @@ propose/reject, delete that reject and **409**. If a newer propose already
 reopened the queue, **200** keeps the reject in history and does not drop
 `moderator_proposal` rows. Role stays
 `verified`. Logs
-`trust.moderator_rejected` `{ subjectId, actorId }`. Then deletes
-`moderator_proposal` rows with `replyId === subject.id`. No notify for the
+`trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
+after insert, deletes `moderator_proposal` rows with
+`replyId === subject.id`. No notify for the
 reject itself. Same 401/403/400/404/409/503 JSON shapes as
 `POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
 
