@@ -6,6 +6,7 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import type { SpendPing } from '@/lib/spend-ping';
 
 /**
  * Operator debug surface for `message_invoice` attempts (forum and
@@ -26,6 +27,8 @@ export interface DebugPaymentsRouteDeps {
   pushStore?: PushStore;
   /** Optional in-app notification persistence. */
   notificationStore?: NotificationStore;
+  /** Optional spend ping after a platform-note compose creates a top-level post. */
+  spendPing?: SpendPing;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -140,6 +143,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           ...(deps.notificationStore === undefined
             ? {}
             : { notificationStore: deps.notificationStore }),
+          ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
         });
         if (result.ok) {
           logEvent('debug.invoices.settled', {

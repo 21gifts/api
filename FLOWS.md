@@ -204,7 +204,8 @@ notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign, plus `#<l
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
 validated kind:9735 is indexed, a payer gift-reply is inserted only when the
-paid row is top-level (`parentId` null). A zap on a signed reply credits that
+paid row is top-level (`parentId` null) and is not the official platform
+profile note. A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
 posts and replies from `basis` (including the parent author) are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then

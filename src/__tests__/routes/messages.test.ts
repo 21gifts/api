@@ -1165,6 +1165,19 @@ describe('GET /messages/compose-target', () => {
 });
 
 describe('POST /messages', () => {
+  it('uses the default post limiter when omitted', async () => {
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore: await namedStore('Ada'),
+        now,
+      }),
+    );
+    const res = await app.request('/messages', { headers: AUTH });
+    expect(res.status).toBe(200);
+  });
+
   it('returns 403 when a basis account posts without paying', async () => {
     const store = await namedStore('Ada');
     const acc = await store.getAccount('acc');

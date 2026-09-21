@@ -234,7 +234,6 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
     ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
-    /* v8 ignore next 2 -- compose deps are injected at boot; unit ticks omit them */
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
   });

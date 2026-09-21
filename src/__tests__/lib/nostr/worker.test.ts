@@ -17,6 +17,7 @@ import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -164,6 +165,24 @@ describe('runNostrWorkerTick', () => {
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
     ]);
+  });
+
+  it('forwards spendPing and postLimiter into zap ingest', async () => {
+    const { auth, messages } = await seed();
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        spendPing,
+        postLimiter: new PostRateLimiter(),
+      }),
+    );
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
   it('re-signs pending rows with a null stored event', async () => {

@@ -1354,8 +1354,7 @@ async function ingestOneReceipt(
     } catch {
       payer = undefined;
     }
-    const parentAuthor = await args.auth.getAccount(row.accountId);
-    if (!isPlatformFeeNote(parentAuthor, row)) {
+    if (!isPlatformFeeNote(author, row)) {
       try {
         await notifyZap({
           note: row,

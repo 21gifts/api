@@ -85,6 +85,7 @@ if (import.meta.main) {
       ? new WebsocketNostrPublisher()
       : undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch);
+  const postLimiter = new PostRateLimiter();
   const app = createApp({
     authStore,
     btcUsdRates,
@@ -104,6 +105,7 @@ if (import.meta.main) {
     ...(fundingStore === undefined ? {} : { fundingStore }),
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
     vapidPublicKey: vapidPublicKey ?? '',
+    postLimiter,
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
@@ -123,7 +125,7 @@ if (import.meta.main) {
         now: Date.now,
         env: process.env,
         pushStore,
-        postLimiter: new PostRateLimiter(),
+        postLimiter,
         ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
         ...(notificationStore === undefined ? {} : { notificationStore }),
         ...(spendPing === undefined ? {} : { spendPing }),
