@@ -93,9 +93,9 @@ describe('eligibleToday', () => {
 
   it('is false when the grant is missing, from the gate day', () => {
     expect(eligibleToday(NON_BASIS, undefined, GATE_MS)).toBe(false);
-    expect(
-      eligibleToday(NON_BASIS, undefined, Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`)),
-    ).toBe(false);
+    expect(eligibleToday(NON_BASIS, undefined, Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`))).toBe(
+      false,
+    );
   });
 
   it('keeps admitted true and basis false the day after the gate', () => {
