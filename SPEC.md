@@ -377,7 +377,7 @@ ID).
 
 The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, and `walletBackupSeenAt`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
 
-A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row calls `updateAccount({ ...existing, walletRequired: true })` after the credential lands and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 

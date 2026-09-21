@@ -306,8 +306,9 @@ export interface AuthStore {
    */
   createPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /**
-   * Persist the account's first passkey. Returns false when this account
-   * already has a credential or the credential id is taken.
+   * Persist the account's first passkey and set `walletRequired: true` in the
+   * same write. Returns false when this account already has a credential, the
+   * credential id is taken, or the account is session-refused.
    */
   createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
