@@ -5,7 +5,11 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { CONVERSATION_LIST_LIMIT } from '@/lib/conversation';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import {
+  decodeMessageFeedCursor,
+  encodeMessageFeedCursor,
+  unsignedNostrDefaults,
+} from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -1425,6 +1429,129 @@ describe('GET /conversations/:id', () => {
     expect(body.messages[1]?.accountId).toBe('other');
     expect(body.messages[0]).not.toHaveProperty('eventId');
     expect(body.messages[0]).not.toHaveProperty('senderAccountId');
+  });
+
+  it('returns the newest 200 messages oldest-first by default with an older cursor', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const ids: string[] = [];
+    for (let i = 0; i <= CONVERSATION_LIST_LIMIT; i += 1) {
+      const id = `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
+      ids.push(id);
+      await conversations.appendMessage({
+        id,
+        conversationId: thread.id,
+        text: `message ${i}`,
+        createdAt: new Date(now() + i),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(body.messages.map((row) => row.id)).toEqual(ids.slice(1));
+    expect(body.nextCursor).toBeDefined();
+    expect(decodeMessageFeedCursor(body.nextCursor ?? '')).toEqual({
+      k: 't',
+      c: new Date(now() + 1).toISOString(),
+      i: ids[1],
+    });
+  });
+
+  it('pages older messages from the oldest row of the newest page', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const ids = [
+      '00000000-0000-4000-8000-000000000011',
+      '00000000-0000-4000-8000-000000000012',
+      '00000000-0000-4000-8000-000000000013',
+    ];
+    for (const [i, id] of ids.entries()) {
+      await conversations.appendMessage({
+        id,
+        conversationId: thread.id,
+        text: `message ${i}`,
+        createdAt: new Date(now() + i),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+
+    const first = await mount(auth, conversations).request(`/conversations/${thread.id}?limit=2`, {
+      headers: AUTH,
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(firstBody.messages.map((row) => row.id)).toEqual(ids.slice(1));
+    expect(firstBody.nextCursor).toBeDefined();
+
+    const second = await mount(auth, conversations).request(
+      `/conversations/${thread.id}?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor ?? '')}`,
+      { headers: AUTH },
+    );
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(secondBody.messages.map((row) => row.id)).toEqual(ids.slice(0, 1));
+    expect(secondBody).not.toHaveProperty('nextCursor');
+  });
+
+  it.each(['0', '201', 'abc'])('returns 400 for invalid limit %s', async (limit) => {
+    const res = await mount(await seeded()).request(`/conversations/${NOTE_ID}?limit=${limit}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid limit' });
+  });
+
+  it.each([
+    '%%%',
+    encodeMessageFeedCursor({
+      k: 's',
+      s: 21,
+      c: new Date(now()).toISOString(),
+      i: NOTE_ID,
+    }),
+    encodeMessageFeedCursor({
+      k: 't',
+      c: new Date(now()).toISOString(),
+      i: 'not-a-uuid',
+    }),
+  ])('returns 400 for an invalid cursor', async (cursor) => {
+    const res = await mount(await seeded()).request(
+      `/conversations/${NOTE_ID}?cursor=${encodeURIComponent(cursor)}`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
   });
 
   it('sets fromMe false for Damus inbound without a sender account', async () => {
@@ -3504,7 +3631,7 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     expect(body.messages.some((row) => row.id === giftId)).toBe(true);
   });
 
-  it('unblocks when the gift id is outside the oldest list window', async () => {
+  it('returns a newest gift immediately and pages to the remaining older row', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -3562,8 +3689,26 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     });
     expect(res.status).toBe(200);
     expect(slept).toBe(0);
-    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    const body = (await res.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
     expect(body.messages).toHaveLength(CONVERSATION_LIST_LIMIT);
-    expect(body.messages.some((row) => row.id === giftId)).toBe(false);
+    expect(body.messages.some((row) => row.id === giftId)).toBe(true);
+    expect(body.nextCursor).toBeDefined();
+
+    const older = await app.request(
+      `/conversations/${thread.id}?cursor=${encodeURIComponent(body.nextCursor ?? '')}`,
+      { headers: AUTH },
+    );
+    expect(older.status).toBe(200);
+    const olderBody = (await older.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(olderBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000000',
+    ]);
+    expect(olderBody).not.toHaveProperty('nextCursor');
   });
 });
