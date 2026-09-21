@@ -127,6 +127,7 @@ describe('GET /debug/trust-edges', () => {
       listEdgesTouching: async () => [],
       insertEdge: async (row) => row,
       deleteEdge: async () => undefined,
+      deleteEdgeById: async () => undefined,
     };
     const res = await mount(new InMemoryAuthStore(), throwing).request('/debug/trust-edges', {
       headers: { authorization: 'Bearer secret' },
