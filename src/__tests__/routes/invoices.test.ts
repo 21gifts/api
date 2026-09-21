@@ -11,7 +11,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { invoiceRoutes } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
-import type { FundingGrant } from '@/lib/funding';
+import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -44,6 +44,7 @@ function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<ty
 
 const spendApp = createApp;
 const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
+const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc1issued';
@@ -746,6 +747,7 @@ describe('POST /invoices', () => {
       messageStore: livePostStore(),
       fetchImpl,
       fundingStore: new InMemoryFundingStore(),
+      now: () => GATE_MS,
     }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
@@ -2844,9 +2846,23 @@ describe('GET /invoices/eligible', () => {
       spendApiToken: TOKEN,
       authStore,
       fundingStore: new InMemoryFundingStore(),
+      now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('returns eligible true without a grant before the gate day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore: new InMemoryFundingStore(),
+      now: () => NOW_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: true });
   });
 
   it('does not persist when GET /eligible sees an expired trial', async () => {
@@ -2858,7 +2874,7 @@ describe('GET /invoices/eligible', () => {
       spendApiToken: TOKEN,
       authStore,
       fundingStore,
-      now: () => NOW_MS,
+      now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: false });
@@ -2879,7 +2895,7 @@ describe('GET /invoices/eligible', () => {
       messageStore: livePostStore(),
       fetchImpl,
       fundingStore,
-      now: () => NOW_MS,
+      now: () => GATE_MS,
     }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),

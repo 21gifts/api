@@ -89,11 +89,29 @@ export function effectiveStatus(
 }
 
 /**
+ * First UTC calendar day `YYYY-MM-DD` on which a funding grant is required
+ * for spend pings and invoices. Until that morning, non-`basis` accounts
+ * stay eligible without a grant so the community can apply.
+ */
+export const FUNDING_REQUIRED_FROM_UTC = '2026-09-25';
+
+/**
+ * Whether the grant gate is in force on this UTC day.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @returns `true` on and after {@link FUNDING_REQUIRED_FROM_UTC}.
+ */
+export function fundingGrantRequired(nowMs: number): boolean {
+  return utcDayKey(nowMs) >= FUNDING_REQUIRED_FROM_UTC;
+}
+
+/**
  * Whether the account may receive a spend ping / spend invoice today.
  *
- * True iff role is not `basis` AND (admitted OR (trial AND
- * `trialUtcDate === utcDayKey(nowMs)`)). Expired trial is false. Missing
- * grant is false. `basis` is always false.
+ * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
+ * other role is true (passkey and living-room post still gate issue). From
+ * that UTC day, true iff admitted OR (trial AND `trialUtcDate === utcDayKey(nowMs)`).
+ * Expired trial, pending, rejected, and missing grants are then false.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
@@ -107,6 +125,9 @@ export function eligibleToday(
 ): boolean {
   if (role === 'basis') {
     return false;
+  }
+  if (!fundingGrantRequired(nowMs)) {
+    return true;
   }
   if (grant === undefined) {
     return false;
