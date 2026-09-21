@@ -3989,9 +3989,9 @@ Success → **Response** `200`:
 }
 ```
 
-`unreadCount` is matching unread in the newest 1000 after
-`notificationsMatchingLevel`, not `store.unreadCount()`. It is not the
-page length and may exceed the 200 list cap.
+`unreadCount` is unread among kept rows after the hidden filter (before
+the 200 cap), not `store.unreadCount()` and not the unfiltered matching
+unread of the newest 1000. It is not necessarily the page length.
 
 ### `POST /notifications/read-all`
 
