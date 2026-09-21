@@ -4931,6 +4931,7 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     expect(await store.listOpenConversationZapEventIds()).toEqual([
       { eventId: 'ab'.repeat(32), conversationMessageId: 'cm1' },
+      { eventId: 'ab'.repeat(32), conversationMessageId: 'cm-dup' },
     ]);
     expect(sql.queries[0]?.text).toMatch(/conversation_id IS NOT NULL/);
     expect(sql.queries[0]?.text).toMatch(/conversation_message_id IS NOT NULL/);
