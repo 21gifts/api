@@ -531,6 +531,7 @@ export async function finishPasskeyReplace(
     return { ok: false, error: 'Invalid passkey' };
   }
   const latest = await store.getAccount(account.id);
+  /* v8 ignore next -- the account row cannot vanish after a successful replace */
   return { ok: true, account: latest ?? account };
 }
 
