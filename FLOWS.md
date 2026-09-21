@@ -58,17 +58,21 @@ The signed-in view currently lives on `/login` — there is no separate
 Address form, and **Sign out**. Name and Lightning Address are each
 skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
+New passkey accounts must confirm the recovery phrase first
+(`POST /me/wallet-backup-seen`); that step cannot skip.
 
-`GET /me` `setup` order is name, then username (unskippable), then
+`GET /me` `setup` order is wallet (when `walletRequired` and the backup
+is unseen; not skippable), then name, then username (unskippable), then
 lightning-address, then rules. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After name/skip, username, and address/skip, the app records living-room
-rules agreement via `POST /me/rules-agreement`. `GET /me` carries
-`setup` (wizard; skip counts as done for name and Lightning Address, not
-username), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch
+After wallet backup (new accounts), name/skip, username, and address/skip,
+the app records living-room rules agreement via `POST /me/rules-agreement`.
+`GET /me` carries `setup` (wizard; skip counts as done for name and
+Lightning Address, not username or wallet), `missing` (facts; skip does
+not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -77,7 +81,8 @@ account.
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
 `/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
-`/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
+`/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
+`/me/rules-agreement`.
 
 ---
 
