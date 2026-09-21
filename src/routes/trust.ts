@@ -620,8 +620,12 @@ async function fanOutPendingProposal(
     const now = pendingModeratorProposals([subject], after)[0];
     if (now === undefined) {
       await clearModeratorProposalNotifications(deps, subject.id);
-    } else if (now.id !== proposeId && depth === 0) {
-      await fanOutPendingProposal(deps, subject, now.id, 1);
+    } else if (now.id !== proposeId) {
+      if (depth === 0) {
+        await fanOutPendingProposal(deps, subject, now.id, 1);
+      } else {
+        await clearModeratorProposalNotifications(deps, subject.id);
+      }
     }
   } catch {
     logEvent('push.enqueue.failed');

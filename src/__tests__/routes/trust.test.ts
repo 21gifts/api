@@ -1183,14 +1183,26 @@ describe('POST /trust/*', () => {
               },
             ];
           }
+          if (lists < 7) {
+            return [
+              ...closed,
+              {
+                id: 'p-reopen-2',
+                subjectId: SUBJECT,
+                actorId: FOUNDER,
+                kind: 'moderator_propose' as const,
+                createdAt: 9_000_000_000_002,
+              },
+            ];
+          }
           return [
             ...closed,
             {
-              id: 'p-reopen-2',
+              id: 'p-reopen-3',
               subjectId: SUBJECT,
-              actorId: FOUNDER,
+              actorId: MOD,
               kind: 'moderator_propose' as const,
-              createdAt: 9_000_000_000_002,
+              createdAt: 9_000_000_000_003,
             },
           ];
         },
@@ -1205,9 +1217,8 @@ describe('POST /trust/*', () => {
         { accountId: SUBJECT },
       );
       expect(res.status).toBe(200);
-      const listed = await notifications.listByRecipient(MOD, 10);
-      expect(listed).toHaveLength(1);
-      expect(listed[0]?.actorAccountId).toBe(FOUNDER);
+      expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+      expect(await notifications.listByRecipient(FOUNDER, 10)).toEqual([]);
     });
 
     it('still 200 when pending fan-out throws', async () => {
